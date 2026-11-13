@@ -36,7 +36,7 @@ approximation), **todo** = not checked yet.
 | V2 | Bullet impacts (puffs) | open | OpenDF's puffs are invented; the original uses effect models (EXP_B.3DI via ITEMS.DEF effects) |
 | V3 | Gun bob, reload lowering, recoil push, muzzle flash time | todo | |
 | V4 | View distance, fog, sky, terrain tint | open | view distance 1200 m and fog 35-98 % are guesses; TRN `filter`/`gamma`/`saturation`/`horizon` are read but their use (÷128 tint) is a guess; the original renders terrain as voxels. Needs its own study (part of "terrain look") |
-| V2b | Weapon bob, recoil kick, reload lowering, flash time | open | all guesses; DF.EXE has `movegun` and weapon table +0xA4 still undecoded |
+| V2b | Gun model motion | fixed | no bob, sway or reload lowering in DF.EXE (0x449abc); firing kicks the gun model 1/32 m back and ±1/64 m randomly, settling 0x80/tick (0x449cbc); the view never moves; flash ≈ one frame. Table +0xA4 = flags (scope, poses, range readout, full auto, …) |
 | V5 | Scope inset | fixed | centre (480,240), radius 100 (was 120), ticks r/4..r/2, range "%3im" / "1km+" at (500,312.5); shown only while not moving (0x450600) |
 
 ## Command map
@@ -64,7 +64,7 @@ approximation), **todo** = not checked yet.
 |---|---|---|---|
 | K1 | Every default key binding | fixed | DF.EXE default table at 0x4df4f8 (read at run time, built-in copy as fallback). Was wrong: Y next waypoint (original W), map zoom keys reversed, Tab/R/X/Z/WASD invented. Now the original table + mouse look (user's choice); N = debug flight only |
 | K2 | Weapon keys | fixed | slots per DF.EXE 0x44b598: 2 sidearm, 3-5 primary modes, 6-8 secondary modes (1 knife, 9/0 grenade/laser not implemented). Was: invented 2/3/4/6/7/8 with all five guns carried |
-| K3 | Keyboard turn/look rates (numpad) | open | 150°/s and 90°/s, not found in DF.EXE yet |
+| K3 | Keyboard turn/look, mouse | fixed | 168.75°/s, 84.375°/s with NoRun, same for pitch; pitch −67.5°..+90° (0x436fec, 0x437435); mouse 0.1758° per count, a quarter zoomed (0x42eba0) |
 
 ## Gameplay
 
@@ -73,8 +73,8 @@ approximation), **todo** = not checked yet.
 | G1 | Weapon switch delay | fixed | was a guessed 0.4 s; DF.EXE 0x44aafe clears cooldown and reload, no delay; an empty weapon starts reloading |
 | G2 | Reload rules | fixed | DF.EXE 0x44a004 / 0x449f58: reload discards the rounds left; the last round fired starts the reload at once; empty trigger reloads |
 | G7 | Loadout | fixed | default from DF.EXE 0x40ee14: .45, M4(/M203), Ammo; Ammo doubles the primary's spares (0x44b598); `--loadout` until Change Gear exists |
-| G3 | Bullet flight (gravity, 3 s life) | open | not traced in DF.EXE yet |
-| G4 | People die from one hit | open | ITEMS.DEF gives people hp 2-4; damage per gun (gun table +0x14?) not traced yet |
+| G3 | Bullet flight | fixed | projectile per 60 Hz tick: speed velocity·60/62 m/s, gravity 9.78 m/s², no drag, lifetime gun +0x18 ticks, no penetration (0x44d450, 0x44f3e4); origin at the gun muzzle, or the eye along the view when scoped |
+| G4 | Damage | fixed | 1 << (P >> age/falloff), no effect if P < armour class B (0x44f184); people lose ITEMS.DEF hp and die at 0. Head ×4 needs the .CHR body-part spheres: **open** |
 | G5 | Scope | fixed | magnification table +0xA0, FOV 28/mag whole degrees (0x450600); one zoom step |
 | G6 | Message lifetime | fixed | see B1 |
 
@@ -83,3 +83,8 @@ approximation), **todo** = not checked yet.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | X1 | Fern (FERN2) drawn magenta inside the scope inset | fixed | transparent texels (palette entry 0, magenta) bled through texture filtering when magnified; they now take their opaque neighbours' colour. The original samples textures unfiltered |
+| X2 | Spread | fixed | uniform ±0.0824°·(A−1) on yaw and pitch, A = gun +0x1C; stance, movement and scope do not matter (0x46af90). Were invented modifiers |
+| X3 | Player physics | fixed | jump 4 m/s (+1/16 m), prone jump stands up; gravity 9.78; ground glue 1/32 m, airborne past 0.5 m; step 0.5 m; slides on gradients > 1.3 until < 0.7; uphill > 0.7 forces walking; collision box ±0.75 m (0x436158, 0x436fd0, 0x437a28) |
+| X4 | Eye height | partly | standing 1.45 m (0.7 above the origin, origin 0.75 above the feet), eases 0.9 per tick (0x449913); crouched/prone come from .CHR animation frames: **open** |
+| X5 | Scope behaviour | fixed | moving turns it off; random aim offset up to 2.8° per zoom (0x44b870); full auto does not refire while zoomed |
+| X6 | Impact effects | open | DF.EXE spawns effect items 107001-107016 by surface/material (0x46a054); OpenDF still draws puffs until it has an effect-object system |

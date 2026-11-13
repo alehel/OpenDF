@@ -45,6 +45,21 @@ const std::vector<WeaponDef>& builtinWeaponDefs() {
 
 namespace {
 
+// Built-in copies of the gun-table projectile fields, per weapon above.
+void builtinProjectiles(std::vector<WeaponDef>& defs) {
+    const int v[5][4] = {{1, 10, 200, 8}, {1, 30, 70, 1}, {2, 40, 70, 1}, {0, 10, 100, 5}, {1, 30, 70, 4}};
+    for (size_t i = 0; i < defs.size() && i < 5; ++i) {
+        defs[i].power = v[i][0];
+        defs[i].falloff = v[i][1];
+        defs[i].lifetime = v[i][2];
+        defs[i].accuracy = v[i][3];
+    }
+}
+
+} // namespace
+
+namespace {
+
 // Overrides `defs` with the values in the user's DF.EXE. Returns false (and
 // leaves `defs` alone) if the tables are not where the US release has them.
 bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<WeaponDef>& defs) {
@@ -69,6 +84,9 @@ bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<Weapo
         if (!gun(g, 0x04, n) || !gun(g, 0x08, d.magazine) || !gun(g, 0x0C, velocity)) return false;
         d.magazines = std::max(1, int(n));
         d.muzzleVelocity = float(velocity);
+        if (!gun(g, 0x10, d.power) || !gun(g, 0x14, d.falloff) || !gun(g, 0x18, d.lifetime) || !gun(g, 0x1C, d.accuracy))
+            return false;
+        d.falloff = std::max(1, d.falloff);
         if (items && mode(first, 0x64, fp))
             if (const ItemDef* it = items->byId(fp); it && !it->graphic.empty()) {
                 std::string name = it->graphic;
@@ -94,6 +112,7 @@ const std::string& Arsenal::modeName() const { return names_[slots_[current_].de
 void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, int primary,
                    int secondary) {
     defs_ = builtinWeaponDefs();
+    builtinProjectiles(defs_);
     fromExe_ = exe && exe->loaded() && readExeTables(*exe, items, defs_);
     names_.clear();
     for (const auto& d : defs_) {
@@ -115,7 +134,8 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     add(secondary, false);                      // secondary gun, if not the Ammo kit
     current_ = 1;   // the primary weapon (the original starts with the knife, not implemented yet)
     zoomLevel_ = 0;
-    cooldown_ = reloadTimer_ = recoil_ = flashTimer_ = 0;
+    cooldown_ = reloadTimer_ = flashTimer_ = 0;
+    kick_[0] = kick_[1] = kick_[2] = 0;
     burstLeft_ = 0;
     bullets_.clear();
     impacts_.clear();
@@ -158,32 +178,68 @@ void Arsenal::toggleZoom() {
     if (reloadTimer_ > 0) return;
     if (def().zoom.empty()) return;   // no scope on this weapon
     zoomLevel_ = (zoomLevel_ + 1) % (int(def().zoom.size()) + 1);
+    if (zoomLevel_) {
+        // 0x44b870: a fixed random aim offset for this zoom, sin/cos of a
+        // random angle times 8 table units (up to 2.8125°).
+        std::uniform_real_distribution<float> a(0.f, 2 * kPi);
+        const float r = a(rng_), m = 2.8125f * kPi / 180.f;
+        scopeYaw_ = std::sin(r) * m;
+        scopePitch_ = std::cos(r) * m;
+    }
 }
 
 void Arsenal::fire(Player& player, World& world) {
+    (void)world;
     Slot& s = slots_[current_];
     const WeaponDef& d = def();
     --s.rounds;
     cooldown_ = mode().fireTicks * kTick;
-    flashTimer_ = 0.05f;
-    recoil_ += d.recoilDeg;
+    flashTimer_ = kTick;   // the flash mesh shows for about one frame (DF.EXE 0x4045f9)
+    // DF.EXE 0x449cbc (fire class 1): the gun model jumps 0x800 back and a
+    // random 0x400 sideways/up (16.16 m); it settles at 0x80 per tick (0x4498a9).
+    {
+        std::uniform_real_distribution<float> a(0.f, 2 * kPi);
+        const float r = a(rng_);
+        kick_[0] = -0x800 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = 0x400 / 65536.f * std::cos(r);
+    }
 
-    // Accuracy: steadier crouched/prone and when still; scopes help a lot.
-    float spread = d.spreadDeg;
-    if (player.stance == Stance::Crouch) spread *= 0.6f;
-    if (player.stance == Stance::Prone) spread *= 0.35f;
-    if (player.moving()) spread *= 2.0f;
-    if (zoomLevel_) spread *= 0.5f;
-    std::normal_distribution<float> n(0.f, spread * kPi / 180.f * 0.5f);
-    float yaw = player.yaw + n(rng_), pitch = player.pitch + recoilPitch() + n(rng_);
+    // Spread (0x46af90): yaw and pitch each off by up to ±0.0824°·(A−1),
+    // uniform; nothing else (stance, movement, scope) changes it.
+    float yaw = player.yaw, pitch = player.pitch;
+    if (d.accuracy > 1) {
+        const float maxDev = float(0xF0000) / 4294967296.f * 2 * kPi * float(d.accuracy - 1);
+        std::uniform_real_distribution<float> u(-1.f, 1.f);
+        yaw += u(rng_) * maxDev;
+        pitch += u(rng_) * maxDev;
+    }
     Vec3 dir{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
-    Vec3 origin = player.eye() + dir * 0.3f;
-    bullets_.push_back({origin, dir * d.muzzleVelocity, 3.f, d.damage});
-}
 
-float Arsenal::recoilPitch() const {
-    // The muzzle climbs while firing and settles back on its own.
-    return std::min(recoil_, 6.f) * 0.5f * kPi / 180.f;
+    // Origin (0x449abc / 0x44b420): scoped, from the eye along the view
+    // (with the scope's offset); otherwise from the gun model's position.
+    Vec3 origin;
+    if (zoomLevel_) {
+        const float sy = yaw + scopeYaw_, sp = pitch + scopePitch_;
+        dir = {std::cos(sp) * std::sin(sy), std::sin(sp), -std::cos(sp) * std::cos(sy)};
+        origin = player.eye() + Vec3{0, -0x200 / 65536.f, 0};
+    } else {
+        const Vec3 fwd = player.forward();
+        const Vec3 right = normalize(Vec3{-std::cos(player.yaw), 0, -std::sin(player.yaw)}) * -1.f;
+        const Vec3 up = normalize(Vec3{fwd.y * right.z - fwd.z * right.y, fwd.z * right.x - fwd.x * right.z,
+                                       fwd.x * right.y - fwd.y * right.x}) * -1.f;
+        const float f = (d.gunOffset[0] / 256.f) + kick_[0], l = (d.gunOffset[1] / 256.f) + kick_[1],
+                    u = (d.gunOffset[2] / 256.f) + kick_[2];
+        origin = player.eye() + fwd * f - right * l + up * u;
+    }
+    // Speed: velocity · 65536 / 62 per tick (the divisor is 62).
+    Projectile p;
+    p.pos = origin;
+    p.vel = dir * (d.muzzleVelocity * 60.f / 62.f);
+    p.lifetime = d.lifetime;
+    p.power = d.power;
+    p.falloff = d.falloff;
+    bullets_.push_back(p);
 }
 
 void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
@@ -192,7 +248,10 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
     const WeaponDef& d = def();
     cooldown_ = std::max(0.f, cooldown_ - dt);
     flashTimer_ = std::max(0.f, flashTimer_ - dt);
-    recoil_ = std::max(0.f, recoil_ - dt * (6.f + recoil_ * 2.f));
+    for (float& k : kick_) {
+        const float step = 0x80 / 65536.f * 60.f * dt;
+        k = k > 0 ? std::max(0.f, k - step) : std::min(0.f, k + step);
+    }
 
     if (reloadTimer_ > 0) {
         reloadTimer_ -= dt;
@@ -204,7 +263,8 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
         }
     } else {
         // Burst fires three rounds per press; full auto fires while held.
-        const FireMode fm = mode().fire;
+        // Full auto (table +0xA4 bit 0x20) refires while held, but not while zoomed (0x449fc3).
+        const FireMode fm = mode().fire == FireMode::Auto && zoomLevel_ ? FireMode::Single : mode().fire;
         if (fm == FireMode::Burst && triggerPressed && burstLeft_ == 0 && cooldown_ <= 0) burstLeft_ = 3;
         const bool wantsFire = fm == FireMode::Auto ? triggerDown : fm == FireMode::Burst ? burstLeft_ > 0 : triggerPressed;
         if (wantsFire && cooldown_ <= 0) {
@@ -220,26 +280,26 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
         }
     }
 
-    // Bullets: integrate with gravity; test each step's segment for hits.
+    // Bullets (0x44f3e4), per 60 Hz tick: trace the segment pos..pos+v, the
+    // nearest hit stops the bullet (no penetration); otherwise move, gravity
+    // 0xb2 per tick², age one tick; gone after `lifetime` ticks.
     for (auto& b : bullets_) {
-        float remaining = dt;
-        while (remaining > 0 && b.life > 0) {
-            float h = std::min(remaining, 1.f / 120.f);
-            Vec3 next = b.pos + b.vel * h + Vec3{0, -4.905f * h * h, 0};
+        for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
+            const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
             if (world.raycast(b.pos, next, hit)) {
                 impacts_.push_back({hit.point, 0, hit.object >= 0});
-                if (hit.object >= 0) world.damage(hit.object, b.damage);
-                b.life = 0;
+                // Damage (0x44f184): 1 << (power >> (age / falloff)).
+                if (hit.object >= 0) world.damage(hit.object, 1 << (b.power >> (b.age / b.falloff)), b.power);
+                b.age = b.lifetime;
                 break;
             }
-            b.vel.y -= 9.81f * h;
             b.pos = next;
-            b.life -= h;
-            remaining -= h;
+            b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
+            ++b.age;
         }
     }
-    bullets_.erase(std::remove_if(bullets_.begin(), bullets_.end(), [](const Projectile& p) { return p.life <= 0; }),
+    bullets_.erase(std::remove_if(bullets_.begin(), bullets_.end(), [](const Projectile& p) { return p.age >= p.lifetime; }),
                    bullets_.end());
     for (auto& i : impacts_) i.age += dt;
     impacts_.erase(std::remove_if(impacts_.begin(), impacts_.end(), [](const Impact& i) { return i.age > 1.5f; }),

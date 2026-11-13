@@ -4,7 +4,7 @@
 // Weapon values come from DF.EXE's own weapon tables, read from the user's
 // copy at start-up (see docs/FORMATS.md); the built-in copies of those values
 // are used if DF.EXE is missing or not the expected version. Spread, damage
-// and recoil are still OpenDF approximations.
+// are still OpenDF approximations.
 #pragma once
 
 #include "../core/ExeImage.h"
@@ -44,8 +44,13 @@ struct WeaponDef {
     std::vector<float> zoom;    // magnifications of the zoom inset (none = no scope)
     int damage;
     float reloadSeconds;
-    float recoilDeg;
+    float recoilDeg;            // unused: the original kicks only the gun model (see kick())
     bool oneHanded = false;     // held in one hand: the soldier uses the *_1HW moves
+    // Gun table (DF.EXE 0x4E9060) projectile fields:
+    int power = 1;              // +0x10: damage 1 << power, halving each `falloff` ticks of flight
+    int falloff = 30;           // +0x14, ticks
+    int lifetime = 70;          // +0x18, ticks of flight
+    int accuracy = 1;           // +0x1C: spread ±0.0824°·(A−1) per axis, none at 1
 };
 
 // Built-in copy of the original's values (fallback).
@@ -55,9 +60,10 @@ const std::vector<WeaponDef>& builtinWeaponDefs();
 int weaponIndex(const std::string& name);
 
 struct Projectile {
-    Vec3 pos, vel;
-    float life;
-    int damage;
+    Vec3 pos, vel;              // metres, metres per second
+    int age = 0, lifetime = 0;  // ticks
+    int power = 1, falloff = 30;
+    float tickClock = 0;
 };
 
 struct Impact {
@@ -103,8 +109,13 @@ public:
     float zoom() const { return zoomLevel_ ? def().zoom[zoomLevel_ - 1] : 1.f; }
     bool zoomed() const { return zoomLevel_ > 0; }
     bool reloading() const { return reloadTimer_ > 0; }
-    float recoil() const { return recoil_; }
-    float recoilPitch() const;   // radians the view is currently kicked up
+    // Gun model kick (DF.EXE 0x449cbc, fire class 1): metres back, left, up
+    // in the weapon's own axes; firing never moves the view.
+    const float* kick() const { return kick_; }
+    // Random aim offset taken when the scope comes up (0x44b870), radians.
+    float scopeYaw() const { return scopeYaw_; }
+    float scopePitch() const { return scopePitch_; }
+    void cancelZoom() { zoomLevel_ = 0; }
     float flash() const { return flashTimer_; }
     const std::vector<Impact>& impacts() const { return impacts_; }
 
@@ -117,7 +128,9 @@ private:
     std::vector<std::vector<std::string>> names_;   // per weapon, per mode
     int current_ = 0;
     int zoomLevel_ = 0;
-    float cooldown_ = 0, reloadTimer_ = 0, recoil_ = 0, flashTimer_ = 0;
+    float cooldown_ = 0, reloadTimer_ = 0, flashTimer_ = 0;
+    float kick_[3] = {0, 0, 0};
+    float scopeYaw_ = 0, scopePitch_ = 0;
     int burstLeft_ = 0;
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;

@@ -8,14 +8,17 @@ namespace df {
 
 namespace {
 
-struct StanceSpec { float eye, height; };
-
-// Eye height and body height in metres: approximations.
-StanceSpec spec(Stance s) {
+// Eye height above the feet. DF.EXE (0x449913) puts the eye 0.7 m above the
+// body origin (0.4 m prone, 0.3 m in water) and eases toward it by 0.9 per
+// tick. Standing, the origin is 0.75 m above the feet (the collision box,
+// 0x437a28, runs from -0.75 to +1.0 m), so the eye is 1.45 m up. Crouched and
+// prone the origin follows the animation frames (.CHR), not decoded yet, so
+// those two heights are still approximations.
+float eyeTarget(Stance s) {
     switch (s) {
-    case Stance::Crouch: return {1.0f, 1.15f};
-    case Stance::Prone: return {0.35f, 0.5f};
-    default: return {1.65f, 1.8f};
+    case Stance::Crouch: return 1.0f;    // approximation
+    case Stance::Prone: return 0.35f;    // approximation
+    default: return 0.75f + 0.7f;
     }
 }
 
@@ -27,9 +30,18 @@ int moveDirection(float forward, float strafe) {
     return (int(std::lround(a / (3.14159265f / 4))) + 8) % 8;
 }
 
-constexpr float kRadius = 0.3f;
-constexpr float kStep = 0.45f;       // highest ledge walked onto without jumping
-constexpr float kMaxSlope = 1.4f;    // rise per metre (~55°) beyond which ground blocks
+// DF.EXE values (player controller 0x436fd0, physics 0x436158):
+constexpr float kRadius = 0.75f;          // collision box half-width (0x437a28)
+constexpr float kHeight = 1.75f;          // box from -0.75 to +1.0 m around the origin
+constexpr float kStep = 0.5f;             // highest floor stepped onto (0x435dc0, 0x8000)
+constexpr float kGravity = 0xb2 * 3600.f / 65536.f;   // 0xb2 per tick², 9.78 m/s²
+constexpr float kJumpSpeed = 0x1111 * 60.f / 65536.f; // 4.0 m/s
+constexpr float kJumpLift = 0x1000 / 65536.f;          // 1/16 m at once
+constexpr float kGlue = 0x800 / 65536.f;               // ground within 1/32 m holds the feet
+constexpr float kAirborne = 0x8000 / 65536.f;          // more than 0.5 m above ground: airborne
+constexpr float kSlideStart = 0x14ccc / 65536.f;       // gradient 1.3 on either axis starts a slide
+constexpr float kSlideStop = 0xb333 / 65536.f;         // until both are under 0.7
+constexpr float kSlideRate = 0x1999 / 65536.f * 60.f;  // xy moves -gradient x 0.1 m per tick
 
 } // namespace
 
@@ -46,8 +58,8 @@ Vec3 Player::forward() const {
 }
 
 void Player::update(float dt, const PlayerInput& in, const World& world) {
-    const StanceSpec st = spec(stance);
-    eyeHeight_ += (st.eye - eyeHeight_) * std::min(1.f, dt * 8.f);
+    // The eye eases toward its target by a factor 0.9 per 60 Hz tick.
+    eyeHeight_ = eyeTarget(stance) + (eyeHeight_ - eyeTarget(stance)) * std::pow(0.9f, dt * 60.f);
 
     Vec3 flatFwd{std::sin(yaw), 0, -std::cos(yaw)};
     Vec3 right{-flatFwd.z, 0, flatFwd.x};
@@ -86,39 +98,53 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         const AnimMove* m = moves ? moves->find(move) : nullptr;
         speed_ = m ? m->velocity : fallback;
     }
+
+    // Terrain gradient (DF.EXE 0x4332ac) for sliding and uphill walking.
+    const float h0x = world.terrain->heightAt(feet.x - 0.5f, feet.z), h1x = world.terrain->heightAt(feet.x + 0.5f, feet.z);
+    const float h0z = world.terrain->heightAt(feet.x, feet.z - 0.5f), h1z = world.terrain->heightAt(feet.x, feet.z + 0.5f);
+    const float gx = h1x - h0x, gz = h1z - h0z;
+    if (onGround_) {
+        if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) sliding_ = true;
+        else if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
+    }
+    // Uphill steeper than 0.7 along the heading forces the walking moves (0x436705).
+    if (moving_ && stance != Stance::Prone && gx * flatFwd.x + gz * flatFwd.z > kSlideStop && moves) {
+        const std::string walk = "Walking" + std::to_string(moveDirection(in.forward, in.strafe)) + (oneHanded ? "_1HW" : "_2HW");
+        if (const AnimMove* w = moves->find(walk)) speed_ = std::min(speed_, w->velocity);
+    }
     Vec3 delta = wish * (speed_ * dt);
+    if (sliding_) delta = delta + Vec3{-gx, 0, -gz} * (kSlideRate * dt);
 
-    // Refuse to walk up walls of terrain that are too steep.
-    const float groundHere = world.groundHeight(feet, kStep);
-    auto tryMove = [&](Vec3 d) {
-        Vec3 next = feet + d;
-        float g = world.groundHeight(next, kStep);
-        float horiz = std::sqrt(d.x * d.x + d.z * d.z);
-        if (onGround_ && horiz > 0 && g - groundHere > std::max(kStep, horiz * kMaxSlope)) return false;
-        feet = next;
-        return true;
-    };
-    if (!tryMove(delta)) {
-        if (!tryMove({delta.x, 0, 0})) tryMove({0, 0, delta.z});
-    }
-    feet = world.resolve(feet, kRadius, st.height, kStep);
+    feet = feet + delta;
+    feet = world.resolve(feet, kRadius, kHeight, kStep);
 
-    if (in.jump && onGround_ && stance == Stance::Stand) {
-        vy_ = 4.2f;
-        onGround_ = false;
+    // Jump (0x4375de): prone, the key stands the soldier up; otherwise 4 m/s up
+    // and 1/16 m at once (not while sliding).
+    if (in.jump && !jumpHeld_) {
+        if (stance == Stance::Prone) stance = Stance::Stand;
+        else if (onGround_ && !sliding_) { vy_ = kJumpSpeed; feet.y += kJumpLift; onGround_ = false; }
     }
-    vy_ -= 9.81f * dt;
-    feet.y += vy_ * dt;
+    jumpHeld_ = in.jump;
+
+    // Ground (0x43655b..0x436a07): below ground snaps up; within 1/32 m holds;
+    // higher up gravity applies, and over 0.5 m (or moving up) is airborne
+    // until landing. No falling damage.
     const float ground = world.groundHeight(feet, kStep);
-    if (feet.y <= ground) {
-        feet.y = ground;
-        vy_ = 0;
-        onGround_ = true;
-    } else if (onGround_ && feet.y - ground < kStep && vy_ <= 0) {
-        feet.y = ground;   // follow the ground down small steps and slopes
-        vy_ = 0;
+    float d = feet.y - ground;
+    if (onGround_) {
+        if (d < 0) { feet.y = ground; vy_ = 0; }
+        else if (d <= kGlue && vy_ <= 0) { feet.y = ground; vy_ = 0; }
+        else {
+            vy_ -= kGravity * dt;
+            feet.y += vy_ * dt;
+            if (feet.y - ground > kAirborne || vy_ > 0) onGround_ = false;
+            if (feet.y < ground) { feet.y = ground; vy_ = 0; }
+        }
     } else {
-        onGround_ = false;
+        vy_ -= kGravity * dt;
+        feet.y += vy_ * dt;
+        d = feet.y - world.groundHeight(feet, kStep);
+        if (d < 0) { feet.y -= d; vy_ = 0; onGround_ = true; }
     }
 
     wrap(world.extent());

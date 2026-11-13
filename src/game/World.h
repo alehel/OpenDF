@@ -67,7 +67,9 @@ public:
 
     // Applies damage from a bullet. Returns a short message when something
     // is destroyed or killed, empty otherwise.
-    std::string damage(int index, int amount);
+    // DF.EXE 0x44f184: no effect unless `power` reaches the target's armour
+    // class (ITEMS.DEF `hp A B`, B); people die when their hit points reach 0.
+    std::string damage(int index, int amount, int power = 99);
 
     void update(float dt);
 

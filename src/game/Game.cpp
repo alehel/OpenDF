@@ -153,9 +153,8 @@ private:
     void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
-    // DF.EXE 0x450600: the scope inset shows while the scope is on and the
-    // player is not moving.
-    bool scopeShown() const { return arsenal_.zoomed() && !player_.moving(); }
+    // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
+    bool scopeShown() const { return arsenal_.zoomed(); }
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -519,9 +518,8 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
 }
 
 Vec3 Game::aimDirection() const {
-    Player kicked = player_;
-    kicked.pitch = std::clamp(player_.pitch + arsenal_.recoilPitch(), -1.5f, 1.5f);
-    return kicked.forward();
+    // Shots go where the soldier faces; firing never moves the view.
+    return player_.forward();
 }
 
 float Game::rangeToAim() const {
@@ -567,9 +565,10 @@ void Game::drawViewModel(const Screen& s) {
     // left, up in 1/256 m.
     const int* g = arsenal_.def().gunOffset;
     Vec3 offset{-g[1] / 256.f, g[2] / 256.f, -g[0] / 256.f};
-    // Recoil pushes the weapon back; reloading lowers it; a slight bob while moving.
-    float bob = player_.moving() && !player_.fly ? std::sin(missionTime_ * 9.f) * 0.006f : 0.f;
-    offset = offset + Vec3{0, bob - (arsenal_.reloading() ? 0.12f : 0.f), arsenal_.recoil() * 0.012f};
+    // DF.EXE 0x449abc: the gun is fixed to the eye (no bob, sway or lowering);
+    // only the firing kick moves it (forward, left, up in its own axes).
+    const float* k = arsenal_.kick();
+    offset = offset + Vec3{-k[1], k[2], -k[0]};
     // Model axes (+X barrel, +Y up, +Z right) to view axes (-Z ahead, +Y up, +X right).
     Mat4 base;
     base.at(0, 0) = 0; base.at(2, 0) = -1;
@@ -1086,9 +1085,11 @@ int Game::run() {
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
-                    const float sens = 0.0022f;
+                    // DF.EXE 0x42eba0: 0x200000 binary angle per count at the
+                    // nominal mouse scale (0.1758°), a quarter while zoomed.
+                    const float sens = 0.17578125f * kPi / 180.f * (arsenal_.zoomed() ? 0.25f : 1.f);
                     player_.yaw += e.motion.xrel * sens;
-                    player_.pitch = std::clamp(player_.pitch - e.motion.yrel * sens, -1.5f, 1.5f);
+                    player_.pitch = std::clamp(player_.pitch - e.motion.yrel * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
                 } else if (e.type == SDL_KEYDOWN && !e.key.repeat) handleKey(e.key);
             }
             if (zoomClick) arsenal_.toggleZoom();
@@ -1109,13 +1110,17 @@ int Game::run() {
             in.down = down(Action::Crouch) && player_.fly;
             if (o_.walkForward) in.forward = 1;
             if (showMap_) in = PlayerInput{};
-            // Keyboard turning and looking (numpad); rates are approximations.
+            // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
+            // angle per tick (168.75°/s), half that with NoRun held; the same
+            // for pitch, which stays within -67.5°..+90° (0x437435).
             if (!showMap_) {
-                const float turn = 150.f * kPi / 180.f * dt, look = 90.f * kPi / 180.f * dt;
-                player_.yaw += turn * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
-                player_.pitch = std::clamp(player_.pitch + look * (float(down(Action::LookUp)) - float(down(Action::LookDown))),
-                                           -1.5f, 1.5f);
+                const float rate = (in.walk ? 84.375f : 168.75f) * kPi / 180.f * dt;
+                player_.yaw += rate * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
+                player_.pitch += rate * (float(down(Action::LookUp)) - float(down(Action::LookDown)));
             }
+            player_.pitch = std::clamp(player_.pitch, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+            // Any move or jump key turns the scope off (0x4373ab).
+            if (in.forward != 0 || in.strafe != 0 || in.jump) arsenal_.cancelZoom();
             const bool trigger = !showMap_ && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.def().oneHanded;
@@ -1159,7 +1164,10 @@ int Game::run() {
             glViewport(0, int(s.bottom), dw, int(s.playH));
             const float fovY = kOriginalFovY;
             Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, viewDistance_ * 1.1f);
-            Mat4 view = lookDir(player_.eye(), aimDirection(), {0, 1, 0});
+            // While zoomed the camera carries the scope's random offset (0x404246).
+            Player cam = player_;
+            if (arsenal_.zoomed()) { cam.yaw += arsenal_.scopeYaw(); cam.pitch += arsenal_.scopePitch(); }
+            Mat4 view = lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
                 glClearColor(1, 0, 1, 1);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

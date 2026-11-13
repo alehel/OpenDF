@@ -42,7 +42,8 @@ public:
     float speed() const { return speed_; }
 
 private:
-    float eyeHeight_ = 1.65f;
+    float eyeHeight_ = 1.45f;
+    bool sliding_ = false, jumpHeld_ = false;
     float vy_ = 0;
     bool onGround_ = true, moving_ = false;
     float speed_ = 0;

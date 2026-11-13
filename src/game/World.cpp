@@ -238,18 +238,22 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit) const {
     return found;
 }
 
-std::string World::damage(int index, int amount) {
+std::string World::damage(int index, int amount, int power) {
     if (index < 0 || index >= int(objects.size())) return {};
     WorldObject& o = objects[index];
     if (o.removed || o.dead) return {};
+    if (o.item && power < o.item->damageClass) return {};
     if (o.person) {
-        // People go down from a single hit (all have `hp 1` in ITEMS.DEF).
+        // People have ITEMS.DEF's hit points (2-4) and die at 0. Head hits
+        // (x4) need the body-part spheres of the .CHR skeleton: not yet.
+        o.hp -= amount;
+        if (o.hp > 0) return {};
         o.dead = true;
         o.fall = 0.001f;
         refreshBoxes(o);
         return o.item->name + " down";
     }
-    if (o.hp <= 0 || !o.item || o.item->damageClass != 0) return {};   // needs explosives / indestructible
+    if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
     if (o.hp > 0) return {};
     if (o.husk) {
