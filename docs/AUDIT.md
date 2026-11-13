@@ -34,7 +34,7 @@ approximation), **todo** = not checked yet.
 |---|---|---|---|
 | V1 | Crosshair | fixed | bright green one-pixel arms 4..10 / 5..11 from the centre (0x401f94) |
 | V2 | Bullet impacts (puffs) | open | OpenDF's puffs are invented; the original uses effect models (EXP_B.3DI via ITEMS.DEF effects) |
-| V3 | Gun bob, reload lowering, recoil push, muzzle flash time | todo | |
+| V3 | Gun bob, reload lowering, recoil push, muzzle flash time | fixed | see V2b |
 | V4 | Terrain colour, fog, sky, view distance | fixed | no sun lighting (sun_slope unused); near rings (< 100 m·F/320): bilinear colour map, detail shade toward black / sky colour 16, detail colour averaged 50/50 (0x438fac); far rings: colour mip k with stepped fog max(0, 20k−15)/256 toward sky colour 0 (0x431924), mixed with ^1.25/^0.8; saturation then gamma/filter tables (0x4358f4, 0x4356c8); sky gradient 2·horizon per row and clouds at sky_height m drifting with time (0x43b930, 0x43b5f4); terrain to 40·F m (12.8 km at 640 wide). Detail-elevation bumps and the water renderer: **open**; model fog and the 1024 m object distance: inferred |
 | V2b | Gun model motion | fixed | no bob, sway or reload lowering in DF.EXE (0x449abc); firing kicks the gun model 1/32 m back and ±1/64 m randomly, settling 0x80/tick (0x449cbc); the view never moves; flash ≈ one frame. Table +0xA4 = flags (scope, poses, range readout, full auto, …) |
 | V5 | Scope inset | fixed | centre (480,240), radius 100 (was 120), ticks r/4..r/2, range "%3im" / "1km+" at (500,312.5); shown only while not moving (0x450600) |
