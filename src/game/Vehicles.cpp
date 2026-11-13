@@ -98,6 +98,7 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
     else v.speed += v.targetSpeed > v.speed ? accel : -accel;
     const float steer = wrapAngle(v.targetHeading - o.heading) / 8.f;
+    o.steer = steer;   // drawn by the `tire` routine (0x4808fc)
     const float axle = o.item && o.item->axleDist > 0 ? o.item->axleDist : 2.3f;
     o.heading += (kPi / 4.f) / axle * v.speed * std::sin(steer) / kTicks;
     const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, right{std::cos(o.heading), 0, std::sin(o.heading)};

@@ -1376,6 +1376,29 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
         }
+        if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "tire" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
+            // 0x4808fc: mesh 0 as is, mesh 1 (shadow) not drawn, front wheels
+            // mesh 2 about hardpoint 2 and mesh 3 about hardpoint 1, turned
+            // about the vertical by the steering angle; no rolling. (The
+            // hardpoints are used as DF.EXE uses them, including the data's
+            // odd pivots.)
+            const GpuModel& m = *v.o->model;
+            const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
+            Mat4 hide;
+            for (float& x : hide.m) x = 0;
+            auto about = [&](int hp, const Mat4& r) {
+                const auto& p = m.points[size_t(hp)];
+                return translate({p[0], p[1], p[2]}) * r * translate({-p[0], -p[1], -p[2]});
+            };
+            // DF yaw is anticlockwise, OpenDF heading clockwise.
+            const Mat4 steer = rotateY(-v.o->steer);
+            std::vector<Mat4> pose(meshes, Mat4{});
+            if (meshes > 1) pose[1] = hide;
+            if (meshes > 2) pose[2] = about(2, steer);
+            if (meshes > 3) pose[3] = about(1, steer);
+            models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
+            continue;
+        }
         if (v.o->chr && !v.o->anim.angles().empty()) {
             const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);
