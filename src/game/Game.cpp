@@ -198,15 +198,44 @@ void Game::drawViewModel(int w, int h) {
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
     const auto& l = m->lods[0];
-    Vec3 center{(l.min[0] + l.max[0]) * 0.5f, (l.min[1] + l.max[1]) * 0.5f, (l.min[2] + l.max[2]) * 0.5f};
     const float length = l.max[0] - l.min[0];
-    // Held low and to the right; pulled back by recoil, lowered while reloading.
-    float kick = arsenal_.recoil() * 0.012f;
-    float lower = arsenal_.reloading() ? 0.12f : 0.f;
+    const float aspect = float(w) / std::max(h, 1);
+    const float fovY = 55.f * kPi / 180.f, t = std::tan(fovY * 0.5f);
+
+    // Placed like the original: the muzzle ends about 63% across and 60%
+    // down the screen and the barrel runs back past the bottom-right corner,
+    // so the open back of the model is never in view. Solve for the muzzle
+    // depth at which a weapon of this length spans from the muzzle point to
+    // just beyond that corner.
+    const float mx = 0.14f, my = -0.22f;         // muzzle, normalised device coords
+    const float rx = 1.10f, ry = -1.15f;         // where the barrel leaves the screen
+    const float rz = 0.32f;                      // ... at this depth
+    const Vec3 A{mx * t * aspect, my * t, -1.f}; // muzzle point = A * depth
+    const Vec3 R{rx * t * aspect * rz, ry * t * rz, -rz};
+    const float span = length * 0.95f;
+    const float qa = dot(A, A), qb = -2.f * dot(A, R), qc = dot(R, R) - span * span;
+    const float disc = std::max(0.f, qb * qb - 4 * qa * qc);
+    const float depth = std::max(0.15f, (-qb + std::sqrt(disc)) / (2 * qa));
+    Vec3 muzzle = A * depth;
+
+    // Recoil pushes the weapon back along its barrel; reloading lowers it.
+    const Vec3 f = normalize(muzzle - R);
+    const Vec3 right = normalize(cross(f, Vec3{0, 1, 0}));
+    const Vec3 up = cross(right, f);
     float bob = player_.moving() && !player_.fly ? std::sin(missionTime_ * 9.f) * 0.006f : 0.f;
-    Vec3 place{0.20f, -0.24f - lower + bob, -0.42f - length * 0.5f + kick};
-    Mat4 model = translate(place) * rotateY(kPi * 0.5f) * translate(center * -1.f);
-    Mat4 proj = perspective(55.f * kPi / 180.f, float(w) / std::max(h, 1), 0.02f, 10.f);
+    muzzle = muzzle - f * (arsenal_.recoil() * 0.012f) + up * bob;
+    if (arsenal_.reloading()) muzzle.y -= 0.12f;
+
+    // Model axes: +X forward (barrel), +Y up, +Z right. Anchor the model's
+    // front end (max X, mid height, mid width) at the muzzle point.
+    const Vec3 anchor{l.max[0], (l.min[1] + l.max[1]) * 0.5f, (l.min[2] + l.max[2]) * 0.5f};
+    Mat4 model;
+    model.m[0] = f.x; model.m[1] = f.y; model.m[2] = f.z;
+    model.m[4] = up.x; model.m[5] = up.y; model.m[6] = up.z;
+    model.m[8] = right.x; model.m[9] = right.y; model.m[10] = right.z;
+    const Vec3 origin = muzzle - (f * anchor.x + up * anchor.y + right * anchor.z);
+    model.m[12] = origin.x; model.m[13] = origin.y; model.m[14] = origin.z;
+    Mat4 proj = perspective(fovY, aspect, 0.02f, 10.f);
     SceneLighting light{{0, 0, 0}, {0, 0, 0}, normalize(Vec3{0.3f, 0.9f, 0.4f}), 1e6f, 2e6f};
     models_.begin(proj, light);
     models_.draw(*m, 0, model);
