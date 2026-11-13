@@ -27,6 +27,7 @@ add_executable(opendf
   src/formats/Mission.cpp
   src/formats/Model3di.cpp
   src/formats/Pcx.cpp
+  src/formats/Rtxt.cpp
   src/formats/Trn.cpp
   src/game/Game.cpp
   src/game/Player.cpp

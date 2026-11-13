@@ -17,8 +17,9 @@ namespace df {
 enum class FireMode { Single, Burst, Auto };
 
 struct WeaponMode {
-    const char* name;           // as shown on the HUD (DFGAME.BIN wording)
+    const char* name;           // fallback if DFGAME.BIN is unavailable
     FireMode fire;
+    int textIndex;              // index into DFGAME.BIN (= DF.EXE weapon table index)
 };
 
 struct WeaponDef {
@@ -56,7 +57,9 @@ class Arsenal {
 public:
     struct Slot { int def; int rounds; int mags; int mode; };
 
-    void init();
+    // `gameText`: DFGAME.BIN strings, for the weapon names (may be empty).
+    void init(const std::vector<std::string>& gameText = {});
+    const std::string& modeName() const;
     // Selects a weapon slot; `mode` < 0 keeps that weapon's current fire mode.
     void select(int slot, int mode = -1);
     void cycle();
@@ -85,6 +88,7 @@ private:
     void fire(Player& player, World& world);
 
     std::vector<Slot> slots_;
+    std::vector<std::vector<std::string>> names_;   // per weapon, per mode
     int current_ = 0;
     int zoomLevel_ = 0;
     float cooldown_ = 0, reloadTimer_ = 0, recoil_ = 0, flashTimer_ = 0;

@@ -4,6 +4,7 @@
 #include "../render/Hud.h"
 #include "../render/Models.h"
 #include "../render/Terrain.h"
+#include "../formats/Rtxt.h"
 #include "Player.h"
 #include "Weapons.h"
 #include "World.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <fstream>
 #include <memory>
@@ -116,6 +118,8 @@ private:
     GameOptions o_;
     SDL_Window* win_ = nullptr;
     ItemDefs items_;
+    std::vector<std::string> gameText_;   // DFGAME.BIN
+    std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     std::vector<std::string> missions_;
     int current_ = 0;
     Mission mission_;
@@ -154,6 +158,8 @@ bool Game::loadMission(int index) {
         return false;
     }
     current_ = index;
+    // Testing: OPENDF_HEIGHTSCALE overrides metres per elevation step.
+    if (const char* hs = std::getenv("OPENDF_HEIGHTSCALE")) terrain_.scale.heightScale = float(std::atof(hs));
     world_.terrain = &terrain_;
     world_.build(vfs_, models_, items_, mission_);
 
@@ -169,7 +175,21 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    arsenal_.init();
+    arsenal_.init(gameText_);
+    // The mission's display name ("Insurrection") is in the campaign text file:
+    // DFCAMPcc.BIN, entry m-1 for CccMmm.
+    missionName_ = missionName(mission_.title);
+    {
+        int c = 0, m = 0;
+        std::vector<uint8_t> camp;
+        std::vector<std::string> text;
+        char file[32];
+        if (std::sscanf(name.c_str(), "C%dM%d", &c, &m) == 2 && m > 0) {
+            std::snprintf(file, sizeof file, "DFCAMP%02d.BIN", c);
+            if (vfs_.read(file, camp) && parseRtxt(camp, text) && m - 1 < int(text.size()) && !text[m - 1].empty())
+                missionName_ = text[m - 1];
+        }
+    }
     missionTime_ = 0;
     messages_.clear();
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
@@ -347,7 +367,7 @@ void Game::drawTopBar(const Screen& s) {
 
     // Weapon line, magazines, rounds and the chamber indicator.
     const auto& sl = arsenal_.current();
-    hud_.text(s.lx(74), s.y(5), arsenal_.mode().name, kHudGreen, ts);
+    hud_.text(s.lx(74), s.y(5), arsenal_.modeName(), kHudGreen, ts);
     hudBox(s, 74, 27, 136, 47, false);
     hudBox(s, 141, 27, 201, 47, false);
     // Magazine icon: a small slanted clip, then the spare magazine count.
@@ -411,7 +431,7 @@ void Game::drawBottomBar(const Screen& s) {
 
     // Operative and mission.
     hud_.text(s.rx(436), y0 + s.y(5), "OPERATIVE", kHudGreen, ts);
-    hud_.text(s.rx(436), y0 + s.y(20), missionName(mission_.title), kHudGreen, ts);
+    hud_.text(s.rx(436), y0 + s.y(20), missionName_, kHudGreen, ts);
 }
 
 void Game::drawCommandMap(const Screen& s) {
@@ -510,7 +530,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         const float bw = s.y(400), bh = s.y(70), x0 = cx - bw / 2, y0 = s.playY + s.y(20);
         hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.8f});
         hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
-        hud_.text(x0 + s.y(10), y0 + s.y(8), "Mission Goals: " + missionName(mission_.title), kHudGreen, s.text());
+        hud_.text(x0 + s.y(10), y0 + s.y(8), "Mission Goals: " + missionName_, kHudGreen, s.text());
         hud_.text(x0 + s.y(10), y0 + s.y(28), "The goal list is not decoded from the mission files yet.", kHudMessage, s.text());
         hud_.text(x0 + s.y(10), y0 + s.y(46), "Press G to close.", kHudGreen, s.text());
     }
@@ -527,6 +547,7 @@ int Game::run() {
         return 1;
     }
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
+    if (vfs_.read("DFGAME.BIN", raw)) parseRtxt(raw, gameText_);
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
     if (it == missions_.end()) { std::fprintf(stderr, "unknown mission %s\n", o_.mission.c_str()); return 1; }

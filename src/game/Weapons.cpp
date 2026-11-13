@@ -11,27 +11,39 @@ constexpr float kPi = 3.14159265f;
 
 const std::vector<WeaponDef>& weaponDefs() {
     using F = FireMode;
-    // Names from the game's DFGAME.BIN string table; icons are WEAP640.PCX
-    // frames. Gun offsets and scope magnifications come from DF.EXE's player
-    // weapon table (168-byte records at 0x4E97D0; +0x78 offset, +0xA0 scope
-    // power, which is 0 for weapons without a scope). Fire rates, velocities,
-    // spread, damage and reload times are still real-world approximations.
+    // Names: DFGAME.BIN (index = DF.EXE weapon table index). Icons: WEAP640.PCX.
+    // From DF.EXE's weapon tables (see docs/FORMATS.md):
+    //  - gun offset (player table +0x78) and scope power (+0xA0);
+    //  - magazine size (gun table +0x08), magazines (+0x04; the player gets
+    //    2n-1 spares, which is what footage of the original shows, e.g. 23
+    //    for the M4) and muzzle velocity in m/s (+0x0C).
+    // Still approximations: fire rate, spread, damage, reload time, recoil.
     static const std::vector<WeaponDef> defs = {
-        {{{"SpecOps .45 caliber pistol", F::Single}},
-         "PM19", 10, {102, -34, -43}, 7, 4, 300, 255, 1.4f, {}, 1, 1.6f, 1.6f},
-        {{{"M4 Assault Rifle, Single Shot", F::Single}, {"M4 Assault Rifle, Burst", F::Burst}},
-         "PM4", 4, {72, -44, -75}, 30, 8, 800, 880, 0.5f, {4.f}, 1, 2.2f, 0.6f},
-        {{{"M40 Sniper Rifle", F::Single}},
-         "PM40", 9, {60, -35, -45}, 5, 8, 45, 790, 0.08f, {8.f}, 2, 3.0f, 2.5f},
-        {{{"H&K MP5 SD, Single Shot", F::Single}, {"H&K MP5 SD, Burst", F::Burst}, {"H&K MP5 SD, Full Auto", F::Auto}},
-         "PMP5", 11, {84, -35, -72}, 30, 8, 800, 285, 0.7f, {}, 1, 2.0f, 0.35f},
-        {{{"SAW Auto. Weap., Full Auto", F::Auto}},
-         "PM249", 8, {85, -43, -73}, 200, 3, 750, 915, 1.0f, {}, 1, 5.0f, 0.5f},
+        {{{"SpecOps .45 caliber pistol", F::Single, 5}},
+         "PM19", 10, {102, -34, -43}, 7, 2 * 3 - 1, 300, 295, 1.4f, {}, 1, 1.6f, 1.6f},
+        {{{"M4 Assault Rifle, Single Shot", F::Single, 7}, {"M4 Assault Rifle, Burst", F::Burst, 6}},
+         "PM4", 4, {72, -44, -75}, 30, 2 * 12 - 1, 800, 1000, 0.5f, {4.f}, 1, 2.2f, 0.6f},
+        {{{"M40 Sniper Rifle", F::Single, 32}},
+         "PM40", 9, {60, -35, -45}, 5, 2 * 12 - 1, 45, 950, 0.08f, {8.f}, 2, 3.0f, 2.5f},
+        {{{"H&K MP5 SD, Single Shot", F::Single, 22}, {"H&K MP5 SD, Burst", F::Burst, 21},
+          {"H&K MP5 SD, Full Auto", F::Auto, 20}},
+         "PMP5", 11, {84, -35, -72}, 30, 2 * 12 - 1, 800, 295, 0.7f, {}, 1, 2.0f, 0.35f},
+        {{{"SAW Auto. Weap., Full Auto", F::Auto, 12}},
+         "PM249", 8, {85, -43, -73}, 200, 2 * 3 - 1, 750, 1000, 1.0f, {}, 1, 5.0f, 0.5f},
     };
     return defs;
 }
 
-void Arsenal::init() {
+const std::string& Arsenal::modeName() const { return names_[current_][slots_[current_].mode]; }
+
+void Arsenal::init(const std::vector<std::string>& gameText) {
+    names_.clear();
+    for (const auto& d : weaponDefs()) {
+        std::vector<std::string> n;
+        for (const auto& m : d.modes)
+            n.push_back(m.textIndex < int(gameText.size()) && !gameText[m.textIndex].empty() ? gameText[m.textIndex] : m.name);
+        names_.push_back(std::move(n));
+    }
     slots_.clear();
     for (int i = 0; i < int(weaponDefs().size()); ++i) {
         const auto& d = weaponDefs()[i];
@@ -112,6 +124,7 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             reloadTimer_ = 0;
             --s.mags;
             s.rounds = d.magazine;
+            messages.push_back("Ammo reloaded");   // DF.EXE's own message
         }
     } else {
         // Burst fires three rounds per press; full auto fires while held.
@@ -124,10 +137,7 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
                 if (burstLeft_ > 0 && --burstLeft_ == 0) cooldown_ = std::max(cooldown_, 0.25f);
             } else {
                 burstLeft_ = 0;
-                if (triggerPressed) {
-                    if (s.mags > 0) { messages.push_back("Reloading."); reload(); }
-                    else messages.push_back("Out of ammunition.");
-                }
+                if (triggerPressed && s.mags > 0) reload();
             }
         }
     }
@@ -141,10 +151,7 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             RayHit hit;
             if (world.raycast(b.pos, next, hit)) {
                 impacts_.push_back({hit.point, 0, hit.object >= 0});
-                if (hit.object >= 0) {
-                    std::string msg = world.damage(hit.object, b.damage);
-                    if (!msg.empty()) messages.push_back(msg);
-                }
+                if (hit.object >= 0) world.damage(hit.object, b.damage);
                 b.life = 0;
                 break;
             }
