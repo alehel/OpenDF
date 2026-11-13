@@ -168,7 +168,20 @@ private:
     void ensureTty(Tty& t, const std::string& text, float x, float y, float w, float h, const char* font, int rate);
     void drawTty(Tty& t);
     void tickTtys();
-    bool transitionDone() const { return true; }   // replaced by the wipe
+    // Screen wipe (0x418f64(1), draw 0x41933c, tick 0x419414): the old frame,
+    // the new screen's first frame revealed 128 px every 4 ticks with the
+    // swipe bar blended at the edge and df_bkg2 keyed on top; Whoosh2 at fx.
+    GLuint lastTex_ = 0, startTex_ = 0, endTex_ = 0;
+    int texW_ = 0, texH_ = 0;
+    std::map<GLuint, std::pair<int, int>> texSize_;
+    bool haveLast_ = false, wipeActive_ = false, wipeCaptured_ = false;
+    int wipeStep_ = 0, wipeCount_ = 0;
+    int leadFade_ = -1;           // DF_LEAD -> DF_BKGD frames left (0x418be0), -1 = not started
+    int endTicks_ = -1;           // End screen: exit after 10 ticks (0x41cb40)
+    bool transitionDone() const { return !wipeActive_; }
+    void captureTo(GLuint& tex);
+    void drawCaptured(GLuint tex, float x, float y, float w, float h);
+    void drawWipe();
 
     void enter(Screen s);
     void setMenu(const std::string& name);
@@ -298,6 +311,11 @@ bool Frontend::openWindow() {
 }
 
 void Frontend::closeWindow() {
+    // Captured frames die with the context: no wipe from a mission's frame.
+    if (ctx_) for (GLuint* t : {&lastTex_, &startTex_, &endTex_}) if (*t) glDeleteTextures(1, t);
+    lastTex_ = startTex_ = endTex_ = 0;
+    texSize_.clear();
+    haveLast_ = wipeActive_ = false;
     hudPtr_.reset();
     images_.clear();
     fonts_.clear();
@@ -453,6 +471,63 @@ void Frontend::blit(const HudImage& im, float x, float y, float sx, float sy, fl
     if (translucent) hud().setTranslucent(false);
 }
 
+void Frontend::captureTo(GLuint& tex) {
+    // The HUD caches the bound texture: restore the binding afterwards.
+    GLint prev = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+    int dw, dh;
+    SDL_GL_GetDrawableSize(win_, &dw, &dh);
+    auto& size = texSize_[tex];
+    if (!tex || size.first != dw || size.second != dh) {
+        if (!tex) glGenTextures(1, &tex);
+        texSize_[tex] = {dw, dh};
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, dw, dh, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, dw, dh);
+    glBindTexture(GL_TEXTURE_2D, GLuint(prev));
+}
+
+void Frontend::drawCaptured(GLuint tex, float x, float y, float w, float h) {
+    // A rect of a captured frame (bottom-up rows) at the same menu position.
+    int dw, dh;
+    SDL_GL_GetDrawableSize(win_, &dw, &dh);
+    const float px = offX_ + x * scale_, py = offY_ + y * scale_, pw = w * scale_, ph = h * scale_;
+    hud().setBlend(4);
+    hud().imageUV(tex, px, py, pw, ph, px / float(dw), 1.f - py / float(dh), (px + pw) / float(dw), 1.f - (py + ph) / float(dh));
+    hud().setBlend(0);
+}
+
+void Frontend::drawWipe() {
+    if (!wipeCaptured_) {
+        // Frame 1: the new screen drew itself; keep it as EndBuf, show the
+        // old frame and play Whoosh2 (frame 2 in DF.EXE).
+        hud().end();
+        captureTo(endTex_);
+        hud().begin(texW_, texH_);
+        wipeCaptured_ = true;
+        sound("WHOOSH2.WAV");
+    }
+    drawCaptured(startTex_, 0, 0, 640, 480);
+    if (wipeStep_ > 0) {
+        drawCaptured(endTex_, 0, 0, float(128 * wipeStep_), 480);
+        // The bar: 50 %, black skipped (0x4083f8).
+        const HudImage bar = image("ImageLightBarRt");
+        if (bar.texture)
+            hud().imageUV(bar.texture, offX_ + float(128 * (wipeStep_ - 1) + 44) * scale_, offY_, 84 * scale_, 480 * scale_, 0, 0, 84.f / float(bar.width),
+                          480.f / float(bar.height), {1, 1, 1, 0.5f});
+    }
+    // df_bkg2 keyed (palette index 0) over everything.
+    const std::string key = "DF_BKG2.PCX#k";
+    if (!images_.count(key)) images_[key] = hud().loadImage(vfs_, "DF_BKG2.PCX", false, true);
+    blit(images_[key], 0, 0, 0, 0, 640, 480, false);
+}
+
 void Frontend::blitHalf(const HudImage& im, float x, float y, float w, float h) {
     if (!im.texture) return;
     hud().setBlend(2);
@@ -560,6 +635,13 @@ void Frontend::setMenu(const std::string& name) {
 }
 
 void Frontend::enter(Screen s) {
+    if (s != End && s != Start && s != Quit && haveLast_) {
+        std::swap(startTex_, lastTex_);   // 0x419104: the last frame of the old screen
+        wipeActive_ = true;
+        wipeCaptured_ = false;
+        wipeStep_ = wipeCount_ = 0;
+    }
+    if (s == End) endTicks_ = 10;
     for (Tty* t : {&ttyHelp_, &ttyNsLeft_, &ttyNsRight_, &ttyNsHelp_, &ttyCamp_, &ttyDebf_, &ttyLo_}) *t = Tty{};
     helpRow_ = -1;
     if (screen_ == Macros && s != Macros) saveProfile(cur_);   // Macros exit hook 0x420ed4
@@ -788,8 +870,16 @@ void Frontend::drawButton(MnuButton& b) {
 
 void Frontend::drawMenu() {
     if (screen_ == Start) {
-        // The splash (DF_LEAD.PCX), then on to the soldier screen.
+        // The splash (DF_LEAD.PCX); once ended, DF_BKGD 50 %-blended over it
+        // on 10 draw frames (0x418be0), then Choose Soldier.
         blit(file("DF_LEAD.PCX"), 0, 0, 0, 0, 640, 480, false);
+        if (leadFade_ >= 0) {
+            const int k = 10 - leadFade_ + 1;
+            const HudImage bk = file("DF_BKGD.PCX", false);
+            if (bk.texture)
+                hud().imageUV(bk.texture, offX_, offY_, 640 * scale_, 480 * scale_, 0, 0, 1, 1, {1, 1, 1, 1.f - std::pow(0.5f, float(k))});
+            if (--leadFade_ <= 0) { leadFade_ = -1; next_ = Soldier; screenTicks_ = -100000; }
+        }
         return;
     }
     const MnuMenu* m = mnu_.menu(menu_);
@@ -1895,7 +1985,7 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    if (screen_ == Start) { sound("BUMP1.WAV"); next_ = Soldier; return; }
+    if (screen_ == Start) { if (leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; } return; }
     const MnuMenu* m = mnu_.menu(menu_);
     if (!m) return;
     auto fire = [&](const std::string& name) {
@@ -1969,7 +2059,7 @@ int Frontend::run() {
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
                 if (screen_ == Start) {
-                    if (e.type == SDL_MOUSEBUTTONDOWN) { sound("BUMP1.WAV"); next_ = Soldier; }
+                    if (e.type == SDL_MOUSEBUTTONDOWN && leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; }
                     continue;
                 }
                 // Slider drag (0x40728c): pos = (mx - x - knobW/2) / width * size,
@@ -2029,7 +2119,13 @@ int Frontend::run() {
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
             ++screenTicks_;
-            if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
+            static const int leadTicks = std::getenv("OPENDF_LEADTICKS") ? std::atoi(std::getenv("OPENDF_LEADTICKS")) : 600;   // testing
+            if (screen_ == Start && screenTicks_ >= leadTicks && leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; }
+            if (wipeActive_ && wipeCaptured_ && ++wipeCount_ >= 4) {
+                wipeCount_ = 0;
+                if (++wipeStep_ > 5) wipeActive_ = false;
+            }
+            if (screen_ == End && endTicks_ >= 0 && --endTicks_ < 0) next_ = Quit;
             if (screen_ == Credits && next_ == Credits) tickCredits();
             if (screen_ == Briefing && captionShown_ < caption_.size()) ++captionShown_;
             if (transitionDone()) tickTtys();
@@ -2104,6 +2200,15 @@ int Frontend::run() {
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
         hud().begin(dw, dh);
+        texW_ = dw;
+        texH_ = dh;
+        if (screen_ == End && haveLast_) {
+            // 0x41cb40 only presents: the last frame stays (dfsplash.pcx is never drawn).
+            drawCaptured(lastTex_, 0, 0, 640, 480);
+            hud().end();
+            SDL_GL_SwapWindow(win_);
+            continue;
+        }
         drawMenu();
         if (screen_ == Credits)
             // 0x41a3a8: after the buttons, each live text at its point, flags
@@ -2168,7 +2273,10 @@ int Frontend::run() {
                 drawTty(ttyDebf_);
             }
         }
+        if (wipeActive_) drawWipe();
         hud().end();
+        captureTo(lastTex_);
+        haveLast_ = true;
         if (!o_.screenshot.empty() && ++frame >= o_.frames) {
             std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);

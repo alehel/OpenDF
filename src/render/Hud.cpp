@@ -148,6 +148,7 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
 }
 
 HudImage Hud::makeImage(int width, int height, const std::vector<uint8_t>& rgba) {
+    flush();   // pending quads belong to the currently bound texture
     HudImage out;
     glGenTextures(1, &out.texture);
     glBindTexture(GL_TEXTURE_2D, out.texture);
@@ -170,6 +171,7 @@ void Hud::setBlend(int mode) {
     case 1: glBlendColor(0.5f, 0.5f, 0.5f, 0.75f); glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_ALPHA); break;
     case 2: glBlendColor(0.5f, 0.5f, 0.5f, 0.5f); glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_ALPHA); break;
     case 3: glBlendColor(0.f, 0.f, 0.5f, 0.5f); glBlendFunc(GL_CONSTANT_ALPHA, GL_CONSTANT_COLOR); break;
+    case 4: glBlendFunc(GL_ONE, GL_ZERO); break;   // opaque copy
     default: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
     }
 }
@@ -189,6 +191,7 @@ HudImage Hud::loadImage(Vfs& vfs, const std::string& name, bool blackTransparent
     std::vector<uint8_t> data;
     IndexedImage img;
     if (!vfs.read(name, data) || !decodePcx(data, img)) return out;
+    flush();   // pending quads belong to the currently bound texture
     std::vector<uint8_t> rgba(img.pixels.size() * 4);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const Rgb& c = img.palette[img.pixels[i]];

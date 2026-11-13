@@ -34,7 +34,7 @@ public:
     void setTranslucent(bool on);
     // Menu blends: 0 normal alpha, 1 src/2 + 3/4 dst (buttons), 2 src/2 +
     // dst/2 (0x407cd8), 3 DF.EXE's line pixel (0x409964): src/2 plus half the
-    // background's blue only (its red and green are dropped).
+    // background's blue only (its red and green are dropped); 4 opaque copy.
     void setBlend(int mode);
 
     void begin(int width, int height);
