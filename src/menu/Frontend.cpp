@@ -208,6 +208,21 @@ private:
     // Campaign / briefing / loadout state.
     int camp_ = 1, mis_ = 0, lastMapClick_ = -100;
     std::string briefing_, caption_;
+    // Briefing map (docs/AUDIT.md F9): items from the BMS, view origin in
+    // the 1024x1024 map space (1 px = 4 m), link table, caption teletype.
+    struct MapItem { int type, x, y, side; };
+    struct BriefLink { std::string key; int word = 0; int r[4] = {0, 0, 0, 0}; };
+    std::vector<MapItem> mapItems_;
+    int mapCur_[2] = {0, 0}, mapTgt_[2] = {0, 0}, mapCenter_[2] = {512, 512}, marker_[2] = {0, 0};
+    bool markerOn_ = false;
+    std::vector<BriefLink> links_;
+    size_t captionShown_ = 0;
+    void loadBriefingMap();
+    void centreMap(int x, int y);
+    void clickLink();
+    void drawBriefingText(const MnuButton& b);
+    void drawBriefingMap(const MnuButton& b);
+    void menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip = nullptr);
     int briefLine_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
@@ -550,6 +565,28 @@ void Frontend::enter(Screen s) {
         }
         briefLine_ = 0;
         caption_.clear();
+        captionShown_ = 0;
+        {
+            // 0x41e670: every {...} group is cut out; it links the word that
+            // follows (index = spaces copied so far).
+            links_.clear();
+            std::string out;
+            int spaces = 0;
+            for (size_t i = 0; i < briefing_.size(); ++i) {
+                if (briefing_[i] == '{') {
+                    const size_t e = briefing_.find('}', i);
+                    if (e != std::string::npos) {
+                        if (links_.size() < 128) links_.push_back({briefing_.substr(i + 1, std::min<size_t>(e - i - 1, 63)), spaces, {}});
+                        i = e;
+                        continue;
+                    }
+                }
+                if (briefing_[i] == ' ') ++spaces;
+                out += briefing_[i];
+            }
+            briefing_ = out;
+        }
+        loadBriefingMap();
         break;
     }
     case Loadout:
@@ -586,6 +623,7 @@ MnuButton* Frontend::hit(int x, int y) {
             if (b->type == 1) { w = im.width; h = im.height / 4; }
             else if (b->type == 6) { w = im.width; h = im.height; }
             else if (b->type == 2) h = im.height;   // 0x405774: H slider = knob height
+            else if (b->type == 3) w = im.width;    // V slider = knob width
         } else if (b->type == 1 && !b->text.empty() && !w) {
             w = int(textWidth(font(b->font), b->text));
             h = font(b->font).height;
@@ -608,11 +646,12 @@ void Frontend::drawButton(MnuButton& b) {
             const int cell = std::clamp(b.drawstate - 1, 0, 3);
             blit(im, float(b.x), float(b.y), 0, ch * float(cell), float(im.width), ch, true);
         }
-    } else if (!b.image.empty() && b.type == 2 && !(b.attrib & 2) && b.drawstate != 4) {
-        // Knob at x + pos * width / size (0x40886c).
+    } else if (!b.image.empty() && (b.type == 2 || b.type == 3) && !(b.attrib & 2) && b.drawstate != 4) {
+        // Knob at x + pos * width / size, or y + pos * height / size (0x40886c).
         const HudImage im = image(b.image);
-        const float kx = float(b.x) + (b.sliderSize > 0 ? float(b.sliderPos) * float(b.width) / float(b.sliderSize) : 0.f);
-        blit(im, kx, float(b.y), 0, 0, float(im.width), float(im.height), false);
+        const float f = b.sliderSize > 0 ? float(b.sliderPos) / float(b.sliderSize) : 0.f;
+        if (b.type == 2) blit(im, float(b.x) + f * float(b.width), float(b.y), 0, 0, float(im.width), float(im.height), false);
+        else blit(im, float(b.x), float(b.y) + f * float(b.height), 0, 0, float(im.width), float(im.height), false);
     } else if (!b.image.empty() && b.type == 6 && !(b.attrib & 0x20)) {
         const HudImage im = image(b.image);
         blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), false);
@@ -727,6 +766,225 @@ void Frontend::profileDefaults(Profile& p) {
         std::snprintf(k, sizeof k, "DEFAULTMACRO%d", i + 1);
         if (const std::string* t = menuText_.find("Macros", k)) p.setStr(0x4b0 + 40 * i, 40, *t);
     }
+}
+
+void Frontend::loadBriefingMap() {
+    // 0x440bdc: records of all four groups with map type +0x4C, not hidden
+    // (+0x0C bits 0x10/0x40), at most 200; map point (x>>18)+512, 512-(y>>18).
+    // The view starts on the first group-3 "Briefing Map Center" (6038).
+    mapItems_.clear();
+    markerOn_ = false;
+    mapCenter_[0] = mapCenter_[1] = 512;
+    std::vector<uint8_t> d;
+    char n[32];
+    std::snprintf(n, sizeof n, "C%02dM%02d.BMS", camp_ + 1, mis_ + 1);
+    if (vfs_.read(n, d) && d.size() >= 0x10C && std::memcmp(d.data(), "BMS", 3) == 0 && d[3] >= 0x0D) {
+        auto i32 = [&](size_t o) { int32_t v = 0; if (o + 4 <= d.size()) std::memcpy(&v, &d[o], 4); return v; };
+        size_t o = 0x10C;
+        bool centre = false;
+        for (int g = 0; g < 4; ++g) {
+            const int count = i32(0x98 + 4 * size_t(g));
+            for (int k = 0; k < count && o + 0x60 <= d.size(); ++k, o += 0x60) {
+                const int mx = (i32(o + 0x10) >> 18) + 512, my = 512 - (i32(o + 0x14) >> 18);
+                if (g == 3 && !centre && i32(o) == 6038) { centre = true; mapCenter_[0] = mx; mapCenter_[1] = my; }
+                if (d[o + 0x4C] && !(d[o + 0x0C] & 0x50) && mapItems_.size() < 200)
+                    mapItems_.push_back({d[o + 0x4C], mx, my, d[o + 0x43]});
+            }
+        }
+    }
+    centreMap(mapCenter_[0], mapCenter_[1]);
+}
+
+void Frontend::centreMap(int x, int y) {
+    // 0x411df0: origin = point - 128 clamped to 0..768, set at once (view,
+    // target and the two sliders).
+    mapCur_[0] = mapTgt_[0] = std::clamp(x - 128, 0, 768);
+    mapCur_[1] = mapTgt_[1] = std::clamp(y - 128, 0, 768);
+    if (MnuButton* h = mnu_.button("but_mi_hscrsl")) h->sliderPos = mapTgt_[0];
+    if (MnuButton* v = mnu_.button("but_mi_vscrsl")) v->sliderPos = mapTgt_[1];
+}
+
+void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip) {
+    // A 1-px line in 640x480 space; clipped to [clip] (Liang-Barsky) if given.
+    if (clip) {
+        float t0 = 0, t1 = 1;
+        const float dx = x1 - x0, dy = y1 - y0;
+        const float p[4] = {-dx, dx, -dy, dy}, q[4] = {x0 - clip[0], clip[2] - x0, y0 - clip[1], clip[3] - y0};
+        for (int i = 0; i < 4; ++i) {
+            if (p[i] == 0) { if (q[i] < 0) return; continue; }
+            const float t = q[i] / p[i];
+            if (p[i] < 0) t0 = std::max(t0, t); else t1 = std::min(t1, t);
+        }
+        if (t0 > t1) return;
+        const float ax = x0 + t0 * dx, ay = y0 + t0 * dy, bx = x0 + t1 * dx, by = y0 + t1 * dy;
+        x0 = ax; y0 = ay; x1 = bx; y1 = by;
+    }
+    hud().line(offX_ + (x0 + 0.5f) * scale_, offY_ + (y0 + 0.5f) * scale_, offX_ + (x1 + 0.5f) * scale_, offY_ + (y1 + 0.5f) * scale_,
+               scale_, argb(color));
+}
+
+void Frontend::drawBriefingMap(const MnuButton& b) {
+    // 0x412c10 ev3. Easing per drawn frame: min(gap >> 1, 32) (stops 1 px short).
+    for (int a = 0; a < 2; ++a) {
+        int& c = mapCur_[a];
+        const int t = mapTgt_[a];
+        if (c > t) c -= std::min((c - t) >> 1, 32);
+        if (c < t) c += std::min((t - c) >> 1, 32);
+    }
+    const int ox = mapCur_[0], oy = mapCur_[1];
+    const float bx = float(b.x), by = float(b.y);
+    // The picture wraps (0x408560): window pixel (d, r) shows picture pixel
+    // ((d + ox + 1) & 255, (r + oy) & 255).
+    char n[32];
+    std::snprintf(n, sizeof n, "C%dM%dSM.PCX", camp_ + 1, mis_ + 1);
+    const HudImage pic = file(n);
+    const int u0 = (ox + 1) & 255, v0 = oy & 255;
+    for (int qy = 0; qy < 2; ++qy)
+        for (int qx = 0; qx < 2; ++qx) {
+            const int su = qx ? 0 : u0, sv = qy ? 0 : v0;
+            const int w = qx ? u0 : 256 - u0, h = qy ? v0 : 256 - v0;
+            if (w <= 0 || h <= 0) continue;
+            blit(pic, bx + float(qx ? 256 - u0 : 0), by + float(qy ? 256 - v0 : 0), float(su), float(sv), float(w), float(h), false);
+        }
+    // Outline (0x409f88), green.
+    const uint32_t green = 0xFF00FF00, route = 0xFFFFE000;
+    menuLine(bx, by, bx + 255, by, green);
+    menuLine(bx + 255, by, bx + 255, by + 255, green);
+    menuLine(bx + 255, by + 255, bx, by + 255, green);
+    menuLine(bx, by + 255, bx, by, green);
+    const float clip[4] = {bx, by, bx + 255, by + 255};
+    // Route: items of type 1 or 3 joined in order, clipped to the window.
+    bool have = false;
+    float px = 0, py = 0;
+    for (const MapItem& it : mapItems_) {
+        if (it.type != 1 && it.type != 3) continue;
+        const float sx = bx + float(it.x - ox), sy = by + float(it.y - oy);
+        if (have) menuLine(px, py, sx, sy, route, clip);
+        px = sx; py = sy; have = true;
+    }
+    auto inside = [](int x, int y, int x0, int y0, int x1, int y1) { return x >= x0 && x <= x1 && y >= y0 && y <= y1; };
+    auto icon = [&](const char* sheet, int frame, float x, float y) {
+        // Colour-keyed on palette index 0 (0x407b28).
+        const std::string pcx = mnu_.images.count(upperCase(sheet)) ? upperCase(mnu_.images[upperCase(sheet)]) : std::string();
+        const std::string key = pcx + "#k";
+        if (!images_.count(key)) images_[key] = hud().loadImage(vfs_, pcx, false, true);
+        const HudImage im = images_[key];
+        blit(im, x, y, 0, float(frame * 6), 8, 6, false);
+    };
+    // Side icons (8x6 frames type-1 of Green/Blue/RedIcons), culled only.
+    for (const MapItem& it : mapItems_) {
+        if (it.type == 1 || it.type == 3 || it.side < 0 || it.side > 2) continue;
+        if (!inside(it.x - 4, it.y - 4, ox + 4, oy + 4, ox + 247, oy + 247)) continue;
+        static const char* kSheet[3] = {"ImageGreenIcons", "ImageBlueIcons", "ImageRedIcons"};
+        icon(kSheet[it.side], it.type - 1, bx + float(it.x - ox - 4), by + float(it.y - oy - 4));
+    }
+    // Waypoints: numbers in LCD10 0xFFAAFFAA at (+4, -6), YellowIcons frame type-1.
+    int number = 0;
+    for (const MapItem& it : mapItems_) {
+        if (it.type != 1 && it.type != 3) continue;
+        ++number;
+        const float sx = bx + float(it.x - ox), sy = by + float(it.y - oy);
+        if (inside(it.x - 4, it.y - 4, ox - 4, oy + 4, ox + 235, oy + 247))
+            drawText("LCD10", sx + 4, sy - 6, std::to_string(number), 0xFFAAFFAA);
+        if (inside(it.x - 4, it.y - 4, ox + 4, oy + 4, ox + 247, oy + 247)) icon("ImageYellowIcons", it.type - 1, sx - 4, sy - 4);
+    }
+    // The link marker: a crosshair across the window.
+    if (markerOn_ && inside(marker_[0], marker_[1], ox, oy, ox + 254, oy + 254)) {
+        const float mx = bx + float(marker_[0] - ox), my = by + float(marker_[1] - oy);
+        menuLine(mx, by, mx, by + 255, route);
+        menuLine(bx, my, bx + 255, my, route);
+    }
+}
+
+void Frontend::drawBriefingText(const MnuButton& b) {
+    // 0x41e9f4: AVA10B in (x+8, y+8)-(x+218, y+280); tokens split on spaces
+    // (strtok), each drawn with a trailing space; "~" breaks the line; links
+    // pale (0xFFDDFFDD), red under the mouse; plain text TrueGreen.
+    MenuFont& f = font("AVA10B");
+    if (!f.ok) return;
+    const float left = float(b.x + 8), top = float(b.y + 8), right = float(b.x + 218), bottom = float(b.y + 280);
+    const float fh = float(f.height);
+    std::vector<std::string> tokens;
+    {
+        std::string t;
+        for (char c : briefing_) {
+            if (c == ' ') { if (!t.empty()) tokens.push_back(t); t.clear(); }
+            else t += c;
+        }
+        if (!t.empty()) tokens.push_back(t);
+    }
+    float x = left, y = top;
+    int lineNo = 0;
+    size_t link = 0;
+    auto put = [&](size_t index, bool visible) {
+        const std::string tok = tokens[index] + " ";
+        const float w = textWidth(f, tok);
+        if (link < links_.size() && links_[link].word == int(index)) {
+            BriefLink& l = links_[link++];
+            if (visible) {
+                l.r[0] = int(x); l.r[1] = int(y); l.r[2] = int(x + w); l.r[3] = int(y + fh - 1);
+                const bool hover = mouseX_ >= l.r[0] && mouseX_ <= l.r[2] && mouseY_ >= l.r[1] && mouseY_ <= l.r[3];
+                drawText("AVA10B", x, y, tok, hover ? 0xFFFF0000 : 0xFFDDFFDD);
+            } else {
+                l.r[0] = l.r[1] = l.r[2] = l.r[3] = 0;
+            }
+        } else if (visible) {
+            drawText("AVA10B", x, y, tok, 0xFF00FF00);
+        }
+        x += w;
+    };
+    auto newline = [&]() {
+        x = left;
+        if (lineNo >= briefLine_) y += fh;
+        ++lineNo;
+    };
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (i == 0) { put(i, true); continue; }   // the first token is drawn untested (as DF.EXE)
+        if (tokens[i] == "~") { newline(); }
+        else {
+            if (x + textWidth(f, tokens[i] + " ") > right) newline();
+            if (y + fh > bottom) break;
+            put(i, lineNo >= briefLine_);
+            continue;
+        }
+        if (y + fh > bottom) break;
+    }
+    // Lines in all (for the scroll limit).
+    int lines = 1;
+    float cx = left;
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        if (tokens[i] == "~") { cx = left; ++lines; continue; }
+        const float w = textWidth(f, tokens[i] + " ");
+        if (cx + w > right) { cx = left; ++lines; }
+        cx += w;
+    }
+    briefLine_ = std::min(briefLine_, std::max(0, lines - 1));
+}
+
+void Frontend::clickLink() {
+    // 0x41ed5c / 0x4132a5: the first link under the mouse; its text from
+    // Briefing<m> is the caption and its entry's map point (u16 x, u16 y)
+    // gets the marker and the view; beep1 at fx*64/255; the caption is
+    // teletyped.
+    const BriefLink* hit = nullptr;
+    for (const BriefLink& l : links_)
+        if (mouseX_ >= l.r[0] && mouseX_ <= l.r[2] && mouseY_ >= l.r[1] && mouseY_ <= l.r[3] && l.r[2] > 0) { hit = &l; break; }
+    if (!hit) return;
+    char sec[32];
+    std::snprintf(sec, sizeof sec, "Briefing%d", mis_ + 1);
+    if (const std::string* t = campText_.find(sec, hit->key)) {
+        caption_ = *t;
+        const uint32_t pos = campText_.position(sec, hit->key);
+        markerOn_ = true;
+        marker_[0] = int(pos & 0xFFFF);
+        marker_[1] = int(pos >> 16);
+        centreMap(marker_[0], marker_[1]);
+    } else {
+        caption_ = "Unable to find link '" + hit->key + "'";
+    }
+    sound("BEEP1.WAV", 64);
+    if (caption_.size() > 1022) caption_.resize(1022);
+    captionShown_ = 0;
 }
 
 void Frontend::loadCredits() {
@@ -977,6 +1235,38 @@ void Frontend::event(MnuButton& b, int ev) {
     if (cb == "MNU_MIS_ACCEPT") return standard(b, ev, [this] { startMission(); });
     if (cb == "MNU_MIS_BACK") return standard(b, ev, to(Campaign));
     if (cb == "MNU_MIS_LOADOUT") return standard(b, ev, to(Loadout));
+    if (cb == "MNU_MIS_PL1") {
+        // Click on the map (0x412f90): click9 at fx*64/255, centre on it.
+        if (ev == 1) {
+            sound("CLICK9.WAV", 64);
+            centreMap(mapTgt_[0] + mouseX_ - 50, mapTgt_[1] + mouseY_ - 66);
+        }
+        return;
+    }
+    if (cb == "MNU_MIS_PL2") { if (ev == 2) clickLink(); return; }
+    if (cb == "MNU_MIS_SCROLLMAP") {
+        // 0x4138c4: arrows step the target 32 px (clamped, sliders follow);
+        // the centre button goes back to the start point.
+        if (b.type == 2 || b.type == 3) return;   // the sliders act in their owner draw
+        if (ev == 1) {
+            b.drawstate = 3;
+            sound("CLICK9.WAV", 128);
+            switch (b.userid) {
+            case 0: mapTgt_[1] -= 32; break;
+            case 1: mapTgt_[1] += 32; break;
+            case 2: mapTgt_[0] -= 32; break;
+            case 3: mapTgt_[0] += 32; break;
+            case 6: centreMap(mapCenter_[0], mapCenter_[1]); return;
+            default: break;
+            }
+            mapTgt_[0] = std::clamp(mapTgt_[0], 0, 768);
+            mapTgt_[1] = std::clamp(mapTgt_[1], 0, 768);
+            if (MnuButton* h = mnu_.button("but_mi_hscrsl")) h->sliderPos = mapTgt_[0];
+            if (MnuButton* v = mnu_.button("but_mi_vscrsl")) v->sliderPos = mapTgt_[1];
+        } else if (ev == 2 || ev == 7) b.drawstate = 1;
+        else if (ev == 6) b.drawstate = 2;
+        return;
+    }
     if (cb == "MNU_MIS_SCROLLBAR") {
         if (ev == 1 || ev == 2) {
             const std::string n = upperCase(b.name);
@@ -1183,23 +1473,28 @@ void Frontend::ownerDraw(MnuButton& b) {
             drawWrapped("LCD10", float(b.x + 6), float(b.y + 6), 244, 74, *t, green);
         return;
     }
-    if (cb == "MNU_MIS_PL1") {
-        // The mission map C<c>M<m>SM.PCX (APPROXIMATION: shown whole, no
-        // scrolling or route marks yet).
-        char n[32];
-        std::snprintf(n, sizeof n, "C%dM%dSM.PCX", camp_ + 1, mis_ + 1);
-        blit(file(n), float(b.x), float(b.y), 0, 0, 256, 256, false);
+    if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
+    if (cb == "MNU_MIS_SCROLLMAP") {
+        // The map sliders' owner draw (0x413a56): target = slider position.
+        if (b.type == 2) mapTgt_[0] = std::clamp(b.sliderPos, 0, 768);
+        else if (b.type == 3) mapTgt_[1] = std::clamp(b.sliderPos, 0, 768);
         return;
     }
     if (cb == "MNU_MIS_PL2") {
         blit(image(b.image), float(b.x), float(b.y), 0, 0, 228, 286, false);
-        const int lines = drawWrapped("LCD10", float(b.x + 8), float(b.y + 8), 210, 272, briefing_, green, briefLine_);
-        briefLine_ = std::min(briefLine_, std::max(0, lines - 1));
+        drawBriefingText(b);
         return;
     }
     if (cb == "MNU_MIS_PL3") {
+        // Caption teletype (0x4184d4): Ttclick1..9 at fx*192/255 on every
+        // draw until all is shown; word-wrapped LCD10 at +8 in w-16 x h-16.
         blit(image(b.image), float(b.x), float(b.y), 0, 0, 256, 56, false);
-        drawWrapped("LCD10", float(b.x + 6), float(b.y + 6), 244, 44, caption_, green);
+        if (captionShown_ < caption_.size()) {
+            char t[16];
+            std::snprintf(t, sizeof t, "TTCLICK%d.WAV", 1 + std::rand() % 9);
+            sound(t, 192);
+        }
+        drawWrapped("LCD10", float(b.x + 8), float(b.y + 8), 240, 40, caption_.substr(0, captionShown_), green);
         return;
     }
     if (cb == "MNU_LO_GUNPIC") {
@@ -1342,8 +1637,10 @@ int Frontend::run() {
                 // Slider drag (0x40728c): pos = (mx - x - knobW/2) / width * size,
                 // clamped; the mouse stays captured until the button is up.
                 auto dragTo = [&](MnuButton& sl) {
+                    // V (0x407388): pos = (my - y - knobH/6) / height * size.
                     const HudImage im = image(sl.image);
-                    const float f = sl.width > 0 ? float(mouseX_ - sl.x - im.width / 2) / float(sl.width) : 0.f;
+                    const float f = sl.type == 3 ? (sl.height > 0 ? float(mouseY_ - sl.y - im.height / 6) / float(sl.height) : 0.f)
+                                                 : (sl.width > 0 ? float(mouseX_ - sl.x - im.width / 2) / float(sl.width) : 0.f);
                     sl.sliderPos = std::clamp(int(f * float(sl.sliderSize)), 0, sl.sliderSize);
                     event(sl, 1);
                 };
@@ -1353,7 +1650,7 @@ int Frontend::run() {
                     continue;
                 }
                 MnuButton* b = hit(mouseX_, mouseY_);
-                if (b && b->type == 2 && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && !(b->attrib & 2) && b->drawstate != 4) {
+                if (b && (b->type == 2 || b->type == 3) && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && !(b->attrib & 2) && b->drawstate != 4) {
                     sound("CLICK9.WAV");
                     dragging_ = b->name;
                     dragTo(*b);
@@ -1396,6 +1693,7 @@ int Frontend::run() {
             ++screenTicks_;
             if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
             if (screen_ == Credits && next_ == Credits) tickCredits();
+            if (screen_ == Briefing && captionShown_ < caption_.size()) ++captionShown_;   // 1 character per tick (0x418408)
         }
         if (screen_ == Options1) syncSliders();
         music_.update();   // once per menu frame (0x406bf8 -> 0x4b8490)

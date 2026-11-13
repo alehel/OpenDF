@@ -23,10 +23,13 @@ public:
     const std::vector<std::string>& text() const { return text_; }
     // Null if the section or key does not exist.
     const std::string* find(const std::string& section, const std::string& key) const;
+    // An entry's second dword: a briefing-map point (u16 x, u16 y), or 0.
+    uint32_t position(const std::string& section, const std::string& key) const;
 
 private:
     struct Section { std::string name; int first = 0, count = 0; };
     std::vector<std::string> text_, keys_;
+    std::vector<uint32_t> positions_;
     std::vector<Section> sections_;
 };
 
