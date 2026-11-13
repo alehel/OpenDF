@@ -47,7 +47,8 @@ struct Options {
     // Game testing aids (mission mode).
     int frames = 1, weapon = -1, stance = -1, zoom = 0;
     bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, killEnemies = false;
-    std::string inputScript, record;
+    std::string inputScript, record, primary = "M4", secondary = "M40", soldierName;
+    int gpsIcons = 1;
     bool watch = false;
     int width = 1280, height = 720;
 };
@@ -68,6 +69,14 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--walk") o.walkForward = true;
         else if (a == "--kill-enemies") o.killEnemies = true;
         else if (a == "--input") o.inputScript = next();
+        else if (a == "--name") o.soldierName = next();
+        else if (a == "--gps") o.gpsIcons = std::atoi(next().c_str());
+        else if (a == "--loadout") {
+            const std::string v = next();
+            const auto comma = v.find(',');
+            o.primary = v.substr(0, comma);
+            if (comma != std::string::npos) o.secondary = v.substr(comma + 1);
+        }
         else if (a == "--watch") o.watch = true;
         else if (a == "--record") o.record = next();
         else if (a == "--viewmodel-only") o.viewModelOnly = true;
@@ -701,6 +710,10 @@ int main(int argc, char** argv) {
             g.gameDir = o.dataDir;
             g.killEnemies = o.killEnemies;
             g.inputScript = o.inputScript;
+            g.primary = o.primary;
+            g.soldierName = o.soldierName;
+            g.gpsIcons = o.gpsIcons;
+            g.secondary = o.secondary;
             g.watch = o.watch;
             g.record = o.record;
             rc = runGame(vfs, g);

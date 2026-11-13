@@ -111,6 +111,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.missionGroup = mo.group;
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
+        o.mapMarker = (mo.raw[19] & 0xFFFF) != 0;
         o.missionX = mo.x;
         o.missionY = mo.y;
         refreshBoxes(o);

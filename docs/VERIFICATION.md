@@ -56,7 +56,7 @@ when DF.EXE is missing or a different version.
 
 | Item | Status | Source |
 |---|---|---|
-| Layout, art, font | Original + footage | `POS640`, `WEAP640`, `F_SML640`; positions measured from footage |
+| Layout, art, font, colours | Original | DF.EXE HUD code (virtual 1024x768 layout, RGB colour table), shown as the original at 800x600 (`POS800`, `WEAP800`, `F_SML800`, as in the footage); item by item in docs/AUDIT.md |
 | "Carrying: Nothing", "Ammo reloaded", mission-end texts | Original | DF.EXE strings |
 | Mission names ("Insurrection") | Original | `DFCAMPcc.BIN` entry m−1, read at run time |
 | Radio messages ("Charlie 2 is down.", opening orders) | Original | mission events fire dialogs `dlg%03i`; clips and subtitles from `DFDLGnn.DBF` + `DFDLGnn.BIN`. Insurrection's opening "Proceed southwest and neutralize all hostiles." appears as in footage. Shown as text at once; the original plays the clips (audio) in sequence, subtitles with their clip |

@@ -30,6 +30,7 @@ struct WorldObject {
     // 1 scenery, 2 markers, 3 people), team (byte +0x48), side (+0x43) and
     // position in mission coordinates.
     int missionGroup = -1, team = 0, side = 0;
+    bool mapMarker = false;            // record +0x4C nonzero: shown on the command map
     double missionX = 0, missionY = 0;
     bool alive() const { return !dead && !removed && !wrecked; }
     std::vector<CollisionBox> boxes;   // model-space solid boxes

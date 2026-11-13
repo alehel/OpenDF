@@ -6,6 +6,7 @@
 #include "../render/Terrain.h"
 #include "../formats/Rtxt.h"
 #include "../formats/Dlg.h"
+#include "Controls.h"
 #include "Player.h"
 #include "Script.h"
 #include "Weapons.h"
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <memory>
@@ -26,26 +28,33 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
-// HUD colours, matched to the original screen.
-const Color kHudGreen{0.30f, 0.92f, 0.30f, 1};
-const Color kHudLine{0.12f, 0.62f, 0.12f, 1};
-const Color kHudBoxFill{0.0f, 0.12f, 0.0f, 1};
-const Color kHudScan{0.0f, 0.19f, 0.0f, 1};
-const Color kHudMessage{0.85f, 0.85f, 0.85f, 1};
-const Color kHudBlue{0.25f, 0.4f, 1.0f, 1};
-const Color kHudRed{0.95f, 0.15f, 0.1f, 1};
+// HUD colours: DF.EXE builds them at start-up from these RGB values
+// (0x4027b1; nearest palette entries in 8-bit modes).
+constexpr Color rgb(int r, int g, int b) { return {r / 255.f, g / 255.f, b / 255.f, 1}; }
+const Color kHudWhite = rgb(255, 255, 255);   // 0x66f930
+const Color kHudBlack = rgb(0, 0, 0);         // 0x66f934
+const Color kHudPureGreen = rgb(0, 255, 0);   // 0x66f938
+const Color kHudBlue = rgb(17, 60, 253);      // 0x66f93c
+const Color kHudRed = rgb(255, 0, 0);         // 0x66f944
+const Color kHudBright = rgb(1, 230, 1);      // 0x66f94c: crosshair, scope, map grid, route
+const Color kHudGreen = rgb(1, 129, 1);       // 0x66f950: HUD text and outlines
+const Color kHudDark = rgb(9, 51, 9);         // 0x66f954: box scanlines, text shadow
+// Message text: most callers pass white.
+const Color kHudMessage = kHudWhite;
 
-// The original HUD is laid out for 640x480; these are its positions in those
-// units (measured from the original game). The screen is scaled by height and,
-// on wide screens, the right-hand group stays anchored to the right edge
-// instead of being stretched.
-constexpr float kTopBar = 59, kBottomBar = 60, kTopDivider = 350, kBottomDivider = 431;
+// The original lays its HUD out in a virtual 1024x768 space (DF.EXE
+// 0x424788); the positions below are those values converted to 640x480
+// units (x 0.625). The bars are H/8 = 60 units each (0x404650). The screen is
+// scaled by height and, on wide screens, the right-hand group stays anchored
+// to the right edge instead of being stretched; things in the 3D view stay
+// centred.
+constexpr float kTopBar = 60, kBottomBar = 60, kTopDivider = 350, kBottomDivider = 431;
 
-// The original's camera: 90° horizontal field of view across its 640x362 3D
-// view, i.e. about 58.9° vertical (matches the first-person weapon in footage
+// The original's camera: 90° horizontal field of view across its 640x360 3D
+// view, i.e. about 58.7° vertical (matches the first-person weapon in footage
 // of the original). Wider screens keep this vertical angle and see more at
 // the sides.
-const float kOriginalFovY = 2.f * std::atan(1.f / (640.f / 362.f));
+const float kOriginalFovY = 2.f * std::atan(1.f / (640.f / 360.f));
 
 struct Message { std::string text; float age; };
 
@@ -121,9 +130,12 @@ private:
         float cx(float dx) const { return w * 0.5f + dx * u; }     // relative to the centre
         float y(float v) const { return v * u; }
         float by(float v) const { return h - (480.f - v) * u; }   // bottom-bar y
-        // HUD text scale: the reference footage uses the 800x600 font size
-        // relative to the screen, i.e. 0.8 of a 640x480 pixel.
+        // OpenDF shows the HUD as the original does at 800x600 (the
+        // resolution of the reference footage): the 800 font and bitmaps
+        // (F_SML800, POS800, WEAP800) drawn 1:1, i.e. 0.8 of a 640x480 unit.
         float text() const { return u * 0.8f; }
+        float art() const { return u * 0.8f; }
+        float px() const { return std::max(1.f, u); }   // one original pixel (lines)
     };
 
     bool loadMission(int index);
@@ -135,8 +147,13 @@ private:
     void drawTopBar(const Screen& s);
     void drawBottomBar(const Screen& s);
     void drawCommandMap(const Screen& s);
+    void drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead);
     void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
+    void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
+    // DF.EXE 0x450600: the scope inset shows while the scope is on and the
+    // player is not moving.
+    bool scopeShown() const { return arsenal_.zoomed() && !player_.moving(); }
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -145,12 +162,13 @@ private:
     ItemDefs items_;
     std::vector<std::string> gameText_;   // DFGAME.BIN
     ExeImage exe_;                        // the original DF.EXE, for its tables
+    Controls controls_;                   // the original's key table (from DF.EXE)
     AnimDefs playerMoves_;                // the player soldier's .ANM move table
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     TextTable campText_;                  // DFCAMPxx.BIN
     // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
     // 0x4838ac shows it): points of the first path flagged 2.
-    struct RoutePoint { double x, y; float radius; std::string name; };
+    struct RoutePoint { double x, y; float radius; std::string name; const MissionObject* object; };
     std::vector<RoutePoint> route_;
     int routeIndex_ = 0;
     void buildRoute();
@@ -197,9 +215,7 @@ private:
     std::deque<Message> messages_;
     float missionTime_ = 0;
     float viewDistance_ = 1200;
-    // Command map zoom (- / =), in 640x480 pixels per metre; footage of the
-    // original shows 0.75 (a 100 m square is 75 px).
-    float mapScale_ = 0.75f;
+    float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
     bool captured_ = true;
 };
@@ -238,7 +254,7 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    arsenal_.init(gameText_, &exe_, &items_);
+    arsenal_.init(gameText_, &exe_, &items_, weaponIndex(o_.primary), weaponIndex(o_.secondary));
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
     missionName_ = missionName(mission_.title);
@@ -292,7 +308,7 @@ void Game::buildRoute() {
     for (size_t i = 0; i < path->points.size() && i < 8; ++i) {
         const MissionObject* o = mission_.inGroup(2, path->points[i]);
         if (!o) continue;
-        RoutePoint rp{o->x, o->y, float(o->raw[7]), {}};   // record +0x1C: arrival radius, metres
+        RoutePoint rp{o->x, o->y, float(o->raw[7]), {}, o};   // record +0x1C: arrival radius, metres
         char key[16];
         std::snprintf(key, sizeof key, "WPN%03d", mission_.routeNameIds[i]);
         if (const std::string* n = campText_.find("Waypoint Names", key); n && !n->empty()) rp.name = *n;
@@ -443,45 +459,42 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
     }
-    switch (k.keysym.sym) {
-    case SDLK_ESCAPE:
+    // Debug keys (not in the original): N free flight.
+    if (k.keysym.sym == SDLK_n) { player_.fly = !player_.fly; return; }
+    (void)shift;
+    switch (controls_.actionFor(k.keysym.scancode)) {
+    case Action::Escape:
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
         if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
         else { SDL_Event q; q.type = SDL_QUIT; SDL_PushEvent(&q); }
         break;
-    // Stances: Delete / End / Page Down as on the original keyboard, plus X / Z toggles.
-    case SDLK_DELETE: player_.stance = Stance::Stand; break;
-    case SDLK_END: player_.stance = Stance::Crouch; break;
-    case SDLK_PAGEDOWN: player_.stance = Stance::Prone; break;
-    case SDLK_x: player_.stance = player_.stance == Stance::Crouch ? Stance::Stand : Stance::Crouch; break;
-    case SDLK_z: player_.stance = player_.stance == Stance::Prone ? Stance::Stand : Stance::Prone; break;
-    // Weapons as on the original keyboard: 2 sidearm, 3/4 primary modes,
-    // 6 secondary. 7 and 8 pick the other primaries (pressing again cycles
-    // their fire modes); Backspace cycles weapons.
-    case SDLK_2: arsenal_.select(0); break;
-    case SDLK_3: arsenal_.select(1, 0); break;
-    case SDLK_4: arsenal_.select(1, 1); break;
-    case SDLK_6: arsenal_.select(2); break;
-    case SDLK_7: if (arsenal_.slotIndex() == 3) arsenal_.cycleMode(); else arsenal_.select(3); break;
-    case SDLK_8: arsenal_.select(4); break;
-    case SDLK_BACKSPACE: arsenal_.cycle(); break;
-    case SDLK_y:   // next waypoint (original key not yet identified)
+    case Action::Stand: player_.stance = Stance::Stand; break;
+    case Action::Crouch: player_.stance = Stance::Crouch; break;
+    case Action::Prone: player_.stance = Stance::Prone; break;
+    // Weapon keys select the original's slots (DF.EXE 0x44b598/0x44aa74):
+    // 1 knife, 2 sidearm, 3-5 the primary's fire modes, 6-8 the secondary's,
+    // 9 and 0 grenade / laser designator (not implemented yet).
+    case Action::Weapon2: arsenal_.select(0); break;
+    case Action::Weapon3: arsenal_.select(1, 0); break;
+    case Action::Weapon4: arsenal_.select(1, 1); break;
+    case Action::Weapon5: arsenal_.select(1, 2); break;
+    case Action::Weapon6: arsenal_.select(2, 0); break;
+    case Action::Weapon7: arsenal_.select(2, 1); break;
+    case Action::Weapon8: arsenal_.select(2, 2); break;
+    case Action::Cycle: arsenal_.cycle(); break;
+    case Action::Magazine: arsenal_.reload(); break;
+    case Action::Scope: arsenal_.toggleZoom(); break;
+    case Action::NextWaypoint:
         if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
         break;
-    case SDLK_m: case SDLK_r: arsenal_.reload(); break;           // M = "change magazine"
-    case SDLK_c: showMap_ = !showMap_; showGoals_ = false; break; // command map
-    case SDLK_g: showGoals_ = !showGoals_; showMap_ = false; break;
-    case SDLK_MINUS: mapScale_ = std::min(4.f, mapScale_ * 1.5f); break;    // map zoom in
-    case SDLK_EQUALS: mapScale_ = std::max(0.25f, mapScale_ / 1.5f); break; // map zoom out
-    case SDLK_F3: crosshair_ = !crosshair_; break;
-    case SDLK_F4: gunVisible_ = !gunVisible_; break;
-    case SDLK_n: player_.fly = !player_.fly; break;               // debug flight
-    case SDLK_TAB: {
-        int n = int(missions_.size());
-        int next = (current_ + (shift ? n - 1 : 1)) % n;
-        for (int tries = 0; tries < n && !loadMission(next); ++tries) next = (next + (shift ? n - 1 : 1)) % n;
-        break;
-    }
+    case Action::BigMap: showMap_ = !showMap_; showGoals_ = false; break;
+    case Action::MissionGoals: showGoals_ = !showGoals_; showMap_ = false; break;
+    // DF.EXE 0x42ddbf: the map scale (metres per pixel) x0.9 / x1.1, 0.25..3.6.
+    case Action::MapZoomIn: mapScale_ = std::max(0.25f, mapScale_ * 0.9f); break;
+    case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
+    case Action::Crosshairs: crosshair_ = !crosshair_; break;
+    case Action::ShowGun: gunVisible_ = !gunVisible_; break;
+    case Action::CenterView: player_.pitch = 0; break;
     default: break;
     }
 }
@@ -524,7 +537,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
 
 void Game::drawViewModel(const Screen& s) {
     // The original hides the weapon while the zoom inset is up.
-    if (!gunVisible_ || arsenal_.zoomed() || showMap_) return;
+    if (!gunVisible_ || scopeShown() || showMap_) return;
     const GpuModel* m = models_.get(vfs_, arsenal_.def().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
@@ -558,8 +571,8 @@ void Game::drawViewModel(const Screen& s) {
 // The zoom view is a magnified circle on the right of the 3D view (the main
 // view stays as it is), like the original.
 void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
-    if (!arsenal_.zoomed() || showMap_) return;
-    const float cx = s.cx(160), cy = s.playY + s.playH * 0.5f, r = s.y(120);
+    if (!scopeShown() || showMap_) return;
+    const float cx = s.cx(160), cy = s.playY + s.playH * 0.5f, r = s.y(100);
 
     glEnable(GL_STENCIL_TEST);
     glClearStencil(0);
@@ -586,87 +599,105 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
 }
 
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
-    // Dark green box with a scanline texture and a green outline.
+    // DF.EXE 0x401de4: no fill; dark green scanlines every 2 pixels from
+    // y1 + 2, then a one-pixel outline in the HUD green.
     const float X0 = right ? s.rx(x0) : s.lx(x0), X1 = right ? s.rx(x1) : s.lx(x1);
-    const float Y0 = s.y(y0), Y1 = s.y(y1);
-    hud_.rect(X0, Y0, X1 - X0, Y1 - Y0, kHudBoxFill);
-    for (float yy = Y0 + s.u; yy < Y1; yy += 2 * s.u) hud_.rect(X0, yy, X1 - X0, s.u * 0.5f, kHudScan);
-    const float t = std::max(1.f, s.u * 0.6f);
-    hud_.rect(X0, Y0, X1 - X0, t, kHudLine);
-    hud_.rect(X0, Y1 - t, X1 - X0, t, kHudLine);
-    hud_.rect(X0, Y0, t, Y1 - Y0, kHudLine);
-    hud_.rect(X1 - t, Y0, t, Y1 - Y0, kHudLine);
+    const float Y0 = s.y(y0), Y1 = s.y(y1), t = s.px();
+    for (float yy = Y0 + 2 * t; yy < Y1; yy += 2 * t) hud_.rect(X0, yy, X1 - X0, t, kHudDark);
+    hud_.rect(X0, Y0, X1 - X0, t, kHudGreen);
+    hud_.rect(X0, Y1 - t, X1 - X0, t, kHudGreen);
+    hud_.rect(X0, Y0, t, Y1 - Y0, kHudGreen);
+    hud_.rect(X1 - t, Y0, t, Y1 - Y0, kHudGreen);
+}
+
+void Game::outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline) {
+    // DF.EXE 0x43ddf4: the text four times in black, one pixel around, then in colour.
+    const float o = std::max(1.f, scale);
+    for (auto [dx, dy] : {std::pair{-o, 0.f}, {o, 0.f}, {0.f, -o}, {0.f, o}}) hud_.text(x + dx, y + dy, t, outline, scale);
+    hud_.text(x, y, t, c, scale);
 }
 
 void Game::drawTopBar(const Screen& s) {
-    const float u = s.u, t = std::max(1.f, u * 0.8f), ts = s.text();
-    hud_.rect(0, 0, s.w, s.top, {0, 0, 0, 1});
-    hud_.rect(0, s.top - t, s.w, t, kHudLine);
-    hud_.rect(0, 0, s.w, t, kHudLine);
-    hud_.rect(s.rx(kTopDivider), 0, t, s.top, kHudLine);
+    // DF.EXE 0x482dd0 and the functions it calls; 640x480 units.
+    const float t = s.px(), ts = s.text();
+    hud_.rect(0, 0, s.w, s.top, kHudBlack);
+    hud_.rect(0, 0, s.w, t, kHudGreen);                       // y 0
+    hud_.rect(0, s.top - t, s.w, t, kHudGreen);               // y 59
+    hud_.rect(0, 0, t, s.top, kHudGreen);                     // x 0
+    hud_.rect(s.w - t, 0, t, s.top, kHudGreen);               // x W-1
+    hud_.rect(s.rx(kTopDivider), 0, t, s.top, kHudGreen);     // divider x 350
 
-    // Stance icon (POS640.PCX: prone, crouch, stand from the top, 50x50 each).
+    // Stance (0x484c74): POS800.PCX frames prone, crouched, standing; centred
+    // on x 50, top y 3.75, drawn 1:1.
     if (stanceIcons_.texture) {
-        int frame = player_.stance == Stance::Prone ? 0 : player_.stance == Stance::Crouch ? 1 : 2;
-        float v0 = frame / 3.f, v1 = (frame + 1) / 3.f;
-        hud_.imageUV(stanceIcons_.texture, s.lx(24), s.y(6), s.y(46), s.y(46), 0, v0, 1, v1);
+        const int frame = player_.stance == Stance::Prone ? 0 : player_.stance == Stance::Crouch ? 1 : 2;
+        const float fh = stanceIcons_.height / 3.f, w = stanceIcons_.width * s.art(), h = fh * s.art();
+        hud_.imageUV(stanceIcons_.texture, s.lx(50) - w / 2, s.y(3.75f), w, h, 0, frame / 3.f, 1, (frame + 1) / 3.f);
     }
 
-    // Weapon line, magazines, rounds and the chamber indicator.
+    // Weapon name (0x483444) at (75, 10); red while reloading or out of
+    // ammunition (0x44b0a0).
     const auto& sl = arsenal_.current();
-    // The weapon name turns red while reloading, as in the original.
-    hud_.text(s.lx(74), s.y(5), arsenal_.modeName(), arsenal_.reloading() ? kHudRed : kHudGreen, ts);
-    hudBox(s, 74, 27, 136, 47, false);
-    hudBox(s, 141, 27, 201, 47, false);
-    // Magazine icon: a small slanted clip, then the spare magazine count.
-    hud_.line(s.lx(80), s.y(42), s.lx(84), s.y(31), 3 * u, kHudGreen);
+    const bool outOfAmmo = sl.mags <= 0 && sl.rounds <= 0;
+    hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), arsenal_.reloading() || outOfAmmo ? kHudRed : kHudGreen, ts);
+
+    // Magazines (x 75-135) with the magazine glyph (font character 1) and
+    // rounds (x 140-200), y 28.75-47.5; the narrow "round chambered" bar at
+    // x 205-210 is solid when a round is chambered, otherwise an empty box.
+    hudBox(s, 75, 28.75f, 135, 47.5f, false);
+    hudBox(s, 140, 28.75f, 200, 47.5f, false);
+    hud_.text(s.lx(78.1f), s.y(31.9f), "\x01", kHudGreen, ts);
     char buf[64];
     std::snprintf(buf, sizeof buf, "%d", sl.mags);
-    hud_.text(s.lx(105) - hud_.textWidth(buf, ts) / 2, s.y(31), buf, kHudGreen, ts);
+    hud_.text(s.lx(105) - hud_.textWidth(buf, ts) / 2, s.y(31.9f), buf, kHudGreen, ts);
     std::snprintf(buf, sizeof buf, "%d", sl.rounds);
-    hud_.text(s.lx(171) - hud_.textWidth(buf, ts) / 2, s.y(31), buf, kHudGreen, ts);
-    if (sl.rounds > 0 && !arsenal_.reloading()) hud_.rect(s.lx(206), s.y(27), s.y(6), s.y(20), kHudGreen);
-    else hudBox(s, 206, 27, 212, 47, false);
+    hud_.text(s.lx(170) - hud_.textWidth(buf, ts) / 2, s.y(31.9f), buf, kHudGreen, ts);
+    if (sl.rounds > 0 && !arsenal_.reloading()) hud_.rect(s.lx(205), s.y(28.75f), s.lx(210) - s.lx(205), s.y(47.5f) - s.y(28.75f), kHudGreen);
+    else hudBox(s, 205, 28.75f, 210, 47.5f, false);
 
-    // Weapon silhouette (WEAP640.PCX: 13 frames of 43 px).
+    // Weapon silhouette (0x484ae8): WEAP800.PCX, 13 frames, drawn 1:1 with
+    // its right edge at x 325 and top at y 16.25.
     if (weaponIcons_.texture) {
         const int frame = arsenal_.def().icon;
-        const float frames = weaponIcons_.height / 43.f;
-        float v0 = frame / frames, v1 = (frame + 1) / frames;
-        float hgt = s.y(32), wid = hgt * weaponIcons_.width / 43.f;
-        hud_.imageUV(weaponIcons_.texture, s.lx(232), s.y(19), wid, hgt, 0, v0, 1, v1);
+        const float fh = weaponIcons_.height / 13.f, w = weaponIcons_.width * s.art(), h = fh * s.art();
+        hud_.imageUV(weaponIcons_.texture, s.lx(325) - w, s.y(16.25f), w, h, 0, frame / 13.f, 1, (frame + 1) / 13.f);
     }
 
-    // Compass: north-up ring, blue needle for your heading.
+    // Compass (0x483d9c): north-up ring (382, 30) radius 20 in HUD green,
+    // letters from font characters 2-5; an inner circle (radius 5) and a
+    // heading needle (length 10) in the team colour (blue for side 1); the
+    // next waypoint as a bright green dot (radius 2) on the ring.
     {
-        const float cx = s.rx(382), cy = s.y(29), r = s.y(20);
-        hud_.ring(cx, cy, r, std::max(1.f, u * 0.8f), kHudLine);
-        hud_.text(cx - hud_.textWidth("N", u * 0.6f) / 2, cy - r - s.y(8), "N", kHudGreen, u * 0.6f);
-        hud_.text(cx - hud_.textWidth("S", u * 0.6f) / 2, cy + r - s.y(1), "S", kHudGreen, u * 0.6f);
-        hud_.text(cx + r + s.y(2), cy - s.y(4), "E", kHudGreen, u * 0.6f);
-        hud_.text(cx - r - s.y(7), cy - s.y(4), "W", kHudGreen, u * 0.6f);
-        hud_.ring(cx, cy, s.y(5), std::max(1.f, u * 0.8f), kHudBlue);
-        float dx = std::sin(player_.yaw), dy = -std::cos(player_.yaw);
-        hud_.line(cx + dx * s.y(5), cy + dy * s.y(5), cx + dx * s.y(13), cy + dy * s.y(13), std::max(1.f, u), kHudBlue);
-        // Green dot on the ring: direction to the next waypoint (manual).
+        const float cx = s.rx(382.5f), cy = s.y(30), r = s.y(20);
+        hud_.ring(cx, cy, r, t, kHudGreen);
+        auto glyph = [&](const char* g, float x, float y) {
+            hud_.text(s.rx(x) - hud_.textWidth(g, ts) / 2, s.y(y), g, kHudGreen, ts);
+        };
+        glyph("\x02", 382.5f, 0);    // N
+        glyph("\x03", 382.5f, 47.5f);// S
+        glyph("\x04", 407.5f, 25);   // E
+        glyph("\x05", 357.5f, 25);   // W
+        hud_.ring(cx, cy, s.y(5), t, kHudBlue);
+        const float dx = std::sin(player_.yaw), dy = -std::cos(player_.yaw);
+        hud_.line(cx, cy, cx + dx * s.y(10), cy + dy * s.y(10), t, kHudBlue);
         if (!route_.empty()) {
             const RoutePoint& p = route_[size_t(routeIndex_)];
             const double ex = p.x - player_.missionX(), ny = p.y - player_.missionY();
             const double len = std::sqrt(ex * ex + ny * ny);
-            if (len > 0.5) hud_.ring(cx + float(ex / len) * r, cy - float(ny / len) * r, s.y(1.5f), s.y(3), kHudGreen);
+            if (len > 0.5) hud_.ring(cx + float(ex / len) * r, cy - float(ny / len) * r, t, 2 * t, kHudBright);
         }
     }
 
-    // Grid square, carried item, waypoint.
-    hudBox(s, 419, 7, 481, 27, true);
-    hudBox(s, 487, 7, 632, 27, true);
-    hudBox(s, 419, 33, 632, 53, true);
+    // Grid square (0x4836b8), carried item (0x483718), waypoint (0x483d48).
+    hudBox(s, 418.75f, 10, 481.25f, 28.75f, true);
+    hudBox(s, 487.5f, 10, 631.25f, 28.75f, true);
+    hudBox(s, 418.75f, 35, 631.25f, 53.75f, true);
     std::string grid = gridName(player_.missionX(), player_.missionY());
-    hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(11), grid, kHudGreen, ts);
-    hud_.text(s.rx(491), s.y(11), "Carrying: Nothing", kHudGreen, ts);
-    // "WP%i: %s (%s)", distance "%im" or "%ikm+" (DF.EXE 0x4838ac): whole
-    // metres of x and y difference, integer square root.
-    std::string wp = "WP: --";
+    hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(13.1f), grid, kHudGreen, ts);
+    hud_.text(s.rx(490.6f), s.y(13.1f), "Carrying: Nothing", kHudGreen, ts);
+    // "WP%i: %s (%s)", distance "%im" or "%ikm+" (0x4838ac): whole metres of
+    // x and y difference, integer square root; "None" without a route.
+    std::string wp = "None";
     if (!route_.empty()) {
         const RoutePoint& p = route_[size_t(routeIndex_)];
         const long dx = long(std::floor(p.x - player_.missionX())), dy = long(std::floor(p.y - player_.missionY()));
@@ -677,34 +708,68 @@ void Game::drawTopBar(const Screen& s) {
         std::snprintf(line, sizeof line, "WP%d: %s (%s)", routeIndex_ + 1, p.name.c_str(), dist);
         wp = line;
     }
-    hud_.text(s.rx(423), s.y(37), wp, kHudGreen, ts);
+    hud_.text(s.rx(425), s.y(38.1f), wp, kHudGreen, ts);
 }
 
 void Game::drawBottomBar(const Screen& s) {
-    const float u = s.u, t = std::max(1.f, u * 0.8f), ts = s.text();
+    const float t = s.px(), ts = s.text();
     const float y0 = s.h - s.bottom;
-    hud_.rect(0, y0, s.w, s.bottom, {0, 0, 0, 1});
-    hud_.rect(0, y0, s.w, t, kHudLine);
-    hud_.rect(0, s.h - t, s.w, t, kHudLine);
-    hud_.rect(s.rx(kBottomDivider), y0, t, s.bottom, kHudLine);
+    hud_.rect(0, y0, s.w, s.bottom, kHudBlack);
+    hud_.rect(0, y0, s.w, t, kHudGreen);                      // y 420
+    hud_.rect(0, s.h - t, s.w, t, kHudGreen);                 // y 479
+    hud_.rect(0, y0, t, s.bottom, kHudGreen);
+    hud_.rect(s.w - t, y0, t, s.bottom, kHudGreen);
+    hud_.rect(s.rx(kBottomDivider), y0, t, s.bottom, kHudGreen);
 
-    // Radio / information messages, newest at the bottom.
-    float y = y0 + s.y(6);
-    size_t first = messages_.size() > 3 ? messages_.size() - 3 : 0;
-    for (size_t i = first; i < messages_.size(); ++i) {
-        hud_.text(s.lx(5), y, messages_[i].text, kHudMessage, ts);
-        y += s.y(14);
+    // Messages (0x483390): up to three lines at x 6.25, y 430 / 445 / 460,
+    // oldest on top; each stays 1240 ticks (0x42f400).
+    for (size_t i = 0; i < messages_.size(); ++i)
+        hud_.text(s.lx(6.25f), s.by(430 + 15 * float(i)), messages_[i].text, kHudMessage, ts);
+
+    // Soldier name and mission name (0x484e54) at x 437.5, y 426.25 / 441.9.
+    hud_.text(s.rx(437.5f), s.by(426.25f), o_.soldierName, kHudGreen, ts);
+    hud_.text(s.rx(437.5f), s.by(441.9f), missionName_, kHudGreen, ts);
+}
+
+void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead) {
+    // DF.EXE 0x43e434: radius 5 virtual units, doubled on the command map.
+    const float r = s.y(6.25f), t = s.px();
+    switch (type) {
+    case 1: hud_.ring(x, y, r, t, c); break;                                  // hollow circle
+    case 2: hud_.ring(x, y, r / 2, r, c); hud_.ring(x, y, r, t, kHudBlack); break;   // filled circle, black outline
+    case 3:                                                                   // diamond
+        hud_.line(x - r, y, x, y - r, t, c); hud_.line(x, y - r, x + r, y, t, c);
+        hud_.line(x + r, y, x, y + r, t, c); hud_.line(x, y + r, x - r, y, t, c);
+        break;
+    case 4: hud_.line(x - r, y, x + r, y, t, c); hud_.line(x, y - r, x, y + r, t, c); break;   // plus
+    case 5:                                                                   // soldier
+        if (dead) { hud_.line(x - r, y - r, x + r, y + r, t, c); hud_.line(x - r, y + r, x + r, y - r, t, c); break; }
+        hud_.ring(x, y, r, t, c);
+        hud_.line(x, y, x + std::sin(heading) * 2 * r, y - std::cos(heading) * 2 * r, t, c);
+        break;
+    case 6:                                                                   // square
+        hud_.line(x - r, y - r, x + r, y - r, t, c); hud_.line(x + r, y - r, x + r, y + r, t, c);
+        hud_.line(x + r, y + r, x - r, y + r, t, c); hud_.line(x - r, y + r, x - r, y - r, t, c);
+        break;
+    case 7:                                                                   // circle with X
+        hud_.ring(x, y, r, t, c);
+        hud_.line(x - r * 0.7f, y - r * 0.7f, x + r * 0.7f, y + r * 0.7f, t, c);
+        hud_.line(x - r * 0.7f, y + r * 0.7f, x + r * 0.7f, y - r * 0.7f, t, c);
+        break;
+    case 8:                                                                   // triangle pointing east
+        hud_.line(x - r, y - r, x + r, y, t, c); hud_.line(x + r, y, x - r, y + r, t, c);
+        hud_.line(x - r, y + r, x - r, y - r, t, c);
+        break;
+    default: break;
     }
-
-    // Operative and mission.
-    hud_.text(s.rx(436), y0 + s.y(5), "OPERATIVE", kHudGreen, ts);
-    hud_.text(s.rx(436), y0 + s.y(20), missionName_, kHudGreen, ts);
 }
 
 void Game::drawCommandMap(const Screen& s) {
-    // Satellite map over the 3D view, centred on you; 100 m grid.
-    const float x0 = 0, y0 = s.playY, w = s.w, h = s.playH;
-    const float pxPerM = s.u * mapScale_;
+    // DF.EXE 0x43cfc8: the terrain colour map over the whole 3D view, centred
+    // on the player, north up. Scale [0x933540] (default 1) is world metres
+    // per pixel x 1024 / W, i.e. 0.625 / scale pixels per metre at 640.
+    const float x0 = 0, y0 = s.playY, w = s.w, h = s.playH, t = s.px();
+    const float pxPerM = s.u * 0.625f / mapScale_;
     const float ext = terrain_.mapExtent();
     const float halfW = w / pxPerM * 0.5f, halfH = h / pxPerM * 0.5f;
     const Vec3 c = player_.feet;
@@ -712,70 +777,88 @@ void Game::drawCommandMap(const Screen& s) {
     const float v0 = (c.z - halfH) / ext, v1 = (c.z + halfH) / ext;
     hud_.imageUV(terrain_.colorTexture(), x0, y0, w, h, u0, v0, u1, v1);
 
-    const Color grid{0.2f, 0.95f, 0.2f, 0.85f};
-    const float lineW = std::max(1.f, s.u * 0.6f);
-    // Grid lines and labels in mission coordinates, as the original's map.
     const double mx = player_.missionX(), my = player_.missionY();
-    const float sq = float(kGridSquare) * pxPerM;
+    auto toScreen = [&](double x, double y) {
+        return std::pair<float, float>{x0 + w / 2 + float(x - mx) * pxPerM, y0 + h / 2 + float(my - y) * pxPerM};
+    };
+
+    // Grid (0x43e16c / 0x43e258): 100 m, one pixel, bright green; labels
+    // white with a black outline: columns centred at the top, rows at the left.
+    const float sq = float(kGridSquare) * pxPerM, ts = s.text();
     for (double gx = std::ceil((mx - halfW) / kGridSquare) * kGridSquare; gx <= mx + halfW; gx += kGridSquare) {
-        float sx = x0 + w / 2 + float(gx - mx) * pxPerM;
-        hud_.rect(sx, y0, lineW, h, grid);
-        std::string label = gridColumn(gx + kGridSquare / 2);
-        hud_.text(sx + sq * 0.5f - hud_.textWidth(label, s.text()) / 2, y0 + s.y(2), label, kHudGreen, s.text());
+        const float sx = toScreen(gx, my).first;
+        hud_.rect(sx, y0, t, h, kHudBright);
+        const std::string label = gridColumn(gx + kGridSquare / 2);
+        outlinedText(sx + sq * 0.5f - hud_.textWidth(label, ts) / 2, y0 + t, label, kHudWhite, ts, kHudBlack);
     }
     for (double gy = std::floor((my + halfH) / kGridSquare) * kGridSquare; gy >= my - halfH; gy -= kGridSquare) {
-        float sy = y0 + h / 2 + float(my - gy) * pxPerM;
-        hud_.rect(x0, sy, w, lineW, grid);
-        hud_.text(x0 + s.y(3), sy + sq * 0.5f - s.y(5), std::to_string(gridRow(gy - kGridSquare / 2)), kHudGreen, s.text());
+        const float sy = toScreen(mx, gy).second;
+        hud_.rect(x0, sy, w, t, kHudBright);
+        outlinedText(x0 + 2 * t, sy + sq * 0.5f - s.y(4), std::to_string(gridRow(gy - kGridSquare / 2)), kHudWhite, ts,
+                     kHudBlack);
     }
 
-    // The route: a green polyline; circles at the first and last points,
-    // diamonds between (as in footage of the original). The current
-    // waypoint's marker blinks: shown while tick bit 4 is set, i.e. 16 ticks
-    // on, 16 off (DF.EXE 0x43d975; 0.53 s, as in footage).
-    for (size_t i = 0; i < route_.size(); ++i) {
-        auto at = [&](size_t k) {
-            return std::pair<float, float>{x0 + w / 2 + float(route_[k].x - mx) * pxPerM,
-                                           y0 + h / 2 + float(my - route_[k].y) * pxPerM};
+    // Route lines between the player's waypoints (0x43e340), bright green.
+    for (size_t i = 0; i + 1 < route_.size(); ++i) {
+        auto [ax, ay] = toScreen(route_[i].x, route_[i].y);
+        auto [bx, by] = toScreen(route_[i + 1].x, route_[i + 1].y);
+        hud_.line(ax, ay, bx, by, t, kHudBright);
+    }
+
+    // Map objects: anything in file groups 0-2 whose record +0x4C is nonzero
+    // is drawn with that marker type in its side's colour (0 green, 1 blue,
+    // 2 red). The current waypoint blinks: drawn while tick bit 4 is set
+    // (0x43d975; 16 ticks on, 16 off).
+    auto sideColour = [](int side) { return side == 1 ? kHudBlue : side == 2 ? kHudRed : kHudPureGreen; };
+    const MissionObject* current = nullptr;
+    if (!route_.empty()) current = route_[size_t(routeIndex_)].object;
+    for (const auto& o : mission_.objects) {
+        const int type = o.raw[19] & 0xFFFF;
+        if (!type || o.group == 3) continue;
+        if (&o == current && !(ticks_ & 16)) continue;
+        auto [sx, sy] = toScreen(o.x, o.y);
+        if (sx < x0 - 20 || sx > x0 + w + 20 || sy < y0 - 20 || sy > y0 + h + 20) continue;
+        drawMapMarker(s, sx, sy, type, sideColour((uint32_t(o.raw[16]) >> 24) & 0xFF), 0, false);
+    }
+    // Soldiers by the GPS option (0x43d445): 0 none, 1 (default) those whose
+    // record +0x4C is set, 2 all; drawn as soldier markers, an X once dead.
+    if (o_.gpsIcons > 0)
+        for (const auto& o : world_.objects) {
+            if (o.missionGroup != 3 || !o.person || o.removed) continue;
+            if (o_.gpsIcons == 1 && !o.mapMarker) continue;
+            Vec3 at = world_.nearest(o.pos, c);
+            const float sx = x0 + w / 2 + (at.x - c.x) * pxPerM, sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
+            drawMapMarker(s, sx, sy, 5, sideColour(o.side), o.heading, o.dead);
+        }
+    // The player: a soldier marker in the team colour (side 1, blue).
+    drawMapMarker(s, x0 + w / 2, y0 + h / 2, 5, kHudBlue, player_.yaw, false);
+
+    // Compass rose (0x43dec0): centre (560, 315), arms 40, inner points 5;
+    // the main cross, a small X, and a four-pointed star; N in white, E S W
+    // in green (bright, as the rest of the rose: assumed), black-outlined.
+    {
+        const float rx = s.rx(560), ry = s.y(315), a = s.y(40), i = s.y(5);
+        hud_.line(rx - a, ry, rx + a, ry, t, kHudBright);
+        hud_.line(rx, ry - a, rx, ry + a, t, kHudBright);
+        hud_.line(rx - i, ry - i, rx + i, ry + i, t, kHudBright);
+        hud_.line(rx - i, ry + i, rx + i, ry - i, t, kHudBright);
+        const float tips[4][2] = {{0, -a}, {a, 0}, {0, a}, {-a, 0}};
+        for (auto& tp : tips) {
+            const float tx = rx + tp[0], ty = ry + tp[1];
+            // the two inner points next to this tip
+            const float ax = tp[0] != 0 ? (tp[0] > 0 ? i : -i) : -i, ay = tp[1] != 0 ? (tp[1] > 0 ? i : -i) : -i;
+            const float bx = tp[0] != 0 ? ax : i, by = tp[1] != 0 ? ay : i;
+            hud_.line(tx, ty, rx + ax, ry + ay, t, kHudBright);
+            hud_.line(tx, ty, rx + bx, ry + by, t, kHudBright);
+        }
+        auto label = [&](const char* l, float x, float y, Color col) {
+            outlinedText(s.rx(x) - hud_.textWidth(l, ts) / 2, s.y(y), l, col, ts, kHudBlack);
         };
-        auto [ax, ay] = at(i);
-        const float lw = std::max(1.f, s.u * 0.8f), e = s.y(4);
-        if (i + 1 < route_.size()) {
-            auto [bx, by] = at(i + 1);
-            hud_.line(ax, ay, bx, by, lw, grid);
-        }
-        if (int(i) == routeIndex_ && !(ticks_ & 16)) continue;
-        if (i == 0 || i + 1 == route_.size()) hud_.ring(ax, ay, e, lw, kHudGreen);
-        else {
-            hud_.line(ax - e, ay, ax, ay - e, lw, kHudGreen);
-            hud_.line(ax, ay - e, ax + e, ay, lw, kHudGreen);
-            hud_.line(ax + e, ay, ax, ay + e, lw, kHudGreen);
-            hud_.line(ax, ay + e, ax - e, ay, lw, kHudGreen);
-        }
+        label("N", 561, 266, kHudWhite);
+        label("E", 606, 311, kHudBright);
+        label("S", 561, 356, kHudBright);
+        label("W", 516, 311, kHudBright);
     }
-
-    // Known casualties in red; you as a blue circle with a heading line.
-    for (const auto& o : world_.objects) {
-        if (!o.dead) continue;
-        Vec3 at = world_.nearest(o.pos, c);
-        float sx = x0 + w / 2 + (at.x - c.x) * pxPerM, sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
-        float e = s.y(3);
-        hud_.line(sx - e, sy - e, sx + e, sy + e, std::max(1.f, s.u), kHudRed);
-        hud_.line(sx - e, sy + e, sx + e, sy - e, std::max(1.f, s.u), kHudRed);
-    }
-    const float px = x0 + w / 2, py = y0 + h / 2;
-    hud_.ring(px, py, s.y(4), std::max(1.f, s.u), kHudBlue);
-    hud_.line(px, py, px + std::sin(player_.yaw) * s.y(12), py - std::cos(player_.yaw) * s.y(12), std::max(1.f, s.u), kHudBlue);
-
-    // Compass rose, lower right.
-    const float rx = x0 + w - s.y(50), ry = y0 + h - s.y(50), rr = s.y(30);
-    hud_.line(rx, ry - rr, rx, ry + rr, std::max(1.f, s.u), kHudGreen);
-    hud_.line(rx - rr, ry, rx + rr, ry, std::max(1.f, s.u), kHudGreen);
-    hud_.line(rx, ry - rr, rx - s.y(5), ry - s.y(8), std::max(1.f, s.u), kHudGreen);
-    hud_.line(rx, ry - rr, rx + s.y(5), ry - s.y(8), std::max(1.f, s.u), kHudGreen);
-    hud_.text(rx - hud_.textWidth("N", s.text()) / 2, ry - rr - s.y(13), "N", kHudGreen, s.text());
-    hud_.text(rx + rr + s.y(2), ry - s.y(6), "E", kHudGreen, s.text());
-    hud_.text(rx - rr - s.y(10), ry - s.y(6), "W", kHudGreen, s.text());
 }
 
 void Game::drawHud(const Screen& s, const Mat4& viewProj) {
@@ -792,31 +875,34 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.puff(sx, sy, r, c);
     }
 
-    const float cx = s.w * 0.5f, cy = s.playY + s.playH * 0.5f;
+    const float cx = s.w * 0.5f, cy = s.playY + s.playH * 0.5f, t = s.px();
     if (showMap_) drawCommandMap(s);
     else if (crosshair_) {
-        // Small green cross with a centre gap.
-        const float g = s.y(3), len = s.y(6), t = std::max(1.f, s.u);
-        hud_.rect(cx - g - len, cy - t * 0.5f, len, t, kHudGreen);
-        hud_.rect(cx + g, cy - t * 0.5f, len, t, kHudGreen);
-        hud_.rect(cx - t * 0.5f, cy - g - len, t, len, kHudGreen);
-        hud_.rect(cx - t * 0.5f, cy + g, t, len, kHudGreen);
+        // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to the
+        // left/top and 5..11 to the right/bottom of the centre.
+        hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
+        hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
+        hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
+        hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
     }
 
-    // Zoom inset furniture: ring, crosshair ticks, range.
-    if (arsenal_.zoomed() && !showMap_) {
-        const float zx = s.cx(160), zy = cy, r = s.y(120), t = std::max(1.f, s.u);
-        hud_.ring(zx, zy, r, std::max(1.5f, s.u * 1.2f), kHudGreen);
-        const float in = r * 0.12f, out = r * 0.42f;
-        hud_.rect(zx - out, zy - t * 0.5f, out - in, t, kHudGreen);
-        hud_.rect(zx + in, zy - t * 0.5f, out - in, t, kHudGreen);
-        hud_.rect(zx - t * 0.5f, zy - out, t, out - in, kHudGreen);
-        hud_.rect(zx - t * 0.5f, zy + in, t, out - in, kHudGreen);
-        float range = rangeToAim();
+    // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
+    // bright green border, ticks from r/4 to r/2 in the four directions, the
+    // range "%3im" at (500, 312.5).
+    if (scopeShown() && !showMap_) {
+        const float zx = s.cx(160), zy = cy, r = s.y(100);
+        hud_.ring(zx, zy, r, t, kHudBright);
+        const float in = r * 0.25f, out = r * 0.5f;
+        hud_.rect(zx - out, zy, out - in, t, kHudBright);
+        hud_.rect(zx + in, zy, out - in, t, kHudBright);
+        hud_.rect(zx, zy - out, t, out - in, kHudBright);
+        hud_.rect(zx, zy + in, t, out - in, kHudBright);
+        const float range = rangeToAim();
         char buf[32];
-        if (range >= 0) std::snprintf(buf, sizeof buf, "%.0fm", range);
-        else std::snprintf(buf, sizeof buf, "---m");
-        hud_.text(zx + r * 0.22f, zy + r * 0.68f, buf, kHudGreen, s.text());
+        if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "1km+");
+        else if (range < 1) std::snprintf(buf, sizeof buf, "1m-");
+        else std::snprintf(buf, sizeof buf, "%3dm", int(range));
+        hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
     }
 
     if (showGoals_) drawGoals(s);
@@ -828,43 +914,52 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
 }
 
 void Game::drawMissionEnd(const Screen& s) {
-    // DF.EXE 0x483094: success if the winner is the player's side.
+    // DF.EXE 0x483094: success if the winner is the player's side. Layout
+    // measured from footage of the original (640x480 units): a box from
+    // x 80 to 560 (centred), y 72 to 153, the scene behind dimmed to ~43 %,
+    // a one-pixel bright green outline; three centred lines with tops at
+    // y 85, 111 and 129.
     const bool won = missionResult_ == kPlayerSide;
-    const float cx = s.cx(0), bw = s.y(400), bh = s.y(62), x0 = cx - bw / 2, y0 = s.playY + s.y(16);
-    hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.75f});
-    hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
+    const Color bright{1 / 255.f, 230 / 255.f, 1 / 255.f, 1};   // DF.EXE colour 0x66f94c (assumed for this panel)
+    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72), y1 = s.y(153), t = std::max(1.f, s.u);
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.57f});
+    hud_.rect(x0, y0, x1 - x0, t, bright);
+    hud_.rect(x0, y1 - t, x1 - x0, t, bright);
+    hud_.rect(x0, y0, t, y1 - y0, bright);
+    hud_.rect(x1 - t, y0, t, y1 - y0, bright);
     const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
                            "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
+    const float tops[] = {83.5f, 109, 127};   // text cell tops giving the footage's ink rows 85, 111, 129
     for (int i = 0; i < 3; ++i)
-        hud_.text(cx - hud_.textWidth(lines[i], s.text()) / 2, y0 + s.y(8 + 17 * i), lines[i], kHudGreen, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.y(tops[i]), lines[i], bright, s.text());
 }
 
 void Game::drawGoals(const Screen& s) {
-    // DF.EXE 0x485250: "Win Conditions:" with goals M%02iSUBGOAL%02i 1..4 and
-    // "Lose Conditions:" with M%02iSUBFAIL%02i from the campaign's "Goals"
-    // section; met ones are highlighted.
-    std::vector<std::pair<std::string, int>> lines;   // text, 0 heading / 1 open / 2 met
-    lines.push_back({missionName_, 0});
+    // DF.EXE 0x485004: no panel; right-aligned at x 625 from y 72.5, lines
+    // 25 virtual units (15.6) apart, each with a (1,1) dark green shadow.
+    // "Win Conditions:" then up to four M%02iSUBGOAL%02i lines (green once
+    // met, white until then); 10 units further "Lose Conditions:" and up to
+    // four M%02iSUBFAIL%02i lines (red once hit, white until then).
+    const float ts = s.text(), sh = s.px();
+    float y = 72.5f;
+    auto line = [&](const std::string& text, Color c) {
+        const float x = s.rx(625) - hud_.textWidth(text, ts);
+        hud_.text(x + sh, s.y(y) + sh, text, kHudDark, ts);
+        hud_.text(x, s.y(y), text, c, ts);
+        y += 15.625f;
+    };
     for (int part = 0; part < 2; ++part) {
-        std::vector<std::pair<std::string, int>> items;
+        std::vector<std::pair<std::string, bool>> items;
         for (int n = 1; n <= 4; ++n) {
             char key[24];
             std::snprintf(key, sizeof key, part == 0 ? "M%02dSUBGOAL%02d" : "M%02dSUBFAIL%02d", missionNumber_, n);
             if (const std::string* t = campText_.find("Goals", key))
-                items.push_back({*t, (part == 0 ? script_.goalDone(n) : script_.failDone(n)) ? 2 : 1});
+                items.push_back({*t, part == 0 ? script_.goalDone(n) : script_.failDone(n)});
         }
         if (items.empty()) continue;
-        lines.push_back({part == 0 ? "Win Conditions:" : "Lose Conditions:", 0});
-        lines.insert(lines.end(), items.begin(), items.end());
-    }
-    const float bw = s.y(440), lh = s.y(16), bh = lh * float(lines.size()) + s.y(12);
-    const float cx = s.cx(0), x0 = cx - bw / 2, y0 = s.playY + s.y(20);
-    hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.8f});
-    hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
-    for (size_t i = 0; i < lines.size(); ++i) {
-        const auto& [text, kind] = lines[i];
-        const Color c = kind == 2 ? Color{1, 1, 0.4f, 1} : kind == 1 ? kHudMessage : kHudGreen;
-        hud_.text(x0 + s.y(kind ? 22 : 10), y0 + s.y(6) + lh * float(i), text, c, s.text());
+        if (part == 1) y += 6.25f;
+        line(part == 0 ? "Win Conditions:" : "Lose Conditions:", kHudWhite);
+        for (auto& [text, met] : items) line(text, met ? (part == 0 ? kHudGreen : kHudRed) : kHudWhite);
     }
 }
 
@@ -888,6 +983,7 @@ int Game::run() {
         std::string err;
         if (exePath.empty()) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
         else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
+        if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
@@ -923,8 +1019,8 @@ int Game::run() {
     else if (!loadMission(int(it - missions_.begin()))) rc = 1;
 
     if (rc == 0) {
-        stanceIcons_ = hud_.loadImage(vfs_, "POS640.PCX");
-        weaponIcons_ = hud_.loadImage(vfs_, "WEAP640.PCX");
+        stanceIcons_ = hud_.loadImage(vfs_, "POS800.PCX");
+        weaponIcons_ = hud_.loadImage(vfs_, "WEAP800.PCX");
         if (o_.hasCamera) {
             player_ = Player{};
             player_.moves = &playerMoves_;
@@ -964,7 +1060,7 @@ int Game::run() {
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT) running = false;
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
-                else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;
+                else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
                     const float sens = 0.0022f;
                     player_.yaw += e.motion.xrel * sens;
@@ -975,18 +1071,28 @@ int Game::run() {
 
             if (!inputCmds_.empty()) runInputScript(dt);
             const Uint8* kb = SDL_GetKeyboardState(nullptr);
-            auto k = [&](SDL_Scancode sc) { return kb[sc] || held(sc); };
+            Uint8 keys[SDL_NUM_SCANCODES];
+            std::memcpy(keys, kb, sizeof keys);
+            for (SDL_Scancode sc : inputHeld_) keys[sc] = 1;
+            const Uint32 mouse = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+            auto down = [&](Action a) { return controls_.down(a, keys, mouse); };
             PlayerInput in;
-            in.forward = float((k(SDL_SCANCODE_W) || k(SDL_SCANCODE_UP)) - (k(SDL_SCANCODE_S) || k(SDL_SCANCODE_DOWN)));
-            in.strafe = float((k(SDL_SCANCODE_D) || k(SDL_SCANCODE_RIGHT)) - (k(SDL_SCANCODE_A) || k(SDL_SCANCODE_LEFT)));
-            in.walk = k(SDL_SCANCODE_LSHIFT) || k(SDL_SCANCODE_RSHIFT);
-            in.jump = k(SDL_SCANCODE_SPACE);
-            in.up = k(SDL_SCANCODE_SPACE);
-            in.down = k(SDL_SCANCODE_C) && player_.fly;
+            in.forward = float(down(Action::MoveForward)) - float(down(Action::MoveBack));
+            in.strafe = float(down(Action::SlideRight)) - float(down(Action::SlideLeft));
+            in.walk = down(Action::NoRun);
+            in.jump = down(Action::Jump);
+            in.up = down(Action::Jump);
+            in.down = down(Action::Crouch) && player_.fly;
             if (o_.walkForward) in.forward = 1;
             if (showMap_) in = PlayerInput{};
-            const bool trigger = !showMap_ && ((captured_ && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
-                                               k(SDL_SCANCODE_LCTRL) || k(SDL_SCANCODE_RCTRL) || o_.holdFire);
+            // Keyboard turning and looking (numpad); rates are approximations.
+            if (!showMap_) {
+                const float turn = 150.f * kPi / 180.f * dt, look = 90.f * kPi / 180.f * dt;
+                player_.yaw += turn * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
+                player_.pitch = std::clamp(player_.pitch + look * (float(down(Action::LookUp)) - float(down(Action::LookDown))),
+                                           -1.5f, 1.5f);
+            }
+            const bool trigger = !showMap_ && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.def().oneHanded;
             player_.update(dt, in, world_);
@@ -1001,7 +1107,8 @@ int Game::run() {
             prevTrigger = trigger;
             for (auto& m : msgs) messages_.push_back({m, 0});
             for (auto& m : messages_) m.age += dt;
-            while (messages_.size() > 6 || (!messages_.empty() && messages_.front().age > 12)) messages_.pop_front();
+            // At most three lines; each leaves 1240 ticks after it arrived (DF.EXE 0x42f400).
+            while (messages_.size() > 3 || (!messages_.empty() && messages_.front().age > 1240.f / 60.f)) messages_.pop_front();
             world_.update(dt);
             missionTime_ += dt;
 

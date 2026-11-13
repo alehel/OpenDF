@@ -28,6 +28,15 @@ struct GameOptions {
     // Scripted runs: a timed input script (see docs/TESTING.md), shown in a
     // visible window in real time (`watch`) and/or recorded to a video file.
     std::string inputScript;
+    // Until the Change Gear menu exists: primary and secondary weapon
+    // (".45", "M4", "M40", "MP5", "SAW").
+    std::string primary = "M4", secondary = "M40";
+    // Until the soldier screens exist: the name shown in the bottom bar (the
+    // original shows the soldier's name, e.g. "ROK").
+    std::string soldierName;
+    // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
+    // 1 (the original's default) only flagged ones, 2 all.
+    int gpsIcons = 1;
     bool watch = false;
     std::string record;
 };

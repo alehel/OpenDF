@@ -64,7 +64,7 @@ void main() {
 }
 )";
 
-// F_SML640.PCX: 16 characters per 16-pixel line, packed proportionally.
+// F_SML800.PCX (the font the original uses at 800x600 and above): 16 characters per 16-pixel line, packed proportionally.
 // Ink is palette index 9; index 3 (magenta) marks the extent of glyphs with
 // little or no ink (space, '!', '.', ...). Runs of ink-or-marker columns in a
 // line are the 16 glyphs, in character order.
@@ -106,8 +106,8 @@ bool Hud::init(Vfs& vfs, std::string* error) {
 
     std::vector<uint8_t> data;
     IndexedImage img;
-    if (!vfs.read("F_SML640.PCX", data) || !decodePcx(data, img) || img.width < 256 || img.height < 256) {
-        if (error) *error = "cannot load HUD font F_SML640.PCX";
+    if (!vfs.read("F_SML800.PCX", data) || !decodePcx(data, img) || img.width < 256 || img.height < 256) {
+        if (error) *error = "cannot load HUD font F_SML800.PCX";
         return false;
     }
     std::vector<uint8_t> rgba(size_t(img.width) * img.height * 4, 255);

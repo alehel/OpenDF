@@ -82,9 +82,17 @@ bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<Weapo
 
 } // namespace
 
-const std::string& Arsenal::modeName() const { return names_[current_][slots_[current_].mode]; }
+int weaponIndex(const std::string& name) {
+    const char* names[] = {".45", "M4", "M40", "MP5", "SAW"};
+    for (int i = 0; i < 5; ++i)
+        if (name == names[i]) return i;
+    return -1;
+}
 
-void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items) {
+const std::string& Arsenal::modeName() const { return names_[slots_[current_].def][slots_[current_].mode]; }
+
+void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, int primary,
+                   int secondary) {
     defs_ = builtinWeaponDefs();
     fromExe_ = exe && exe->loaded() && readExeTables(*exe, items, defs_);
     names_.clear();
@@ -95,8 +103,12 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
         names_.push_back(std::move(n));
     }
     slots_.clear();
-    for (int i = 0; i < int(defs_.size()); ++i) slots_.push_back({i, defs_[i].magazine, defs_[i].spareMags, 0});
-    current_ = 1;   // start with the carbine
+    const int n = int(defs_.size());
+    for (int d : {0, primary, secondary}) {
+        if (d < 0 || d >= n) d = 0;
+        slots_.push_back({d, defs_[d].magazine, defs_[d].spareMags, 0});
+    }
+    current_ = 1;   // the primary weapon (the original starts with the knife, not implemented yet)
     zoomLevel_ = 0;
     cooldown_ = reloadTimer_ = recoil_ = flashTimer_ = 0;
     burstLeft_ = 0;
@@ -106,12 +118,16 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
 
 void Arsenal::select(int slot, int mode) {
     if (slot < 0 || slot >= int(slots_.size())) return;
+    if (mode >= int(defs_[size_t(slots_[size_t(slot)].def)].modes.size())) return;
+    // DF.EXE 0x44aa74: switching clears the fire cooldown and any reload in
+    // progress (no bring-up delay); an empty weapon starts reloading.
     if (slot != current_) {
         current_ = slot;
         zoomLevel_ = 0;
         reloadTimer_ = 0;
-        cooldown_ = 0.4f;   // bring the weapon up
+        cooldown_ = 0;
         burstLeft_ = 0;
+        if (slots_[current_].rounds == 0) reload();
     }
     if (mode >= 0) slots_[current_].mode = std::min(mode, int(def().modes.size()) - 1);
 }
@@ -124,8 +140,11 @@ void Arsenal::cycleMode() {
 }
 
 void Arsenal::reload() {
+    // DF.EXE 0x44a004: the rounds left in the magazine are discarded; the
+    // new one is in after 0x78 ticks.
     Slot& s = slots_[current_];
     if (reloadTimer_ > 0 || s.mags <= 0 || s.rounds == def().magazine) return;
+    s.rounds = 0;
     reloadTimer_ = def().reloadSeconds;
     zoomLevel_ = 0;
 }
@@ -187,6 +206,8 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             if (s.rounds > 0) {
                 fire(player, world);
                 if (burstLeft_ > 0) --burstLeft_;   // a burst: three rounds, fireTicks apart
+                // DF.EXE 0x449f58: the last round starts the reload at once.
+                if (s.rounds == 0) { burstLeft_ = 0; reload(); }
             } else {
                 burstLeft_ = 0;
                 if (triggerPressed && s.mags > 0) reload();

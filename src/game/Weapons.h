@@ -49,6 +49,8 @@ struct WeaponDef {
 
 // Built-in copy of the original's values (fallback).
 const std::vector<WeaponDef>& builtinWeaponDefs();
+// Index of a weapon by short name (".45", "M4", "M40", "MP5", "SAW"), -1 if unknown.
+int weaponIndex(const std::string& name);
 
 struct Projectile {
     Vec3 pos, vel;
@@ -68,12 +70,16 @@ public:
 
     // `gameText`: DFGAME.BIN strings, for the weapon names (may be empty).
     // `exe`: the original DF.EXE, for the weapon tables (may be null).
+    // The original carries a sidearm and the primary and secondary weapons
+    // chosen on Change Gear (indices into the weapon list; see weaponIndex).
     void init(const std::vector<std::string>& gameText = {}, const ExeImage* exe = nullptr,
-              const ItemDefs* items = nullptr);
+              const ItemDefs* items = nullptr, int primary = 1, int secondary = 2);
     // True if the weapon values were read from DF.EXE.
     bool fromExe() const { return fromExe_; }
     const std::string& modeName() const;
-    // Selects a weapon slot; `mode` < 0 keeps that weapon's current fire mode.
+    // Selects a weapon slot (0 sidearm, 1 primary, 2 secondary); `mode` < 0
+    // keeps that weapon's current fire mode. A mode the weapon does not have
+    // does nothing, like an empty slot in the original.
     void select(int slot, int mode = -1);
     void cycle();
     void cycleMode();
