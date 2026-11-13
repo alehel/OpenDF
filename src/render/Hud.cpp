@@ -104,10 +104,14 @@ bool Hud::init(Vfs& vfs, std::string* error) {
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(Vertex, r)));
     glBindVertexArray(0);
 
+    return loadFont(vfs, "F_SML800.PCX", error);
+}
+
+bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
     std::vector<uint8_t> data;
     IndexedImage img;
-    if (!vfs.read("F_SML800.PCX", data) || !decodePcx(data, img) || img.width < 256 || img.height < 256) {
-        if (error) *error = "cannot load HUD font F_SML800.PCX";
+    if (!vfs.read(name, data) || !decodePcx(data, img) || img.width < 256 || img.height < 256) {
+        if (error) *error = "cannot load HUD font " + name;
         return false;
     }
     std::vector<uint8_t> rgba(size_t(img.width) * img.height * 4, 255);
@@ -130,6 +134,7 @@ bool Hud::init(Vfs& vfs, std::string* error) {
             else { glyphX_[c] = float(12 + i * 11); glyphW_[c] = 10; }   // unused symbol lines
         }
     }
+    if (font_) glDeleteTextures(1, &font_);
     glGenTextures(1, &font_);
     glBindTexture(GL_TEXTURE_2D, font_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);

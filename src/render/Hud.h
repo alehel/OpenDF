@@ -23,6 +23,8 @@ class Hud {
 public:
     ~Hud();
     bool init(Vfs& vfs, std::string* error);
+    // Switches the HUD font (F_SML640.PCX, F_SML800.PCX, ...).
+    bool loadFont(Vfs& vfs, const std::string& name, std::string* error);
     // Loads a game PCX as a texture; pure black becomes transparent.
     HudImage loadImage(Vfs& vfs, const std::string& name);
 

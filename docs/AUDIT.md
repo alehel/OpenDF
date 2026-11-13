@@ -12,14 +12,14 @@ approximation), **todo** = not checked yet.
 |---|---|---|---|
 | T1 | Bars, borders, dividers | fixed | DF.EXE 0x404650/0x485300: bars H/8 = 60 each (was 59/60), borders at y 0/59/420/479 and both side edges, dividers x 350 / 431, all one pixel in HUD green |
 | T2 | HUD colours | fixed | were eyeballed; now DF.EXE's RGB table (0x4027b1): text/outline (1,129,1), bright (1,230,1), dark (9,51,9), blue (17,60,253), red, white |
-| T3 | Stance icon | fixed | POS800 1:1 (footage is 800x600), centred x 50, top 3.75 (0x484c74) |
+| T3 | Stance icon | fixed | POS%i of the display mode, 1:1, centred x 50, top 3.75 (0x484c74, 0x4846f8) |
 | T4 | Weapon name | fixed | (75, 10); red while reloading or out of ammunition (0x44b0a0) |
 | T5 | Magazine / rounds boxes, magazine icon | fixed | boxes 75-135 / 140-200; the icon is font character 1 (was a guessed line); boxes have no fill, 2-pixel dark scanlines, HUD-green outline (0x401de4) |
 | T6 | "Round chambered" bar | fixed | x 205-210, solid when chambered, empty box otherwise (0x483558); chambered = rounds > 0 and not reloading (inferred) |
-| T7 | Weapon silhouette | fixed | WEAP800 1:1, right edge x 325, top 16.25 (0x484ae8) |
+| T7 | Weapon silhouette | fixed | WEAP%i of the display mode, 1:1, right edge x 325, top 16.25 (0x484ae8) |
 | T8 | Compass | fixed | (382,30) r 20; letters are font characters 2-5; inner circle r 5 + needle 10 in team colour; dot r 2 bright green (0x483d9c) |
 | T9 | Grid / Carrying / WP boxes | fixed | positions from 0x4836b8 / 0x483718 / 0x483d48; "None" without a route |
-| T10 | Font and size | fixed | F_SML800 at 0.8 of a 640 unit: the original at 800x600, which is what the footage shows (measured text widths ÷ font widths = 0.797) |
+| T10 | Font and size | fixed | F_SML%i with the width capped at 800 (0x40298c), 1:1 in the original display mode that fits the window (640x480 / 800x600 / 1024x768); the footage was recorded at 800x600 |
 
 ## Bottom bar
 
@@ -45,7 +45,7 @@ approximation), **todo** = not checked yet.
 |---|---|---|---|
 | M1 | Map grid and labels | fixed | bright green 1 px; labels white with black outline (0x43ddf4) |
 | M2 | Route and markers | fixed | route bright green; markers from record +0x4C (type: 1 circle, 3 diamond, ...) in side colour, radius 6.25 (0x43e434) |
-| M3 | Player marker (blue, steady) | fixed | footage |
+| M3 | Player marker | fixed | soldier marker in side colour, blue (0x43e434) |
 | M4 | Current waypoint blink | fixed | DF.EXE 0x43d975 |
 | M5 | Soldier marks | fixed | GPS option (default 1, "gpsicon") draws soldiers whose record +0x4C is set as soldier markers in side colour (red enemies, blue friendlies), an X once dead, culled to the map window (0x43d445, 0x43e434). The flag never changes at run time; footage at 173 s shows live and dead enemies this way. OpenDF shows more at once only because soldiers do not move or die yet (no AI) |
 | M6 | Compass rose | fixed | (560,315), arms 40, star with inner points 5; N white, E S W green, outlined (0x43dec0); was invented |
@@ -56,7 +56,7 @@ approximation), **todo** = not checked yet.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | P1 | Goals screen | fixed | no panel (was invented); right-aligned at x 625 from y 72.5, 15.6 apart, shadowed; headings white, goals white / green when met, lose lines white / red when hit (0x485004) |
-| P2 | Mission end panel | fixed | measured from footage: box x 80-560, y 72-153, scene dimmed to ~43 %, bright green outline and text |
+| P2 | Mission end panel | fixed | 0x483094: darkened box (128,116)-(896,246) virtual, shade 10 = 10/31 brightness (0x401b6c, 0x435070), bright green outline; text pure green (0,255,0) centred at x 512, tops 136/176/206 virtual. The earlier footage measurement (43 %, bright text) was off |
 
 ## Controls
 

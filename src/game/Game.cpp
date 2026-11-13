@@ -130,11 +130,12 @@ private:
         float cx(float dx) const { return w * 0.5f + dx * u; }     // relative to the centre
         float y(float v) const { return v * u; }
         float by(float v) const { return h - (480.f - v) * u; }   // bottom-bar y
-        // OpenDF shows the HUD as the original does at 800x600 (the
-        // resolution of the reference footage): the 800 font and bitmaps
-        // (F_SML800, POS800, WEAP800) drawn 1:1, i.e. 0.8 of a 640x480 unit.
-        float text() const { return u * 0.8f; }
-        float art() const { return u * 0.8f; }
+        // The original's display mode that fits this window (modeW x
+        // modeW*3/4): DF.EXE draws that mode's font and bitmaps 1:1, so in
+        // 640x480 units they are 640/modeW in size.
+        int modeW = 640;
+        float text() const { return u * 640.f / float(modeW); }
+        float art() const { return u * 640.f / float(modeW); }
         float px() const { return std::max(1.f, u); }   // one original pixel (lines)
     };
 
@@ -209,6 +210,8 @@ private:
     ModelRenderer& models_ = *modelsPtr_;
     Hud& hud_ = *hudPtr_;
     HudImage stanceIcons_, weaponIcons_;
+    int hudMode_ = 0;   // display mode whose HUD assets are loaded
+    void useHudMode(int modeW);
     World world_;
     Player player_;
     Arsenal arsenal_;
@@ -392,6 +395,21 @@ void Game::runInputScript(float dt) {
     }
     player_.yaw += turnRate_ * kPi / 180.f * dt;
     player_.pitch = std::clamp(player_.pitch + lookRate_ * kPi / 180.f * dt, -1.5f, 1.5f);
+}
+
+// DF.EXE picks its HUD art by screen width: POS%i.PCX / WEAP%i.PCX (0x4846f8)
+// and the font F_SML%i.PCX with the width capped at 800 (0x40298c).
+void Game::useHudMode(int modeW) {
+    if (modeW == hudMode_) return;
+    hudMode_ = modeW;
+    char name[32];
+    std::snprintf(name, sizeof name, "POS%d.PCX", modeW);
+    stanceIcons_ = hud_.loadImage(vfs_, name);
+    std::snprintf(name, sizeof name, "WEAP%d.PCX", modeW);
+    weaponIcons_ = hud_.loadImage(vfs_, name);
+    std::snprintf(name, sizeof name, "F_SML%d.PCX", std::min(modeW, 800));
+    std::string err;
+    if (!hud_.loadFont(vfs_, name, &err)) std::fprintf(stderr, "%s\n", err.c_str());
 }
 
 int Game::teamCount(int team, bool aliveOnly) const {
@@ -914,24 +932,24 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
 }
 
 void Game::drawMissionEnd(const Screen& s) {
-    // DF.EXE 0x483094: success if the winner is the player's side. Layout
-    // measured from footage of the original (640x480 units): a box from
-    // x 80 to 560 (centred), y 72 to 153, the scene behind dimmed to ~43 %,
-    // a one-pixel bright green outline; three centred lines with tops at
-    // y 85, 111 and 129.
+    // DF.EXE 0x483094: success if the winner is the player's side. A darkened
+    // panel (0x401b6c) from (128, 116) to (896, 246) virtual, i.e. x 80-560,
+    // y 72.5-153.75, shade level 10 of the 32-step shade table (0x435070:
+    // level r keeps r/31 of the brightness, so 10/31), with a one-pixel
+    // outline in bright green (0x66f94c); three lines centred at x 512 in
+    // green (0x66f938) with tops at 136, 176, 206 virtual.
     const bool won = missionResult_ == kPlayerSide;
-    const Color bright{1 / 255.f, 230 / 255.f, 1 / 255.f, 1};   // DF.EXE colour 0x66f94c (assumed for this panel)
-    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72), y1 = s.y(153), t = std::max(1.f, s.u);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.57f});
-    hud_.rect(x0, y0, x1 - x0, t, bright);
-    hud_.rect(x0, y1 - t, x1 - x0, t, bright);
-    hud_.rect(x0, y0, t, y1 - y0, bright);
-    hud_.rect(x1 - t, y0, t, y1 - y0, bright);
+    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72.5f), y1 = s.y(153.75f), t = s.px();
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, t, kHudBright);
+    hud_.rect(x0, y1 - t, x1 - x0, t, kHudBright);
+    hud_.rect(x0, y0, t, y1 - y0, kHudBright);
+    hud_.rect(x1 - t, y0, t, y1 - y0, kHudBright);
     const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
                            "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
-    const float tops[] = {83.5f, 109, 127};   // text cell tops giving the footage's ink rows 85, 111, 129
+    const float tops[] = {85, 110, 128.75f};
     for (int i = 0; i < 3; ++i)
-        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.y(tops[i]), lines[i], bright, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.y(tops[i]), lines[i], kHudPureGreen, s.text());
 }
 
 void Game::drawGoals(const Screen& s) {
@@ -1019,8 +1037,6 @@ int Game::run() {
     else if (!loadMission(int(it - missions_.begin()))) rc = 1;
 
     if (rc == 0) {
-        stanceIcons_ = hud_.loadImage(vfs_, "POS800.PCX");
-        weaponIcons_ = hud_.loadImage(vfs_, "WEAP800.PCX");
         if (o_.hasCamera) {
             player_ = Player{};
             player_.moves = &playerMoves_;
@@ -1122,6 +1138,10 @@ int Game::run() {
             s.bottom = kBottomBar * s.u;
             s.playY = s.top;
             s.playH = std::max(1.f, s.h - s.top - s.bottom);
+            // The largest of the original's modes (640x480, 800x600,
+            // 1024x768) that fits the window height.
+            s.modeW = s.h >= 768 ? 1024 : s.h >= 600 ? 800 : 640;
+            useHudMode(s.modeW);
 
             glViewport(0, 0, dw, dh);
             glClearColor(0, 0, 0, 1);
