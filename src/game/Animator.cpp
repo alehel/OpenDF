@@ -12,6 +12,7 @@ void Animator::enter(const Chr& chr, int anim, int frame) {
     const ChrAnimation* a = chr.animation(anim);
     if (!a || frame < 0 || frame >= int(a->frames.size())) {
         frozen_ = true;
+        rootStep_ = {0, 0, 0};
         return;
     }
     anim_ = anim;
@@ -27,6 +28,14 @@ void Animator::enter(const Chr& chr, int anim, int frame) {
     }
     step_.assign(n, {0, 0, 0});
     left_ = std::max(1, f.ticks);
+    // Root motion (CHR axes x lateral, y up, z back -> model x = -z,
+    // y = -x, z = y).
+    std::array<float, 3> d = f.root;
+    if (prev_ && f.anchor < int(f.contacts.size()) && f.anchor < int(prev_->contacts.size()))
+        for (int k = 0; k < 3; ++k) d[size_t(k)] += prev_->contacts[size_t(f.anchor)][size_t(k)] - f.contacts[size_t(f.anchor)][size_t(k)];
+    rootStep_ = {-d[2] / float(left_), -d[0] / float(left_), d[1] / float(left_)};
+    if (prev_ == &f) rootStep_ = {0, 0, 0};   // holding the last frame
+    prev_ = &f;
     for (size_t p = 0; p < n; ++p)
         for (int k = 0; k < 3; ++k) {
             float d = f.angles[p][size_t(k)] / 256.f - cur_[p][size_t(k)];
@@ -54,7 +63,7 @@ int Animator::tick(const Chr& chr) {
             if (!tr.cond[0] && !tr.cond[1]) { t = &tr; break; }
         if (!t && f.transitions.empty()) enter(chr, 0, 0);
         else if (t) enter(chr, t->anim, std::max(0, t->frame));
-        else frozen_ = true;
+        else frozen_ = true, rootStep_ = {0, 0, 0};
     }
     return event;
 }

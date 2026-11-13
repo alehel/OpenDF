@@ -427,6 +427,13 @@ void World::update(float dt) {
             WorldObject& o = objects[i];
             if (!o.chr || o.removed) continue;
             if (const int ev = o.anim.tick(*o.chr)) animEvents_.push_back({int(i), ev});
+            // Override moves (deaths) carry the body along (0x43666b).
+            if (o.dead) {
+                const auto& r = o.anim.rootStep();
+                const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, left{-std::cos(o.heading), 0, -std::sin(o.heading)};
+                o.pos = o.pos + fwd * r[0] + left * r[1];
+                o.base = terrain->heightAt(o.pos.x, o.pos.z) + o.lift;
+            }
             poseUpdate(o);
         }
     }

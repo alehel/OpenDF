@@ -31,6 +31,11 @@ public:
     bool frozen() const { return frozen_; }
     // Current angles per part in turns (raw: a0, a1, a2 as stored).
     const std::vector<std::array<float, 3>>& angles() const { return cur_; }
+    // Root motion of the current frame per tick (0x468180), model axes
+    // (x forward, y left, z up), metres: (previous frame's anchor contact -
+    // this frame's) + the frame's root offset, over its ticks. "override"
+    // moves move the body by it (0x43666b).
+    const std::array<float, 3>& rootStep() const { return rootStep_; }
     // The frame being blended to (for contact points / root motion).
     const ChrFrame* currentFrame(const Chr& chr) const;
 
@@ -40,6 +45,8 @@ private:
     int anim_ = -1, frame_ = 0, left_ = 0;
     bool frozen_ = true;
     std::vector<std::array<float, 3>> cur_, step_;
+    std::array<float, 3> rootStep_{0, 0, 0};
+    const ChrFrame* prev_ = nullptr;
 };
 
 } // namespace df
