@@ -22,12 +22,14 @@ when DF.EXE is missing or a different version.
 | First-person model, offset and camera | Original | DF.EXE player weapon table `+0x64`, `+0x78`; matches footage |
 | Magazine size | Original | gun table `+0x08` (M4 30, M40 5, MP5 SD 30, SAW 200, .45 7) |
 | Spare magazines | Original | gun table `+0x04` = n; spares n−1, or 2n−1 for the primary when the secondary Change Gear kit is "Ammo" (profile +0x688 == 1; 0x449787 → 0x44b598) |
-| Default loadout | Original | a new soldier (0x40ee14): sidearm .45, primary M4/M203, secondary Ammo. OpenDF's `--loadout PRIMARY,SECONDARY` until Change Gear exists; the M203, Barrett, HS .22, satchel, claymore and LAW are not implemented |
+| Default loadout and slots | Original | a new soldier (0x40ee14): sidearm .45, primary M4/M203, kit Ammo. Ten slots (0x44b598, keys 0-9 via 0x42de85): 0 laser designator, 1 knife, 2 sidearm, 3-5 the primary row's modes, 6-8 the kit row's, 9 frag grenade; rows from the item table 0x4E9610 (M4/M203 = burst, M203, single). Mission start on slot 3 (0x449791). OpenDF's `--loadout PRIMARY,KIT,SIDEARM` until Change Gear exists. Laser designator, knife, satchel and claymore modes are not implemented (their slots stay empty) |
 | Muzzle velocity | Original (units inferred: m/s) | gun table `+0x0C` (M4 1000, M40 950, MP5 SD 295, SAW 1000, .45 295) |
 | Scope power | Original | player table `+0xA0`, used by the scope view (0x450600); allowed when `+0xA4` bit 0 is set |
-| Fire rate | Original | player table `+0x9C`: ticks between rounds at 60 ticks/s (M4 single 10, burst 6, M40 70, MP5 SD 10/6/6, SAW 6, .45 10); bursts of 3 about 0.1 s apart in footage |
-| Reload time and rules | Original | 0x44a004: 0x78 = 120 ticks, the rounds left are discarded; 0x449f58: the last round starts the reload |
-| Weapon text red | Original | 0x44b0a0: while reloading or out of ammunition |
+| Fire rate and modes | Original | player table `+0x9C`: ticks between rounds at 60 ticks/s; `+0xA4` 0x20 full auto (refire on cooldown expiry while held, not zoomed); bursts hard-coded for modes 6, 8, 21, 35, 36 in 0x46af90: three rounds a cooldown apart, finishing on their own (0x44988e); otherwise one shot per press (0x44a920). Ammunition per gun (+0x74): chambered flag, magazine, spares; the next round is chambered when the cooldown ends (0x449f58) |
+| Reload time and rules | Original | 0x44a004: 0x78 = 120 ticks, the rounds left are discarded; 0x449f58: the empty magazine starts the reload. Launchers and grenades: the next round after the cooldown (0x44a318). Chambering after a reload into an empty chamber: inferred |
+| Weapon text red | Original | 0x44b0a0 / 0x44b164: while reloading or with no ammunition at all |
+| Ammunition readout | Original | 0x483447 by fire type: guns spares (with glyph) / magazine / chamber bar; launchers and grenades: rounds left / chamber bar at 140; icon frame per mode (0x484ae8) |
+| M203 and LAW | Original | fire type 2 (0x44a120): from the model, no spread, kick 0x4000 back (the random drop's range is inferred); M203 rounds arm after 8 ticks (before: a bullet-like hit, effect 5 on objects), blast type 1; the LAW no gravity, arms at once, blast type 3 out of the water; no first-person model for the LAW (item 0). Rounds leave from the model's table offset, not muzzle vertex +0x90 (APPROXIMATION) |
 | Spread, damage, recoil | Original | see docs/AUDIT.md G3, G4, X2, V2b (head-shot ×4 still open) |
 | Sounds | Original (not played yet) | gun table `+0x24..+0x30` sound ids |
 | Starting with the knife in hand | Not implemented | knife missing |

@@ -205,7 +205,7 @@ private:
     std::vector<SmokeGen> smokeGens_;
     int playerHp_ = 4;                    // character word +0x74
     bool playerDead() const { return playerHp_ <= 0; }
-    void explode(Vec3 at, int surface);   // surface: 0 terrain, 1 object, 2 water
+    void explode(Vec3 at, int surface, bool heavy = false);   // surface: 0 terrain, 1 object, 2 water
     void spawnPuff(Vec3 at);
     void tickEffects();
     std::mt19937 effectRng_{1998};
@@ -279,7 +279,13 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    arsenal_.init(gameText_, &exe_, &items_, weaponIndex(o_.primary), weaponIndex(o_.secondary));
+    {
+        Loadout lo;
+        if (const int r = loadoutRow(o_.sidearm); r >= 0) lo.sidearm = r;
+        if (const int r = loadoutRow(o_.primary); r >= 0) lo.primary = r;
+        if (const int r = loadoutRow(o_.secondary); r >= 0) lo.kit = r;
+        arsenal_.init(gameText_, &exe_, &items_, lo);
+    }
     // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
     {
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
@@ -461,10 +467,11 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // Explosion (DF.EXE 0x44f776 terrain, 0x44f90a / 0x44fb78 object or person,
 // 0x44fc20 water; barrels 0x46cb64): effect 3 "ground exp" (4 "water exp" in
 // water), blast type 1 with radius 10 m, and on terrain a smoke generator.
-// Sound 0x32 / 0x35: not yet (no sound).
-void Game::explode(Vec3 at, int surface) {
+// Sound 0x32 / 0x35: not yet (no sound). The LAW out of the water is blast
+// type 3 (`heavy`: objects lose 128 - 16 d).
+void Game::explode(Vec3 at, int surface, bool heavy) {
     spawnEffect(surface == 2 ? 4 : 3, at);
-    for (auto& m : world_.blast(at, 10.f, false)) messages_.push_back({m, 0});
+    for (auto& m : world_.blast(at, 10.f, heavy)) messages_.push_back({m, 0});
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
     if (!playerDead()) {
@@ -532,9 +539,15 @@ void Game::tickEffects() {
 }
 
 void Game::spawnImpact(const Impact& hit) {
-    if (hit.explosive) {
-        if (!hit.armed) return;
-        explode(hit.pos, hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1);
+    if (hit.explosive && hit.armed) {
+        const int surface = hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1;
+        explode(hit.pos, surface, hit.law && surface != 2);
+        return;
+    }
+    // An M203 round before it is armed (0x44f3e0): like a bullet on the
+    // ground or water; effect 5 on an object or person.
+    if (hit.explosive && hit.object >= 0) {
+        spawnEffect(5, hit.pos);
         return;
     }
     // Terrain (0x46a054): surface 1..6 -> dirt, grass, snow, stone, sand,
@@ -634,17 +647,19 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Stand: player_.stance = Stance::Stand; break;
     case Action::Crouch: player_.stance = Stance::Crouch; break;
     case Action::Prone: player_.stance = Stance::Prone; break;
-    // Weapon keys select the original's slots (DF.EXE 0x44b598/0x44aa74):
-    // 1 knife, 2 sidearm, 3-5 the primary's fire modes, 6-8 the secondary's,
-    // 9 frag grenade (always carried), 0 laser designator (not implemented yet).
-    case Action::Weapon2: arsenal_.select(0); break;
-    case Action::Weapon3: arsenal_.select(1, 0); break;
-    case Action::Weapon4: arsenal_.select(1, 1); break;
-    case Action::Weapon5: arsenal_.select(1, 2); break;
-    case Action::Weapon6: arsenal_.selectSecondary(0); break;
-    case Action::Weapon7: arsenal_.selectSecondary(1); break;
-    case Action::Weapon8: arsenal_.selectSecondary(2); break;
-    case Action::Weapon9: arsenal_.selectGrenade(); break;
+    // Weapon keys select the original's slots (DF.EXE 0x42de85 -> 0x44aa74):
+    // 0 laser designator, 1 knife (neither done yet), 2 sidearm, 3-5 the
+    // primary's modes, 6-8 the kit's, 9 frag grenade.
+    case Action::Weapon0: arsenal_.select(0); break;
+    case Action::Weapon1: arsenal_.select(1); break;
+    case Action::Weapon2: arsenal_.select(2); break;
+    case Action::Weapon3: arsenal_.select(3); break;
+    case Action::Weapon4: arsenal_.select(4); break;
+    case Action::Weapon5: arsenal_.select(5); break;
+    case Action::Weapon6: arsenal_.select(6); break;
+    case Action::Weapon7: arsenal_.select(7); break;
+    case Action::Weapon8: arsenal_.select(8); break;
+    case Action::Weapon9: arsenal_.select(9); break;
     case Action::Cycle: arsenal_.cycle(); break;
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
@@ -725,17 +740,19 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         models_.draw(*e.model, 0, m, false, false, frame);
         models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
-    // Thrown grenades in flight: ITEMS.DEF "grenade" (0x44d96d: item 4033
-    // for gun flag 0x10), turned to the direction of travel (APPROXIMATION:
-    // DF.EXE's in-flight orientation not traced).
-    if (const ItemDef* gi = items_.byId(104033); gi && !gi->graphic.empty())
-        if (const GpuModel* gm = models_.get(vfs_, gi->graphic))
-            for (const auto& p : arsenal_.projectiles()) {
-                if (!(p.flags & 0x10)) continue;
-                const Vec3 at = world_.nearest(p.pos, eye);
-                const float yaw = std::atan2(p.vel.x, -p.vel.z);
-                models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - yaw));
-            }
+    // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
+    // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
+    // turned to the direction of travel (APPROXIMATION: DF.EXE's in-flight
+    // orientation not traced).
+    for (const auto& p : arsenal_.projectiles()) {
+        const int id = (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
+        const ItemDef* gi = id ? items_.byId(id) : nullptr;
+        const GpuModel* gm = gi && !gi->graphic.empty() ? models_.get(vfs_, gi->graphic) : nullptr;
+        if (!gm) continue;
+        const Vec3 at = world_.nearest(p.pos, eye);
+        const float yaw = std::atan2(p.vel.x, -p.vel.z);
+        models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - yaw));
+    }
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     terrain_.drawWater(view, proj, eye, float(ticks_));
@@ -744,7 +761,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
 void Game::drawViewModel(const Screen& s) {
     // The original hides the weapon while the zoom inset is up.
     if (!gunVisible_ || scopeShown() || showMap_) return;
-    const GpuModel* m = models_.get(vfs_, arsenal_.def().viewModel);
+    const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -752,7 +769,7 @@ void Game::drawViewModel(const Screen& s) {
     // the view) at the weapon's offset from DF.EXE's player weapon table, with
     // the same camera as the world. Offset axes are the model's own: forward,
     // left, up in 1/256 m.
-    const int* g = arsenal_.def().gunOffset;
+    const int* g = arsenal_.mode().offset;
     Vec3 offset{-g[1] / 256.f, g[2] / 256.f, -g[0] / 256.f};
     // DF.EXE 0x449abc: the gun is fixed to the eye (no bob, sway or lowering);
     // only the firing kick moves it (forward, left, up in its own axes).
@@ -863,30 +880,41 @@ void Game::drawTopBar(const Screen& s) {
         hud_.imageUV(stanceIcons_.texture, s.lx(50) - w / 2, s.y(3.75f), w, h, 0, frame / 3.f, 1, (frame + 1) / 3.f);
     }
 
-    // Weapon name (0x483444) at (75, 10); red while reloading or out of
-    // ammunition (0x44b0a0).
-    const auto& sl = arsenal_.current();
-    const bool outOfAmmo = sl.mags <= 0 && sl.rounds <= 0;
+    // Weapon name (0x483444) at (75, 10); red while reloading or with no
+    // ammunition left at all (0x44b0a0 / 0x44b164).
+    const ModeDef& md = arsenal_.mode();
+    const bool outOfAmmo = arsenal_.spares() <= 0 && arsenal_.rounds() <= 0 && !arsenal_.chambered();
     hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), arsenal_.reloading() || outOfAmmo ? kHudRed : kHudGreen, ts);
 
-    // Magazines (x 75-135) with the magazine glyph (font character 1) and
-    // rounds (x 140-200), y 28.75-47.5; the narrow "round chambered" bar at
-    // x 205-210 is solid when a round is chambered, otherwise an empty box.
-    hudBox(s, 75, 28.75f, 135, 47.5f, false);
-    hudBox(s, 140, 28.75f, 200, 47.5f, false);
-    hud_.text(s.lx(78.1f), s.y(31.9f), "\x01", kHudGreen, ts);
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "%d", sl.mags);
-    hud_.text(s.lx(105) - hud_.textWidth(buf, ts) / 2, s.y(31.9f), buf, kHudGreen, ts);
-    std::snprintf(buf, sizeof buf, "%d", sl.rounds);
-    hud_.text(s.lx(170) - hud_.textWidth(buf, ts) / 2, s.y(31.9f), buf, kHudGreen, ts);
-    if (sl.rounds > 0 && !arsenal_.reloading()) hud_.rect(s.lx(205), s.y(28.75f), s.lx(210) - s.lx(205), s.y(47.5f) - s.y(28.75f), kHudGreen);
-    else hudBox(s, 205, 28.75f, 210, 47.5f, false);
+    // Ammunition (0x483447, by fire type, jump table 0x483418), y 28.75-47.5:
+    // guns: spare magazines with the magazine glyph (font character 1) at
+    // x 75-135, rounds in the magazine at 140-200, the "round chambered"
+    // bar at 205-210 (solid when chambered, else an outline); launchers and
+    // grenades: the rounds left at 75-135 and the bar at 140-145.
+    auto chamberBar = [&](float x) {
+        if (arsenal_.chambered()) hud_.rect(s.lx(x), s.y(28.75f), s.lx(x + 5) - s.lx(x), s.y(47.5f) - s.y(28.75f), kHudGreen);
+        else hudBox(s, x, 28.75f, x + 5, 47.5f, false);
+    };
+    auto countBox = [&](float x, int value, bool glyph) {
+        hudBox(s, x, 28.75f, x + 60, 47.5f, false);
+        if (glyph) hud_.text(s.lx(x + 3.1f), s.y(31.9f), "\x01", kHudGreen, ts);
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%d", value);
+        hud_.text(s.lx(x + 30) - hud_.textWidth(buf, ts) / 2, s.y(31.9f), buf, kHudGreen, ts);
+    };
+    if (md.type == 1) {
+        countBox(75, arsenal_.spares(), true);
+        countBox(140, arsenal_.rounds(), false);
+        chamberBar(205);
+    } else if (md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11) {
+        countBox(75, arsenal_.spares(), false);
+        chamberBar(140);
+    }
 
-    // Weapon silhouette (0x484ae8): WEAP800.PCX, 13 frames, drawn 1:1 with
-    // its right edge at x 325 and top at y 16.25.
-    if (weaponIcons_.texture) {
-        const int frame = arsenal_.def().icon;
+    // Weapon silhouette (0x484ae8): WEAP800.PCX, 13 frames, chosen per mode,
+    // drawn 1:1 with its right edge at x 325 and top at y 16.25.
+    if (weaponIcons_.texture && md.icon >= 0) {
+        const int frame = md.icon;
         const float fh = weaponIcons_.height / 13.f, w = weaponIcons_.width * s.art(), h = fh * s.art();
         hud_.imageUV(weaponIcons_.texture, s.lx(325) - w, s.y(16.25f), w, h, 0, frame / 13.f, 1, (frame + 1) / 13.f);
     }
@@ -1338,7 +1366,7 @@ int Game::run() {
             if (in.forward != 0 || in.strafe != 0 || in.jump) arsenal_.cancelZoom();
             const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
-            player_.oneHanded = arsenal_.def().oneHanded;
+            player_.oneHanded = arsenal_.mode().oneHanded();
             in.shooting = arsenal_.firing();
             player_.update(dt, in, world_);
             if (std::getenv("OPENDF_DEBUGPLAYER") && (ticks_ % 30) == 0) {

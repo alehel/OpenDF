@@ -26,7 +26,7 @@ One command per line, `<seconds> <command> [argument]`, `#` starts a comment:
 | `face DEG` | turn smoothly to a compass heading (0 north, 90 east) |
 | `end` | finish (the run also finishes after the last command) |
 
-Other test options: `--camera x,y,h,yaw,pitch`, `--weapon N`, `--stance N`,
+Other test options: `--camera x,y,h,yaw,pitch`, `--weapon SLOT` (0-9, as the keys), `--loadout PRIMARY,KIT,SIDEARM`, `--stance N`,
 `--zoom N`, `--fire`, `--walk`, `--map`, `--kill-enemies`, `--viewmodel-only`.
 
 Debugging aids: `OPENDF_DEBUGHITS=1` prints every bullet hit (object, body

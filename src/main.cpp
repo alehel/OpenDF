@@ -49,7 +49,7 @@ struct Options {
     // Game testing aids (mission mode).
     int frames = 1, weapon = -1, stance = -1, zoom = 0;
     bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, killEnemies = false;
-    std::string inputScript, record, primary = "M4", secondary = "Ammo", soldierName;
+    std::string inputScript, record, primary = "M4", secondary = "Ammo", sidearm = ".45", soldierName;
     int gpsIcons = 1;
     bool watch = false;
     int width = 1280, height = 720;
@@ -76,8 +76,14 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--loadout") {
             const std::string v = next();
             const auto comma = v.find(',');
+            // PRIMARY[,KIT[,SIDEARM]]
             o.primary = v.substr(0, comma);
-            if (comma != std::string::npos) o.secondary = v.substr(comma + 1);
+            if (comma != std::string::npos) {
+                const std::string rest = v.substr(comma + 1);
+                const auto c2 = rest.find(',');
+                o.secondary = rest.substr(0, c2);
+                if (c2 != std::string::npos) o.sidearm = rest.substr(c2 + 1);
+            }
         }
         else if (a == "--watch") o.watch = true;
         else if (a == "--record") o.record = next();
@@ -744,6 +750,7 @@ int main(int argc, char** argv) {
             g.soldierName = o.soldierName;
             g.gpsIcons = o.gpsIcons;
             g.secondary = o.secondary;
+            g.sidearm = o.sidearm;
             g.watch = o.watch;
             g.record = o.record;
             rc = runGame(vfs, g);

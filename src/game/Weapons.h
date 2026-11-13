@@ -1,10 +1,10 @@
-// Player weapons: magazines, fire modes, reloads, scopes and simulated
-// bullets (gravity drop and travel time) hitting terrain and objects.
+// Player weapons as DF.EXE has them: ten slots holding one weapon mode each
+// (keys 0-9), modes from the player weapon table, ammunition kept per gun,
+// and simulated projectiles (bullets, grenades, M203 and LAW rounds).
 //
-// Weapon values come from DF.EXE's own weapon tables, read from the user's
-// copy at start-up (see docs/FORMATS.md); the built-in copies of those values
-// are used if DF.EXE is missing or not the expected version. Spread, damage
-// are still OpenDF approximations.
+// All values come from DF.EXE's tables, read from the user's copy at
+// start-up (see docs/FORMATS.md); built-in copies of the same tables are used
+// if DF.EXE is missing or not the expected version.
 #pragma once
 
 #include "../core/ExeImage.h"
@@ -12,143 +12,146 @@
 #include "Player.h"
 #include "World.h"
 
+#include <array>
 #include <random>
 #include <string>
 #include <vector>
 
 namespace df {
 
-enum class FireMode { Single, Burst, Auto };
-
 // The original's logic runs at 60 ticks per second.
 constexpr float kTick = 1.f / 60.f;
 
-struct WeaponMode {
-    const char* name;           // fallback if DFGAME.BIN is unavailable
-    FireMode fire;
-    int table;                  // DF.EXE player weapon table index (= DFGAME.BIN string)
-    int fireTicks;              // ticks between rounds (table +0x9C)
+// Player weapon table record (0x4E97D0, 168 bytes, 39 modes).
+struct ModeDef {
+    int type = 0;               // +0x6C fire type: 1 gun, 2 launcher (M203, LAW), 11 thrown grenade; others not done
+    int gun = 0;                // +0x74 gun table index (ammunition is kept per gun)
+    int item = 0;               // +0x64 first-person item (ITEMS.DEF id - 100000)
+    int offset[3] = {};         // +0x78 first-person model offset: forward, left, up in 1/256 m
+    int muzzleVertex = 0;       // +0x90 vertex of the first-person model the round leaves from
+    int cooldown = 0;           // +0x9C ticks between rounds
+    int scope = 0;              // +0xA0 zoom inset magnification
+    int flags = 0;              // +0xA4: 0x1 zoom allowed, 0x4 rifle (two-handed), 0x20 full auto
+    std::string name;           // DFGAME.BIN string of the mode number
+    std::string viewModel;      // the first-person item's graphic
+    int icon = -1;              // WEAP%i.PCX frame (0x484ae8), -1 none
+    bool burst = false;         // 0x46aefc: modes 6, 8, 21, 35, 36 fire bursts of three
+    bool oneHanded() const { return !(flags & 4); }
+    bool automatic() const { return flags & 0x20; }
+    bool zoomable() const { return (flags & 1) && scope > 1; }
+    bool works() const { return type == 1 || type == 2 || type == 11; }
 };
 
-struct WeaponDef {
-    std::vector<WeaponMode> modes;
-    std::string viewModel;      // first-person .3DI (ITEMS.DEF item at table +0x64)
-    int icon;                   // frame in WEAP640.PCX
-    // First-person model offset from the eye, from DF.EXE's player weapon
-    // table (record +0x78): forward, left, up in 1/256 m.
-    int gunOffset[3];
-    int magazine;               // rounds per magazine (gun table +0x08)
-    int magazines;              // n, gun table +0x04: spares n-1, or 2n-1 for the primary with the "Ammo" kit
-    float muzzleVelocity;       // m/s
-    float spreadDeg;            // standing, still, unzoomed
-    std::vector<float> zoom;    // magnifications of the zoom inset (none = no scope)
-    int damage;
-    float reloadSeconds;
-    float recoilDeg;            // unused: the original kicks only the gun model (see kick())
-    bool oneHanded = false;     // held in one hand: the soldier uses the *_1HW moves
-    // Gun table (DF.EXE 0x4E9060) projectile fields:
-    int power = 1;              // +0x10: damage 1 << power, halving each `falloff` ticks of flight
-    int falloff = 30;           // +0x14, ticks
-    int lifetime = 70;          // +0x18, ticks of flight
-    int accuracy = 1;           // +0x1C: spread ±0.0824°·(A−1) per axis, none at 1
-    int gunFlags = 0;           // +0x30: 0x10 hand grenade (thrown, explodes on impact), 0x01 M203, 0x40 LAW
-    bool thrown() const { return gunFlags & 0x10; }
+// Gun table record (0x4E9060, 52 bytes).
+struct GunDef {
+    int n = 0;                  // +0x04 magazines (n - 1 spare; 2n - 1 with the Ammo kit); rounds for launchers
+    int magazine = 0;           // +0x08 rounds per magazine
+    int velocity = 0;           // +0x0C m/s (moved at velocity / 62 per tick)
+    int power = 0;              // +0x10 damage 1 << power, halving every `falloff` ticks
+    int falloff = 1;            // +0x14
+    int lifetime = 0;           // +0x18 ticks of flight
+    int accuracy = 1;           // +0x1C spread ±(A−1)·30·0x8000 binary angle per axis
+    int flags = 0;              // +0x30: 0x01 M203, 0x10 hand grenade, 0x40 LAW
 };
 
-// Built-in copy of the original's values (fallback).
-const std::vector<WeaponDef>& builtinWeaponDefs();
-// Index of a weapon by short name (".45", "M4", "M40", "MP5", "SAW",
-// "Grenade"); -1 for "Ammo" or anything unknown.
-int weaponIndex(const std::string& name);
-
+// A shot in flight.
 struct Projectile {
     Vec3 pos, vel;              // metres, metres per second
     int age = 0, lifetime = 0;  // ticks
     int power = 1, falloff = 30;
-    int flags = 0;              // gun table +0x30
+    int flags = 0;              // gun +0x30
     float tickClock = 0;
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }
 };
 
-// A bullet hit, for spawning the impact effect (DF.EXE 0x44f71f: 0.25 m
-// back along the path).
+// A hit, for spawning the impact effect (DF.EXE 0x44f71f: 0.25 m back along
+// the path).
 struct Impact {
     Vec3 pos;
-    int object = -1;   // -1 = terrain, -2 = water
-    int part = -1;     // people: body part
-    bool explosive = false;   // grenade / M203 round: explodes here
-    bool armed = true;        // explosive: armed (old enough or impact-armed)
+    int object = -1;          // -1 = terrain, -2 = water
+    int part = -1;            // people: body part
+    bool explosive = false;   // grenade / M203 / LAW round
+    bool armed = true;        // explosive: armed (M203: more than 8 ticks of flight)
+    bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
 };
+
+// The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table
+// (0x4E9610). Sidearm: 6 .45, 5 HS .22. Primary: 9 M4/M203, 23 M40,
+// 12 Barrett, 15 MP5 SD, 11 SAW. Kit: 1 Ammo, 20 LAW, 21 Satchel,
+// 24 Claymore. A new soldier has .45, M4/M203 and Ammo (0x40ee14).
+struct Loadout { int sidearm = 6, primary = 9, kit = 1; };
+// Row for a short name (".45", "HS22", "M4", "M40", "Barrett", "MP5", "SAW",
+// "Ammo", "LAW", "Satchel", "Claymore"); -1 if unknown.
+int loadoutRow(const std::string& name);
 
 class Arsenal {
 public:
-    struct Slot { int def; int rounds; int mags; int mode; };
+    static constexpr int kSlots = 10;
 
-    // `gameText`: DFGAME.BIN strings, for the weapon names (may be empty).
-    // `exe`: the original DF.EXE, for the weapon tables (may be null).
-    // The original carries a sidearm and the primary and secondary kits
-    // chosen on Change Gear (indices into the weapon list; see weaponIndex).
-    // `secondary` < 0 is the "Ammo" kit (a new soldier's default): no second
-    // gun, and the primary gets 2n-1 spare magazines instead of n-1
-    // (DF.EXE 0x44b598, profile +0x688 == 1).
-    void init(const std::vector<std::string>& gameText = {}, const ExeImage* exe = nullptr,
-              const ItemDefs* items = nullptr, int primary = 1, int secondary = -1);
-    // True if the weapon values were read from DF.EXE.
+    // `gameText`: DFGAME.BIN strings (mode names); `exe`: the original
+    // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
+    void init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, Loadout loadout);
     bool fromExe() const { return fromExe_; }
-    const std::string& modeName() const;
-    // Selects a weapon slot (0 sidearm, 1 primary, 2 secondary); `mode` < 0
-    // keeps that weapon's current fire mode. A mode the weapon does not have
-    // does nothing, like an empty slot in the original.
-    void select(int slot, int mode = -1);
-    void selectGrenade() { if (grenadeSlot_ >= 0) select(grenadeSlot_); }
-    void selectSecondary(int mode) { if (secondarySlot_ >= 0) select(secondarySlot_, mode); }
-    void cycle();
-    void cycleMode();
-    void reload();
-    void toggleZoom();
 
-    // Fires as needed and advances bullets. Returns messages for the HUD.
+    // Keys 0-9 (0x44aa74): slot 0 laser designator, 1 knife, 2 sidearm,
+    // 3-5 the primary's modes, 6-8 the kit's, 9 frag grenade. A slot without
+    // a working mode does nothing.
+    void select(int slot);
+    void cycle();                 // 0x44b81c: next slot with a mode, wrapping
+    void reload();                // 0x44a004
+    void toggleZoom();
+    void cancelZoom() { zoomLevel_ = 0; }
+
+    // Runs the weapon on 60 Hz ticks. Messages go to the HUD.
     void update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
                 std::vector<std::string>& messages);
 
-    const Slot& current() const { return slots_[current_]; }
-    const WeaponDef& def() const { return defs_[slots_[current_].def]; }
-    const WeaponMode& mode() const { return def().modes[slots_[current_].mode]; }
-    int slotIndex() const { return current_; }
-    // Magnification of the zoom inset (1 = not zoomed).
-    float zoom() const { return zoomLevel_ ? def().zoom[zoomLevel_ - 1] : 1.f; }
+    int slot() const { return current_; }
+    const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
+    const GunDef& gun() const { return guns_[size_t(mode().gun)]; }
+    const std::string& modeName() const { return mode().name; }
+    // Ammunition of the current mode's gun (0x933354 / 0x9333d4 / 0x933454).
+    bool chambered() const { return chambered_[size_t(mode().gun)] != 0; }
+    int rounds() const { return mag_[size_t(mode().gun)]; }
+    int spares() const { return spares_[size_t(mode().gun)]; }
+
+    float zoom() const { return zoomLevel_ ? float(mode().scope) : 1.f; }
     bool zoomed() const { return zoomLevel_ > 0; }
-    bool reloading() const { return reloadTimer_ > 0; }
+    bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
-    // Gun model kick (DF.EXE 0x449cbc, fire class 1): metres back, left, up
-    // in the weapon's own axes; firing never moves the view.
+    // Gun model kick: metres back, left, up in the weapon's own axes.
     const float* kick() const { return kick_; }
-    // Random aim offset taken when the scope comes up (0x44b870), radians.
     float scopeYaw() const { return scopeYaw_; }
     float scopePitch() const { return scopePitch_; }
-    void cancelZoom() { zoomLevel_ = 0; }
     float flash() const { return flashTimer_; }
-    // Hits since the last call.
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
 
 private:
-    void fire(Player& player, World& world);
+    void tick(bool triggerDown, Player& player, std::vector<std::string>& messages);
+    void fire(Player& player);
+    void startReload();
+    void moveProjectiles(float dt, World& world);
+    int& chamberedRef() { return chambered_[size_t(mode().gun)]; }
+    int& magRef() { return mag_[size_t(mode().gun)]; }
+    int& sparesRef() { return spares_[size_t(mode().gun)]; }
 
-    std::vector<WeaponDef> defs_;
+    std::vector<ModeDef> modes_;
+    std::vector<GunDef> guns_;
     bool fromExe_ = false;
-    std::vector<Slot> slots_;
-    std::vector<std::vector<std::string>> names_;   // per weapon, per mode
-    int current_ = 0;
+    std::array<int, kSlots> slots_{};   // mode per slot, 0 = empty
+    int current_ = 3;
+    std::vector<int> chambered_, mag_, spares_;   // per gun
+    int cooldown_ = 0, reloadTicks_ = 0, burstLeft_ = 0;
+    bool pressed_ = false;
+    float clock_ = 0;
     int zoomLevel_ = 0;
-    float cooldown_ = 0, reloadTimer_ = 0, flashTimer_ = 0;
+    float flashTimer_ = 0;
     float kick_[3] = {0, 0, 0};
     float scopeYaw_ = 0, scopePitch_ = 0;
-    int burstLeft_ = 0;
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
-    int grenadeSlot_ = -1, secondarySlot_ = -1;
     std::mt19937 rng_{1998};
 };
 

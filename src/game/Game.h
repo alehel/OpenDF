@@ -31,7 +31,8 @@ struct GameOptions {
     // Until the Change Gear menu exists: the primary weapon ("M4", "M40",
     // "MP5", "SAW") and the secondary kit ("Ammo" or ".45"); a new soldier in
     // the original has M4/M203 + Ammo (DF.EXE 0x40ee14).
-    std::string primary = "M4", secondary = "Ammo";
+    // Change Gear choices (loadoutRow names): primary, kit, sidearm.
+    std::string primary = "M4", secondary = "Ammo", sidearm = ".45";
     // Until the soldier screens exist: the name shown in the bottom bar (the
     // original shows the soldier's name, e.g. "ROK").
     std::string soldierName;
