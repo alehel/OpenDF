@@ -4,9 +4,9 @@ OpenDF can play itself from a timed input script, so test runs can be
 watched live or recorded.
 
 ```
-opendf mission C02M01 --input tests/runs/insurrection-start.txt --watch          # live window, real time
-opendf mission C02M01 --input tests/runs/insurrection-start.txt --record run.mp4 # video (needs ffmpeg)
-opendf mission C02M01 --frames 300 --screenshot shot.ppm                        # one frame, hidden window
+opendf --game games/DeltaForce mission C02M01 --input tests/runs/insurrection-start.txt --watch          # live window, real time
+opendf --game games/DeltaForce mission C02M01 --input tests/runs/insurrection-start.txt --record run.mp4 # video (needs ffmpeg)
+opendf --game games/DeltaForce mission C02M01 --frames 300 --screenshot shot.ppm                        # one frame, hidden window
 ```
 
 `--record` runs in fixed 60 Hz steps, so a recording is the same every time;

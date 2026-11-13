@@ -69,23 +69,27 @@ The executable is `build\Release\opendf.exe`.
 
 ## Running
 
-Point `--data` at your CD copy (the folder containing `DFSETUP`, or `DFSETUP` itself):
+Games live in `games/`, one folder per game (see [games/README.md](games/README.md)).
+Copy the contents of your Delta Force CD into `games/DeltaForce`, then start
+OpenDF with `--game` pointing at that folder:
 
 ```bash
-./build/opendf --data "/path/to/Delta Force (USA)"
+./build/opendf --game games/DeltaForce mission C02M01
 ```
 
-If the `OpenDF` folder sits inside the CD folder, as it does here, `--data ..` works.
+Without `--game`, OpenDF lists the games it finds in `games/`. Values that
+only exist in the original executable (weapon tables, key bindings, …) are read
+from the game's own `DFSETUP/DF.EXE`.
 
 | Command | Purpose |
 |---|---|
-| `opendf [--data DIR] [--terrain DFG1] [--size 1600x900]` | terrain viewer |
-| `opendf --data DIR mission [C02M01]` | play a mission in first person, starting where the player starts |
-| `opendf --data DIR models [HUMVEE]` | browse all 362 `.3DI` models |
-| `opendf --data DIR check` | parse every model, terrain, image and mission and report failures |
+| `opendf --game ROOT [--terrain DFG1] [--size 1600x900]` | terrain viewer |
+| `opendf --game ROOT mission [C02M01]` | play a mission in first person, starting where the player starts |
+| `opendf --game ROOT models [HUMVEE]` | browse all 362 `.3DI` models |
+| `opendf --game ROOT check` | parse every model, terrain, image and mission and report failures |
 | `--camera X,Y,HEIGHT,YAW,PITCH` | start at map metres X (east), Y (north), HEIGHT above ground, facing compass YAW, PITCH (degrees) |
-| `opendf --data DIR list [.EXT]` | list every file in the archives |
-| `opendf --data DIR extract OUTDIR [.EXT]` | extract files (encrypted ones decoded) |
+| `opendf --game ROOT list [.EXT]` | list every file in the archives |
+| `opendf --game ROOT extract OUTDIR [.EXT]` | extract files (encrypted ones decoded) |
 
 Viewer controls: mouse to look, **WASD** to move, **Shift** to go faster,
 **Space / C** for up / down, **F** to switch between walking and flying,
