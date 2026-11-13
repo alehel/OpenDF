@@ -81,6 +81,40 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             t.rgba[k * 4 + 2] = c[2];
             t.rgba[k * 4 + 3] = (t.indexZeroTransparent && idx == 0) ? 0 : 255;
         }
+        // Transparent texels keep palette entry 0's colour (often magenta).
+        // The original samples textures without filtering; OpenDF filters, so
+        // give transparent texels their opaque neighbours' colour (a few
+        // passes of dilation) to keep that colour from bleeding into edges.
+        if (t.indexZeroTransparent) {
+            const int w = t.width, h = t.height;
+            std::vector<uint8_t> done(texels);
+            for (size_t k = 0; k < texels; ++k) done[k] = t.rgba[k * 4 + 3] != 0;
+            for (int pass = 0; pass < 8; ++pass) {
+                std::vector<uint8_t> next = done;
+                bool changed = false;
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < w; ++x) {
+                        const size_t k = size_t(y) * w + x;
+                        if (done[k]) continue;
+                        int sum[3] = {}, n = 0;
+                        for (int dy = -1; dy <= 1; ++dy)
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                const int xx = x + dx, yy = y + dy;
+                                if ((dx || dy) && xx >= 0 && yy >= 0 && xx < w && yy < h && done[size_t(yy) * w + xx]) {
+                                    const size_t j = (size_t(yy) * w + xx) * 4;
+                                    for (int c = 0; c < 3; ++c) sum[c] += t.rgba[j + c];
+                                    ++n;
+                                }
+                            }
+                        if (!n) continue;
+                        for (int c = 0; c < 3; ++c) t.rgba[k * 4 + c] = uint8_t(sum[c] / n);
+                        next[k] = 1;
+                        changed = true;
+                    }
+                done.swap(next);
+                if (!changed) break;
+            }
+        }
         m.textures.push_back(std::move(t));
         p = palette + 1024;
     }

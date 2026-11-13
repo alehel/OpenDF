@@ -82,4 +82,4 @@ approximation), **todo** = not checked yet.
 
 | # | Item | Status | Notes |
 |---|---|---|---|
-| X1 | Palm crowns drawn magenta inside the scope inset | open | a colour-key/transparency bug at the LOD used for magnified views |
+| X1 | Fern (FERN2) drawn magenta inside the scope inset | fixed | transparent texels (palette entry 0, magenta) bled through texture filtering when magnified; they now take their opaque neighbours' colour. The original samples textures unfiltered |
