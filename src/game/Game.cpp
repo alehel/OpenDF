@@ -245,7 +245,8 @@ private:
     // The camera: the player's eye, or once dead the orbit around the body
     // (0x404104 / 0x481224).
     Vec3 viewEye() const;
-    static std::vector<Mat4> personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns);
+    static std::vector<Mat4> personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns,
+                                        float aimPitch = 0);
     Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
     void explode(Vec3 at, int surface, bool heavy = false);   // surface: 0 terrain, 1 object, 2 water
@@ -575,7 +576,12 @@ void Game::explode(Vec3 at, int surface, bool heavy) {
 // rotation from the animation about the mesh pivot; each pivot carried by
 // its parent mesh's matrix. Model axes: OpenDF's (x forward, y up, z right);
 // the .CHR rotations are in (x forward, y left, z up).
-std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns) {
+std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns,
+                                   float aimPitch) {
+    (void)chr;
+    // The aim pitch (obj+0x34, within +-90 degrees) goes 1/4 into the torso
+    // and 3/4 into the head (0x44ca34).
+    const float aim = std::clamp(aimPitch, -kPi / 2, kPi / 2) / (2 * kPi);
     const auto& l = m.lods[size_t(std::clamp(lod, 0, int(m.lods.size()) - 1))];
     const size_t n = l.meshPivot.size();
     std::vector<Mat4> out(n);
@@ -584,7 +590,10 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
     for (size_t k = 0; k < n; ++k) {
         Mat4 r;
         if (k < turns.size()) {
-            const ChrMatrix c = Chr::partRotation(turns[k]);
+            std::array<float, 3> t = turns[k];
+            if (k == 1) t[1] += aim * 0.25f;
+            if (k == 2) t[1] += aim * 0.75f;
+            const ChrMatrix c = Chr::partRotation(t);
             // C R C^-1 with C: (x, y, z) -> (x, z, -y).
             const int map[3] = {0, 2, 1};
             const float sign[3] = {1, 1, -1};
@@ -1004,7 +1013,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     }
     for (auto& v : visible) {
         if (v.o->chr && !v.o->anim.angles().empty()) {
-            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles());
+            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);
             models_.drawPosed(*v.o->model, v.lod, body, pose);
             // The held weapon (0x44cc34): the mode's third-person item (+0x68),

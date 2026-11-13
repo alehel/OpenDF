@@ -401,6 +401,7 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         if (p.target >= 0 && world.objects[size_t(p.target)].killer == p.object) bark(world, p, sound, 5);
         p.target = -1;
         p.state = 0;
+        o.aimPitch = 0;
         world.requestMove(o, idleMove(world, p));
         p.think = 16;
         return;
@@ -495,6 +496,10 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     // under 350 m half the time if no friend is in the line (0x46c040).
     world.requestMove(o, idleMove(world, p));
     o.heading = headingTo(o.pos, world.nearest(p.lastKnown, o.pos));
+    {
+        const Vec3 d = world.nearest(p.lastKnown, o.pos) - (o.pos + Vec3{0, 0.5f, 0});
+        o.aimPitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z));
+    }
     p.think = dist < 30.f ? 16 : dist < 70.f ? 32 : 64;
     if (dist < 350.f && rnd() < 0x8000) {
         const Vec3 from = o.pos + Vec3{0, 0.75f, 0}, to = world.nearest(p.lastKnown, from);
