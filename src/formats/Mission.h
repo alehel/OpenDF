@@ -45,11 +45,42 @@ struct MissionObject {
     float x = 0, y = 0;        // map metres; x east, y north (terrain row = -y)
     float z = 0;               // height above the ground, metres
     float heading = 0;         // degrees clockwise from north; model +X faces it
+    int group = 0;             // which of the file's four object groups (0..3)
+    int indexInGroup = 0;      // paths and events refer to objects by this
+    int32_t raw[24] = {};      // the whole 96-byte record, for fields not yet decoded
 };
+
+// A path: an ordered list of objects of group 2 (waypoint markers). The
+// player's route is one of them. DF.EXE keeps 128 (0x748360, 0x88 bytes).
+struct MissionPath {
+    uint32_t flags = 0;
+    std::vector<int> points;   // indices into group 2
+};
+
+// The mission's event system (DF.EXE 0x45C7BC): each event has a run of
+// conditions and a run of actions. Records are kept raw until decoded.
+struct MissionEvent {
+    int32_t raw[6] = {};
+    int firstCondition = 0, conditionCount = 0;
+    int firstAction = 0, actionCount = 0;
+};
+struct MissionRecord { int32_t raw[8] = {}; };   // a condition or an action
 
 struct Mission {
     std::string title, author, terrain, dialogue;
-    std::vector<MissionObject> objects;
+    std::vector<MissionObject> objects;     // all groups, in file order
+    int groupStart[4] = {}, groupSize[4] = {};
+    std::vector<MissionPath> paths;         // always 128
+    std::vector<MissionEvent> events;
+    std::vector<MissionRecord> conditions, actions;
+    // The player's route names: header +0xAC, one number per point of the
+    // route path; text "WPN%03i" in the campaign's "Waypoint Names" section.
+    int routeNameIds[8] = {};
+    // The object at `index` of `group`, or null.
+    const MissionObject* inGroup(int group, int index) const {
+        if (group < 0 || group > 3 || index < 0 || index >= groupSize[group]) return nullptr;
+        return &objects[size_t(groupStart[group] + index)];
+    }
 };
 
 bool parseMission(const std::vector<uint8_t>& file, Mission& out, std::string* error);

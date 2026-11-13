@@ -1,5 +1,6 @@
 #include "Mission.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -88,20 +89,62 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     m.author = cstr(d, 0x2C, 0x28);
     m.terrain = cstr(d, 0x54, 0x10);
     m.dialogue = cstr(d, 0x64, 0x10);
+    for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
 
-    // 96-byte object records from 0x10C until the first empty/invalid type.
-    for (size_t r = 0x10C; r + 0x60 <= d.size(); r += 0x60) {
-        const uint32_t type = u32(d, r);
-        if (type == 0 || type > 100000) break;
-        MissionObject o;
-        o.type = type;
-        o.id = u32(d, r + 0x08);
-        o.flags = u32(d, r + 0x0C);
-        o.x = fixed16(d, r + 0x10);
-        o.y = fixed16(d, r + 0x14);
-        o.z = fixed16(d, r + 0x18);
-        o.heading = float(u32(d, r + 0x34) % 360);
-        m.objects.push_back(o);
+    // Layout from DF.EXE's loader (0x440490): four groups of 96-byte object
+    // records (counts at 0x98..0xA4), 128 paths of 0x88 bytes, 64 records of
+    // 32 bytes, 32 names of 20 bytes, then the event system.
+    auto fail = [&](const char* what) { if (error) *error = what; return false; };
+    size_t o = 0x10C;
+    for (int g = 0; g < 4; ++g) {
+        const uint32_t n = u32(d, 0x98 + 4 * g);
+        if (n > 10000 || o + size_t(n) * 0x60 > d.size()) return fail("BMS object table truncated");
+        m.groupStart[g] = int(m.objects.size());
+        m.groupSize[g] = int(n);
+        for (uint32_t i = 0; i < n; ++i, o += 0x60) {
+            MissionObject ob;
+            ob.type = u32(d, o);
+            ob.id = u32(d, o + 0x08);
+            ob.flags = u32(d, o + 0x0C);
+            ob.x = fixed16(d, o + 0x10);
+            ob.y = fixed16(d, o + 0x14);
+            ob.z = fixed16(d, o + 0x18);
+            ob.heading = float(u32(d, o + 0x34) % 360);
+            ob.group = g;
+            ob.indexInGroup = int(i);
+            for (int k = 0; k < 24; ++k) ob.raw[k] = int32_t(u32(d, o + 4 * k));
+            m.objects.push_back(ob);
+        }
+    }
+    if (o + 128 * 0x88 + 64 * 32 + 32 * 20 + 12 > d.size()) return fail("BMS path tables truncated");
+    for (int i = 0; i < 128; ++i, o += 0x88) {
+        MissionPath p;
+        p.flags = u32(d, o);
+        const uint32_t n = std::min<uint32_t>(u32(d, o + 4), 32);
+        for (uint32_t k = 0; k < n; ++k) p.points.push_back(int(u32(d, o + 8 + 4 * k)));
+        m.paths.push_back(std::move(p));
+    }
+    o += 64 * 32 + 32 * 20;
+    const uint32_t nE = u32(d, o), nC = u32(d, o + 4), nA = u32(d, o + 8);
+    o += 12;
+    if (nE > 100000 || nC > 100000 || nA > 100000 || o + nE * 24 + (nC + nA) * size_t(32) > d.size())
+        return fail("BMS event tables truncated");
+    for (uint32_t i = 0; i < nE; ++i, o += 24) {
+        MissionEvent e;
+        for (int k = 0; k < 6; ++k) e.raw[k] = int32_t(u32(d, o + 4 * k));
+        e.firstCondition = e.raw[1];
+        e.firstAction = e.raw[2];
+        e.conditionCount = (e.raw[5] >> 8) & 0xFF;
+        e.actionCount = (e.raw[5] >> 16) & 0xFF;
+        m.events.push_back(e);
+    }
+    for (auto* list : {&m.conditions, &m.actions}) {
+        const uint32_t n = list == &m.conditions ? nC : nA;
+        for (uint32_t i = 0; i < n; ++i, o += 32) {
+            MissionRecord r;
+            for (int k = 0; k < 8; ++k) r.raw[k] = int32_t(u32(d, o + 4 * k));
+            list->push_back(r);
+        }
     }
     if (m.terrain.empty()) {
         if (error) *error = "mission names no terrain";

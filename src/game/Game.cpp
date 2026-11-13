@@ -134,6 +134,14 @@ private:
     ExeImage exe_;                        // the original DF.EXE, for its tables
     AnimDefs playerMoves_;                // the player soldier's .ANM move table
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
+    TextTable campText_;                  // DFCAMPxx.BIN
+    // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
+    // 0x4838ac shows it): points of the first path flagged 2.
+    struct RoutePoint { double x, y; float radius; std::string name; };
+    std::vector<RoutePoint> route_;
+    int routeIndex_ = 0;
+    void buildRoute();
+    void updateRoute();
     std::vector<std::string> missions_;
     int current_ = 0;
     Mission mission_;
@@ -200,14 +208,16 @@ bool Game::loadMission(int index) {
     {
         int c = 0, m = 0;
         std::vector<uint8_t> camp;
-        std::vector<std::string> text;
         char file[32];
+        campText_ = TextTable{};
         if (std::sscanf(name.c_str(), "C%dM%d", &c, &m) == 2 && m > 0) {
             std::snprintf(file, sizeof file, "DFCAMP%02d.BIN", c);
-            if (vfs_.read(file, camp) && parseRtxt(camp, text) && m - 1 < int(text.size()) && !text[m - 1].empty())
-                missionName_ = text[m - 1];
+            if (vfs_.read(file, camp) && campText_.parse(camp) && m - 1 < int(campText_.text().size()) &&
+                !campText_.text()[m - 1].empty())
+                missionName_ = campText_.text()[m - 1];
         }
     }
+    buildRoute();
     missionTime_ = 0;
     messages_.clear();
     if (exe_.loaded() && !arsenal_.fromExe())
@@ -216,6 +226,36 @@ bool Game::loadMission(int index) {
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
                 world_.objects.size());
     return true;
+}
+
+void Game::buildRoute() {
+    route_.clear();
+    routeIndex_ = 0;
+    const MissionPath* path = nullptr;
+    for (const auto& p : mission_.paths)
+        if (p.flags & 2) { path = &p; break; }
+    if (!path) return;
+    for (size_t i = 0; i < path->points.size() && i < 8; ++i) {
+        const MissionObject* o = mission_.inGroup(2, path->points[i]);
+        if (!o) continue;
+        RoutePoint rp{o->x, o->y, float(o->raw[7]), {}};   // record +0x1C: arrival radius, metres
+        char key[16];
+        std::snprintf(key, sizeof key, "WPN%03d", mission_.routeNameIds[i]);
+        if (const std::string* n = campText_.find("Waypoint Names", key); n && !n->empty()) rp.name = *n;
+        else rp.name = std::to_string(i);   // DF.EXE falls back to "%i"
+        route_.push_back(std::move(rp));
+    }
+}
+
+void Game::updateRoute() {
+    // DF.EXE 0x449a39: arrived when within the radius on both axes and
+    // max + min/2 (an octagonal distance) is under it; wraps to the start.
+    if (route_.empty()) return;
+    const RoutePoint& p = route_[size_t(routeIndex_)];
+    const double ax = std::abs(player_.missionX() - p.x), ay = std::abs(player_.missionY() - p.y);
+    if (ax > p.radius || ay > p.radius) return;
+    if (std::max(ax, ay) + std::min(ax, ay) / 2 >= p.radius) return;
+    routeIndex_ = (routeIndex_ + 1) % int(route_.size());
 }
 
 void Game::handleKey(const SDL_KeyboardEvent& k) {
@@ -242,6 +282,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case SDLK_7: if (arsenal_.slotIndex() == 3) arsenal_.cycleMode(); else arsenal_.select(3); break;
     case SDLK_8: arsenal_.select(4); break;
     case SDLK_BACKSPACE: arsenal_.cycle(); break;
+    case SDLK_y:   // next waypoint (original key not yet identified)
+        if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+        break;
     case SDLK_m: case SDLK_r: arsenal_.reload(); break;           // M = "change magazine"
     case SDLK_c: showMap_ = !showMap_; showGoals_ = false; break; // command map
     case SDLK_g: showGoals_ = !showGoals_; showMap_ = false; break;
@@ -422,6 +465,13 @@ void Game::drawTopBar(const Screen& s) {
         hud_.ring(cx, cy, s.y(5), std::max(1.f, u * 0.8f), kHudBlue);
         float dx = std::sin(player_.yaw), dy = -std::cos(player_.yaw);
         hud_.line(cx + dx * s.y(5), cy + dy * s.y(5), cx + dx * s.y(13), cy + dy * s.y(13), std::max(1.f, u), kHudBlue);
+        // Green dot on the ring: direction to the next waypoint (manual).
+        if (!route_.empty()) {
+            const RoutePoint& p = route_[size_t(routeIndex_)];
+            const double ex = p.x - player_.missionX(), ny = p.y - player_.missionY();
+            const double len = std::sqrt(ex * ex + ny * ny);
+            if (len > 0.5) hud_.ring(cx + float(ex / len) * r, cy - float(ny / len) * r, s.y(1.5f), s.y(3), kHudGreen);
+        }
     }
 
     // Grid square, carried item, waypoint.
@@ -431,8 +481,20 @@ void Game::drawTopBar(const Screen& s) {
     std::string grid = gridName(player_.missionX(), player_.missionY());
     hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(11), grid, kHudGreen, ts);
     hud_.text(s.rx(491), s.y(11), "Carrying: Nothing", kHudGreen, ts);
-    // Waypoint names and positions are in the .JIM files, not decoded yet.
-    hud_.text(s.rx(423), s.y(37), "WP: --", kHudGreen, ts);
+    // "WP%i: %s (%s)", distance "%im" or "%ikm+" (DF.EXE 0x4838ac): whole
+    // metres of x and y difference, integer square root.
+    std::string wp = "WP: --";
+    if (!route_.empty()) {
+        const RoutePoint& p = route_[size_t(routeIndex_)];
+        const long dx = long(std::floor(p.x - player_.missionX())), dy = long(std::floor(p.y - player_.missionY()));
+        const long d = long(std::sqrt(double(dx * dx + dy * dy)));
+        char dist[32], line[128];
+        if (d < 1000) std::snprintf(dist, sizeof dist, "%ldm", d);
+        else std::snprintf(dist, sizeof dist, "%ldkm+", d / 1000);
+        std::snprintf(line, sizeof line, "WP%d: %s (%s)", routeIndex_ + 1, p.name.c_str(), dist);
+        wp = line;
+    }
+    hud_.text(s.rx(423), s.y(37), wp, kHudGreen, ts);
 }
 
 void Game::drawBottomBar(const Screen& s) {
@@ -482,6 +544,28 @@ void Game::drawCommandMap(const Screen& s) {
         float sy = y0 + h / 2 + float(my - gy) * pxPerM;
         hud_.rect(x0, sy, w, lineW, grid);
         hud_.text(x0 + s.y(3), sy + sq * 0.5f - s.y(5), std::to_string(gridRow(gy - kGridSquare / 2)), kHudGreen, s.text());
+    }
+
+    // The route: a green polyline; circles at the first and last points,
+    // diamonds between (as in footage of the original).
+    for (size_t i = 0; i < route_.size(); ++i) {
+        auto at = [&](size_t k) {
+            return std::pair<float, float>{x0 + w / 2 + float(route_[k].x - mx) * pxPerM,
+                                           y0 + h / 2 + float(my - route_[k].y) * pxPerM};
+        };
+        auto [ax, ay] = at(i);
+        const float lw = std::max(1.f, s.u * 0.8f), e = s.y(4);
+        if (i + 1 < route_.size()) {
+            auto [bx, by] = at(i + 1);
+            hud_.line(ax, ay, bx, by, lw, grid);
+        }
+        if (i == 0 || i + 1 == route_.size()) hud_.ring(ax, ay, e, lw, kHudGreen);
+        else {
+            hud_.line(ax - e, ay, ax, ay - e, lw, kHudGreen);
+            hud_.line(ax, ay - e, ax + e, ay, lw, kHudGreen);
+            hud_.line(ax + e, ay, ax, ay + e, lw, kHudGreen);
+            hud_.line(ax, ay + e, ax - e, ay, lw, kHudGreen);
+        }
     }
 
     // Known casualties in red; you as a green circle with a heading line.
@@ -668,6 +752,7 @@ int Game::run() {
 
             player_.oneHanded = arsenal_.def().oneHanded;
             player_.update(dt, in, world_);
+            updateRoute();
             std::vector<std::string> msgs;
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
             prevTrigger = trigger;

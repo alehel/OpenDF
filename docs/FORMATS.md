@@ -312,6 +312,28 @@ at (−1000, +1000): letter(s) from ⌊(x + 1000) / 100⌋ (A..Z, then AA, AB, .
 negative values get +70200 m first), number ⌊(1000 − y) / 100⌋ + 1
 (negative values get +10000 m first).
 
+## BMS layout (DF.EXE loader 0x440490)
+
+| Part | Size |
+|---|---|
+| Header | 0x10C: "BMS\r", title @0x04, author @0x2C, terrain @0x54, dialogue @0x64, object counts of four groups @0x98..0xA4, route name numbers @0xAC (8 × u32) |
+| Objects | four groups of 96-byte records |
+| Paths | 128 × 0x88: u32 flags (bit 1: player route), u32 count, 32 × u32 indices into group 2 |
+| Teams | 64 × 32 bytes |
+| Names | 32 × 20 bytes (empty in the shipped missions) |
+| Events | u32 counts (events, conditions, actions); events 24 bytes, conditions 32, actions 32 |
+
+Object record fields found so far: +0x00 type, +0x08 id, +0x10/14/18 position
+(16.16 m), +0x1C waypoint arrival radius (m), +0x34 heading, +0x43 side,
++0x48 team, +0x49 path, +0x4A start waypoint / area tag.
+
+## RTXT key block
+
+Header field 1 is the offset of a key block: u32 section count, per section
+(u32 offset of its first key name from block start + 4, u32 entry count),
+the section names, then one key name per entry. DF.EXE finds text by
+section and key, e.g. "Waypoint Names" / "WPN008" = "IP".
+
 ## .JIM
 
 `count:u8`, then 9-byte waypoints (`x:u16 y:u16 index:u32 0x7F`), further
