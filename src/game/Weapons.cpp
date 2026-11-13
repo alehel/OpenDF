@@ -127,6 +127,28 @@ const int kBuiltinRows[kRowCount][3] = {
 };
 
 
+// Gun sound ids +0x20..+0x2C (built-in copy).
+const int kBuiltinGunSounds[kGunCount][4] = {
+    {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {98, 97, 96, 95}, {94, 0, 0, 0}, {0, 0, 0, 0},
+    {82, 84, 83, 85}, {81, 84, 83, 85}, {0, 0, 0, 0}, {0, 0, 0, 0}, {86, 89, 88, 87}, {0, 0, 0, 0}, {80, 113, 0, 114},
+    {99, 102, 101, 100}, {90, 93, 92, 91}, {0, 0, 0, 0}, {109, 112, 111, 110}, {0, 0, 0, 0}, {0, 0, 0, 0},
+    {0, 0, 0, 0}, {0, 0, 0, 0}, {103, 106, 105, 104}, {107, 0, 0, 0}, {0, 0, 0, 0}, {108, 0, 0, 0}, {0, 0, 0, 0},
+    {115, 117, 0, 116},
+};
+
+// The guns a burst mode fires (0x46aefc): the first round from the burst
+// gun (its sound is the whole burst), the other two from the next gun
+// (silent). Ammunition comes from the mode's own gun.
+int burstGun(int mode) {
+    switch (mode) {
+    case 6: case 8: return 8;
+    case 21: return 5;
+    case 35: return 23;
+    case 36: return 25;
+    default: return -1;
+    }
+}
+
 // WEAP%i.PCX frame per mode (0x484ae8, jump table 0x484a4c); -1 none.
 int iconFor(int mode) {
     switch (mode) {
@@ -174,6 +196,7 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     for (int g = 0; g < kGunCount; ++g) {
         const int* v = kBuiltinGuns[g];
         guns_[size_t(g)] = {v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]};
+        for (int k = 0; k < 4; ++k) guns_[size_t(g)].sounds[k] = kBuiltinGunSounds[g][k];
     }
     for (int r = 0; r < kRowCount; ++r)
         for (int k = 0; k < 3; ++k) rows[r][k] = kBuiltinRows[r][k];
@@ -200,6 +223,7 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
                 const uint32_t b = kGunTable + uint32_t(g) * kGunRecord;
                 guns_[size_t(g)] = {rd(b + 4), rd(b + 8), rd(b + 0xC), rd(b + 0x10), rd(b + 0x14), rd(b + 0x18), rd(b + 0x1C),
                                     rd(b + 0x30)};
+                for (int k = 0; k < 4; ++k) guns_[size_t(g)].sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
             }
             for (int r = 0; r < kRowCount; ++r)
                 for (int k = 0; k < 3; ++k) {
@@ -290,10 +314,17 @@ void Arsenal::reload() {
     startReload();
 }
 
+void Arsenal::sound(int field, int gunIndex) {
+    const GunDef& g = guns_[size_t(gunIndex >= 0 ? gunIndex : mode().gun)];
+    if (g.sounds[field] > 0) sounds_.push_back({g.sounds[field], soundPos_});
+}
+
 void Arsenal::startReload() {
     // 0x44a004: needs a spare magazine and a magazine that is not full; the
     // rounds left in it are discarded; the new one is in after 0x78 ticks.
+    // The reload sound (+0x28) plays as it begins (0x44a084).
     if (reloadTicks_ > 0 || sparesRef() <= 0 || magRef() == gun().magazine) return;
+    sound(2);
     magRef() = 0;
     reloadTicks_ = kReloadTicks;
     zoomLevel_ = 0;
@@ -404,11 +435,24 @@ void Arsenal::fire(Player& player) {
     p.falloff = g.falloff;
     p.flags = g.flags;
     bullets_.push_back(p);
+    // The shot (gun +0x20, 0x44d5fe) at the muzzle. A burst sounds once:
+    // the first round carries the burst gun's sound, the others none.
+    if (const int bg = burstGun(slots_[size_t(current_)]); bg >= 0) {
+        if (!followUp_) {
+            const int id = guns_[size_t(bg)].sounds[0];
+            if (id > 0) sounds_.push_back({id, origin});
+        }
+    } else if (g.sounds[0] > 0) {
+        sounds_.push_back({g.sounds[0], origin});
+    }
+    // A launcher loads its next round at once, with the load sound (0x44a290).
+    if (md.type == 2) sound(1);
 }
 
 void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
                      std::vector<std::string>& messages) {
     if (triggerPressed) pressed_ = true;
+    soundPos_ = player.origin();
     flashTimer_ = std::max(0.f, flashTimer_ - dt);
     for (float& k : kick_) {
         const float step = 0x80 / 65536.f * 60.f * dt;
@@ -426,6 +470,7 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
         --sparesRef();
         magRef() = gun().magazine;
         messages.push_back("Ammo reloaded");   // DF.EXE's own message
+        sounds_.push_back({-0x164, {0, 0, 0}});   // PU_AMMO, 2D (0x42b587); negative id = 2D
         // APPROXIMATION (inferred): an empty chamber is loaded from it.
         if (!chambered() && magRef() > 0) { chamberedRef() = 1; --magRef(); }
     }
@@ -434,12 +479,12 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
         if (md.type == 1) {
             // 0x449f58: the next round from the magazine; an empty magazine
             // starts the reload.
-            if (magRef() > 0) { chamberedRef() = 1; --magRef(); }
+            if (magRef() > 0) { chamberedRef() = 1; --magRef(); sound(1); }   // chamber sound +0x24 (0x449f48)
             if (magRef() == 0) startReload();
             // A burst goes on by itself (0x44988e); full auto refires while
             // the trigger is held, but not zoomed (0x449fc3).
             if (chambered() && reloadTicks_ == 0) {
-                if (burstLeft_ > 0) { --burstLeft_; fire(player); shot = true; }
+                if (burstLeft_ > 0) { --burstLeft_; followUp_ = true; fire(player); followUp_ = false; shot = true; }
                 else if (md.automatic() && triggerDown && !zoomLevel_) { fire(player); shot = true; }
             }
         } else if (md.type == 6) {
@@ -455,11 +500,14 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     if (pressed_) {
         pressed_ = false;
         if (!shot && cooldown_ <= 0 && reloadTicks_ == 0) {
-            if (chambered()) {
+            if (!chambered() && md.type != 1 && md.type != 6) {
+                sound(3);                       // launcher / grenade dry fire (0x44a221, 0x44a3e3)
+            } else if (chambered()) {
                 fire(player);
                 if (md.burst) burstLeft_ = 2;   // 0x46af90: three rounds in all
             } else if (md.type == 1) {
-                burstLeft_ = 0;                 // dry fire (0x449e1d)
+                burstLeft_ = 0;                 // dry fire (0x449e1d), sound +0x2C (0x449e03)
+                sound(3);
                 startReload();
             }
         }
@@ -500,6 +548,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.explosive = b.explosive();
                 im.armed = !(b.flags & 0x01) || b.age > 8;
                 im.law = b.flags & 0x40;
+                im.flags = b.flags;
                 impacts_.push_back(im);
                 if (std::getenv("OPENDF_DEBUGHITS")) {
                     std::fprintf(stderr, "hit obj %d part %d at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part, hit.point.x,
@@ -519,6 +568,16 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power);
                 b.age = b.lifetime;
                 break;
+            }
+            // Whiz-by (0x44f330): the point of this step nearest the listener,
+            // if it lies inside the step and the round is within 40 m of the
+            // listener on both horizontal axes.
+            {
+                const Vec3 d = next - b.pos;
+                const float dd = dot(d, d);
+                const float t = dd > 0 ? dot(listener_ - b.pos, d) / dd : -1;
+                if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
+                    sounds_.push_back({0x41, b.pos + d * t});
             }
             b.pos = next;
             if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;

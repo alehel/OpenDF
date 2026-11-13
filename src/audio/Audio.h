@@ -37,16 +37,17 @@ public:
     // Decodes and caches a WAV from the game data; null if missing.
     const SoundClip* clip(Vfs& vfs, const std::string& name);
 
-    // Starts a voice; returns its handle (> 0), or 0 if it could not get a
-    // voice. `priority`: a new voice may take the place of the lowest-
-    // priority (then oldest) voice when all are busy, if it is not lower.
-    int play(const SoundClip* clip, float left, float right, bool loop = false, int priority = 0);
+    // Starts a voice; returns its handle (> 0), or 0 if there was no voice
+    // for it. As DF.EXE's mixer (0x4a99b0): 16 voices, 10-15 kept for
+    // looping sounds (group 1); a one-shot (group 0) takes a free voice, or
+    // else the first one-shot voice quieter than itself (`volume` 0..255),
+    // or is dropped. `pitch` scales the clip's own rate.
+    int play(const SoundClip* clip, float left, float right, float pitch = 1, int volume = 255, bool loop = false,
+             int group = 0);
     void setGains(int voice, float left, float right);
     void stop(int voice);
     bool playing(int voice) const;
     void stopAll();
-    // Maximum simultaneous voices.
-    void setVoices(int n) { maxVoices_ = n; }
     void setMasterVolume(float v) { master_ = v; }
 
     // Mixes `frames` stereo frames (interleaved s16) at kRate.
@@ -60,8 +61,8 @@ private:
         uint64_t step = 0;
         float left = 1, right = 1;
         bool loop = false;
-        int priority = 0;
-        uint64_t started = 0;
+        int volume = 0;
+        int group = 0;
     };
     static void callback(void* self, Uint8* stream, int len);
 
@@ -70,9 +71,8 @@ private:
     std::map<std::string, std::unique_ptr<SoundClip>> clips_;
     SDL_AudioDeviceID device_ = 0;
     int nextId_ = 1;
-    int maxVoices_ = 16;
+    static constexpr int kOneShotVoices = 10, kLoopVoices = 6;
     float master_ = 1;
-    uint64_t counter_ = 0;
     std::vector<float> scratch_;
 };
 

@@ -53,7 +53,12 @@ struct GunDef {
     int lifetime = 0;           // +0x18 ticks of flight
     int accuracy = 1;           // +0x1C spread ±(A−1)·30·0x8000 binary angle per axis
     int flags = 0;              // +0x30: 0x01 M203, 0x10 hand grenade, 0x40 LAW
+    // +0x20 shot, +0x24 chamber / load, +0x28 reload, +0x2C dry fire (sound ids, 0 none)
+    int sounds[4] = {0, 0, 0, 0};
 };
+
+// A sound the weapons asked for (DF.EXE 0x473220): id at a position.
+struct SoundEvent { int id; Vec3 pos; };
 
 // A shot in flight.
 struct Projectile {
@@ -75,6 +80,7 @@ struct Impact {
     bool explosive = false;   // grenade / M203 / LAW round
     bool armed = true;        // explosive: armed (M203: more than 8 ticks of flight)
     bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
+    int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table
@@ -136,6 +142,9 @@ public:
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
     // Knife strikes since the last call: the point 0.5 m along the view
     // from the body origin (0x42ca8c), for blast kind 2.
+    // The listener, for bullets whizzing by (0x44f330).
+    void setListener(Vec3 p) { listener_ = p; }
+    std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
 
 private:
@@ -163,6 +172,11 @@ private:
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
+    std::vector<SoundEvent> sounds_;
+    bool followUp_ = false;
+    Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst
+    Vec3 soundPos_{0, 0, 0};   // the player's position for weapon handling sounds
+    void sound(int field, int gun = -1);
     std::mt19937 rng_{1998};
 };
 

@@ -24,11 +24,12 @@ bool DialogIndex::parse(const std::vector<uint8_t>& d) {
         if (name.empty() || n > 64) break;
         size_t p = o + 0x34;
         std::vector<DialogPart> parts;
-        for (uint32_t k = 0; k < n && p + 0x28 <= d.size(); ++k, p += 0x44) {
+        for (uint32_t k = 0; k < n && p + 0x44 <= d.size(); ++k, p += 0x44) {
             DialogPart part;
             part.clip = field(d, p, 24);
             const std::string text = field(d, p + 24, 16);
             if (!text.empty() && text[0] == '_') part.subtitle = std::atoi(text.c_str() + 1);
+            if (p + 0x35 < d.size()) part.gap = d[p + 0x35];
             parts.push_back(std::move(part));
         }
         dialogs_[name] = std::move(parts);

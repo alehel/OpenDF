@@ -11,6 +11,7 @@
 #include "Controls.h"
 #include "Player.h"
 #include "Script.h"
+#include "Sound.h"
 #include "Weapons.h"
 #include "World.h"
 
@@ -188,6 +189,9 @@ private:
     MissionScript script_;
     DialogIndex dialogs_;                 // DFDLGnn.DBF
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
+    struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; };
+    std::vector<ActiveDialog> activeDialogs_;
+    void tickDialogs();
     float scriptClock_ = 0;
     uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
     // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
@@ -206,6 +210,8 @@ private:
     // Sound: live on the audio device, or mixed in fixed steps into the
     // recording (--record).
     Audio audio_;
+    SoundSystem sound_;
+    void playSound(int id, Vec3 at) { sound_.play(id, at); }
     FILE* audioOut_ = nullptr;
     double audioClock_ = 0;
     std::vector<SmokeGen> smokeGens_;
@@ -329,9 +335,12 @@ bool Game::loadMission(int index) {
         const std::string set = toUpper(mission_.dialogue);
         dialogs_ = DialogIndex{};
         dialogText_.clear();
+        activeDialogs_.clear();
+        sound_.stopAll();
         if (!set.empty()) {
             if (vfs_.read(set + ".DBF", raw)) dialogs_.parse(raw);
             if (vfs_.read(set + ".BIN", raw)) parseRtxt(raw, dialogText_);
+            sound_.loadDialogBank(vfs_, set + ".PWF");
         }
         int c = 0;
         missionNumber_ = 0;
@@ -487,6 +496,7 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // type 3 (`heavy`: objects lose 128 - 16 d).
 void Game::explode(Vec3 at, int surface, bool heavy) {
     spawnEffect(surface == 2 ? 4 : 3, at);
+    playSound(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
     for (auto& m : world_.blast(at, 10.f, heavy)) messages_.push_back({m, 0});
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
@@ -618,6 +628,31 @@ void Game::spawnImpact(const Impact& hit) {
     // Terrain (0x46a054): surface 1..6 -> dirt, grass, snow, stone, sand,
     // heavy dirt. People (0x44f9e3): flesh. Objects: by the hit material's
     // +0x12 bits (metal, wood, stone, foliage; armour, cloth), else dirt.
+    // Impact sounds (0x46a054 terrain by surface; objects by the hit
+    // material; people flesh; water 0x3b).
+    {
+        int id = 0;
+        const bool shrapnel = hit.flags & 0x20;
+        if (hit.object == -2) id = SoundSystem::BulletWater;
+        else if (hit.object < 0) {
+            static const int bySurface[7] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
+                                             SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt};
+            id = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+        } else {
+            const auto& o = world_.objects[size_t(hit.object)];
+            if (o.person) id = SoundSystem::BulletFlesh;
+            else {
+                const uint16_t f = o.model ? o.model->impact : 0;
+                const uint8_t lo = f & 0xFF, hi = f >> 8;
+                id = (lo & 2) ? SoundSystem::BulletMetal : (lo & 4) ? SoundSystem::BulletWood
+                   : (lo & 0x10) ? (shrapnel ? SoundSystem::ShrapnelStone : SoundSystem::BulletStone)
+                   : (lo & 0x80) ? SoundSystem::BulletBush
+                   : (hi & 0x10) ? (shrapnel ? SoundSystem::ShrapnelArmor : SoundSystem::BulletArmor)
+                   : (hi & 0x80) ? SoundSystem::BulletCanvas : 0;
+            }
+        }
+        if (id) playSound(id, hit.pos);
+    }
     int slot = 0;
     if (hit.object == -2) slot = 2;   // water: "water splash" (0x44fc20)
     else if (hit.object < 0) {
@@ -675,13 +710,29 @@ void Game::showText(int id) {
 }
 
 void Game::radio(int id) {
-    // Subtitles of the dialog's clips; the audio comes with sound support.
+    // 0x473ee0: the dialog joins the queue (16 at most; more are dropped).
     char name[16];
     std::snprintf(name, sizeof name, "dlg%03d", id);
-    if (const auto* parts = dialogs_.find(name))
-        for (const auto& p : *parts)
-            if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
-                messages_.push_back({dialogText_[size_t(p.subtitle)], 0});
+    if (const auto* parts = dialogs_.find(name); parts && !parts->empty() && activeDialogs_.size() < 16)
+        activeDialogs_.push_back({parts, 0, 0});
+}
+
+// Per 60 Hz tick: each queued dialog plays its lines in order (all queued
+// dialogs advance at once); a line shows its subtitle as it starts
+// (0x472f7c -> 0x42f400) and the next follows the line's length plus its
+// gap byte x 62 / 10 ticks.
+void Game::tickDialogs() {
+    for (auto& d : activeDialogs_) {
+        if (d.wait > 0 && --d.wait > 0) continue;
+        if (d.next >= int(d.parts->size())) { d.next = -1; continue; }
+        const DialogPart& p = (*d.parts)[size_t(d.next++)];
+        sound_.playDialogLine(p.clip);
+        if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
+            messages_.push_back({dialogText_[size_t(p.subtitle)], 0});
+        d.wait = sound_.dialogLineTicks(p.clip) + p.gap * 62 / 10 + 1;
+    }
+    activeDialogs_.erase(std::remove_if(activeDialogs_.begin(), activeDialogs_.end(), [](const ActiveDialog& d) { return d.next < 0; }),
+                         activeDialogs_.end());
 }
 
 void Game::endMission(int winnerSide) {
@@ -1343,6 +1394,8 @@ int Game::run() {
         if (exePath.empty()) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
         else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
         if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");
+        std::string sndErr;
+        if (!sound_.init(vfs_, &exe_, &audio_, &sndErr)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
@@ -1480,12 +1533,26 @@ int Game::run() {
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
             for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
+            for (const auto& e : arsenal_.takeSounds()) {
+                if (e.id < 0) sound_.play2D(-e.id);
+                else playSound(e.id, e.pos);
+            }
+            for (int i : world_.takeDestroyed()) {
+                // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
+                static const std::pair<int, int> kDestroyed[] = {
+                    {1001, 0x135}, {1002, 0x136}, {1039, 0x137}, {1040, 0x138}, {1041, 0x13F}, {1042, 0x145}, {1044, 0x146},
+                    {1046, 0x145}, {1048, 0x138}, {1049, 0x145}, {3008, 0x13C}, {4015, 0x13D}, {4019, 0x13E}};
+                const auto& o = world_.objects[size_t(i)];
+                for (const auto& d : kDestroyed)
+                    if (o.item && o.item->id - 100000 == d.first) playSound(d.second, o.pos);
+            }
             for (const auto& at : arsenal_.takeStabs())
                 for (auto& m : world_.stab(at)) messages_.push_back({m, 0});
             for (const auto& sp : player_.takeSpawns()) spawnEffect(sp.slot, sp.pos);
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
                 tickEffects();
+                tickDialogs();
                 // 0x449830: the damage flash fades 2 per tick.
                 damageFlash_ = damageFlash_ > 1 ? damageFlash_ - 2 : 0;
                 // 0x446148, every 64 ticks: a dead player ends the mission
@@ -1494,6 +1561,13 @@ int Game::run() {
                 if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;
+            // The listener (0x4735b8): the player, or the external camera once dead.
+            {
+                const Vec3 at = playerDead() ? viewEye() : player_.origin();
+                const Vec3 f = viewDir();
+                sound_.setListener(at, std::atan2(f.x, -f.z), &terrain_);
+                arsenal_.setListener(at);
+            }
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
             prevTrigger = trigger;
             for (auto& m : msgs) messages_.push_back({m, 0});

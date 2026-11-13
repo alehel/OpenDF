@@ -93,9 +93,12 @@ public:
     std::string damage(int index, int amount, int power = 99);
 
     void update(float dt);
+    // Objects destroyed (not people) since the last call, for their sounds.
+    std::vector<int> takeDestroyed() { std::vector<int> out; out.swap(destroyed_); return out; }
 
 private:
     void refreshBoxes(WorldObject& o) const;
+    std::vector<int> destroyed_;
 };
 
 } // namespace df

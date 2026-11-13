@@ -74,29 +74,32 @@ const SoundClip* Audio::clip(Vfs& vfs, const std::string& name) {
     return slot.get();
 }
 
-int Audio::play(const SoundClip* clip, float left, float right, bool loop, int priority) {
-    if (!clip || clip->samples.empty()) return 0;
+int Audio::play(const SoundClip* clip, float left, float right, float pitch, int volume, bool loop, int group) {
+    if (!clip || clip->samples.empty() || pitch <= 0) return 0;
     std::lock_guard<std::mutex> lock(mutex_);
     Voice v;
     v.id = nextId_++;
     v.clip = clip;
-    v.step = (uint64_t(clip->rate) << 32) / uint64_t(kRate);
+    v.step = uint64_t(double(clip->rate) * pitch / kRate * 4294967296.0);
     v.left = left;
     v.right = right;
     v.loop = loop;
-    v.priority = priority;
-    v.started = counter_++;
-    if (int(voices_.size()) < maxVoices_) {
+    v.volume = volume;
+    v.group = group;
+    const int limit = group ? kLoopVoices : kOneShotVoices;
+    int busy = 0;
+    for (const auto& o : voices_) busy += o.group == group;
+    if (busy < limit) {
         voices_.push_back(v);
         return v.id;
     }
-    // All busy: replace the lowest priority, oldest voice, if not more important.
-    auto victim = std::min_element(voices_.begin(), voices_.end(), [](const Voice& a, const Voice& b) {
-        return a.priority != b.priority ? a.priority < b.priority : a.started < b.started;
-    });
-    if (victim == voices_.end() || victim->priority > priority) return 0;
-    *victim = v;
-    return v.id;
+    if (group) return 0;
+    for (auto& o : voices_)
+        if (o.group == 0 && o.volume < volume) {
+            o = v;
+            return v.id;
+        }
+    return 0;
 }
 
 void Audio::setGains(int voice, float left, float right) {

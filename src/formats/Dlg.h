@@ -18,6 +18,7 @@ namespace df {
 struct DialogPart {
     std::string clip;
     int subtitle = -1;   // DFDLGnn.BIN entry, -1 = none
+    int gap = 0;         // part +0x35: pause after the line, in tenths of 62 ticks (0x472f44)
 };
 
 class DialogIndex {

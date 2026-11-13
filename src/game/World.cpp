@@ -321,6 +321,7 @@ std::string World::damage(int index, int amount, int power) {
         o.removed = true;
     }
     o.hp = 0;
+    destroyed_.push_back(index);
     // An explosive barrel goes off 10 ticks after it is destroyed (0x45a3c0).
     if (o.item->aiFunction == "brrl" && o.detonate < 0) o.detonate = 10;
     refreshBoxes(o);
