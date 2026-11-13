@@ -109,4 +109,4 @@ when DF.EXE is missing or a different version.
 
 ## Not yet implemented, so not checkable
 
-Credits, keyboard remap and message macros screens; multiplayer.
+Keyboard remap screen; screen transitions; multiplayer.

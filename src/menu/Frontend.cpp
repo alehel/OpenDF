@@ -114,7 +114,7 @@ public:
     int run();
 
 private:
-    enum Screen { Start, Soldier, Main, Options1, Options3, Macros, Campaign, Briefing, Loadout, Mission, Debrief, End, Quit };
+    enum Screen { Start, Soldier, Main, Options1, Options3, Macros, Credits, Campaign, Briefing, Loadout, Mission, Debrief, End, Quit };
 
     bool openWindow();
     void closeWindow();
@@ -169,6 +169,18 @@ private:
     std::string dragging_;      // the slider being dragged (0x4c1b64)
     void refreshSettings();
     void refreshMacros();
+    // Credits (0x419c70 init, 0x419d94 update, 0x41a3a8 draw): credits.scr
+    // commands run against credits.bin; text objects in 100 slots by ID.
+    struct CreditCmd { int type = 0; int id = 0, flags = 0, life = 0, x = 0, y = 0, arg = 0; std::string font, color, text; };
+    struct CreditText { bool active = false; int life = 0, x = 0, y = 0, flags = 0; std::string font, text; uint32_t color = 0; };
+    std::vector<CreditCmd> credits_;
+    size_t creditPc_ = 0;
+    int creditPause_ = 0;
+    bool creditsDone_ = false;
+    std::array<CreditText, 100> creditSlots_{};
+    TextTable creditText_;
+    void loadCredits();
+    void tickCredits();
     void profileDefaults(Profile& p);
     void syncSliders();
     bool musicLoaded_ = false;
@@ -486,6 +498,11 @@ void Frontend::enter(Screen s) {
         break;
     }
     case Options3: musicVar(1, 11); setMenu("Options3Menu"); refreshOptions(); break;   // 0x41c47c
+    case Credits:
+        setMenu("CreditsMenu");
+        loadCredits();
+        musicVar(1, 5);   // 0x419d5c
+        break;
     case Macros:
         setMenu("MsgMacMenu");
         refreshMacros();
@@ -712,6 +729,82 @@ void Frontend::profileDefaults(Profile& p) {
     }
 }
 
+void Frontend::loadCredits() {
+    // Every visit starts over (the init clears the slots and the finished
+    // flag). credits.scr: [MISSIONSCRIPT] SCRIPT={COMMAND},args (0x421538).
+    credits_.clear();
+    creditSlots_ = {};
+    creditPc_ = 0;
+    creditPause_ = 0;
+    creditsDone_ = false;
+    std::vector<uint8_t> raw;
+    creditText_ = TextTable{};
+    if (vfs_.read("CREDITS.BIN", raw)) creditText_.parse(raw);
+    if (!vfs_.read("CREDITS.SCR", raw)) return;
+    std::istringstream in(std::string(raw.begin(), raw.end()));
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == ';' || eq == std::string::npos || upperCase(line.substr(0, eq)) != "SCRIPT") continue;
+        std::vector<std::string> f;
+        std::stringstream ss(line.substr(eq + 1));
+        for (std::string t; std::getline(ss, t, ',');) {
+            t.erase(0, t.find_first_not_of(" \t"));
+            t.erase(t.find_last_not_of(" \t") + 1);
+            f.push_back(t);
+        }
+        if (f.empty()) continue;
+        const std::string cmd = upperCase(f[0]);
+        auto num = [&](size_t i) { return i < f.size() ? std::atoi(f[i].c_str()) : 0; };
+        auto str = [&](size_t i) { return i < f.size() ? f[i] : std::string(); };
+        CreditCmd c;
+        if (cmd == "{PRINTTEXT}" || cmd == "{PRINTTEXTTTY}") {
+            c = {cmd == "{PRINTTEXT}" ? 0 : 1, num(1), num(2), num(3), num(6), num(7), 0, str(4), str(5), str(8)};
+        } else if (cmd == "{PAUSE}") { c.type = 2; c.arg = num(1); }
+        else if (cmd == "{PLAYSOUND}") { c.type = 8; c.text = str(1); c.arg = num(2); }
+        else if (cmd == "{REMOVEOBJECT}") { c.type = 5; c.id = num(1); }
+        else if (cmd == "{END}") break;
+        else continue;   // lines, rectangles, pictures, anims: not used by CREDITS.SCR
+        credits_.push_back(c);
+    }
+}
+
+void Frontend::tickCredits() {
+    // 0x419d94: a pause counts down; else commands run up to and including
+    // the next PAUSE; at the end of the list -> Main Menu (not looped). Then
+    // every text loses one tick of life and goes at 0 (-1 = for ever).
+    if (!creditsDone_) {
+        if (creditPause_ > 0) --creditPause_;
+        else for (;;) {
+            if (creditPc_ >= credits_.size()) { creditsDone_ = true; next_ = Main; break; }
+            const CreditCmd& c = credits_[creditPc_++];
+            if (c.type == 0 && c.id >= 0 && c.id < 100) {
+                // 0x419edd: the key's text from credits.bin "Credits".
+                CreditText& t = creditSlots_[size_t(c.id)];
+                const std::string* tx = creditText_.find("Credits", c.text);
+                t = {true, c.life, c.x, c.y, c.flags, c.font, tx ? *tx : c.text, 0xFF00FF00};
+                const auto it = mnu_.colors.find(upperCase(c.color));
+                if (it != mnu_.colors.end()) t.color = it->second | 0xFF000000;
+            } else if (c.type == 5 && c.id >= 0 && c.id < 100) {
+                creditSlots_[size_t(c.id)].active = false;
+            } else if (c.type == 8) {
+                // 0x41a220: volume = arg * fx_volume / 255, at most 255.
+                const int vol = std::min(255, int(std::lround(c.arg * std::clamp(cfg_.get("fx_volume"), 0, 255) / 255.0)));
+                if (const SoundClip* clip = audio_.clip(vfs_, upperCase(c.text))) {
+                    const float g = float(vol) / 255.f * 0.5f;
+                    audio_.play(clip, g, g);
+                }
+            } else if (c.type == 2) {
+                creditPause_ = c.arg;
+                break;
+            }
+        }
+    }
+    for (CreditText& t : creditSlots_)
+        if (t.active && --t.life == 0) t.active = false;
+}
+
 void Frontend::refreshMacros() {
     // 0x420d80: the ten boxes show profile +0x4b0 + 40 i.
     for (int i = 0; i < 10; ++i) {
@@ -802,7 +895,9 @@ void Frontend::event(MnuButton& b, int ev) {
     if (cb == "MNU_MAIN_EXIT" || cb == "MNU_NS_EXIT" || cb == "MNU_CAMP_EXIT" || cb == "MNU_MIS_EXIT" || cb == "MNU_HOST_EXIT" ||
         cb == "MNU_MM_EXIT" || cb == "MNU_OPT1_EXIT" || cb == "MNU_OPT3_EXIT")
         return standard(b, ev, to(End));
-    if (cb == "MNU_MAIN_CREDITS" || cb == "MNU_MAIN_MP" || cb == "MNU_MAIN_UPDATE") return standard(b, ev, [] {});
+    if (cb == "MNU_MAIN_CREDITS") return standard(b, ev, to(Credits));
+    if (cb == "MNU_CREDITS_ACCEPT") return standard(b, ev, to(Main));   // 0x41a434
+    if (cb == "MNU_MAIN_MP" || cb == "MNU_MAIN_UPDATE") return standard(b, ev, [] {});
     if (cb == "MNU_END_ACCEPT") return standard(b, ev, to(Quit));
     // Choose Soldier.
     if (cb == "MNU_NS_NAMEBUTTON1") {
@@ -1219,7 +1314,7 @@ int Frontend::run() {
     {
         const std::string s = o_.startScreen;
         Screen first = s == "soldier" ? Soldier : s == "main" ? Main : s == "campaign" ? Campaign : s == "briefing" ? Briefing
-                     : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "macros" ? Macros : s == "debrief" ? Debrief : Start;
+                     : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "macros" ? Macros : s == "credits" ? Credits : s == "debrief" ? Debrief : Start;
         if (first == Briefing || first == Loadout || first == Debrief) { enter(Campaign); }
         if (first != Start) { enter(first); next_ = first; music_.start(); musicVar(0, 0); musicVar(1, first == Soldier ? 4 : first == Main ? 0 : first == Campaign ? 1 : first == Briefing ? 6 : first == Loadout ? 7 : first == Options3 ? 11 : first == Options1 ? 3 : 0); }
     }
@@ -1300,6 +1395,7 @@ int Frontend::run() {
             ++ticks_;
             ++screenTicks_;
             if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
+            if (screen_ == Credits && next_ == Credits) tickCredits();
         }
         if (screen_ == Options1) syncSliders();
         music_.update();   // once per menu frame (0x406bf8 -> 0x4b8490)
@@ -1359,6 +1455,11 @@ int Frontend::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         hud().begin(dw, dh);
         drawMenu();
+        if (screen_ == Credits)
+            // 0x41a3a8: after the buttons, each live text at its point, flags
+            // 4 centred (1 left, 2 right).
+            for (const CreditText& t : creditSlots_)
+                if (t.active) drawText(t.font, float(t.x), float(t.y), t.text, t.color, (t.flags & 4) ? 1 : (t.flags & 2) ? 2 : 0);
         if (screen_ == Options1 || screen_ == Options3 || screen_ == Macros) {
             // The settings pages' separator under the tab strip: a green line
             // (37,108)-(600,108) after the buttons (0x40b00c, 0x41c4fc, 0x420eac).
