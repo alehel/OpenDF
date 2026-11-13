@@ -1,0 +1,46 @@
+# Roadmap
+
+Each milestone ends with something you can run.
+
+## M1: Data access and terrain ✅
+- PFF2/PFF3 reader, PFF2 decryption, `list` / `extract` tools
+- PCX, TRN parsing
+- GPU terrain renderer (chunked LOD, wrap-around, detail tiles), sky, clouds, water, haze
+- Fly / walk camera with ground collision
+
+## M2: Objects in the world
+- Decode `.3DO` (static objects with LODs) and `.AI` descriptors, including camo variants
+- Decode `.3DI` (characters and weapons) with textures
+- Model viewer mode (`opendf models`)
+- Pin down world scale against object sizes (a door ≈ 2 m)
+
+## M3: Missions
+- Decode `.BMS` mission files: terrain, object placement, objectives
+- Decode `.JIM` waypoints
+- Load a mission and place every object on its terrain
+- Mission picker
+
+## M4: Player
+- First-person soldier: movement, stances (stand/crouch/prone), stamina
+- Weapons (M4/M16, M249, M40 sniper with scope, MP5, grenades, satchels): firing, ballistics, reload, zoom
+- Collision with objects, footstep materials from the TRN `type` table
+- HUD (compass, ammo, waypoint marker), command map (`C`), goals (`G`)
+
+## M5: Audio
+- WAV playback from `AUDIO.PFF` (SFX, radio chatter)
+- `DFMUSIC.SBF` music bank; MIDI via a software synth
+- Positional 3D sound
+
+## M6: AI and mission logic
+- Enemy and friendly soldiers: patrol, alert, cover, attack
+- Mission scripting: triggers, objectives, win/fail, debrief
+- Vehicles and static weapons used in the campaigns
+
+## M7: Front end
+- Menus from `DF.MNU` / `DFMENU.BIN`, player profiles, settings
+- KDV video decoder (intro and campaign briefings)
+- Save game progress per campaign
+
+## Later
+- LAN multiplayer (deathmatch, team, CTF, KotH) with a modern protocol
+- Widescreen / high-resolution HUD scaling, controller support
