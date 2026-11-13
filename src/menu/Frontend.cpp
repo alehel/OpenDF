@@ -43,6 +43,11 @@ struct Profile {
     void set(int off, int32_t v) { std::memcpy(&d[size_t(off)], &v, 4); }
     bool valid() const { return d[0] == 'P' && d[1] == 'L' && d[2] == 'Y' && (get(0x24) & 1); }
     std::string name() const { return std::string(reinterpret_cast<const char*>(&d[4]), strnlen(reinterpret_cast<const char*>(&d[4]), 15)); }
+    std::string str(int off, int max) const { return std::string(reinterpret_cast<const char*>(&d[size_t(off)]), strnlen(reinterpret_cast<const char*>(&d[size_t(off)]), size_t(max))); }
+    void setStr(int off, int max, const std::string& v) {
+        std::memset(&d[size_t(off)], 0, size_t(max));
+        std::memcpy(&d[size_t(off)], v.data(), std::min(v.size(), size_t(max - 1)));
+    }
     void setName(const std::string& n) {
         std::memset(&d[4], 0, 16);
         std::string u = upperCase(n).substr(0, 15);
@@ -109,7 +114,7 @@ public:
     int run();
 
 private:
-    enum Screen { Start, Soldier, Main, Options1, Options3, Campaign, Briefing, Loadout, Mission, Debrief, End, Quit };
+    enum Screen { Start, Soldier, Main, Options1, Options3, Macros, Campaign, Briefing, Loadout, Mission, Debrief, End, Quit };
 
     bool openWindow();
     void closeWindow();
@@ -163,6 +168,8 @@ private:
     DfConfig cfg_;              // df.cfg (written at exit, 0x40dc88 from 0x4016c7)
     std::string dragging_;      // the slider being dragged (0x4c1b64)
     void refreshSettings();
+    void refreshMacros();
+    void profileDefaults(Profile& p);
     void syncSliders();
     bool musicLoaded_ = false;
     void musicVar(int n, int v) { music_.setVar(n, v); }
@@ -253,9 +260,18 @@ void Frontend::loadProfiles() {
             buf[3] >= 0x1A) {
             p.d = buf;
         } else {
-            p.defaults();
+            profileDefaults(p);
         }
-        if (!p.valid()) { p.defaults(); p.setName("New Operative"); }
+        if (!p.valid()) { profileDefaults(p); p.setName("New Operative"); }
+        // Profiles written by OpenDF before it kept the message macros have
+        // all ten empty; they get DF.EXE's defaults (DF.EXE never writes that).
+        bool noMacros = true;
+        for (int m = 0; m < 10; ++m) noMacros = noMacros && p.str(0x4b0 + 40 * m, 40).empty();
+        if (noMacros) {
+            Profile fresh;
+            profileDefaults(fresh);
+            std::memcpy(&p.d[0x4b0], &fresh.d[0x4b0], 400);
+        }
         any = any || p.valid();
         std::memset(&p.d[0x14], 0, 16);
         std::memcpy(&p.d[0x14], name, std::strlen(name));
@@ -438,6 +454,7 @@ void Frontend::setMenu(const std::string& name) {
 }
 
 void Frontend::enter(Screen s) {
+    if (screen_ == Macros && s != Macros) saveProfile(cur_);   // Macros exit hook 0x420ed4
     prevScreen_ = screen_;
     screen_ = s;
     screenTicks_ = 0;
@@ -469,6 +486,11 @@ void Frontend::enter(Screen s) {
         break;
     }
     case Options3: musicVar(1, 11); setMenu("Options3Menu"); refreshOptions(); break;   // 0x41c47c
+    case Macros:
+        setMenu("MsgMacMenu");
+        refreshMacros();
+        musicVar(1, 12);   // 0x420e2c
+        break;
     case Campaign:
         musicVar(1, 1);   // 0x4114b8
         setMenu("CampMenu");
@@ -677,6 +699,26 @@ void Frontend::refreshOptions() {
     put("but_opt3_bxw", t(options_ & 0x2000 ? "OPT3OFF" : "OPT3ON"));
     put("but_opt3_pww", t(options_ & 0x800 ? "OPT3ON" : "OPT3OFF"));
     put("but_opt3_gpsw", t(gpsIcons_ == 0 ? "OPT3GPSSHOWFRIENDLY" : gpsIcons_ == 1 ? "OPT3GPSDEFAULT" : "OPT3GPSSHOWALL"));
+}
+
+void Frontend::profileDefaults(Profile& p) {
+    // 0x40ee14 loadout etc., then the message macros DEFAULTMACRO1..10 from
+    // DFMENU.BIN "Macros" into +0x4b0, 40 bytes each (0x40f6ac).
+    p.defaults();
+    for (int i = 0; i < 10; ++i) {
+        char k[32];
+        std::snprintf(k, sizeof k, "DEFAULTMACRO%d", i + 1);
+        if (const std::string* t = menuText_.find("Macros", k)) p.setStr(0x4b0 + 40 * i, 40, *t);
+    }
+}
+
+void Frontend::refreshMacros() {
+    // 0x420d80: the ten boxes show profile +0x4b0 + 40 i.
+    for (int i = 0; i < 10; ++i) {
+        char n[32];
+        std::snprintf(n, sizeof n, "but_mm_mm%d", i + 1);
+        if (MnuButton* b = mnu_.button(n)) { b->text = prof().str(0x4b0 + 40 * i, 40); b->attrib |= 0x40; }
+    }
 }
 
 void Frontend::refreshSettings() {
@@ -924,7 +966,35 @@ void Frontend::event(MnuButton& b, int ev) {
         else if (ev == 6) b.drawstate = 2;
         return;
     }
-    if (cb == "MNU_OPT1_KBDREMAP" || cb == "MNU_OPT1_MSGMAC") return standard(b, ev, [] {});   // pages not in OpenDF yet
+    if (cb == "MNU_OPT1_MSGMAC" || cb == "MNU_OPT3_MSGMAC") return standard(b, ev, to(Macros));
+    if (cb == "MNU_OPT1_KBDREMAP") return standard(b, ev, [] {});   // the keyboard page is not in OpenDF yet
+    // Message Macros (0x420ee4..0x421234).
+    if (cb == "MNU_MM_ACCEPT") return standard(b, ev, to(Main));
+    if (cb == "MNU_MM_OPTIONS") return standard(b, ev, to(Options1));
+    if (cb == "MNU_MM_DIFFICULTY") return standard(b, ev, to(Options3));
+    if (cb == "MNU_MM_MMBOX") {
+        // 0x420fa0: press pushes; release edits but_mm_mm<n> (40 characters);
+        // Enter stores the text in the profile, Esc restores; both reset
+        // the dot and the box.
+        char box[32], dot[32];
+        std::snprintf(box, sizeof box, "but_mm_mm%d", b.userid + 1);
+        std::snprintf(dot, sizeof dot, "but_mm_mm%dd", b.userid + 1);
+        MnuButton* bx = mnu_.button(box);
+        MnuButton* dt = mnu_.button(dot);
+        if (ev == 1) b.drawstate = 3;
+        else if (ev == 2) {
+            b.drawstate = 1;
+            if (bx && upperCase(editing_) != upperCase(bx->name)) startEdit(*bx, 40);
+        } else if (ev == 6) { if (b.drawstate == 1) b.drawstate = 2; }
+        else if (ev == 7) { if (b.drawstate == 2) b.drawstate = 1; }
+        else if (ev == 4 || ev == 5) {
+            if (ev == 4 && bx) prof().setStr(0x4b0 + 40 * std::clamp(b.userid, 0, 9), 40, bx->text);
+            if (dt) dt->drawstate = 1;
+            if (bx) bx->drawstate = 1;
+            refreshMacros();
+        }
+        return;
+    }
     // Settings tabs: General <-> Difficulty (the keyboard and macro pages are not in OpenDF yet).
     if (cb == "MNU_OPT1_DIFFICULTY") return standard(b, ev, to(Options3));
     if (cb == "MNU_OPT3_OPTIONS") return standard(b, ev, to(Options1));
@@ -1059,16 +1129,23 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
         MnuButton* b = mnu_.button(editing_);
         if (!b) { editing_.clear(); return; }
         if (sym == SDLK_BACKSPACE && !b->text.empty()) b->text.pop_back();
-        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
+        else if (b->callback != "MNU_NS_TEXT" && (sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE)) {
+            // Framework (0x406bf8): Enter -> cb(4), Esc -> text restored, cb(5).
+            const bool commit = sym != SDLK_ESCAPE;
+            if (!commit) b->text = editBackup_;
+            editing_.clear();
+            SDL_StopTextInput();
+            event(*b, commit ? 4 : 5);
+        } else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
             // mnu_ns_text (0x410074): empty keeps the old name; else the
             // upper-cased name, slot in use, saved at once.
             if (!b->text.empty()) {
-                if (editMode_ == 1) prof().defaults();
+                if (editMode_ == 1) profileDefaults(prof());
                 prof().setName(b->text);
                 prof().set(0x24, prof().get(0x24) | 1);
                 saveProfile(cur_);
             } else if (editMode_ == 1) {
-                prof().defaults();
+                profileDefaults(prof());
                 prof().setName("New Operative");
             }
             b->text = prof().name();
@@ -1127,7 +1204,7 @@ int Frontend::run() {
     {
         const std::string s = o_.startScreen;
         Screen first = s == "soldier" ? Soldier : s == "main" ? Main : s == "campaign" ? Campaign : s == "briefing" ? Briefing
-                     : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "debrief" ? Debrief : Start;
+                     : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "macros" ? Macros : s == "debrief" ? Debrief : Start;
         if (first == Briefing || first == Loadout || first == Debrief) { enter(Campaign); }
         if (first != Start) { enter(first); next_ = first; music_.start(); musicVar(0, 0); musicVar(1, first == Soldier ? 4 : first == Main ? 0 : first == Campaign ? 1 : first == Briefing ? 6 : first == Loadout ? 7 : first == Options3 ? 11 : first == Options1 ? 3 : 0); }
     }
@@ -1267,6 +1344,11 @@ int Frontend::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         hud().begin(dw, dh);
         drawMenu();
+        if (screen_ == Options1 || screen_ == Options3 || screen_ == Macros) {
+            // The settings pages' separator under the tab strip: a green line
+            // (37,108)-(600,108) after the buttons (0x40b00c, 0x41c4fc, 0x420eac).
+            hud().line(offX_ + 37 * scale_, offY_ + 108.5f * scale_, offX_ + 600 * scale_, offY_ + 108.5f * scale_, scale_, {0, 1, 0, 1});
+        }
         if (screen_ == Main) {
             // The hover help (0x40c788 / 0x418568): the hovered button's
             // MM*TEXT in ImageMainPlt at (172, 324), 296x61, 8 px inset, LCD10
