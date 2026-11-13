@@ -24,7 +24,7 @@ don't react yet** (AI is milestone 6), so it is not a game yet. What works today
 | Model viewer, and placing objects in the world at real scale | ✅ |
 | `ITEMS.DEF`, `.BMS` missions: every object placed with position, height and heading; player start | ✅ all 62 missions, 26,510 objects |
 | First-person soldier: run/walk, jump, stand/crouch/prone, collision with buildings and objects (the models' own collision volumes), standing on bridges | ✅ |
-| Weapons with the original names and fire modes: SpecOps .45, M4 (single shot / burst), M40, H&K MP5 SD (single / burst / full auto), SAW; magazines, reloads, recoil, bullet drop and travel time, muzzle flash | ✅ (ballistic numbers are real-world approximations) |
+| Weapons with the original names, fire modes, first-person placement and scopes (from `DF.EXE`): SpecOps .45, M4 (single shot / burst), M40, H&K MP5 SD (single / burst / full auto), SAW; magazines, reloads, recoil, bullet drop and travel time, muzzle flash | ✅ (ballistic numbers are real-world approximations) |
 | Damage: people go down, crates/barrels/etc. break into their `husk` wreck models | ✅ |
 | The original's HUD: top and bottom bars with the game's own stance icons, weapon silhouettes and font; compass, grid square, carrying box, messages; the zoom view as a magnified circle with a range readout; command map (C) | ✅ (waypoint box empty until `.JIM` is decoded) |
 | Knife, grenades, M203, binoculars, laser designator; player health | ⏳ |

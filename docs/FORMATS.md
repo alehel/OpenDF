@@ -194,6 +194,33 @@ vehicle, person, object, marker, effect), `graphic` (`.3DI`), `husk`
 OpenDF lets bullets damage class 0 only; the other classes presumably need
 explosives. This reading is inferred from which items use which value.
 
+## DF.EXE player weapon table
+
+`DF.EXE` holds the player weapons as static data: 39 records of 168 bytes at
+virtual address `0x4E97D0` (pointer stored in `0xB7A954` at start-up; the
+debug command `movegun` edits `+0x78..+0x80` and prints "Move Gun: %i, %i, %i").
+Record order matches the weapon name list in `DFGAME.BIN` (`STR_PWNAME%02i`):
+0 No Weapon, 1 Knife, 2 Knife Thrown, 3 Garrote, 4 HS .22, 5 SpecOps .45,
+6/7 M4 burst/single, 8/9 M16, 10 M203, 11 Shotgun, 12–14 SAW, 15 Barret,
+16 M89, 17–19 MP5, 20–22 MP5 SD, 23/24 M11, 25 Stinger, 26 RPG, 27 Laser
+Designator, 28 LAW, 29 Satchel, 30 Radio Detonator, 31 Camera, 32 M40,
+33 Frag, 34 Smoke, 35/36 AK-47, 37/38 Claymore.
+
+| Offset | Meaning |
+|---|---|
+| `+0x00` | weapon number |
+| `+0x04` | name, filled in at run time |
+| `+0x64` | first-person model item id − 100000 (4057 = `PM4`) |
+| `+0x68` | third-person model item id − 100000 |
+| `+0x78`, `+0x7C`, `+0x80` | **first-person model offset from the eye**: forward, left, up in 1/256 m (M4: 72, −44, −75) |
+| `+0x9C`, `+0xA4` | not yet identified |
+| `+0xA0` | scope magnification (M4 4, M40 8, 0 for weapons without a scope; inferred from the values) |
+
+The engine draws the `P*` model **unrotated** at that offset with the world
+camera: 90° horizontal field of view across the 640×362 3D view (about 58.9°
+vertical). Rendering it that way reproduces footage of the original exactly
+(`docs/compare-weapon-original.png`, original left).
+
 ## F_SML640.PCX (HUD font)
 
 256×256, one 16-pixel line per 16 characters (line = code / 16, so line 2 is

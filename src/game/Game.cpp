@@ -36,6 +36,12 @@ const Color kHudRed{0.95f, 0.15f, 0.1f, 1};
 // instead of being stretched.
 constexpr float kTopBar = 59, kBottomBar = 60, kTopDivider = 350, kBottomDivider = 431;
 
+// The original's camera: 90° horizontal field of view across its 640x362 3D
+// view, i.e. about 58.9° vertical (matches the first-person weapon in footage
+// of the original). Wider screens keep this vertical angle and see more at
+// the sides.
+const float kOriginalFovY = 2.f * std::atan(1.f / (640.f / 362.f));
+
 struct Message { std::string text; float age; };
 
 bool project(const Mat4& vp, Vec3 p, float w, float h, float& sx, float& sy, float& depth) {
@@ -254,44 +260,32 @@ void Game::drawViewModel(const Screen& s) {
     const GpuModel* m = models_.get(vfs_, arsenal_.def().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
-    const auto& l = m->lods[0];
-    const float length = l.max[0] - l.min[0];
-    const float aspect = s.w / s.playH;
-    const float fovY = 55.f * kPi / 180.f, t = std::tan(fovY * 0.5f);
 
-    // Placement fitted to the original's screen (the engine's own offset has
-    // not been found in DF.EXE yet): the muzzle ends about 62% across and 60%
-    // down the 3D view and the barrel runs back past the bottom-right corner,
-    // so the open back of the model is never in view. The muzzle depth is
-    // solved so a weapon of this length spans from there to beyond the corner.
-    const float mx = 0.14f, my = -0.22f;         // muzzle, normalised device coords
-    const float rx = 1.10f, ry = -1.15f;         // where the barrel leaves the screen
-    const float rz = 0.32f;                      // ... at this depth
-    const Vec3 A{mx * t * aspect, my * t, -1.f}; // muzzle point = A * depth
-    const Vec3 R{rx * t * aspect * rz, ry * t * rz, -rz};
-    const float span = length * 0.95f;
-    const float qa = dot(A, A), qb = -2.f * dot(A, R), qc = dot(R, R) - span * span;
-    const float disc = std::max(0.f, qb * qb - 4 * qa * qc);
-    const float depth = std::max(0.15f, (-qb + std::sqrt(disc)) / (2 * qa));
-    Vec3 muzzle = A * depth;
-
-    const Vec3 f = normalize(muzzle - R);
-    const Vec3 right = normalize(cross(f, Vec3{0, 1, 0}));
-    const Vec3 up = cross(right, f);
+    // As in the original engine: the P* model is drawn unrotated (aligned with
+    // the view) at the weapon's offset from DF.EXE's player weapon table, with
+    // the same camera as the world. Offset axes are the model's own: forward,
+    // left, up in 1/256 m.
+    const int* g = arsenal_.def().gunOffset;
+    Vec3 offset{-g[1] / 256.f, g[2] / 256.f, -g[0] / 256.f};
+    // Recoil pushes the weapon back; reloading lowers it; a slight bob while moving.
     float bob = player_.moving() && !player_.fly ? std::sin(missionTime_ * 9.f) * 0.006f : 0.f;
-    muzzle = muzzle - f * (arsenal_.recoil() * 0.012f) + up * bob;
-    if (arsenal_.reloading()) muzzle.y -= 0.12f;
+    offset = offset + Vec3{0, bob - (arsenal_.reloading() ? 0.12f : 0.f), arsenal_.recoil() * 0.012f};
+    // Model axes (+X barrel, +Y up, +Z right) to view axes (-Z ahead, +Y up, +X right).
+    Mat4 base;
+    base.at(0, 0) = 0; base.at(2, 0) = -1;
+    base.at(0, 2) = 1; base.at(2, 2) = 0;
+    Mat4 model = translate(offset) * base;
 
-    // Model axes: +X forward (barrel), +Y up, +Z right. Anchor the model's
-    // front end (max X, mid height, mid width) at the muzzle point.
-    const Vec3 anchor{l.max[0], (l.min[1] + l.max[1]) * 0.5f, (l.min[2] + l.max[2]) * 0.5f};
-    Mat4 model;
-    model.m[0] = f.x; model.m[1] = f.y; model.m[2] = f.z;
-    model.m[4] = up.x; model.m[5] = up.y; model.m[6] = up.z;
-    model.m[8] = right.x; model.m[9] = right.y; model.m[10] = right.z;
-    const Vec3 origin = muzzle - (f * anchor.x + up * anchor.y + right * anchor.z);
-    model.m[12] = origin.x; model.m[13] = origin.y; model.m[14] = origin.z;
-    Mat4 proj = perspective(fovY, aspect, 0.02f, 10.f);
+    // Modern amenity: on screens wider than the original's 3D view (640x362)
+    // keep the weapon at the same distance from the right edge, in screen
+    // heights, instead of letting it drift toward the centre. Clip-space x is
+    // scaled and shifted right (x' = s*x + c*w).
+    const float aspect0 = 640.f / 362.f, aspect = s.w / s.playH;
+    Mat4 proj = perspective(kOriginalFovY, aspect0, 0.02f, 10.f);
+    Mat4 widen;
+    widen.at(0, 0) = aspect0 / aspect;
+    widen.at(0, 3) = 1.f - aspect0 / aspect;
+    proj = widen * proj;
     SceneLighting light{{0, 0, 0}, {0, 0, 0}, normalize(Vec3{0.3f, 0.9f, 0.4f}), 1e6f, 2e6f};
     models_.begin(proj, light);
     models_.draw(*m, 0, model);
@@ -644,14 +638,21 @@ int Game::run() {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
             // 3D view between the two HUD bars.
             glViewport(0, int(s.bottom), dw, int(s.playH));
-            const float fovY = 60.f * kPi / 180.f;
+            const float fovY = kOriginalFovY;
             Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, viewDistance_ * 1.1f);
             Mat4 view = lookDir(player_.eye(), aimDirection(), {0, 1, 0});
-            drawWorld(view, proj, false);
-            drawViewModel(s);
-            drawZoomInset(s, view, fovY);
-            glViewport(0, 0, dw, dh);
-            drawHud(s, proj * view);
+            if (o_.viewModelOnly) {
+                glClearColor(1, 0, 1, 1);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                drawViewModel(s);
+                glViewport(0, 0, dw, dh);
+            } else {
+                drawWorld(view, proj, false);
+                drawViewModel(s);
+                drawZoomInset(s, view, fovY);
+                glViewport(0, 0, dw, dh);
+                drawHud(s, proj * view);
+            }
 
             if (test && ++frame >= o_.frames) {
                 writePpm(o_.screenshot, dw, dh);

@@ -11,18 +11,22 @@ constexpr float kPi = 3.14159265f;
 
 const std::vector<WeaponDef>& weaponDefs() {
     using F = FireMode;
-    // Names from the game's DFGAME.BIN string table; icons are WEAP640.PCX frames.
+    // Names from the game's DFGAME.BIN string table; icons are WEAP640.PCX
+    // frames. Gun offsets and scope magnifications come from DF.EXE's player
+    // weapon table (168-byte records at 0x4E97D0; +0x78 offset, +0xA0 scope
+    // power, which is 0 for weapons without a scope). Fire rates, velocities,
+    // spread, damage and reload times are still real-world approximations.
     static const std::vector<WeaponDef> defs = {
         {{{"SpecOps .45 caliber pistol", F::Single}},
-         "PM19", 10, 7, 4, 300, 255, 1.4f, {2.f}, 1, 1.6f, 1.6f},
+         "PM19", 10, {102, -34, -43}, 7, 4, 300, 255, 1.4f, {}, 1, 1.6f, 1.6f},
         {{{"M4 Assault Rifle, Single Shot", F::Single}, {"M4 Assault Rifle, Burst", F::Burst}},
-         "PM4", 4, 30, 8, 800, 880, 0.5f, {4.f}, 1, 2.2f, 0.6f},
+         "PM4", 4, {72, -44, -75}, 30, 8, 800, 880, 0.5f, {4.f}, 1, 2.2f, 0.6f},
         {{{"M40 Sniper Rifle", F::Single}},
-         "PM40", 9, 5, 8, 45, 790, 0.08f, {4.f, 10.f}, 2, 3.0f, 2.5f},
+         "PM40", 9, {60, -35, -45}, 5, 8, 45, 790, 0.08f, {8.f}, 2, 3.0f, 2.5f},
         {{{"H&K MP5 SD, Single Shot", F::Single}, {"H&K MP5 SD, Burst", F::Burst}, {"H&K MP5 SD, Full Auto", F::Auto}},
-         "PMP5", 11, 30, 8, 800, 285, 0.7f, {2.f}, 1, 2.0f, 0.35f},
+         "PMP5", 11, {84, -35, -72}, 30, 8, 800, 285, 0.7f, {}, 1, 2.0f, 0.35f},
         {{{"SAW Auto. Weap., Full Auto", F::Auto}},
-         "PM249", 8, 200, 3, 750, 915, 1.0f, {2.f}, 1, 5.0f, 0.5f},
+         "PM249", 8, {85, -43, -73}, 200, 3, 750, 915, 1.0f, {}, 1, 5.0f, 0.5f},
     };
     return defs;
 }
@@ -64,6 +68,7 @@ void Arsenal::reload() {
 
 void Arsenal::toggleZoom() {
     if (reloadTimer_ > 0) return;
+    if (def().zoom.empty()) return;   // no scope on this weapon
     zoomLevel_ = (zoomLevel_ + 1) % (int(def().zoom.size()) + 1);
 }
 

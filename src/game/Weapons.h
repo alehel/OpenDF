@@ -25,11 +25,14 @@ struct WeaponDef {
     std::vector<WeaponMode> modes;
     const char* viewModel;      // first-person .3DI
     int icon;                   // frame in WEAP640.PCX
+    // First-person model offset from the eye, from DF.EXE's player weapon
+    // table (record +0x78): forward, left, up in 1/256 m.
+    int gunOffset[3];
     int magazine, spareMags;
     float roundsPerMinute;
     float muzzleVelocity;       // m/s
     float spreadDeg;            // standing, still, unzoomed
-    std::vector<float> zoom;    // magnifications of the zoom inset
+    std::vector<float> zoom;    // magnifications of the zoom inset (none = no scope)
     int damage;
     float reloadSeconds;
     float recoilDeg;

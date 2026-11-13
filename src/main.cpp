@@ -46,7 +46,7 @@ struct Options {
     float camera[5] = {0, 0, 0, 0, 0};
     // Game testing aids (mission mode).
     int frames = 1, weapon = -1, stance = -1, zoom = 0;
-    bool holdFire = false, showMap = false, walkForward = false;
+    bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false;
     int width = 1280, height = 720;
 };
 
@@ -64,6 +64,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--zoom") o.zoom = std::atoi(next().c_str());
         else if (a == "--fire") o.holdFire = true;
         else if (a == "--walk") o.walkForward = true;
+        else if (a == "--viewmodel-only") o.viewModelOnly = true;
         else if (a == "--map") o.showMap = true;
         else if (a == "--camera") {
             std::string s = next();
@@ -689,6 +690,7 @@ int main(int argc, char** argv) {
             g.zoom = o.zoom;
             g.holdFire = o.holdFire;
             g.walkForward = o.walkForward;
+            g.viewModelOnly = o.viewModelOnly;
             g.showMap = o.showMap;
             rc = runGame(vfs, g);
         }

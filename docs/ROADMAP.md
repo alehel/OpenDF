@@ -30,7 +30,7 @@ Each milestone ends with something you can run.
 - The original's HUD layout and art (see docs/ORIGINAL-UI.md), zoom inset, command map; original key layout where possible
 - Still open: knife, frag grenades, M203, satchels, binoculars, laser designator; player health
   (comes with enemies in M6); waypoint names (`.JIM`); footstep materials (with audio in M5);
-  the real weapon numbers and the first-person weapon offset from `DF.EXE`
+  the remaining weapon numbers in `DF.EXE`'s weapon table (fire rate, damage, ...)
 
 ## M5: Audio
 - WAV playback from `AUDIO.PFF` (SFX, radio chatter)

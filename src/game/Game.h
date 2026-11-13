@@ -21,6 +21,7 @@ struct GameOptions {
     bool holdFire = false;
     bool walkForward = false;
     bool showMap = false;
+    bool viewModelOnly = false;          // testing: draw only the weapon on magenta
 };
 
 int runGame(Vfs& vfs, const GameOptions& options);
