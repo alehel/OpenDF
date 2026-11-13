@@ -906,6 +906,21 @@ void Frontend::event(MnuButton& b, int ev) {
             const int n = loTab_ == 0 ? 5 : loTab_ == 1 ? 4 : 2;
             loSel_[loTab_] = (loSel_[loTab_] + (cb == "MNU_LO_LEFT" ? n - 1 : 1)) % n;
         });
+    if (cb == "MNU_LO_BUTTON") {
+        // Esc (the MENU's back button, not on screen; 0x420070): like ACCEPT
+        // but without the press sound.
+        if (ev == 1) { b.drawstate = 3; return; }
+        if (ev != 2) return standard(b, ev, [] {});
+        b.drawstate = 1;
+        prof().set(0x698, loSel_[0]);
+        prof().set(0x69C, loSel_[1]);
+        prof().set(0x694, loSel_[2]);
+        prof().set(0x684, kPrimary[loSel_[0]].item);
+        prof().set(0x688, kSecondary[loSel_[1]].item);
+        prof().set(0x680, kSidearm[loSel_[2]].item);
+        next_ = Briefing;
+        return;
+    }
     if (cb == "MNU_LO_ACCEPT" || cb == "MNU_LO_BACK")
         return standard(b, ev, [this] {
             prof().set(0x698, loSel_[0]);
