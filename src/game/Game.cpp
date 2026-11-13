@@ -1111,14 +1111,18 @@ void Game::spawnImpact(const Impact& hit) {
         } else {
             const auto& o = world_.objects[size_t(hit.object)];
             if (o.person) id = SoundSystem::BulletFlesh;
+            else if (o.item && (o.item->attrib & 0x40)) id = SoundSystem::BulletFlesh;   // `flesh` items
             else {
-                const uint16_t f = o.model ? o.model->impact : 0;
-                const uint8_t lo = f & 0xFF, hi = f >> 8;
-                id = (lo & 2) ? SoundSystem::BulletMetal : (lo & 4) ? SoundSystem::BulletWood
-                   : (lo & 0x10) ? (shrapnel ? SoundSystem::ShrapnelStone : SoundSystem::BulletStone)
-                   : (lo & 0x80) ? SoundSystem::BulletBush
-                   : (hi & 0x10) ? (shrapnel ? SoundSystem::ShrapnelArmor : SoundSystem::BulletArmor)
-                   : (hi & 0x80) ? SoundSystem::BulletCanvas : 0;
+                // 0x44f90a: the hit face's material, first match: 0x10000
+                // metal, 0x20000 wood, 0x40000 stone, 0x80000 bush,
+                // 0x04000000 armour, 0x08000000 canvas (shrapnel variants
+                // for stone and armour), none: no sound.
+                const uint32_t f = hit.material;
+                id = (f & 0x10000) ? SoundSystem::BulletMetal : (f & 0x20000) ? SoundSystem::BulletWood
+                   : (f & 0x40000) ? (shrapnel ? SoundSystem::ShrapnelStone : SoundSystem::BulletStone)
+                   : (f & 0x80000) ? SoundSystem::BulletBush
+                   : (f & 0x04000000) ? (shrapnel ? SoundSystem::ShrapnelArmor : SoundSystem::BulletArmor)
+                   : (f & 0x08000000) ? SoundSystem::BulletCanvas : 0;
             }
         }
         if (id) playSound(id, hit.pos);
@@ -1131,11 +1135,11 @@ void Game::spawnImpact(const Impact& hit) {
         slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
     } else {
         const auto& o = world_.objects[size_t(hit.object)];
-        if (o.person) slot = 16;
+        if (o.person || (o.item && (o.item->attrib & 0x40))) slot = 16;
         else {
-            const uint16_t f = o.model ? o.model->impact : 0;
-            const uint8_t lo = f & 0xFF, hi = f >> 8;
-            slot = (lo & 1) ? 11 : (lo & 2) ? 10 : (lo & 4) ? 13 : (lo & 8) ? 15 : (hi & 4) ? 12 : (hi & 8) ? 14 : 5;
+            const uint32_t f = hit.material;
+            slot = (f & 0x10000) ? 11 : (f & 0x20000) ? 10 : (f & 0x40000) ? 13 : (f & 0x80000) ? 15 : (f & 0x04000000) ? 12
+                 : (f & 0x08000000) ? 14 : 5;
         }
     }
     spawnEffect(slot, hit.pos);

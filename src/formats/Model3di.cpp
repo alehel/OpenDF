@@ -234,6 +234,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                                                                                -r.i32(mo + 0x38) / 65536.f}
                                                         : std::array<float, 3>{0, 0, 0});
         }
+        if (li == 0) lod.hitMeshes.resize(nm);
         std::map<int, size_t> batchIndex;   // material and mesh -> batch
         bool first = true;
         uint32_t face = 0, vBase = 0, nBase = 0;
@@ -243,6 +244,27 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             for (uint32_t k = 0; k < meshFaces && face < nf; ++k, ++face) {
                 const size_t fo = fOff + size_t(face) * 72;
                 const uint32_t matIdx = r.u32(fo + 0x44);
+                if (li == 0 && matIdx < nmat) {
+                    // Rounds test every face, drawn or not (0x44ec29).
+                    HitFace h{};
+                    bool ok = true;
+                    for (int c = 0; c < 3; ++c) {
+                        const uint32_t vx = vBase + uint32_t(r.i16(fo + 0x1C + c * 2));
+                        if (vx >= nv) { ok = false; break; }
+                        const size_t o = vOff + size_t(vx) * 8;
+                        h.v[c][0] = r.i16(o) / 256.f; h.v[c][1] = r.i16(o + 2) / 256.f; h.v[c][2] = r.i16(o + 4) / 256.f;
+                    }
+                    const uint32_t ni2 = nBase + uint32_t(r.u16(fo + 0x02));
+                    if (ok && ni2 < nn) {
+                        const size_t o = nOff + size_t(ni2) * 8;
+                        h.n[0] = r.i16(o) / 16384.f; h.n[1] = r.i16(o + 2) / 16384.f; h.n[2] = r.i16(o + 4) / 16384.f;
+                        h.axis = r.u16(o + 6);
+                        h.d = r.i32(fo + 0x28) / 65536.f;
+                        for (int c = 0; c < 6; ++c) h.box[c] = r.i32(fo + 0x2C + 4 * size_t(c)) / 65536.f;
+                        h.material = uint32_t(mats[matIdx].flags) | uint32_t(mats[matIdx].impact) << 16;
+                        lod.hitMeshes[mi].push_back(h);
+                    }
+                }
                 if (matIdx >= nmat || mats[matIdx].hidden) continue;
                 uint32_t vi[3], ni[3];
                 bool valid = true;

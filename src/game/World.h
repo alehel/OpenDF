@@ -71,6 +71,8 @@ struct RayHit {
     float t = 1;          // fraction along the segment
     int object = -1;      // -1 = terrain
     int part = -1;        // people: body part hit (2 = head), from the .CHR hit spheres
+    int mesh = -1;        // objects hit by a round: the mesh
+    uint32_t material = 0;   // objects hit by a round: the face's material flags (0x10000.. impact class)
     Vec3 point;
 };
 
@@ -96,7 +98,9 @@ public:
     // player's hit spheres: object -3); `objects` false tests the terrain
     // only; `ignore` skips one object (the shooter; -3 the player).
     // `people` false: people and the player do not block (lines of sight).
-    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true) const;
+    // `rounds`: objects are tested as DF.EXE tests a round (0x44e918):
+    // their LOD 0 faces in the pose of their draw routine, not the boxes.
+    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true, bool rounds = false) const;
 
     // The player as a target for others' rounds: body origin, heading and
     // the .CHR hit spheres of the current pose (set by the game each tick).
@@ -150,6 +154,11 @@ private:
     float animClock_ = 0;
     int animTicks_ = 0;
     void poseUpdate(WorldObject& o);
+    // The pose routines' slot flags (0x964020 + 0x40 i, +0x3C): one static
+    // buffer in DF.EXE, so routines that set only some slots (tire) keep
+    // the others from the previous object posed.
+    mutable std::array<uint8_t, 64> hitSkip_{};
+    bool roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material) const;
 };
 
 } // namespace df

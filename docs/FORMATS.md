@@ -174,7 +174,7 @@ Humvee 1236, about 4.8 m), **+Z up, +X forward, +Y left**. OpenDF maps
 | `0x0080` | with `0x0001`: 50% translucent |
 | `0x0800` | invisible (collision-only geometry) |
 | `0x8000` | multiply blend: shadows under vehicles, rotor-blur discs, window panes |
-| `0x10000`–`0x8000000` | unknown; common on buildings (probably damage/destruction states) |
+| `0x10000`–`0x8000000` | impact surface for rounds (DF.EXE 0x44f90a, first match): 0x10000 metal, 0x20000 wood, 0x40000 stone, 0x80000 bush, 0x04000000 armour, 0x08000000 canvas; 0x01000000 = rounds pass through the face (0x44ec29) |
 
 ## 3DO + AI (legacy object library)
 

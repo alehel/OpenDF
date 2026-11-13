@@ -278,7 +278,98 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
     return feet;
 }
 
-bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool people) const {
+// A round against one object's LOD 0 faces (0x44e918, per object): the
+// pose routine of its draw code gives each mesh's matrix and skip flag
+// (gnrc and others: the object matrix, all hittable; helo 0x478070: rotors
+// unrotated, meshes 3 and 5 skipped while the main rotor is slow, 2 and 4
+// when fast; tire 0x4807e0: mesh 1 skipped, front wheels 2/3 steered;
+// efct/shrk: never hit). Per face: the file's face box, materials with
+// 0x01000000 let rounds through, the plane crossing from the front (both
+// ways with material flag 0x2), t = |ds| / (|ds| + |de|), kept if <= the
+// best so far, then the point in the triangle on the face's projection.
+bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material) const {
+    const GpuModel& m = *o.model;
+    const std::string& code = m.lodCodes[0];
+    if (code == "efct" || code == "shrk" || m.hitMeshes.empty()) return false;
+    const size_t meshes = m.hitMeshes.size();
+    const Vec3 at = nearest(o.pos, a);
+    const Mat4 body = o.matrix(at);
+    std::vector<Mat4> pose(meshes, Mat4{});
+    auto about = [&](int hp, const Mat4& r) {
+        const auto& p = m.points[size_t(hp)];
+        return translate({p[0], p[1], p[2]}) * r * translate({-p[0], -p[1], -p[2]});
+    };
+    if (code == "helo") {
+        for (size_t i = 0; i < meshes && i < hitSkip_.size(); ++i) hitSkip_[i] = 0;
+        const bool fast = o.rotorSpeed >= float(0x0C000000);
+        for (int i : fast ? std::array<int, 2>{2, 4} : std::array<int, 2>{3, 5})
+            if (i < int(hitSkip_.size())) hitSkip_[size_t(i)] = 1;
+    } else if (code == "tire") {
+        hitSkip_[1] = 1;   // the shadow; slots 0, 2, 3 keep their flags (0x4807e0)
+        if (m.points.size() >= 3) {
+            const Mat4 steer = rotateY(-o.steer);
+            if (meshes > 2) pose[2] = about(2, steer);
+            if (meshes > 3) pose[3] = about(1, steer);
+        }
+    } else {
+        for (size_t i = 0; i < meshes && i < hitSkip_.size(); ++i) hitSkip_[i] = 0;
+    }
+    bool found = false;
+    for (size_t mi = 0; mi < meshes; ++mi) {
+        if (mi < hitSkip_.size() && hitSkip_[mi]) continue;
+        // World -> mesh space (rigid: transpose the rotation), then file axes.
+        const Mat4 w = body * pose[mi];
+        auto toFile = [&](Vec3 p) {
+            const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
+            const Vec3 l{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
+                         w.at(0, 2) * q.x + w.at(1, 2) * q.y + w.at(2, 2) * q.z};
+            return std::array<float, 3>{l.x, -l.z, l.y};
+        };
+        const auto ls = toFile(a), le = toFile(b);
+        float lo[3], hi[3];
+        for (int c = 0; c < 3; ++c) lo[c] = std::min(ls[c], le[c]), hi[c] = std::max(ls[c], le[c]);
+        for (const HitFace& f : m.hitMeshes[mi]) {
+            if (lo[0] > f.box[1] || hi[0] < f.box[0] || lo[1] > f.box[3] || hi[1] < f.box[2] || lo[2] > f.box[5] || hi[2] < f.box[4]) continue;
+            if (f.material & 0x01000000) continue;
+            const float ds = f.n[0] * ls[0] + f.n[1] * ls[1] + f.n[2] * ls[2] + f.d;
+            const float de = f.n[0] * le[0] + f.n[1] * le[1] + f.n[2] * le[2] + f.d;
+            if (f.material & 0x2) { if ((ds > 0 && de > 0) || (ds <= 0 && de <= 0)) continue; }
+            else if (!(ds > 0 && de <= 0)) continue;
+            const float sum = std::abs(ds) + std::abs(de);
+            if (sum <= 0) continue;
+            const float t = std::abs(ds) / sum;   // fraction of the segment
+            if (haveObject || found ? t > best : t >= best) continue;   // ties: objects over each other, not over terrain
+            const float h[3] = {ls[0] + (le[0] - ls[0]) * t, ls[1] + (le[1] - ls[1]) * t, ls[2] + (le[2] - ls[2]) * t};
+            // 0x45ade0: crossing number toward +u on the face's projection.
+            const int ua = f.axis == 4 ? 1 : 0, va = f.axis == 1 ? 1 : 2;
+            const float pu = h[ua], pv = h[va];
+            int c = 0;
+            bool aboveA = f.v[0][va] >= pv;
+            for (int k = 0; k < 3 && c < 2; ++k) {
+                const float* A = f.v[k];
+                const float* B = f.v[(k + 1) % 3];
+                const bool aboveB = B[va] >= pv;
+                if (aboveA != aboveB) {
+                    const bool ltA = pu > A[ua], ltB = pu > B[ua];
+                    if (!ltA && !ltB) ++c;
+                    else if (ltA != ltB) {
+                        const float x = A[ua] + (B[ua] - A[ua]) / (B[va] - A[va]) * (pv - A[va]);
+                        if (x >= pu) ++c;
+                    }
+                }
+                aboveA = aboveB;
+            }
+            if (c != 1) continue;
+            best = t;
+            mesh = int(mi);
+            material = f.material;
+            found = true;
+        }
+    }
+    return found;
+}
+
+bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool people, bool rounds) const {
     hit = RayHit{};
     bool found = false;
     Vec3 d = b - a;
@@ -375,6 +466,37 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
                     hit.part = int(k);
                     found = true;
                 }
+            }
+            continue;
+        }
+        if (rounds && !o.person) {
+            if (o.removed || !o.model) continue;
+            // Broad phase (0x44e918): the header radius R; the segment box
+            // grown by R must hold the object, and the line (not clamped to
+            // the segment) must pass within R by DF.EXE's approximate length.
+            const Vec3 at = nearest(o.pos, mid);
+            const float R = o.model->headerRadius;
+            if (at.x < std::min(a.x, b.x) - R || at.x > std::max(a.x, b.x) + R || at.y < std::min(a.y, b.y) - R ||
+                at.y > std::max(a.y, b.y) + R || at.z < std::min(a.z, b.z) - R || at.z > std::max(a.z, b.z) + R)
+                continue;
+            const Vec3 dir = d * (1.f / len);
+            const Vec3 c = a + dir * dot(at - a, dir);
+            const Vec3 off = c - at;
+            float x = std::abs(off.x), y = std::abs(off.y), z = std::abs(off.z);
+            if (x < y) std::swap(x, y);
+            if (x < z) std::swap(x, z);
+            if (y < z) std::swap(y, z);
+            if (x + y * 11.f / 32.f + z * 0.25f > R) continue;
+            float best = hit.t;
+            int mesh = -1;
+            uint32_t material = 0;
+            if (roundHit(o, a, b, best, found && hit.object >= 0 && !this->objects[size_t(hit.object)].person, mesh, material)) {
+                hit.t = best;
+                hit.object = int(i);
+                hit.part = -1;
+                hit.mesh = mesh;
+                hit.material = material;
+                found = true;
             }
             continue;
         }

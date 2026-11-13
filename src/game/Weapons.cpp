@@ -599,7 +599,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
-            bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter);
+            bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter, true, true);
             // Water (0x44f0e4, tested after terrain and objects; the nearest
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
@@ -625,10 +625,11 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.armed = !(b.flags & 0x01) || b.age > 8;
                 im.law = b.flags & 0x40;
                 im.flags = b.flags;
+                im.material = hit.material;
                 impacts_.push_back(im);
                 if (std::getenv("OPENDF_DEBUGHITS")) {
-                    std::fprintf(stderr, "hit obj %d part %d at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part, hit.point.x,
-                                 hit.point.y, hit.point.z, b.age);
+                    std::fprintf(stderr, "hit obj %d part %d mesh %d material %08x at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part,
+                                 hit.mesh, hit.material, hit.point.x, hit.point.y, hit.point.z, b.age);
                     if (hit.object >= 0) {
                         const auto& o = world.objects[size_t(hit.object)];
                         std::fprintf(stderr, "  origin (%.2f %.2f %.2f) heading %.1f deg hip %.2f\n", o.pos.x, o.pos.y, o.pos.z,
@@ -643,9 +644,21 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 if (hit.object == -3) {
                     // The player (0x44f184 / 0x44f2b2): armour class 0.
                     playerHits_.push_back({(1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), hit.part, b.from});
-                } else if (hit.object >= 0)
+                } else if (hit.object >= 0 && (b.flags & 0x100) && world.objects[size_t(hit.object)].item &&
+                           (world.objects[size_t(hit.object)].item->attrib & 0x80)) {
+                    // 0x44f184: rounds with flag 0x100 do nothing to `noak` items.
+                } else if (hit.object >= 0) {
+                    WorldObject& target = world.objects[size_t(hit.object)];
+                    const int before = target.hp;
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
                                  world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                    // Helicopters (0x47cc36): a hit on the tail rotor (mesh 3/4) or
+                    // mesh 6 gives 1 hp back. (DF.EXE also counts tail hits toward a
+                    // tail-rotor failure, 0x47d0bc, not in OpenDF.)
+                    if (target.model && target.model->lodCodes[0] == "helo" && (hit.mesh == 3 || hit.mesh == 4 || hit.mesh == 6) &&
+                        target.hp < before && !target.dead)
+                        ++target.hp;
+                }
                 b.age = b.lifetime;
                 break;
             }

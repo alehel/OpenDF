@@ -38,6 +38,7 @@ struct GpuModel {
     std::vector<GLuint> indexTextures; // raw 8-bit texels (R8, nearest)
     std::vector<Lod> lods;
     std::vector<CollisionBox> collision;   // LOD 0 collision volumes (may be empty)
+    std::vector<std::vector<HitFace>> hitMeshes;   // LOD 0 faces per mesh, for rounds (0x44e918)
     std::vector<std::array<float, 3>> points;   // LOD 0 hardpoints (muzzle points)
     float radius = 1.f;  // of LOD 0, around the origin
 };

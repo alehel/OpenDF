@@ -97,6 +97,7 @@ struct Impact {
     bool armed = true;        // explosive: armed (M203: more than 8 ticks of flight)
     bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
     int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
+    uint32_t material = 0;    // objects: the hit face's material flags (0x44f90a picks effect and sound)
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table

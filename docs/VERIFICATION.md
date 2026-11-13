@@ -113,4 +113,4 @@ Multiplayer (screens, network).
 
 | Item | Status | Source |
 |---|---|---|
-| Rounds against objects (vehicles, buildings, props) | APPROXIMATION | OpenDF tests the model's collision volumes (or its bounds); DF.EXE tests each posed mesh of the hit model in mesh space (0x44e440..), skipping meshes flagged by the model's pose routine, e.g. the helicopter's hit pose (0x478070: unrotated rotors; meshes 3 and 5 unhittable while the main rotor is slow, 2 and 4 when fast). Not yet traced or implemented |
+| Rounds against objects (vehicles, buildings, props) | Original | see AUDIT X21; AI sight lines and movement still use the collision volumes (movement: as DF.EXE 0x437a28; AI sight: not traced) |

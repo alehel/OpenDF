@@ -205,6 +205,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     g->name = name.substr(0, name.size() - 4);
     g->kind = src.kind;
     for (int k = 0; k < 4; ++k) g->lodCodes[k] = src.lodCodes[k];
+    if (!src.lods.empty()) g->hitMeshes = src.lods[0].hitMeshes;
     std::copy(src.lodThreshold, src.lodThreshold + 4, g->lodThreshold);
     g->headerRadius = src.radius > 0 ? src.radius : 1.f;
     for (auto& t : src.textures) {

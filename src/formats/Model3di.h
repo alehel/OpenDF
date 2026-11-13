@@ -50,6 +50,21 @@ struct ModelBatch {
 };
 
 // Axis-aligned box in model space (already in OpenDF axes, metres).
+// A face as DF.EXE's round test reads it (0x44e918), file axes, metres:
+// vertices, plane (normal word +0x02, D at +0x28: n.v + D, front side > 0),
+// the file's face box (+0x2C, xmin xmax ymin ymax zmin zmax), the material
+// flags dword (+0x10: 0x2 two-sided, 0x01000000 rounds pass, 0x10000..
+// 0x08000000 impact class) and the projection axis (normal word +0x06: 1 Z,
+// 2 Y, 4 X dominant).
+struct HitFace {
+    float v[3][3];
+    float n[3];
+    float d;
+    float box[6];
+    uint32_t material;
+    uint16_t axis;
+};
+
 struct CollisionBox {
     float min[3], max[3];
 };
@@ -59,6 +74,7 @@ struct ModelLod {
     int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
+    std::vector<std::vector<HitFace>> hitMeshes;   // LOD 0 only: every face per mesh (hidden ones too)
     // Hardpoints (LOD header +0xA0, 12 bytes: i32 x, y, z in 16.16 m),
     // OpenDF axes, metres: DF.EXE's model +0xa4 point list (the
     // first-person muzzle is point +0x90 of the player table, 0x44b4a0).
