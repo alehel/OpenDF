@@ -64,6 +64,7 @@
     X(void, Uniform1f, (GLint, GLfloat)) \
     X(void, Uniform2f, (GLint, GLfloat, GLfloat)) \
     X(void, Uniform3f, (GLint, GLfloat, GLfloat, GLfloat)) \
+    X(void, Uniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) \
     X(void, UniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*)) \
     X(void, GenVertexArrays, (GLsizei, GLuint*)) \
     X(void, BindVertexArray, (GLuint)) \
@@ -101,6 +102,7 @@ DFGL_FUNCS(DFGL_DECLARE)
 #define glUniform1i dfglUniform1i
 #define glUniform1f dfglUniform1f
 #define glUniform2f dfglUniform2f
+#define glUniform4f dfglUniform4f
 #define glUniform3f dfglUniform3f
 #define glUniformMatrix4fv dfglUniformMatrix4fv
 #define glGenVertexArrays dfglGenVertexArrays

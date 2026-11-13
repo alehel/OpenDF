@@ -619,6 +619,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
     models_.end();
+    // Water last: it tints what is under it (DF.EXE 0x43bfd8).
+    terrain_.drawWater(view, proj, eye, float(ticks_));
 }
 
 void Game::drawViewModel(const Screen& s) {

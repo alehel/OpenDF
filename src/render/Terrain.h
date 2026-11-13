@@ -45,6 +45,8 @@ public:
     // dirt, 0 none; each colour-map palette colour is matched to the nearest
     // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects).
     int surfaceAt(float x, float z) const;
+    // Water, after everything else is drawn (DF.EXE 0x43bfd8); `ticks` drives the waves.
+    void drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks);
     float saturationFactor() const { return desc_.saturation / 128.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
@@ -67,7 +69,8 @@ private:
 
     GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0;
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
-    GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0;
+    GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0, texWaterGrad_ = 0, texScene_ = 0;
+    int sceneW_ = 0, sceneH_ = 0;
     GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0;
     GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0;
     Mesh lods_[5];

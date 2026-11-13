@@ -156,18 +156,32 @@ void main() {
 }
 )";
 
+// DF.EXE 0x43bfd8 / 0x43bd7a: a water pixel is W[r][c] = T[(1-op)·c + op·4r]:
+// r = water texel >> 2 (0..63), c = the luminance (R+2G+B)/4 of what is
+// already drawn there, T the 256-step water palette gradient (finished with
+// the TRN colour pipeline). 16 texels per metre; waves warp the texture
+// coordinates by up to 4 texels (sine table, period 16 m, phase tick << 23).
+// No fog; drawn only where it is in front.
 const char* kWaterFS = R"(#version 330 core
 in vec3 vWorld;
-uniform sampler2D uWater;
-uniform vec3 uEye, uFog;
-uniform float uAlpha, uFogStart, uFogEnd, uTime;
+uniform sampler2D uWaterIdx, uGradient, uScene;
+uniform vec4 uViewport;     // x, y, w, h of the 3D view
+uniform float uOpacity, uPhase;
+uniform bool uBelow;
 out vec4 oColor;
+const float kTwoPi = 6.28318531;
 void main() {
-    vec2 p = vWorld.xz / 64.0;
-    vec3 c = 0.5 * (texture(uWater, p + vec2(uTime * 0.010, 0.0)).rgb +
-                    texture(uWater, p * 1.3 + vec2(0.0, uTime * 0.013)).rgb);
-    float dist = length(vWorld - uEye);
-    oColor = vec4(mix(c, uFog, smoothstep(uFogStart, uFogEnd, dist)), uAlpha);
+    vec3 under = texture(uScene, (gl_FragCoord.xy - uViewport.xy) / uViewport.zw).rgb * 255.0;
+    float lum = floor((under.r + 2.0 * under.g + under.b) / 4.0);
+    float r = 0.0;
+    if (!uBelow) {
+        vec2 t = vWorld.xz * 16.0;                                // texels
+        float iu = mod(t.x * 4.0 + uPhase, 1024.0), iv = mod(t.y * 4.0 + uPhase, 1024.0);
+        vec2 w = t + 4.0 * vec2(cos(kTwoPi * iv / 1024.0), sin(kTwoPi * iu / 1024.0));
+        r = floor(texture(uWaterIdx, w / 256.0).r * 255.0 / 4.0);
+    }
+    float idx = floor((1.0 - uOpacity) * lum + uOpacity * 4.0 * r);
+    oColor = vec4(texture(uGradient, vec2((idx + 0.5) / 256.0, 0.5)).rgb, 1.0);
 }
 )";
 
@@ -230,9 +244,12 @@ void setM4(GLuint p, const char* n, const Mat4& m) { glUniformMatrix4fv(glGetUni
 Terrain::~Terrain() { release(); }
 
 void Terrain::release() {
-    GLuint texs[] = {texColor_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_};
+    GLuint texs[] = {texColor_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
+                     texWaterGrad_, texScene_};
     for (GLuint t : texs) if (t) glDeleteTextures(1, &t);
     texColor_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
+    texWaterGrad_ = texScene_ = 0;
+    sceneW_ = sceneH_ = 0;
     for (auto& m : lods_) {
         if (m.vao) glDeleteVertexArrays(1, &m.vao);
         if (m.vbo) glDeleteBuffers(1, &m.vbo);
@@ -347,11 +364,32 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     }
     texClouds_ = makeTex2D(clouds.width, clouds.height, GL_R8, GL_RED, clouds.pixels.data(), true, true);
 
+    // Water (DF.EXE 0x431b3e, 0x431d04): none if water_height is 0 or the
+    // palette is missing; the gradient T from water palette entries 0..15.
     IndexedImage water, waterPal;
     hasWater_ = false;
-    if (loadImage(vfs, desc_.waterMap, water)) {
-        const auto& pal = (loadImage(vfs, desc_.waterPalette, waterPal) && waterPal.hasPalette) ? waterPal.palette : water.palette;
-        texWater_ = makeTex2D(water.width, water.height, GL_RGB8, GL_RGB, toRgb(water, pal).data(), true, true);
+    if (desc_.waterHeight != 0 && loadImage(vfs, desc_.waterMap, water) && loadImage(vfs, desc_.waterPalette, waterPal) &&
+        waterPal.hasPalette) {
+        texWater_ = makeTex2D(water.width, water.height, GL_R8, GL_RED, water.pixels.data(), false, true);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+        std::vector<uint8_t> grad(256 * 3);
+        auto post = [&](float c[3], uint8_t* out) {
+            const float y = (c[0] + 2 * c[1] + c[2]) / 4.f;
+            for (int ch = 0; ch < 3; ++ch) {
+                const float v = std::clamp(y + (c[ch] - y) * desc_.saturation / 128.f, 0.f, 255.f);
+                out[ch] = lut[size_t(int(v)) * 3 + ch];
+            }
+        };
+        for (int k = 0; k < 15; ++k)
+            for (int j = 0; j < 16; ++j) {
+                const Rgb& a = waterPal.palette[size_t(k)];
+                const Rgb& b = waterPal.palette[size_t(k + 1)];
+                float c[3] = {a.r + (b.r - a.r) * j / 16.f, a.g + (b.g - a.g) * j / 16.f, a.b + (b.b - a.b) * j / 16.f};
+                post(c, &grad[size_t(16 * (k + 1) + j) * 3]);
+            }
+        for (int i = 0; i < 16; ++i) std::copy(&grad[16 * 3], &grad[16 * 3] + 3, &grad[size_t(i) * 3]);
+        texWaterGrad_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, grad.data(), false, false);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         hasWater_ = true;
     }
 
@@ -376,7 +414,9 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     setInt(progSky_, "uClouds", 1);
     setF(progSky_, "uSat", desc_.saturation / 128.f);
     glUseProgram(progWater_);
-    setInt(progWater_, "uWater", 0);
+    setInt(progWater_, "uWaterIdx", 0);
+    setInt(progWater_, "uGradient", 1);
+    setInt(progWater_, "uScene", 2);
     glUseProgram(0);
 
     buildMeshes();
@@ -460,6 +500,57 @@ float Terrain::heightAt(float x, float z) const {
     return (a + (b - a) * tz) * scale.heightScale;
 }
 
+void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks) {
+    if (!hasWater_) return;
+    const float level = desc_.waterHeight * scale.heightScale;
+    // What is already drawn: copied so the water can read its luminance.
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    if (!texScene_ || sceneW_ != vp[2] || sceneH_ != vp[3]) {
+        if (texScene_) glDeleteTextures(1, &texScene_);
+        texScene_ = makeTex2D(vp[2], vp[3], GL_RGB8, GL_RGB, nullptr, false, false);
+        sceneW_ = vp[2];
+        sceneH_ = vp[3];
+    }
+    glActiveTexture(GL_TEXTURE0 + 2);
+    glBindTexture(GL_TEXTURE_2D, texScene_);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
+
+    glUseProgram(progWater_);
+    const bool below = eye.y < level;
+    glUniform4f(glGetUniformLocation(progWater_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
+    setF(progWater_, "uOpacity", desc_.waterOpacity);
+    // Phase: tick << 23 in table units of 2^22 -> 2 entries per tick.
+    setF(progWater_, "uPhase", std::fmod(ticks * 2.f, 1024.f));
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), below);
+    setV3(progWater_, "uEye", eye);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texWater_);
+    glActiveTexture(GL_TEXTURE0 + 1);
+    glBindTexture(GL_TEXTURE_2D, texWaterGrad_);
+    glBindVertexArray(waterVao_);
+    glDepthMask(GL_FALSE);
+    if (below) {
+        // Under water: everything is tinted through row 0 (0x43c500).
+        glDisable(GL_DEPTH_TEST);
+        setM4(progWater_, "uViewProj", Mat4{});
+        setF(progWater_, "uLevel", 0.f);
+        setF(progWater_, "uExtent", 1.f);
+        setV3(progWater_, "uEye", {0, 0, 0});
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glEnable(GL_DEPTH_TEST);
+    } else {
+        // The surface out to 1023 m, only where it is in front (depth test).
+        setM4(progWater_, "uViewProj", proj * view);
+        setF(progWater_, "uLevel", level);
+        setF(progWater_, "uExtent", 1023.f);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+    glDepthMask(GL_TRUE);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
 int Terrain::surfaceAt(float x, float z) const {
     if (size_ == 0 || surface_.empty()) return 0;
     const long ix = ((long(std::floor(x / scale.cellSize)) % size_) + size_) % size_;
@@ -478,7 +569,6 @@ Vec3 Terrain::sunDirection() const {
 void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDistance) {
     const Mat4 viewProj = proj * view;
     const Vec3 fog = fogColor();
-    const float fogStart = viewDistance * 0.35f, fogEnd = viewDistance * 0.98f;
     const float cell = scale.cellSize;
     auto rgb = [](Rgb c) { return Vec3{c.r / 255.f, c.g / 255.f, c.b / 255.f}; };
 
@@ -576,27 +666,6 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
         }
 
-    // Translucent water plane.
-    const float level = desc_.waterHeight * scale.heightScale;
-    if (hasWater_ && eye.y > level) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glUseProgram(progWater_);
-        setM4(progWater_, "uViewProj", viewProj);
-        setV3(progWater_, "uEye", eye);
-        setV3(progWater_, "uFog", fog);
-        setF(progWater_, "uLevel", level);
-        setF(progWater_, "uExtent", viewDistance);
-        setF(progWater_, "uAlpha", desc_.waterOpacity > 0 ? desc_.waterOpacity : 1.f);
-        setF(progWater_, "uFogStart", fogStart);
-        setF(progWater_, "uFogEnd", fogEnd);
-        setF(progWater_, "uTime", SDL_GetTicks() / 1000.f);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texWater_);
-        glBindVertexArray(waterVao_);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glDisable(GL_BLEND);
-    }
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
 }
