@@ -26,6 +26,7 @@ add_executable(opendf
   src/core/ExeImage.cpp
   src/core/Pff.cpp
   src/formats/Anm.cpp
+  src/formats/Dlg.cpp
   src/formats/Mission.cpp
   src/formats/Model3di.cpp
   src/formats/Pcx.cpp
@@ -33,6 +34,7 @@ add_executable(opendf
   src/formats/Trn.cpp
   src/game/Game.cpp
   src/game/Player.cpp
+  src/game/Script.cpp
   src/game/Weapons.cpp
   src/game/World.cpp
   src/render/Gl.cpp

@@ -24,6 +24,7 @@ struct GameOptions {
     bool walkForward = false;
     bool showMap = false;
     bool viewModelOnly = false;          // testing: draw only the weapon on magenta
+    bool killEnemies = false;            // testing: every side-2 soldier dies at the start
 };
 
 int runGame(Vfs& vfs, const GameOptions& options);

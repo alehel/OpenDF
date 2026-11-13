@@ -5,7 +5,9 @@
 #include "../render/Models.h"
 #include "../render/Terrain.h"
 #include "../formats/Rtxt.h"
+#include "../formats/Dlg.h"
 #include "Player.h"
+#include "Script.h"
 #include "Weapons.h"
 #include "World.h"
 
@@ -93,10 +95,20 @@ std::string missionName(const std::string& title) {
     return dash == std::string::npos ? title : title.substr(dash + 3);
 }
 
-class Game {
+class Game : public ScriptHost {
 public:
     Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o) {}
     int run();
+
+    // ScriptHost: what the mission's events can see and do.
+    int teamTotal(int team) const override { return teamCount(team, false); }
+    int teamAlive(int team) const override { return teamCount(team, true); }
+    bool teamInArea(int team, const AreaBox& a) const override;
+    void killTeam(int team) override;
+    void removeTeam(int team) override;
+    void showText(int id) override;
+    void radio(int id) override;
+    void endMission(int winnerSide) override;
 
 private:
     struct Screen {
@@ -142,6 +154,18 @@ private:
     int routeIndex_ = 0;
     void buildRoute();
     void updateRoute();
+    int teamCount(int team, bool aliveOnly) const;
+    void drawMissionEnd(const Screen& s);
+    void drawGoals(const Screen& s);
+
+    // Mission scripting.
+    MissionScript script_;
+    DialogIndex dialogs_;                 // DFDLGnn.DBF
+    std::vector<std::string> dialogText_; // DFDLGnn.BIN
+    float scriptClock_ = 0;
+    int missionResult_ = -1;              // winning side once the mission has ended
+    int missionNumber_ = 0;               // m of CccMmm
+    static constexpr int kPlayerTeam = 1, kPlayerSide = 1;
     std::vector<std::string> missions_;
     int current_ = 0;
     Mission mission_;
@@ -218,6 +242,23 @@ bool Game::loadMission(int index) {
         }
     }
     buildRoute();
+    {
+        // Radio dialogs: the mission header names the set ("dfdlg02").
+        std::vector<uint8_t> raw;
+        const std::string set = toUpper(mission_.dialogue);
+        dialogs_ = DialogIndex{};
+        dialogText_.clear();
+        if (!set.empty()) {
+            if (vfs_.read(set + ".DBF", raw)) dialogs_.parse(raw);
+            if (vfs_.read(set + ".BIN", raw)) parseRtxt(raw, dialogText_);
+        }
+        int c = 0;
+        missionNumber_ = 0;
+        std::sscanf(name.c_str(), "C%dM%d", &c, &missionNumber_);
+    }
+    script_.load(mission_);
+    scriptClock_ = 0;
+    missionResult_ = -1;
     missionTime_ = 0;
     messages_.clear();
     if (exe_.loaded() && !arsenal_.fromExe())
@@ -258,8 +299,71 @@ void Game::updateRoute() {
     routeIndex_ = (routeIndex_ + 1) % int(route_.size());
 }
 
+int Game::teamCount(int team, bool aliveOnly) const {
+    // DF.EXE 0x440904/0x4409f4 counts the players and every object of a team
+    // in file groups 0 (moving objects), 1 (scenery and props) and 3 (people);
+    // markers (group 2) are not counted.
+    if (team == 0) return 0;
+    int n = team == kPlayerTeam ? 1 : 0;   // the player (cannot be killed yet)
+    for (const auto& o : world_.objects)
+        if (o.team == team && o.missionGroup != 2 && (!aliveOnly || o.alive())) ++n;
+    return n;
+}
+
+bool Game::teamInArea(int team, const AreaBox& a) const {
+    auto inside = [&](double x, double y) { return x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY; };
+    if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
+    // Other teams stand where the mission placed them until OpenDF has AI.
+    for (const auto& o : world_.objects)
+        if (o.team == team && o.alive() && o.missionGroup != 2 && inside(o.missionX, o.missionY))
+            return true;
+    return false;
+}
+
+void Game::killTeam(int team) {
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        auto& o = world_.objects[i];
+        if (o.team == team && o.missionGroup == 3 && o.alive()) world_.damage(int(i), 1000);
+    }
+}
+
+void Game::removeTeam(int team) {
+    for (auto& o : world_.objects)
+        if (o.team == team && o.missionGroup != 2) o.removed = true;
+}
+
+void Game::showText(int id) {
+    char key[16];
+    std::snprintf(key, sizeof key, "ID%03d", id);
+    if (const std::string* t = campText_.find("Triggered Text", key)) messages_.push_back({*t, 0});
+}
+
+void Game::radio(int id) {
+    // Subtitles of the dialog's clips; the audio comes with sound support.
+    char name[16];
+    std::snprintf(name, sizeof name, "dlg%03d", id);
+    if (const auto* parts = dialogs_.find(name))
+        for (const auto& p : *parts)
+            if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
+                messages_.push_back({dialogText_[size_t(p.subtitle)], 0});
+}
+
+void Game::endMission(int winnerSide) {
+    if (missionResult_ < 0) missionResult_ = winnerSide;
+}
+
 void Game::handleKey(const SDL_KeyboardEvent& k) {
     const bool shift = (k.keysym.mod & KMOD_SHIFT) != 0;
+    if (missionResult_ >= 0) {
+        // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
+        if (k.keysym.sym == SDLK_RETURN || k.keysym.sym == SDLK_KP_ENTER) {
+            SDL_Event q;
+            q.type = SDL_QUIT;
+            SDL_PushEvent(&q);
+            return;
+        }
+        if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
+    }
     switch (k.keysym.sym) {
     case SDLK_ESCAPE:
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
@@ -633,18 +737,53 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.text(zx + r * 0.22f, zy + r * 0.68f, buf, kHudGreen, s.text());
     }
 
-    if (showGoals_) {
-        const float bw = s.y(400), bh = s.y(70), x0 = cx - bw / 2, y0 = s.playY + s.y(20);
-        hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.8f});
-        hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
-        hud_.text(x0 + s.y(10), y0 + s.y(8), "Mission Goals: " + missionName_, kHudGreen, s.text());
-        hud_.text(x0 + s.y(10), y0 + s.y(28), "The goal list is not decoded from the mission files yet.", kHudMessage, s.text());
-        hud_.text(x0 + s.y(10), y0 + s.y(46), "Press G to close.", kHudGreen, s.text());
-    }
+    if (showGoals_) drawGoals(s);
+    if (missionResult_ >= 0) drawMissionEnd(s);
 
     drawTopBar(s);
     drawBottomBar(s);
     hud_.end();
+}
+
+void Game::drawMissionEnd(const Screen& s) {
+    // DF.EXE 0x483094: success if the winner is the player's side.
+    const bool won = missionResult_ == kPlayerSide;
+    const float cx = s.cx(0), bw = s.y(400), bh = s.y(62), x0 = cx - bw / 2, y0 = s.playY + s.y(16);
+    hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.75f});
+    hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
+    const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
+                           "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
+    for (int i = 0; i < 3; ++i)
+        hud_.text(cx - hud_.textWidth(lines[i], s.text()) / 2, y0 + s.y(8 + 17 * i), lines[i], kHudGreen, s.text());
+}
+
+void Game::drawGoals(const Screen& s) {
+    // DF.EXE 0x485250: "Win Conditions:" with goals M%02iSUBGOAL%02i 1..4 and
+    // "Lose Conditions:" with M%02iSUBFAIL%02i from the campaign's "Goals"
+    // section; met ones are highlighted.
+    std::vector<std::pair<std::string, int>> lines;   // text, 0 heading / 1 open / 2 met
+    lines.push_back({missionName_, 0});
+    for (int part = 0; part < 2; ++part) {
+        std::vector<std::pair<std::string, int>> items;
+        for (int n = 1; n <= 4; ++n) {
+            char key[24];
+            std::snprintf(key, sizeof key, part == 0 ? "M%02dSUBGOAL%02d" : "M%02dSUBFAIL%02d", missionNumber_, n);
+            if (const std::string* t = campText_.find("Goals", key))
+                items.push_back({*t, (part == 0 ? script_.goalDone(n) : script_.failDone(n)) ? 2 : 1});
+        }
+        if (items.empty()) continue;
+        lines.push_back({part == 0 ? "Win Conditions:" : "Lose Conditions:", 0});
+        lines.insert(lines.end(), items.begin(), items.end());
+    }
+    const float bw = s.y(440), lh = s.y(16), bh = lh * float(lines.size()) + s.y(12);
+    const float cx = s.cx(0), x0 = cx - bw / 2, y0 = s.playY + s.y(20);
+    hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.8f});
+    hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const auto& [text, kind] = lines[i];
+        const Color c = kind == 2 ? Color{1, 1, 0.4f, 1} : kind == 1 ? kHudMessage : kHudGreen;
+        hud_.text(x0 + s.y(kind ? 22 : 10), y0 + s.y(6) + lh * float(i), text, c, s.text());
+    }
 }
 
 int Game::run() {
@@ -710,6 +849,9 @@ int Game::run() {
         if (o_.stance >= 0) player_.stance = Stance(std::clamp(o_.stance, 0, 2));
         for (int i = 0; i < o_.zoom; ++i) arsenal_.toggleZoom();
         showMap_ = o_.showMap;
+        if (o_.killEnemies)
+            for (size_t i = 0; i < world_.objects.size(); ++i)
+                if (world_.objects[i].side == 2 && world_.objects[i].missionGroup == 3) world_.damage(int(i), 1000);
 
         captured_ = !test;
         SDL_SetRelativeMouseMode(captured_ ? SDL_TRUE : SDL_FALSE);
@@ -753,6 +895,9 @@ int Game::run() {
             player_.oneHanded = arsenal_.def().oneHanded;
             player_.update(dt, in, world_);
             updateRoute();
+            // Mission events run on the original's 60 Hz ticks.
+            for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f)
+                if (missionResult_ < 0) script_.tick(*this);
             std::vector<std::string> msgs;
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
             prevTrigger = trigger;
@@ -799,6 +944,7 @@ int Game::run() {
                 writePpm(o_.screenshot, dw, dh);
                 std::printf("wrote %s (%dx%d)\n", o_.screenshot.c_str(), dw, dh);
                 for (auto& m : messages_) std::printf("  message: %s\n", m.text.c_str());
+                if (missionResult_ >= 0) std::printf("  mission ended, winner side %d\n", missionResult_);
                 std::printf("  player at %.2f, %.2f (grid %s), %.2f m above ground\n", player_.missionX(), player_.missionY(),
                             gridName(player_.missionX(), player_.missionY()).c_str(),
                             player_.feet.y - terrain_.heightAt(player_.feet.x, player_.feet.z));

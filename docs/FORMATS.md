@@ -327,6 +327,21 @@ Object record fields found so far: +0x00 type, +0x08 id, +0x10/14/18 position
 (16.16 m), +0x1C waypoint arrival radius (m), +0x34 heading, +0x43 side,
 +0x48 team, +0x49 path, +0x4A start waypoint / area tag.
 
+## BMS events
+
+Event (24 bytes): +0 flags (bit 0 repeat, bit 2 at mission start only, bit 4
+at mission end only), +4 first condition, +8 first action, dword 3 = repeat
+interval << 16, dword 4 = delay << 16 (ticks), +0x15 condition count, +0x16
+action count. Condition (32 bytes): flags (bit 0 NOT, bit 1 OR / bit 2 XOR
+with the next), class, subtype, p1, p2, p3. Action (32 bytes): unused, type,
+subtype, p1, p2. Meanings: docs/VERIFICATION.md and src/game/Script.cpp.
+
+## DFDLGnn.DBF
+
+"DLG0" header (32 bytes), then per dialog: name[24], part count at +0x18,
+parts from +0x34, each 0x44 bytes: clip name[24], text field[16] ("_" +
+DFDLGnn.BIN entry, or "##" for no subtitle). Audio in DFDLGnn.PWF.
+
 ## RTXT key block
 
 Header field 1 is the offset of a key block: u32 section count, per section

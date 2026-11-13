@@ -25,6 +25,13 @@ struct WorldObject {
     bool removed = false;              // destroyed without a husk
     float fall = 0;                    // 0..1 while a killed person falls
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
+    bool wrecked = false;              // destroyed, husk shown
+    // From the mission record: its group in the file (0 moving objects,
+    // 1 scenery, 2 markers, 3 people), team (byte +0x48), side (+0x43) and
+    // position in mission coordinates.
+    int missionGroup = -1, team = 0, side = 0;
+    double missionX = 0, missionY = 0;
+    bool alive() const { return !dead && !removed && !wrecked; }
     std::vector<CollisionBox> boxes;   // model-space solid boxes
 
     Mat4 matrix(Vec3 at) const;

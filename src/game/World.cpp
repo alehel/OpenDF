@@ -108,6 +108,11 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
             o.pos.y += o.hip;
         }
         o.hp = item->hp;
+        o.missionGroup = mo.group;
+        o.team = mo.raw[18] & 0xFF;
+        o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
+        o.missionX = mo.x;
+        o.missionY = mo.y;
         refreshBoxes(o);
         objects.push_back(std::move(o));
     }
@@ -249,6 +254,7 @@ std::string World::damage(int index, int amount) {
     if (o.husk) {
         o.model = o.husk;
         o.husk = nullptr;
+        o.wrecked = true;
     } else {
         o.removed = true;
     }

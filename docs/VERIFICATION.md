@@ -59,13 +59,28 @@ when DF.EXE is missing or a different version.
 | Layout, art, font | Original + footage | `POS640`, `WEAP640`, `F_SML640`; positions measured from footage |
 | "Carrying: Nothing", "Ammo reloaded", mission-end texts | Original | DF.EXE strings |
 | Mission names ("Insurrection") | Original | `DFCAMPcc.BIN` entry m−1, read at run time |
-| Radio messages ("Charlie 2 is down.", opening orders) | Original text known, not shown yet | `DFDLGcc.BIN`; triggered by mission scripts (not decoded) |
+| Radio messages ("Charlie 2 is down.", opening orders) | Original | mission events fire dialogs `dlg%03i`; clips and subtitles from `DFDLGnn.DBF` + `DFDLGnn.BIN`. Insurrection's opening "Proceed southwest and neutralize all hostiles." appears as in footage. Shown as text at once; the original plays the clips (audio) in sequence, subtitles with their clip |
+| Triggered text | Original | campaign "Triggered Text" `ID%03i` (no shipped campaign uses it) |
+| Mission end panel | Original | texts and success rule from DF.EXE (0x483094); events decide the winner |
+| Goals screen (G) | Original text, own layout | "Win Conditions:" `M%02iSUBGOAL%02i`, "Lose Conditions:" `M%02iSUBFAIL%02i` from the campaign "Goals" section, met goals highlighted; the original's screen layout not yet compared |
 | Grid square names and map grid | Original + footage | DF.EXE 0x43DCE0: column = ⌊(x + 1000) / 100⌋ as A..Z, AA.., row = ⌊(1000 − y) / 100⌋ + 1, in mission coordinates (not the 1024 m terrain tile). Start of Insurrection is I12, as in footage; the command map's grid lines up with the terrain as in footage |
 | Command map zoom | Footage | 0.75 px per metre at 640×480 |
 | Waypoint route, names, box, compass dot, map route | Original + footage | route = first BMS path with flag 2 (DF.EXE 0x447856); names = campaign text "Waypoint Names"/`WPN%03i` with the numbers at BMS header +0xAC; arrival radius = waypoint record +0x1C; advance rule 0x449a39; box format and distance 0x4838ac. Insurrection gives IP, CP ALPHA, CP BRAVO, OBJ BREEZE, CP CHARLIE, EP; route shape matches the footage's command map. `.JIM` files are not used by DF.EXE |
 | Distance at the start of Insurrection | **Open** | OpenDF shows "WP1: IP (29m)", footage "22m". DF.EXE picks the first player-start marker in single player (0x442c47), which is what OpenDF does; another start marker (id 381) would give 21 m |
 | Map route markers | Footage | circles at first/last point, diamonds between; footage shows no marker on the current target, not yet copied |
 | "Next waypoint" key | Approximation | the original's default key is not identified yet; OpenDF uses Y |
+
+## Mission events
+
+| Item | Status | Source |
+|---|---|---|
+| Event engine: schedule (every 128 ticks, one eighth per 16 ticks), condition chaining, NOT, delays with re-check, repeats | Original | DF.EXE 0x445914, 0x45c534, 0x45c48c |
+| Conditions: team all dead / alive / losses / at least n alive / none lost, team inside area, event fired, campaign flags, load toggle, squad option | Original | 0x45c17c; areas from Area Trigger markers by tag (0x45c9a0) |
+| Conditions needing AI: team spotted / engaging / alerted / reached waypoint / carrying | **Not yet** | always false until AI exists |
+| Actions: kill team, remove team, campaign flag, text, radio, end mission (win/lose/none), goals met, lose conditions | Original | 0x45c368 |
+| Actions needing AI: follow path, AI properties, team speed | **Not yet** | ignored until AI exists |
+| Team membership and counts | Original | team = record byte +0x48, side = +0x43; counts over players, people and moving objects (0x4409f4) |
+| Player death | **Not yet** | the player cannot be hurt yet, so "Bravo 1 is down" and failures from it cannot happen |
 
 ## Not yet implemented, so not checkable
 
