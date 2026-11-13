@@ -91,6 +91,7 @@ private:
         float playY, playH;     // 3D view area (top-left origin)
         float lx(float x) const { return x * u; }                 // left-anchored
         float rx(float x) const { return w - (640.f - x) * u; }   // right-anchored
+        float cx(float dx) const { return w * 0.5f + dx * u; }     // relative to the centre
         float y(float v) const { return v * u; }
         float by(float v) const { return h - (480.f - v) * u; }   // bottom-bar y
         // HUD text scale: the reference footage uses the 800x600 font size
@@ -276,16 +277,10 @@ void Game::drawViewModel(const Screen& s) {
     base.at(0, 2) = 1; base.at(2, 2) = 0;
     Mat4 model = translate(offset) * base;
 
-    // Modern amenity: on screens wider than the original's 3D view (640x362)
-    // keep the weapon at the same distance from the right edge, in screen
-    // heights, instead of letting it drift toward the centre. Clip-space x is
-    // scaled and shifted right (x' = s*x + c*w).
-    const float aspect0 = 640.f / 362.f, aspect = s.w / s.playH;
-    Mat4 proj = perspective(kOriginalFovY, aspect0, 0.02f, 10.f);
-    Mat4 widen;
-    widen.at(0, 0) = aspect0 / aspect;
-    widen.at(0, 3) = 1.f - aspect0 / aspect;
-    proj = widen * proj;
+    // Same camera as the world: on wider screens the gun stays where it is
+    // relative to the centre of the view (in screen heights); the extra width
+    // only shows more of the world, so ultrawide screens look natural.
+    Mat4 proj = perspective(kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
     SceneLighting light{{0, 0, 0}, {0, 0, 0}, normalize(Vec3{0.3f, 0.9f, 0.4f}), 1e6f, 2e6f};
     models_.begin(proj, light);
     models_.draw(*m, 0, model);
@@ -297,7 +292,7 @@ void Game::drawViewModel(const Screen& s) {
 // view stays as it is), like the original.
 void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     if (!arsenal_.zoomed() || showMap_) return;
-    const float cx = s.rx(480), cy = s.playY + s.playH * 0.5f, r = s.y(120);
+    const float cx = s.cx(160), cy = s.playY + s.playH * 0.5f, r = s.y(120);
 
     glEnable(GL_STENCIL_TEST);
     glClearStencil(0);
@@ -497,7 +492,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
 
     // Zoom inset furniture: ring, crosshair ticks, range.
     if (arsenal_.zoomed() && !showMap_) {
-        const float zx = s.rx(480), zy = cy, r = s.y(120), t = std::max(1.f, s.u);
+        const float zx = s.cx(160), zy = cy, r = s.y(120), t = std::max(1.f, s.u);
         hud_.ring(zx, zy, r, std::max(1.5f, s.u * 1.2f), kHudGreen);
         const float in = r * 0.12f, out = r * 0.42f;
         hud_.rect(zx - out, zy - t * 0.5f, out - in, t, kHudGreen);
