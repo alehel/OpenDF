@@ -17,11 +17,12 @@ This project is in its early stages and **not yet playable as a game**. What wor
 | Extract / list tool | ✅ |
 | PCX images and palettes | ✅ |
 | `.TRN` terrain descriptors | ✅ |
-| Terrain rendering: colour and elevation maps, detail tiles, sky, clouds, water, haze, endless wrap-around | ✅ (scale approximated) |
+| Terrain rendering: colour and elevation maps, detail tiles, sky, clouds, water, haze, endless wrap-around | ✅ (1 m per pixel, calibrated from mission data) |
 | Free-fly and walk camera with ground collision | ✅ |
 | `.3DI` models (every object, vehicle, soldier, weapon): textures, LODs, materials, transparency, shadows | ✅ 359 of 362 load; the other 3 are damaged or unused on the disc |
 | Model viewer, and placing objects in the world at real scale | ✅ |
-| `.BMS` missions (object placement), `ITEMS.DEF`, `.JIM` waypoints | ⏳ next |
+| `ITEMS.DEF`, `.BMS` missions: every object placed with position, height and heading; player start | ✅ all 62 missions, 26,510 objects |
+| Mission triggers/objectives, AI state, `.JIM` briefing maps | ⏳ |
 | Soldier animation (`.ANM`, `PLAYER01.CHR`) | ⏳ |
 | Weapons, AI soldiers, mission scripting, HUD, menus | ⏳ |
 | Audio (WAV/MIDI in `AUDIO.PFF`, `DFMUSIC.SBF`), `.KDV` video | ⏳ |
@@ -73,14 +74,16 @@ If the `OpenDF` folder sits inside the CD folder, as it does here, `--data ..` w
 | Command | Purpose |
 |---|---|
 | `opendf [--data DIR] [--terrain DFG1] [--size 1600x900]` | terrain viewer |
+| `opendf --data DIR mission [C02M01]` | load a mission: its terrain and all its objects, starting where the player starts |
 | `opendf --data DIR models [HUMVEE]` | browse all 362 `.3DI` models |
-| `opendf --data DIR check` | parse every model, terrain and image and report failures |
+| `opendf --data DIR check` | parse every model, terrain, image and mission and report failures |
+| `--camera X,Y,HEIGHT,YAW,PITCH` | start at map metres X (east), Y (north), HEIGHT above ground, facing compass YAW, PITCH (degrees) |
 | `opendf --data DIR list [.EXT]` | list every file in the archives |
 | `opendf --data DIR extract OUTDIR [.EXT]` | extract files (encrypted ones decoded) |
 
 Viewer controls: mouse to look, **WASD** to move, **Shift** to go faster,
 **Space / C** for up / down, **F** to switch between walking and flying,
-**Tab / Shift+Tab** for the next / previous terrain, **[ ]** for height scale,
+**Tab / Shift+Tab** for the next / previous terrain (or mission, in `mission` mode), **[ ]** for height scale,
 **- =** for view distance, **M** to place a row of sample objects in front of you
 (soldier, hostage, Humvee, pickup, crates, trees, hut, barracks, tower, Black Hawk),
 **N** to clear them, and **Esc** to release the mouse and then quit.
@@ -89,7 +92,9 @@ Model viewer controls: drag to orbit, mouse wheel to zoom, **Tab / Shift+Tab** f
 the next / previous model, **PageUp / PageDown** to jump 10, **L** to cycle the
 level of detail. The title bar shows the size in metres.
 
-![Sample objects placed on the jungle terrain](docs/screenshot-objects.png)
+![Rope bridge across a gorge in multiplayer map C08M61](docs/screenshot-mission-bridge.png)
+
+![Ruins on their levelled pad in mission C03M03](docs/screenshot-mission-ruins.png)
 
 ## Legal
 

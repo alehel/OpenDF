@@ -88,10 +88,9 @@ type R G B material      maps colour-map colours to footstep/terrain materials
 
 Terrains are 1024×1024 and **wrap around** in both directions.
 
-**Unknowns / approximations in OpenDF:** world scale. OpenDF currently uses
-8 m per map cell and 1.5 m per elevation step (adjustable with `[ ]`). The
-real values should come from `DF.EXE` or from object placement in missions.
-The exact meaning of `gamma`, `horizon` and `sun_slope` is also guessed.
+**Scale:** 1 m per map pixel and about 0.25 m per elevation step; see
+*World scale and orientation* below. The exact meaning of `gamma`, `horizon`
+and `sun_slope` is still guessed.
 
 ## 3DI model (objects, vehicles, soldiers, weapons)
 
@@ -177,20 +176,61 @@ Delta Force itself draws `.3DI` via `ITEMS.DEF`, so OpenDF ignores these for now
 Text: `begin "name"` … `end` blocks with `id`, `type` (decoration, vehicle,
 …), `graphic` (`.3DI`), `husk` (destroyed graphic), `hp`, `ai_function`.
 
-## BMS mission (first look)
+## BMS mission
 
-`C%02iM%02i.BMS` in `DFBASE.PFF`: `"BMS\r"`, title, author, terrain (`C2M1.TRN`),
-dialogue set (`dfdlg02`), section counts at 0x98, then 96-byte object
-records from 0x10C: u32 type (e.g. 2009 ↔ `ITEMS.DEF` id 102009?), u32 0,
-u32 id, u32 0, i32 x, y, z (16.16; z is height above ground), … Positions
-span about 1–2 km per mission. **The terrain cell size will be pinned down
-by matching these to terrain features**; until then 8 m per cell is a guess.
+`C%02iM%02i.BMS` in `DFBASE.PFF` (62 missions: campaigns 2–6 plus the `C08`
+multiplayer maps).
+
+```
+0x00  "BMS\r"
+0x04  char title[40]       "C02M01 - Clear Camp"
+0x2C  char author[40]
+0x54  char terrain[16]     "C2M1.TRN" (each mission has its own TRN, usually
+                           pointing at a shared DFxx map)
+0x64  char dialogue[16]    "dfdlg02"
+0x98  u32 counts[...]      the first four add up to the object count
+0x10C object records, 96 bytes each, until a zero type
+  0x00 u32 type            ITEMS.DEF id − 100000 (one item, 3034, is stored as-is)
+  0x08 u32 id              unique within the mission
+  0x0C u32 flags           team/state bits (0, 0x10, 0x100, 0x102, 0x112 …; not decoded)
+  0x10 i32 x               16.16, metres east
+  0x14 i32 y               16.16, metres north
+  0x18 i32 z               16.16, metres above the ground
+  0x1C … 0x30              mostly constant (4; 100, 100, 100; 0x10; 0x400): AI parameters?
+  0x34 u32 heading         degrees clockwise from north; the model's +X points this way
+  0x38 … 0x4C              AI/behaviour data (not decoded)
+after the records: triggers/objectives (not decoded)
+```
+
+Invisible items (`type marker` in `ITEMS.DEF`) include `start, player`
+(106001), waypoints, area triggers, multiplayer starts and ambient sound
+emitters. OpenDF starts the camera at the first `start, player`.
+
+## World scale and orientation (calibrated)
+
+- **1 mission unit = 1 terrain pixel = 1 metre.** Mission (x, y) maps to
+  terrain column x, row −y, wrapping every 1024. Evidence:
+  - Over 795 buildings in all missions, the heightmap under each building is
+    12× flatter than the map average with this mapping. The designers
+    flattened building pads. Every other combination of scale (⅛–2),
+    origin and axis flips tested scores no better than chance.
+  - The `C08` multiplayer maps place objects across ±1024 units, one whole terrain.
+  - Barbed-wire rolls (3.08 m long models) are laid in lines 2.84 units apart.
+  - Rope bridges (44 m models) start on a canyon rim and span the gorge
+    in their heading's direction.
+- **Height:** 0.25 m per elevation step (estimate). The heightmaps change by a
+  median of 1 step per pixel (90th percentile 3, 99th 7). At 0.25 m/step that
+  is about 14° typical ground, with only canyon walls steeper than 45°. Larger
+  values make ordinary terrain unwalkable. The exact engine constant has not
+  been found yet.
+- Terrains are therefore about 1 km square and tile endlessly. Some missions
+  have objects several km out, which land on wrapped copies of the map.
 
 ## Other formats (identified, not yet decoded)
 
 | Ext | Magic | Notes |
 |---|---|---|
-| `.JIM` | binary | mission waypoints; contains names like `1-START POINT`, `2-CP ALPHA` |
+| `.JIM` | binary | briefing-map annotations: 9-byte points (u8 kind, u16 x, u16 y, u32 n) then 16-byte names like `2-CP ALPHA`; for the M7 briefing screen |
 | `.PAL` | binary | mission map palettes |
 | `.KDV` | `xVDK`/`sVDK`/`pVDK` chunks | video: 640×480, includes `SAMP` audio chunks |
 | `.SBF` | `SBF0` | music bank with named tracks (`Intro`, …) |

@@ -18,8 +18,12 @@
 namespace df {
 
 struct WorldScale {
-    float cellSize = 8.0f;     // metres per map pixel (approximation, see docs)
-    float heightScale = 1.5f;  // metres per elevation step (approximation)
+    // One map pixel is one metre: mission coordinates (also metres, matching
+    // the 1/256 m model units) land 1:1 on terrain pixels; see docs/FORMATS.md.
+    float cellSize = 1.0f;
+    // Metres per elevation step. Estimated from slope statistics (keeps typical
+    // ground walkable, canyon walls steep); not yet confirmed from the engine.
+    float heightScale = 0.25f;
 };
 
 class Terrain {

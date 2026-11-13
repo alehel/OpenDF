@@ -9,6 +9,7 @@
 // DFSETUP folder). It defaults to the current directory and its parent.
 
 #include "core/Pff.h"
+#include "formats/Mission.h"
 #include "formats/Model3di.h"
 #include "formats/Pcx.h"
 #include "formats/Trn.h"
@@ -40,6 +41,8 @@ struct Options {
     std::string terrain;
     std::string screenshot;  // render one frame to a .ppm and exit (for testing)
     bool spawn = false;      // place the sample objects at start (for testing)
+    bool hasCamera = false;  // --camera x,y,height,yaw,pitch (map metres, degrees)
+    float camera[5] = {0, 0, 0, 0, 0};
     int width = 1280, height = 720;
 };
 
@@ -51,12 +54,18 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--terrain") o.terrain = next();
         else if (a == "--screenshot") o.screenshot = next();
         else if (a == "--spawn") o.spawn = true;
+        else if (a == "--camera") {
+            std::string s = next();
+            float* c = o.camera;
+            if (std::sscanf(s.c_str(), "%f,%f,%f,%f,%f", &c[0], &c[1], &c[2], &c[3], &c[4]) != 5) return false;
+            o.hasCamera = true;
+        }
         else if (a == "--size") {
             std::string s = next();
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "extract" || a == "view" || a == "models" || a == "check")) o.command = a;
+                 (a == "list" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission")) o.command = a;
         else o.args.push_back(a);
     }
     return true;
@@ -68,15 +77,19 @@ void usage() {
         "\n"
         "usage:\n"
         "  opendf [--data DIR] [--terrain NAME] [--size WxH]   terrain viewer\n"
+        "  opendf [--data DIR] mission [C02M01]                load a mission: terrain + all objects\n"
         "  opendf [--data DIR] models [NAME]                   3DI model viewer\n"
         "  opendf [--data DIR] list [EXT]                      list files in the archives\n"
         "  opendf [--data DIR] extract OUTDIR [EXT]            extract files (PFF2 decrypted)\n"
         "  opendf [--data DIR] check                           parse every model/terrain/image\n"
+        "  --camera X,Y,HEIGHT,YAW,PITCH  start at map metres X (east), Y (north), HEIGHT above\n"
+        "                                 ground, compass YAW and PITCH in degrees\n"
         "\n"
         "DIR is the folder with the game's .PFF files (CD root or DFSETUP).\n"
         "\n"
         "terrain viewer: mouse look, WASD move, Shift fast, Space/C up/down (fly)\n"
-        "  F walk/fly, Tab / Shift+Tab terrain, M place sample objects, N clear them\n"
+        "  F walk/fly, Tab / Shift+Tab next/previous terrain or mission,\n"
+        "  M place sample objects, N clear them\n"
         "  [ ] height scale, - = view distance, Esc release mouse / quit\n"
         "model viewer: drag to orbit, wheel to zoom, Tab / Shift+Tab model,\n"
         "  PageUp/PageDown jump 10, L cycle level of detail, Esc quit");
@@ -171,7 +184,7 @@ struct GlWindow {
 };
 
 struct Camera {
-    Vec3 pos{4096, 300, 4096};
+    Vec3 pos{512, 60, 512};
     float yaw = 0.6f, pitch = -0.05f;
     bool walking = false;
     Vec3 forward() const { return {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)}; }
@@ -179,8 +192,9 @@ struct Camera {
 
 struct Placed {
     const GpuModel* model;
-    Vec3 pos;
-    float heading;
+    Vec3 pos;        // x/z inside the map; y = ground + lift
+    float heading;   // radians clockwise from north; the model's +X faces it
+    float lift;      // height above the ground
 };
 
 // A row of familiar objects for judging the world scale against the terrain.
@@ -202,13 +216,55 @@ std::vector<Placed> placeSamples(Vfs& vfs, ModelRenderer& models, const Terrain&
         offset += halfWidth + 1.f;
         Vec3 p = base + right * offset + fwd * halfWidth;
         p.y = terrain.heightAt(p.x, p.z) - l.min[1];
-        out.push_back({m, p, cam.yaw + kPi * 0.5f});
+        out.push_back({m, p, cam.yaw + kPi * 0.5f, -l.min[1]});
         offset += halfWidth + 1.f;
     }
     return out;
 }
 
-Mat4 objectMatrix(const Placed& p) { return translate(p.pos) * rotateY(-p.heading); }
+// The terrain repeats every `extent` metres; draw each object at the copy
+// nearest the camera.
+Vec3 nearestCopy(Vec3 p, Vec3 eye, float extent) {
+    auto wrap = [&](float v, float ref) {
+        float d = std::fmod(v - ref, extent);
+        if (d > extent * 0.5f) d -= extent;
+        if (d < -extent * 0.5f) d += extent;
+        return ref + d;
+    };
+    return {wrap(p.x, eye.x), p.y, wrap(p.z, eye.z)};
+}
+
+Mat4 objectMatrix(const Placed& p, Vec3 at) { return translate(at) * rotateY(kPi * 0.5f - p.heading); }
+
+void reseat(std::vector<Placed>& placed, const Terrain& terrain) {
+    for (auto& p : placed) p.pos.y = terrain.heightAt(p.pos.x, p.pos.z) + p.lift;
+}
+
+// Everything a mission places that has a graphic (markers, triggers and
+// sounds are invisible). Returns the player start, if any.
+bool placeMission(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const Mission& mission,
+                  const Terrain& terrain, std::vector<Placed>& out, Placed* start) {
+    out.clear();
+    bool haveStart = false;
+    const float ext = terrain.mapExtent();
+    int missing = 0;
+    for (const auto& o : mission.objects) {
+        const ItemDef* item = items.byMissionType(o.type);
+        Vec3 pos{std::fmod(std::fmod(o.x, ext) + ext, ext), 0, std::fmod(std::fmod(-o.y, ext) + ext, ext)};
+        const float heading = o.heading * kPi / 180.f;
+        if (item && item->id == kItemPlayerStart && !haveStart) {
+            haveStart = true;
+            if (start) *start = {nullptr, pos, heading, o.z};
+        }
+        if (!item || item->graphic.empty() || item->type == "effect") continue;
+        const GpuModel* m = models.get(vfs, item->graphic);
+        if (!m) { ++missing; continue; }
+        out.push_back({m, pos, heading, o.z});
+    }
+    reseat(out, terrain);
+    if (missing) std::fprintf(stderr, "%d objects have no loadable graphic\n", missing);
+    return haveStart;
+}
 
 // Parses every file type OpenDF understands and reports anything that fails.
 int cmdCheck(Vfs& vfs) {
@@ -233,22 +289,53 @@ int cmdCheck(Vfs& vfs) {
         TerrainDesc d;
         report(n, vfs.read(n, buf) && parseTrn(std::string(buf.begin(), buf.end()), d), "bad TRN");
     }
+    ItemDefs items;
+    bool haveItems = vfs.read("ITEMS.DEF", buf) && items.parse(std::string(buf.begin(), buf.end()));
+    report("ITEMS.DEF", haveItems, "cannot parse");
+    int objects = 0, unknown = 0;
+    for (auto& n : vfs.list(".BMS")) {
+        Mission m;
+        std::string err;
+        bool ok = vfs.read(n, buf) && parseMission(buf, m, &err);
+        if (ok) {
+            std::string trn = m.terrain;
+            if (!vfs.exists(trn)) { ok = false; err = "terrain " + trn + " missing"; }
+            for (auto& obj : m.objects) {
+                ++objects;
+                if (haveItems && !items.byMissionType(obj.type)) ++unknown;
+            }
+        }
+        report(n, ok, err);
+    }
+    std::printf("%d mission objects, %d with unknown item types\n", objects, unknown);
     std::printf("%d files checked, %d failed\n", total, failed);
     return 0;
 }
 
 int cmdView(Vfs& vfs, Options& o) {
-    std::vector<std::string> terrains;
-    for (auto& t : vfs.list(".TRN")) terrains.push_back(t.substr(0, t.size() - 4));
-    if (terrains.empty()) { std::fprintf(stderr, "no terrains found\n"); return 1; }
+    const bool missionMode = o.command == "mission";
+    // In mission mode Tab cycles missions, otherwise terrains.
+    std::vector<std::string> entries;
+    for (auto& t : vfs.list(missionMode ? ".BMS" : ".TRN")) entries.push_back(t.substr(0, t.size() - 4));
+    if (entries.empty()) { std::fprintf(stderr, "nothing to show\n"); return 1; }
+    std::string want = missionMode ? (o.args.empty() ? "C02M01" : o.args[0]) : (o.terrain.empty() ? "DFG1" : o.terrain);
     int current = 0;
-    if (!o.terrain.empty()) {
-        auto it = std::find(terrains.begin(), terrains.end(), toUpper(o.terrain));
-        if (it == terrains.end()) { std::fprintf(stderr, "unknown terrain %s\n", o.terrain.c_str()); return 1; }
-        current = int(it - terrains.begin());
-    } else if (auto it = std::find(terrains.begin(), terrains.end(), "DFG1"); it != terrains.end()) {
-        current = int(it - terrains.begin());
+    if (auto it = std::find(entries.begin(), entries.end(), toUpper(want)); it != entries.end())
+        current = int(it - entries.begin());
+    else if (missionMode ? !o.args.empty() : !o.terrain.empty()) {
+        std::fprintf(stderr, "unknown %s %s\n", missionMode ? "mission" : "terrain", want.c_str());
+        return 1;
     }
+
+    ItemDefs items;
+    if (missionMode) {
+        std::vector<uint8_t> raw;
+        if (!vfs.read("ITEMS.DEF", raw) || !items.parse(std::string(raw.begin(), raw.end()))) {
+            std::fprintf(stderr, "cannot read ITEMS.DEF\n");
+            return 1;
+        }
+    }
+    std::string missionTitle;
 
     GlWindow window;
     if (!window.open(o, "OpenDF")) return 1;
@@ -260,25 +347,57 @@ int cmdView(Vfs& vfs, Options& o) {
     if (!models.init(&err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
     Camera cam;
     std::vector<Placed> placed;
-    float viewDistance = 4000.f;
+    float viewDistance = 1200.f;
 
     auto load = [&](int idx) {
-        std::string e;
+        std::string e, trn = entries[idx];
+        Mission mission;
+        if (missionMode) {
+            std::vector<uint8_t> raw;
+            if (!vfs.read(entries[idx] + ".BMS", raw) || !parseMission(raw, mission, &e)) {
+                std::fprintf(stderr, "%s: %s\n", entries[idx].c_str(), e.empty() ? "unreadable" : e.c_str());
+                return false;
+            }
+            trn = mission.terrain;
+            if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
+        }
         WorldScale keep = terrain.scale;
-        if (!terrain.load(vfs, terrains[idx], &e)) {
-            std::fprintf(stderr, "%s: %s\n", terrains[idx].c_str(), e.c_str());
+        if (!terrain.load(vfs, trn, &e)) {
+            std::fprintf(stderr, "%s: %s\n", entries[idx].c_str(), e.c_str());
             return false;
         }
         terrain.scale = keep;
         current = idx;
-        std::printf("terrain %s: \"%s\" by %s\n", terrains[idx].c_str(), terrain.desc().name.c_str(),
-                    terrain.desc().creator.c_str());
-        cam.pos.y = std::max(cam.pos.y, terrain.heightAt(cam.pos.x, cam.pos.z) + 40.f);
-        for (auto& p : placed) p.pos.y = terrain.heightAt(p.pos.x, p.pos.z) - p.model->lods[0].min[1];
+        if (missionMode) {
+            Placed start{};
+            missionTitle = mission.title;
+            if (placeMission(vfs, models, items, mission, terrain, placed, &start)) {
+                cam.pos = start.pos;
+                cam.pos.y = terrain.heightAt(cam.pos.x, cam.pos.z) + 1.7f;
+                cam.yaw = start.heading;
+                cam.pitch = -0.05f;
+                cam.walking = true;
+            }
+            std::printf("mission %s: \"%s\" by %s on %s (%s), %zu objects shown\n", entries[idx].c_str(),
+                        mission.title.c_str(), mission.author.c_str(), trn.c_str(), terrain.desc().name.c_str(),
+                        placed.size());
+        } else {
+            std::printf("terrain %s: \"%s\" by %s\n", entries[idx].c_str(), terrain.desc().name.c_str(),
+                        terrain.desc().creator.c_str());
+            reseat(placed, terrain);
+        }
+        cam.pos.y = std::max(cam.pos.y, terrain.heightAt(cam.pos.x, cam.pos.z) + (cam.walking ? 1.7f : 10.f));
         return true;
     };
+    if (!missionMode) cam.pos.y = 60.f;
     if (!load(current)) return 1;
-    cam.pos.y = terrain.heightAt(cam.pos.x, cam.pos.z) + 120.f;
+    if (o.hasCamera) {
+        cam.pos = {o.camera[0], 0, -o.camera[1]};
+        cam.pos.y = terrain.heightAt(cam.pos.x, cam.pos.z) + o.camera[2];
+        cam.yaw = o.camera[3] * kPi / 180.f;
+        cam.pitch = o.camera[4] * kPi / 180.f;
+        cam.walking = false;
+    }
     if (o.spawn) {
         cam.pos.y = terrain.heightAt(cam.pos.x, cam.pos.z) + 1.7f;
         cam.walking = true;
@@ -315,7 +434,7 @@ int cmdView(Vfs& vfs, Options& o) {
                     else running = false;
                     break;
                 case SDLK_TAB: {
-                    int n = int(terrains.size());
+                    int n = int(entries.size());
                     int next = (current + (shift ? n - 1 : 1)) % n;
                     for (int tries = 0; tries < n && !load(next); ++tries) next = (next + (shift ? n - 1 : 1)) % n;
                     break;
@@ -328,15 +447,15 @@ int cmdView(Vfs& vfs, Options& o) {
                 }
                 case SDLK_n: placed.clear(); break;
                 case SDLK_LEFTBRACKET:
-                    terrain.scale.heightScale = std::max(0.25f, terrain.scale.heightScale - 0.25f);
-                    for (auto& p : placed) p.pos.y = terrain.heightAt(p.pos.x, p.pos.z) - p.model->lods[0].min[1];
+                    terrain.scale.heightScale = std::max(0.05f, terrain.scale.heightScale - 0.05f);
+                    reseat(placed, terrain);
                     break;
                 case SDLK_RIGHTBRACKET:
-                    terrain.scale.heightScale += 0.25f;
-                    for (auto& p : placed) p.pos.y = terrain.heightAt(p.pos.x, p.pos.z) - p.model->lods[0].min[1];
+                    terrain.scale.heightScale += 0.05f;
+                    reseat(placed, terrain);
                     break;
-                case SDLK_MINUS: viewDistance = std::max(1000.f, viewDistance - 500.f); break;
-                case SDLK_EQUALS: viewDistance = std::min(12000.f, viewDistance + 500.f); break;
+                case SDLK_MINUS: viewDistance = std::max(300.f, viewDistance - 100.f); break;
+                case SDLK_EQUALS: viewDistance = std::min(4000.f, viewDistance + 100.f); break;
                 default: break;
                 }
             }
@@ -353,7 +472,7 @@ int cmdView(Vfs& vfs, Options& o) {
         if (k[SDL_SCANCODE_S]) move = move - dirF;
         if (k[SDL_SCANCODE_D]) move = move + right;
         if (k[SDL_SCANCODE_A]) move = move - right;
-        float speed = cam.walking ? (fast ? 9.f : 4.5f) : (fast ? 400.f : 80.f);
+        float speed = cam.walking ? (fast ? 9.f : 4.5f) : (fast ? 120.f : 25.f);
         if (!cam.walking) {
             if (k[SDL_SCANCODE_SPACE]) move.y += 1;
             if (k[SDL_SCANCODE_C]) move.y -= 1;
@@ -371,15 +490,10 @@ int cmdView(Vfs& vfs, Options& o) {
         } else {
             cam.pos.y = std::max(cam.pos.y, ground + 2.f);
         }
-        // Keep coordinates small; the world repeats every map extent. Placed
-        // objects move with the wrap so they stay where they were put.
+        // Keep coordinates small; the world repeats every map extent.
         const float ext = terrain.mapExtent();
-        Vec3 before = cam.pos;
         cam.pos.x = std::fmod(std::fmod(cam.pos.x, ext) + ext, ext);
         cam.pos.z = std::fmod(std::fmod(cam.pos.z, ext) + ext, ext);
-        Vec3 shift = cam.pos - before;
-        if (shift.x != 0 || shift.z != 0)
-            for (auto& p : placed) { p.pos.x += shift.x; p.pos.z += shift.z; }
 
         int dw, dh;
         SDL_GL_GetDrawableSize(win, &dw, &dh);
@@ -393,14 +507,20 @@ int cmdView(Vfs& vfs, Options& o) {
         if (!placed.empty()) {
             SceneLighting light{cam.pos, terrain.fogColor(), terrain.sunDirection(), viewDistance * 0.35f, viewDistance * 0.98f};
             models.begin(proj * view, light);
+            const Vec3 fwdView = cam.forward();
+            struct Visible { const Placed* p; Vec3 at; int lod; };
+            std::vector<Visible> visible;
+            visible.reserve(placed.size());
             for (auto& p : placed) {
-                Vec3 d = p.pos - cam.pos;
-                models.draw(*p.model, ModelRenderer::chooseLod(*p.model, std::sqrt(dot(d, d))), objectMatrix(p));
+                Vec3 at = nearestCopy(p.pos, cam.pos, ext);
+                Vec3 d = at - cam.pos;
+                float dist = std::sqrt(dot(d, d));
+                if (dist > viewDistance + p.model->radius) continue;
+                if (dot(d, fwdView) < -p.model->radius) continue;   // behind the camera
+                visible.push_back({&p, at, ModelRenderer::chooseLod(*p.model, dist)});
             }
-            for (auto& p : placed) {
-                Vec3 d = p.pos - cam.pos;
-                models.drawTranslucent(*p.model, ModelRenderer::chooseLod(*p.model, std::sqrt(dot(d, d))), objectMatrix(p));
-            }
+            for (auto& v : visible) models.draw(*v.p->model, v.lod, objectMatrix(*v.p, v.at));
+            for (auto& v : visible) models.drawTranslucent(*v.p->model, v.lod, objectMatrix(*v.p, v.at));
             models.end();
         }
 
@@ -415,9 +535,9 @@ int cmdView(Vfs& vfs, Options& o) {
         fpsTimer += dt;
         if (fpsTimer >= 0.5f) {
             char title[256];
-            std::snprintf(title, sizeof title, "OpenDF - %s \"%s\" - %s - %.0f fps - pos %.0f %.0f alt %.0f m",
-                          terrains[current].c_str(), terrain.desc().name.c_str(), cam.walking ? "walk" : "fly",
-                          frames / fpsTimer, cam.pos.x, cam.pos.z, cam.pos.y - ground);
+            std::snprintf(title, sizeof title, "OpenDF - %s \"%s\" - %s - %.0f fps - map %.0f, %.0f - %.0f m above ground",
+                          entries[current].c_str(), missionMode ? missionTitle.c_str() : terrain.desc().name.c_str(),
+                          cam.walking ? "walk" : "fly", frames / fpsTimer, cam.pos.x, -cam.pos.z, cam.pos.y - ground);
             SDL_SetWindowTitle(win, title);
             frames = 0;
             fpsTimer = 0;
@@ -528,7 +648,7 @@ int cmdModels(Vfs& vfs, Options& o) {
 int main(int argc, char** argv) {
     Options o;
     if (!parseArgs(argc, argv, o)) { usage(); return 1; }
-    const bool graphics = o.command == "view" || o.command == "models";
+    const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission";
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
@@ -539,6 +659,7 @@ int main(int argc, char** argv) {
         if (o.command == "list") rc = cmdList(vfs, o);
         else if (o.command == "extract") rc = cmdExtract(vfs, o);
         else if (o.command == "models") rc = cmdModels(vfs, o);
+        else if (o.command == "mission") rc = cmdView(vfs, o);
         else if (o.command == "check") rc = cmdCheck(vfs);
         else rc = cmdView(vfs, o);
     }

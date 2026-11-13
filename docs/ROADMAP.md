@@ -14,12 +14,12 @@ Each milestone ends with something you can run.
 - Model viewer mode (`opendf models`), `check` command
 - Objects placed on terrain at true scale (1/256 m units)
 
-## M3: Missions
-- Pin down terrain cell size and height scale by matching mission objects to terrain features
-- Parse `ITEMS.DEF`; decode `.BMS` mission files: terrain, object placement, objectives
-- Decode `.JIM` waypoints
-- Load a mission and place every object on its terrain
-- Mission picker
+## M3: Missions ✅
+- World scale calibrated from mission data: 1 m per terrain pixel, Y north, heading clockwise from north (height ≈ 0.25 m/step, estimated)
+- `ITEMS.DEF` parsed; `.BMS` object records decoded (position, height, heading, type)
+- `mission` mode: every object placed, camera at the player start, Tab cycles missions
+- `.JIM` identified as briefing-map annotations (moved to M7)
+- Still open: BMS triggers/objectives and the per-object AI fields (needed in M6)
 
 ## M4: Player
 - First-person soldier: movement, stances (stand/crouch/prone), stamina

@@ -24,6 +24,7 @@ find_package(OpenGL REQUIRED)
 add_executable(opendf
   src/main.cpp
   src/core/Pff.cpp
+  src/formats/Mission.cpp
   src/formats/Model3di.cpp
   src/formats/Pcx.cpp
   src/formats/Trn.cpp

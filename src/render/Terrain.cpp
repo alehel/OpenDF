@@ -11,7 +11,7 @@ namespace df {
 namespace {
 
 constexpr int kChunkCells = 64;
-constexpr float kSkirtDepth = 40.f;
+constexpr float kSkirtDepth = 8.f;
 
 const char* kTerrainVS = R"(#version 330 core
 layout(location = 0) in vec3 aPos;          // chunk-local cell x, cell y, skirt flag
@@ -53,7 +53,7 @@ void main() {
     vec3 n = normalize(vec3(hl - hr, 2.0 * uCell, hd - hu));
 
     float dist = length(vWorld - uEye);
-    float fade = 1.0 - smoothstep(120.0, 700.0, dist);
+    float fade = 1.0 - smoothstep(30.0, 220.0, dist);
     if (fade > 0.0) {
         ivec2 cell = ivec2(mod(floor(vCell), uMapSize));
         float tile = min(texelFetch(uDetailIdx, cell, 0).r * 255.0, uTiles - 1.0);
@@ -123,7 +123,7 @@ uniform vec3 uEye, uFog;
 uniform float uAlpha, uFogStart, uFogEnd, uTime;
 out vec4 oColor;
 void main() {
-    vec2 p = vWorld.xz / 512.0;
+    vec2 p = vWorld.xz / 64.0;
     vec3 c = 0.5 * (texture(uWater, p + vec2(uTime * 0.010, 0.0)).rgb +
                     texture(uWater, p * 1.3 + vec2(0.0, uTime * 0.013)).rgb);
     float dist = length(vWorld - uEye);
@@ -413,8 +413,8 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     }
     setV3(progSky_, "uEye", eye);
     setV3(progSky_, "uFog", fog);
-    setF(progSky_, "uCloudH", std::max(desc_.skyHeight * scale.heightScale, 600.f));
-    setF(progSky_, "uCloudScale", 8192.f);
+    setF(progSky_, "uCloudH", std::max(desc_.skyHeight * scale.heightScale, 150.f));
+    setF(progSky_, "uCloudScale", 2048.f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texSkyPal_);
     glActiveTexture(GL_TEXTURE0 + 1);
@@ -460,7 +460,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             float horiz = std::sqrt(d.x * d.x + d.z * d.z);
             if (horiz > viewDistance + chunkRadius) continue;
             if (dot(d, fwd) < -chunkRadius) continue;
-            int lod = horiz < 700 ? 0 : horiz < 1500 ? 1 : horiz < 3000 ? 2 : 3;
+            int lod = horiz < 160 ? 0 : horiz < 400 ? 1 : horiz < 800 ? 2 : 3;
             glUniform2f(locOrigin, float(cx * kChunkCells), float(cz * kChunkCells));
             glBindVertexArray(lods_[lod].vao);
             glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
