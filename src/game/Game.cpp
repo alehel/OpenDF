@@ -133,6 +133,9 @@ private:
         float text() const { return u * 640.f / float(modeW); }
         float art() const { return u * 640.f / float(modeW); }
         float px() const { return std::max(1.f, u); }   // one original pixel (lines)
+        // DF.EXE's virtual 1024x768 HUD coordinates (centred horizontally).
+        float vx(float x) const { return cx(x * 0.625f - 320.f); }
+        float vy(float y) const { return this->y(y * 0.625f); }
     };
 
     bool loadMission(int index);
@@ -268,6 +271,25 @@ private:
     float scopeFocal_ = 320;
     float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
+    // Binoculars ([0x93367c], 0x44b870): a 22-degree view with a fixed
+    // random aim offset chosen as they come up (yaw, pitch radians).
+    bool binoculars_ = false;
+    float binoYaw_ = 0, binoPitch_ = 0;
+    bool paused_ = false;                 // [0xc70ac4] (0x42df53)
+    bool oldMessages_ = false;            // [0x66f974]
+    bool friendlyTags_ = false;           // [0x66f978]
+    int letterbox_ = 1;                   // lbsize (0x404650): 1 or 2 eighths of the height per band
+    float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
+    std::deque<std::string> history_;     // the 16 latest messages (ring 0x68a280)
+    void drawOldMessages(const Screen& s);
+    void pushMessage(const std::string& text) {
+        messages_.push_back({text, 0});
+        history_.push_back(text);
+        while (history_.size() > 16) history_.pop_front();
+    }
+    void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawPaused(const Screen& s);
+    void drawBinoculars(const Screen& s);
     bool captured_ = true;
 };
 
@@ -520,7 +542,7 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 void Game::explode(Vec3 at, int surface, bool heavy) {
     spawnEffect(surface == 2 ? 4 : 3, at);
     playSound(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
-    for (auto& m : world_.blast(at, 10.f, heavy)) messages_.push_back({m, 0});
+    for (auto& m : world_.blast(at, 10.f, heavy)) pushMessage(m);
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
     if (!playerDead()) {
@@ -812,7 +834,7 @@ void Game::removeTeam(int team) {
 void Game::showText(int id) {
     char key[16];
     std::snprintf(key, sizeof key, "ID%03d", id);
-    if (const std::string* t = campText_.find("Triggered Text", key)) messages_.push_back({*t, 0});
+    if (const std::string* t = campText_.find("Triggered Text", key)) pushMessage(*t);
 }
 
 void Game::radio(int id) {
@@ -834,7 +856,7 @@ void Game::tickDialogs() {
         const DialogPart& p = (*d.parts)[size_t(d.next++)];
         sound_.playDialogLine(p.clip);
         if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
-            messages_.push_back({dialogText_[size_t(p.subtitle)], 0});
+            pushMessage(dialogText_[size_t(p.subtitle)]);
         d.wait = sound_.dialogLineTicks(p.clip) + p.gap * 62 / 10 + 1;
     }
     activeDialogs_.erase(std::remove_if(activeDialogs_.begin(), activeDialogs_.end(), [](const ActiveDialog& d) { return d.next < 0; }),
@@ -860,8 +882,15 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // Debug keys (not in the original): N free flight.
     if (k.keysym.sym == SDLK_n) { player_.fly = !player_.fly; return; }
     (void)shift;
-    switch (controls_.actionFor(k.keysym.scancode)) {
+    const Action act = controls_.actionFor(k.keysym.scancode);
+    // While paused, the game's commands (flag 0x10000) are ignored (0x42d9e3).
+    if (paused_ && act != Action::Pause && act != Action::Escape) return;
+    switch (act) {
     case Action::Escape:
+        // Esc closes the first overlay open (0x42e964): pause, old messages,
+        // map / goals; else (OpenDF) frees the mouse or quits.
+        if (paused_) { paused_ = false; break; }
+        if (oldMessages_) { oldMessages_ = false; break; }
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
         if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
         else { SDL_Event q; q.type = SDL_QUIT; SDL_PushEvent(&q); }
@@ -887,6 +916,23 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
         if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+        break;
+    case Action::Pause: paused_ = !paused_; break;
+    case Action::OldMessages: oldMessages_ = !oldMessages_; break;
+    case Action::ShowFriendly:
+        friendlyTags_ = !friendlyTags_;
+        pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
+        break;
+    case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
+    case Action::Binoculars:
+        binoculars_ = !binoculars_ && !playerDead();
+        if (binoculars_) {
+            // 0x44b870: sin / cos of a random angle times 2^25 binary angle (2.8125 degrees).
+            const float r = std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
+            binoYaw_ = std::sin(r) * 2.8125f * kPi / 180.f;
+            binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
+        }
+        arsenal_.setBinoculars(binoculars_);
         break;
     case Action::BigMap: showMap_ = !showMap_; showGoals_ = false; break;
     case Action::MissionGoals: showGoals_ = !showGoals_; showMap_ = false; break;
@@ -1002,7 +1048,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
 void Game::drawViewModel(const Screen& s) {
     // The original hides the weapon while the zoom inset is up.
     // Nor is it drawn once the player is dead (0x4042df).
-    if (!gunVisible_ || scopeShown() || showMap_ || playerDead()) return;
+    if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_) return;   // 0x4042ff
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
@@ -1026,7 +1072,7 @@ void Game::drawViewModel(const Screen& s) {
     // Same camera as the world: on wider screens the gun stays where it is
     // relative to the centre of the view (in screen heights); the extra width
     // only shows more of the world, so ultrawide screens look natural.
-    Mat4 proj = perspective(kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
+    Mat4 proj = perspective(viewFovY_ > 0 ? viewFovY_ : kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
     // The world light (DF.EXE 0x44bea4) rotated into view space, as the gun
     // is drawn there; the viewer looks along -Z.
     SceneLighting light;
@@ -1404,6 +1450,11 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
     }
 
+    if (friendlyTags_) drawFriendlyTags(s, viewProj);
+    if (binoculars_ && !playerDead()) drawBinoculars(s);
+    if (oldMessages_) drawOldMessages(s);
+    if (paused_) drawPaused(s);
+
     drawTopBar(s);
     drawBottomBar(s);
     // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
@@ -1413,6 +1464,74 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.multiply(0, s.playY, s.w, s.playH, {1, c, c, 1});
     }
     hud_.end();
+}
+
+void Game::drawPaused(const Screen& s) {
+    // 0x48327c: a darkened box (shade level 10) from (310, 330) to (714, 438)
+    // and "Game Paused" centred at (512, 380) in green (0x66f938).
+    const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    const char* t = "Game Paused";
+    hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+void Game::drawOldMessages(const Screen& s) {
+    // 0x484d94: a darkened box (100, 100)-(924, 668), "Messages" centred at
+    // (512, 120) in bright green, then the 16 latest lines from x 130, y 160,
+    // 30 apart, the oldest at the top (APPROXIMATION: order inferred), each
+    // in its message colour (white here).
+    const float x0 = s.vx(100), x1 = s.vx(924), y0 = s.vy(100), y1 = s.vy(668);
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    const char* t = "Messages";
+    hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kHudBright, s.text());
+    const size_t first = history_.size() < 16 ? 0 : history_.size() - 16;
+    for (size_t i = first, row = 16 - (history_.size() - first); i < history_.size(); ++i, ++row)
+        hud_.text(s.vx(130), s.vy(160 + 30 * float(row)), history_[i], kHudMessage, s.text());
+}
+
+void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
+    // 0x44c574: the names of visible soldiers on the player's team, centred
+    // 25 above their projected position, clipped to x 60..964 and the view
+    // (top + 5 .. bottom - 30); colour by side: 0 green, 1 blue, 2 red.
+    // (APPROXIMATION: the name is the ITEMS.DEF item name.)
+    const Vec3 eye = viewEye();
+    for (const auto& o : world_.objects) {
+        if (!o.person || !o.alive() || o.team != kPlayerTeam || !o.item) continue;
+        const Vec3 at = world_.nearest(o.pos, eye);
+        Mat4 vp = viewProj;
+        const float cx = vp.at(0, 0) * at.x + vp.at(0, 1) * at.y + vp.at(0, 2) * at.z + vp.at(0, 3);
+        const float cy = vp.at(1, 0) * at.x + vp.at(1, 1) * at.y + vp.at(1, 2) * at.z + vp.at(1, 3);
+        const float cw = vp.at(3, 0) * at.x + vp.at(3, 1) * at.y + vp.at(3, 2) * at.z + vp.at(3, 3);
+        if (cw <= 0.1f) continue;
+        const float px = (cx / cw * 0.5f + 0.5f) * s.w;
+        const float py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH - s.vy(25);
+        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) continue;
+        const Color c = o.side == 1 ? kHudBlue : o.side == 2 ? kHudRed : kHudPureGreen;
+        hud_.text(px - hud_.textWidth(o.item->name, s.text()) / 2, py, o.item->name, c, s.text());
+    }
+}
+
+void Game::drawBinoculars(const Screen& s) {
+    // 0x401f94: "Distance: %3im" at (768, 369) (the depth at the centre of
+    // the view, "1km+" from 1000 m) and "Heading: %3i" at (256, 369), both
+    // centred, bright green. The heading is DF.EXE's (yaw - 90 degrees +
+    // offset) in its angles (0 east, anticlockwise: obj+0x30, loader
+    // 0x440109), i.e. 360 - the compass bearing of the view.
+    Player cam = player_;
+    cam.yaw += binoYaw_;
+    cam.pitch += binoPitch_;
+    const Vec3 eye = player_.eye(), dir = cam.forward();
+    RayHit hit;
+    float dist = 1e9f;
+    if (world_.raycast(eye, eye + dir * 1100.f, hit)) dist = hit.t * 1100.f * dot(dir, dir);
+    char buf[32];
+    if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "Distance: 1km+");
+    else std::snprintf(buf, sizeof buf, "Distance: %3im", int(dist));
+    hud_.text(s.vx(768) - hud_.textWidth(buf, s.text()) / 2, s.vy(369), buf, kHudBright, s.text());
+    float deg = 360.f - cam.yaw * 180.f / kPi;
+    deg -= 360.f * std::floor(deg / 360.f);
+    std::snprintf(buf, sizeof buf, "Heading: %3i", int(deg));
+    hud_.text(s.vx(256) - hud_.textWidth(buf, s.text()) / 2, s.vy(369), buf, kHudBright, s.text());
 }
 
 void Game::drawMissionEnd(const Screen& s) {
@@ -1581,6 +1700,8 @@ int Game::run() {
         while (running) {
             Uint64 now = SDL_GetPerformanceCounter();
             float dt = fixedStep ? 1.f / 60.f : std::min(float(now - last) / SDL_GetPerformanceFrequency(), 0.1f);
+            const float realDt = dt;   // the input script keeps time while paused
+            if (paused_) dt = 0;       // Pause stops the game (0x42df53)
             last = now;
 
             SDL_Event e;
@@ -1599,7 +1720,7 @@ int Game::run() {
             }
             if (zoomClick) arsenal_.toggleZoom();
 
-            if (!inputCmds_.empty()) runInputScript(dt);
+            if (!inputCmds_.empty()) runInputScript(realDt);
             const Uint8* kb = SDL_GetKeyboardState(nullptr);
             Uint8 keys[SDL_NUM_SCANCODES];
             std::memcpy(keys, kb, sizeof keys);
@@ -1627,7 +1748,10 @@ int Game::run() {
             }
             player_.pitch = std::clamp(player_.pitch, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
             // Any move or jump key turns the scope off (0x4373ab).
-            if (in.forward != 0 || in.strafe != 0 || in.jump) arsenal_.cancelZoom();
+            if (in.forward != 0 || in.strafe != 0 || in.jump) {
+                arsenal_.cancelZoom();
+                if (binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
+            }
             const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.mode().oneHanded();
@@ -1665,7 +1789,7 @@ int Game::run() {
                     if (o.item && o.item->id - 100000 == d.first) playSound(d.second, o.pos);
             }
             for (const auto& at : arsenal_.takeStabs())
-                for (auto& m : world_.stab(at, player_.origin())) messages_.push_back({m, 0});
+                for (auto& m : world_.stab(at, player_.origin())) pushMessage(m);
             for (const auto& sp : player_.takeSpawns()) spawnEffect(sp.slot, sp.pos);
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
@@ -1720,7 +1844,7 @@ int Game::run() {
             }
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
             prevTrigger = trigger;
-            for (auto& m : msgs) messages_.push_back({m, 0});
+            for (auto& m : msgs) pushMessage(m);
             for (auto& m : messages_) m.age += dt;
             // At most three lines; each leaves 1240 ticks after it arrived (DF.EXE 0x42f400).
             while (messages_.size() > 3 || (!messages_.empty() && messages_.front().age > 1240.f / 60.f)) messages_.pop_front();
@@ -1735,8 +1859,9 @@ int Game::run() {
             s.u = s.h / 480.f;
             s.top = kTopBar * s.u;
             s.bottom = kBottomBar * s.u;
-            s.playY = s.top;
-            s.playH = std::max(1.f, s.h - s.top - s.bottom);
+            // The 3D view: rows letterbox/8 .. 1 - letterbox/8 of the height (0x404650).
+            s.playY = float(letterbox_) * s.h / 8.f;
+            s.playH = std::max(1.f, s.h - 2 * s.playY);
             // The largest of the original's modes (640x480, 800x600,
             // 1024x768) that fits the window height.
             s.modeW = s.h >= 768 ? 1024 : s.h >= 600 ? 800 : 640;
@@ -1747,12 +1872,17 @@ int Game::run() {
             glClearStencil(0);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
             // 3D view between the two HUD bars.
-            glViewport(0, int(s.bottom), dw, int(s.playH));
-            const float fovY = kOriginalFovY;
+            glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
+            // Focal length W/2 per 640 of width (FOV 90 across, 0x404489), or
+            // the binoculars' FOV 22 (0x40423d); the letterbox crops the height.
+            const float tanHalfX = binoculars_ && !playerDead() ? std::tan(11.f * kPi / 180.f) : 1.f;
+            const float fovY = 2.f * std::atan(tanHalfX * std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
+            viewFovY_ = 2.f * std::atan(std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
             Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, viewDistance_ * 1.1f);
-            // While zoomed the camera carries the scope's random offset (0x404246).
+            // With the binoculars up the camera carries their random offset (0x404246).
             Player cam = player_;
-            if (arsenal_.zoomed()) { cam.yaw += arsenal_.scopeYaw(); cam.pitch += arsenal_.scopePitch(); }
+            if (binoculars_) { cam.yaw += binoYaw_; cam.pitch += binoPitch_; }
+            if (binoculars_) scopeFocal_ = 320.f / tanHalfX;
             Mat4 view = playerDead() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
                 glClearColor(1, 0, 1, 1);
@@ -1760,7 +1890,7 @@ int Game::run() {
                 drawViewModel(s);
                 glViewport(0, 0, dw, dh);
             } else {
-                drawWorld(view, proj, false);
+                drawWorld(view, proj, binoculars_ && !playerDead());
                 drawViewModel(s);
                 drawZoomInset(s, view, fovY);
                 glViewport(0, 0, dw, dh);

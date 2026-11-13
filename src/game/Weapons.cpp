@@ -332,17 +332,10 @@ void Arsenal::startReload() {
 }
 
 void Arsenal::toggleZoom() {
-    // 0x44b420: only modes with flag 0x1 (and a magnification).
-    if (reloadTicks_ > 0 || !mode().zoomable()) return;
+    // 0x44b420: only modes with flag 0x1 (and a magnification), not with
+    // the binoculars up ([0x93367c]).
+    if (reloadTicks_ > 0 || !mode().zoomable() || binoculars_) return;
     zoomLevel_ = zoomLevel_ ? 0 : 1;
-    if (zoomLevel_) {
-        // 0x44b870: a fixed random aim offset for this zoom, sin/cos of a
-        // random angle times 8 table units (up to 2.8125°).
-        std::uniform_real_distribution<float> a(0.f, 2 * kPi);
-        const float r = a(rng_), m = 2.8125f * kPi / 180.f;
-        scopeYaw_ = std::sin(r) * m;
-        scopePitch_ = std::cos(r) * m;
-    }
 }
 
 void Arsenal::fire(Player& player) {
@@ -404,8 +397,6 @@ void Arsenal::fire(Player& player) {
     // always fire from the model (0x44a120).
     Vec3 origin;
     if (zoomLevel_ && md.type == 1) {
-        const float sy = yaw + scopeYaw_, sp = pitch + scopePitch_;
-        dir = {std::cos(sp) * std::sin(sy), std::sin(sp), -std::cos(sp) * std::cos(sy)};
         origin = player.eye() + Vec3{0, -0x200 / 65536.f, 0};
     } else {
         const Vec3 fwd = player.forward();
@@ -484,10 +475,10 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             if (magRef() > 0) { chamberedRef() = 1; --magRef(); sound(1); }   // chamber sound +0x24 (0x449f48)
             if (magRef() == 0) startReload();
             // A burst goes on by itself (0x44988e); full auto refires while
-            // the trigger is held, but not zoomed (0x449fc3).
+            // the trigger is held, but not with the binoculars up ([0x93367c], 0x449ff1).
             if (chambered() && reloadTicks_ == 0) {
                 if (burstLeft_ > 0) { --burstLeft_; followUp_ = true; fire(player); followUp_ = false; shot = true; }
-                else if (md.automatic() && triggerDown && !zoomLevel_) { fire(player); shot = true; }
+                else if (md.automatic() && triggerDown && !binoculars_) { fire(player); shot = true; }
             }
         } else if (md.type == 6) {
             chamberedRef() = 1;   // 0x44a6c4: the knife is ready again
@@ -501,7 +492,8 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     // during the cooldown is lost (0x44a920).
     if (pressed_) {
         pressed_ = false;
-        if (!shot && cooldown_ <= 0 && reloadTicks_ == 0) {
+        // The binoculars block the trigger (0x44a947).
+        if (!shot && cooldown_ <= 0 && reloadTicks_ == 0 && !binoculars_) {
             if (!chambered() && md.type != 1 && md.type != 6) {
                 sound(3);                       // launcher / grenade dry fire (0x44a221, 0x44a3e3)
             } else if (chambered()) {

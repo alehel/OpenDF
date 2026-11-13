@@ -20,6 +20,9 @@ const ActionName kNames[] = {
     {Action::Weapon8, "weapon8"}, {Action::Weapon9, "weapon9"}, {Action::NextWaypoint, "NextWaypoint"},
     {Action::BigMap, "BigMap"}, {Action::MissionGoals, "MissionGoals"}, {Action::MapZoomIn, "zoomin"},
     {Action::MapZoomOut, "zoomout"}, {Action::Crosshairs, "crosshairs"}, {Action::ShowGun, "showgun"},
+    {Action::Binoculars, "Binoculars"}, {Action::Pause, "Pause"}, {Action::OldMessages, "OldMessages"},
+    {Action::ShowFriendly, "ShowFriendly"}, {Action::LetterBox, "lbsize"}, {Action::Drop, "Drop"},
+    {Action::Briefing, "briefing"}, {Action::Help, "help"},
     {Action::Escape, "escape"},
 };
 
@@ -34,6 +37,8 @@ const Default kDefaults[] = {
     {"weapon5", 0x35}, {"weapon6", 0x36}, {"weapon7", 0x37}, {"weapon8", 0x38}, {"weapon9", 0x39},
     {"NextWaypoint", 0x57}, {"BigMap", 0x43}, {"MissionGoals", 0x47}, {"zoomin", 0xbb}, {"zoomout", 0xbd},
     {"crosshairs", 0x72}, {"showgun", 0x73}, {"escape", 0x1b},
+    {"Binoculars", 0x42}, {"Pause", 0x13}, {"OldMessages", 0x52}, {"ShowFriendly", 0x46}, {"lbsize", 0x7b},
+    {"Drop", 0x44}, {"briefing", 0x4f}, {"help", 0x70},
 };
 
 SDL_Scancode fromVirtualKey(uint32_t vk) {

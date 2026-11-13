@@ -19,6 +19,7 @@ enum class Action {
     NoRun, Crouch, Prone, Stand, Fire, Scope, Magazine, Cycle,
     Weapon0, Weapon1, Weapon2, Weapon3, Weapon4, Weapon5, Weapon6, Weapon7, Weapon8, Weapon9,
     NextWaypoint, BigMap, MissionGoals, MapZoomIn, MapZoomOut, Crosshairs, ShowGun, Escape,
+    Binoculars, Pause, OldMessages, ShowFriendly, LetterBox, Drop, Briefing, Help,
     Count
 };
 

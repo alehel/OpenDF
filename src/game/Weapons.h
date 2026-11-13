@@ -131,8 +131,8 @@ public:
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
     const float* kick() const { return kick_; }
-    float scopeYaw() const { return scopeYaw_; }
-    float scopePitch() const { return scopePitch_; }
+    // Binoculars up ([0x93367c]): no firing, no scope.
+    void setBinoculars(bool on) { binoculars_ = on; if (on) zoomLevel_ = 0; }
     float flash() const { return flashTimer_; }
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     // Rounds not fired by the player's weapon (shrapnel); they hit and do
@@ -170,7 +170,7 @@ private:
     int zoomLevel_ = 0;
     float flashTimer_ = 0;
     float kick_[3] = {0, 0, 0};
-    float scopeYaw_ = 0, scopePitch_ = 0;
+    bool binoculars_ = false;
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
