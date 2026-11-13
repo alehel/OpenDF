@@ -1,0 +1,149 @@
+#include "Audio.h"
+
+#include "../core/Pff.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace df {
+
+Audio::~Audio() { closeDevice(); }
+
+bool Audio::openDevice() {
+    if (device_) return true;
+    if (!SDL_WasInit(SDL_INIT_AUDIO) && SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return false;
+    SDL_AudioSpec want{}, have{};
+    want.freq = kRate;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = 512;
+    want.callback = &Audio::callback;
+    want.userdata = this;
+    device_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    if (!device_) return false;
+    SDL_PauseAudioDevice(device_, 0);
+    return true;
+}
+
+void Audio::closeDevice() {
+    if (device_) SDL_CloseAudioDevice(device_);
+    device_ = 0;
+}
+
+void Audio::callback(void* self, Uint8* stream, int len) {
+    static_cast<Audio*>(self)->mix(reinterpret_cast<int16_t*>(stream), len / 4);
+}
+
+const SoundClip* Audio::clip(Vfs& vfs, const std::string& name) {
+    std::string key = name;
+    for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+    if (key.find('.') == std::string::npos) key += ".WAV";
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (auto it = clips_.find(key); it != clips_.end()) return it->second.get();
+    }
+    std::unique_ptr<SoundClip> out;
+    std::vector<uint8_t> data;
+    if (vfs.read(key, data) && !data.empty()) {
+        SDL_AudioSpec spec{};
+        Uint8* buf = nullptr;
+        Uint32 len = 0;
+        SDL_RWops* rw = SDL_RWFromConstMem(data.data(), int(data.size()));
+        if (SDL_LoadWAV_RW(rw, 1, &spec, &buf, &len)) {
+            // To signed 16-bit mono at the clip's own rate.
+            SDL_AudioCVT cvt;
+            if (SDL_BuildAudioCVT(&cvt, spec.format, spec.channels, spec.freq, AUDIO_S16SYS, 1, spec.freq) >= 0) {
+                std::vector<Uint8> work(size_t(len) * size_t(std::max(1, cvt.len_mult)));
+                std::memcpy(work.data(), buf, len);
+                cvt.buf = work.data();
+                cvt.len = int(len);
+                if (cvt.needed) SDL_ConvertAudio(&cvt);
+                const int bytes = cvt.needed ? cvt.len_cvt : int(len);
+                out = std::make_unique<SoundClip>();
+                out->rate = spec.freq;
+                out->samples.resize(size_t(bytes) / 2);
+                std::memcpy(out->samples.data(), work.data(), out->samples.size() * 2);
+            }
+            SDL_FreeWAV(buf);
+        }
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& slot = clips_[key];
+    slot = std::move(out);
+    return slot.get();
+}
+
+int Audio::play(const SoundClip* clip, float left, float right, bool loop, int priority) {
+    if (!clip || clip->samples.empty()) return 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Voice v;
+    v.id = nextId_++;
+    v.clip = clip;
+    v.step = (uint64_t(clip->rate) << 32) / uint64_t(kRate);
+    v.left = left;
+    v.right = right;
+    v.loop = loop;
+    v.priority = priority;
+    v.started = counter_++;
+    if (int(voices_.size()) < maxVoices_) {
+        voices_.push_back(v);
+        return v.id;
+    }
+    // All busy: replace the lowest priority, oldest voice, if not more important.
+    auto victim = std::min_element(voices_.begin(), voices_.end(), [](const Voice& a, const Voice& b) {
+        return a.priority != b.priority ? a.priority < b.priority : a.started < b.started;
+    });
+    if (victim == voices_.end() || victim->priority > priority) return 0;
+    *victim = v;
+    return v.id;
+}
+
+void Audio::setGains(int voice, float left, float right) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& v : voices_)
+        if (v.id == voice) { v.left = left; v.right = right; }
+}
+
+void Audio::stop(int voice) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    voices_.erase(std::remove_if(voices_.begin(), voices_.end(), [&](const Voice& v) { return v.id == voice; }), voices_.end());
+}
+
+bool Audio::playing(int voice) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& v : voices_)
+        if (v.id == voice) return true;
+    return false;
+}
+
+void Audio::stopAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    voices_.clear();
+}
+
+void Audio::mix(int16_t* out, int frames) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    scratch_.assign(size_t(frames) * 2, 0.f);
+    for (auto& v : voices_) {
+        const auto& s = v.clip->samples;
+        const uint64_t end = uint64_t(s.size()) << 32;
+        for (int i = 0; i < frames; ++i) {
+            if (v.pos >= end) {
+                if (!v.loop) break;
+                v.pos %= end;
+            }
+            const float x = s[size_t(v.pos >> 32)] / 32768.f;
+            scratch_[size_t(i) * 2] += x * v.left;
+            scratch_[size_t(i) * 2 + 1] += x * v.right;
+            v.pos += v.step;
+        }
+    }
+    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
+                                 [](const Voice& v) { return !v.loop && v.pos >= (uint64_t(v.clip->samples.size()) << 32); }),
+                  voices_.end());
+    for (size_t i = 0; i < scratch_.size(); ++i)
+        out[i] = int16_t(std::clamp(scratch_[i] * master_, -1.f, 1.f) * 32767.f);
+}
+
+} // namespace df

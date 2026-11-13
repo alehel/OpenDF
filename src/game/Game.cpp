@@ -7,6 +7,7 @@
 #include "../formats/Rtxt.h"
 #include "../formats/Chr.h"
 #include "../formats/Dlg.h"
+#include "../audio/Audio.h"
 #include "Controls.h"
 #include "Player.h"
 #include "Script.h"
@@ -202,6 +203,11 @@ private:
     // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
     // every 16..23 ticks, 100 puffs.
     struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; };
+    // Sound: live on the audio device, or mixed in fixed steps into the
+    // recording (--record).
+    Audio audio_;
+    FILE* audioOut_ = nullptr;
+    double audioClock_ = 0;
     std::vector<SmokeGen> smokeGens_;
     int playerHp_ = 4;                    // character word +0x74
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
@@ -1394,6 +1400,11 @@ int Game::run() {
                 if (world_.objects[i].side == 2 && world_.objects[i].missionGroup == 3) world_.damage(int(i), 1000);
 
         captured_ = !scripted;
+        if (!o_.record.empty()) {
+            audioOut_ = std::fopen((o_.record + ".pcm").c_str(), "wb");
+        } else if (!hidden && !audio_.openDevice()) {
+            std::fprintf(stderr, "no audio device: %s\n", SDL_GetError());
+        }
         FILE* video = nullptr;
         int videoW = 0, videoH = 0;
         std::vector<uint8_t> videoFrame;
@@ -1546,6 +1557,15 @@ int Game::run() {
                     if (!video) std::fprintf(stderr, "cannot start ffmpeg for --record\n");
                     videoFrame.resize(size_t(videoW) * videoH * 3);
                 }
+                if (audioOut_) {
+                    // The soundtrack of this 1/60 s step.
+                    audioClock_ += Audio::kRate / 60.0;
+                    const int n = int(audioClock_);
+                    audioClock_ -= n;
+                    std::vector<int16_t> pcm(size_t(n) * 2);
+                    audio_.mix(pcm.data(), n);
+                    std::fwrite(pcm.data(), 2, pcm.size(), audioOut_);
+                }
                 if (video) {
                     glPixelStorei(GL_PACK_ALIGNMENT, 1);
                     glReadPixels(0, 0, videoW, videoH, GL_RGB, GL_UNSIGNED_BYTE, videoFrame.data());
@@ -1565,7 +1585,24 @@ int Game::run() {
                 running = false;
             }
             SDL_GL_SwapWindow(win_);
-            if (!running && video) { pclose(video); video = nullptr; std::printf("recorded %s\n", o_.record.c_str()); }
+            if (!running && video) {
+                pclose(video);
+                video = nullptr;
+                if (audioOut_) {
+                    // Put the soundtrack into the recording.
+                    std::fclose(audioOut_);
+                    audioOut_ = nullptr;
+                    const std::string pcm = o_.record + ".pcm", tmp = o_.record + ".tmp.mp4";
+                    char cmd[2048];
+                    std::snprintf(cmd, sizeof cmd,
+                                  "ffmpeg -loglevel error -y -i \"%s\" -f s16le -ar %d -ac 2 -i \"%s\" -c:v copy -c:a aac -b:a 128k "
+                                  "-shortest \"%s\" && mv \"%s\" \"%s\"",
+                                  o_.record.c_str(), Audio::kRate, pcm.c_str(), tmp.c_str(), tmp.c_str(), o_.record.c_str());
+                    if (std::system(cmd) != 0) std::fprintf(stderr, "could not add the soundtrack to %s\n", o_.record.c_str());
+                    std::remove(pcm.c_str());
+                }
+                std::printf("recorded %s\n", o_.record.c_str());
+            }
 
             ++fpsFrames;
             fpsTimer += dt;
