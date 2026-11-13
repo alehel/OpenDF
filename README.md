@@ -24,9 +24,9 @@ don't react yet** (AI is milestone 6), so it is not a game yet. What works today
 | Model viewer, and placing objects in the world at real scale | ✅ |
 | `ITEMS.DEF`, `.BMS` missions: every object placed with position, height and heading; player start | ✅ all 62 missions, 26,510 objects |
 | First-person soldier: run/walk, jump, stand/crouch/prone, collision with buildings and objects (the models' own collision volumes), standing on bridges | ✅ |
-| Weapons: .45, M4 (semi/auto), M40 sniper (4×/10× scope), MP5SD, M249 SAW; magazines, reloads, recoil, bullet drop and travel time, muzzle flash | ✅ (weapon numbers are real-world approximations) |
+| Weapons with the original names and fire modes: SpecOps .45, M4 (single shot / burst), M40, H&K MP5 SD (single / burst / full auto), SAW; magazines, reloads, recoil, bullet drop and travel time, muzzle flash | ✅ (ballistic numbers are real-world approximations) |
 | Damage: people go down, crates/barrels/etc. break into their `husk` wreck models | ✅ |
-| HUD in the game's own font: compass, weapon/mags/rounds/chamber, stance, grid, mission timer, messages; command map (C) | ✅ |
+| The original's HUD: top and bottom bars with the game's own stance icons, weapon silhouettes and font; compass, grid square, carrying box, messages; the zoom view as a magnified circle with a range readout; command map (C) | ✅ (waypoint box empty until `.JIM` is decoded) |
 | Knife, grenades, M203, binoculars, laser designator; player health | ⏳ |
 | Mission triggers/objectives, AI state, waypoint names (`.JIM`) | ⏳ |
 | Soldier animation (`.ANM`, `PLAYER01.CHR`) | ⏳ |
@@ -102,9 +102,10 @@ with mouse + WASD:
 | Look / fire / zoom or scope | mouse / left button or Ctrl / right button |
 | Move | WASD or arrow keys (running is the default, Shift walks), Space jumps |
 | Stand / crouch / prone | Delete / End / Page Down (original keys), or X / Z to toggle crouch / prone |
-| Weapons | 2 .45 pistol, 3 M4 single, 4 M4 auto, 6 M40 sniper, 7 MP5SD, 8 M249, Backspace cycles |
+| Weapons | 2 .45 pistol, 3 / 4 M4 single shot / burst, 6 M40 sniper, 7 MP5 SD (again: next fire mode), 8 SAW, Backspace cycles |
+| Zoom view | right mouse button (cycles the weapon's magnifications, then off) |
 | Change magazine | M (original key) or R |
-| Command map / goals | C / G |
+| Command map (zoom in / out) / goals | C (- / =) / G |
 | Crosshair / gun on-off | F3 / F4 (original keys) |
 | Debug flight / next mission | N / Tab |
 

@@ -14,16 +14,22 @@
 
 namespace df {
 
+enum class FireMode { Single, Burst, Auto };
+
+struct WeaponMode {
+    const char* name;           // as shown on the HUD (DFGAME.BIN wording)
+    FireMode fire;
+};
+
 struct WeaponDef {
-    const char* name;
+    std::vector<WeaponMode> modes;
     const char* viewModel;      // first-person .3DI
+    int icon;                   // frame in WEAP640.PCX
     int magazine, spareMags;
     float roundsPerMinute;
-    bool canAuto;
     float muzzleVelocity;       // m/s
-    float spreadDeg;            // standing, still, unscoped
-    float zoom[2];              // scope/zoom magnifications (1 = none)
-    bool scope;                 // draws a scope overlay when zoomed
+    float spreadDeg;            // standing, still, unzoomed
+    std::vector<float> zoom;    // magnifications of the zoom inset
     int damage;
     float reloadSeconds;
     float recoilDeg;
@@ -45,12 +51,13 @@ struct Impact {
 
 class Arsenal {
 public:
-    struct Slot { int def; int rounds; int mags; bool autoMode; };
+    struct Slot { int def; int rounds; int mags; int mode; };
 
     void init();
-    // Selects a weapon slot; `mode` < 0 keeps the current fire mode.
+    // Selects a weapon slot; `mode` < 0 keeps that weapon's current fire mode.
     void select(int slot, int mode = -1);
     void cycle();
+    void cycleMode();
     void reload();
     void toggleZoom();
 
@@ -60,9 +67,11 @@ public:
 
     const Slot& current() const { return slots_[current_]; }
     const WeaponDef& def() const { return weaponDefs()[slots_[current_].def]; }
+    const WeaponMode& mode() const { return def().modes[slots_[current_].mode]; }
     int slotIndex() const { return current_; }
+    // Magnification of the zoom inset (1 = not zoomed).
     float zoom() const { return zoomLevel_ ? def().zoom[zoomLevel_ - 1] : 1.f; }
-    bool scoped() const { return zoomLevel_ > 0 && def().scope; }
+    bool zoomed() const { return zoomLevel_ > 0; }
     bool reloading() const { return reloadTimer_ > 0; }
     float recoil() const { return recoil_; }
     float recoilPitch() const;   // radians the view is currently kicked up
@@ -76,6 +85,7 @@ private:
     int current_ = 0;
     int zoomLevel_ = 0;
     float cooldown_ = 0, reloadTimer_ = 0, recoil_ = 0, flashTimer_ = 0;
+    int burstLeft_ = 0;
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
     std::mt19937 rng_{1998};

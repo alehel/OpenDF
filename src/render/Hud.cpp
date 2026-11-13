@@ -34,11 +34,22 @@ in vec2 vUv;
 in vec4 vColor;
 in vec2 vPos;
 uniform sampler2D uTex;
-uniform int uMode;      // 0 solid, 1 textured, 2 scope mask, 3 soft round puff
+uniform int uMode;      // 0 solid, 1 textured, 2 scope mask, 3 soft puff, 4 ring, 5 disc
 uniform vec3 uCircle;   // centre x, y, radius in pixels
+uniform float uThickness;
 out vec4 oColor;
 void main() {
     if (uMode == 1) { oColor = texture(uTex, vUv) * vColor; return; }
+    if (uMode == 4) {
+        float d = abs(length(vPos - uCircle.xy) - uCircle.z);
+        oColor = vec4(vColor.rgb, vColor.a * (1.0 - smoothstep(uThickness * 0.5 - 0.5, uThickness * 0.5 + 0.5, d)));
+        return;
+    }
+    if (uMode == 5) {
+        if (length(vPos - uCircle.xy) > uCircle.z) discard;
+        oColor = vec4(0.0);
+        return;
+    }
     if (uMode == 3) {
         float d = length(vUv * 2.0 - 1.0);
         oColor = vec4(vColor.rgb, vColor.a * smoothstep(1.0, 0.2, d));
@@ -63,6 +74,7 @@ constexpr int kCellH = 16, kFirstX = 9;
 
 Hud::~Hud() {
     if (font_) glDeleteTextures(1, &font_);
+    for (GLuint t : images_) glDeleteTextures(1, &t);
     if (vbo_) glDeleteBuffers(1, &vbo_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
     if (prog_) glDeleteProgram(prog_);
@@ -74,6 +86,7 @@ bool Hud::init(Vfs& vfs, std::string* error) {
     locScreen_ = glGetUniformLocation(prog_, "uScreen");
     locMode_ = glGetUniformLocation(prog_, "uMode");
     locCircle_ = glGetUniformLocation(prog_, "uCircle");
+    locThickness_ = glGetUniformLocation(prog_, "uThickness");
     glUseProgram(prog_);
     glUniform1i(glGetUniformLocation(prog_, "uTex"), 0);
     glUseProgram(0);
@@ -121,11 +134,38 @@ bool Hud::init(Vfs& vfs, std::string* error) {
     glBindTexture(GL_TEXTURE_2D, font_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img.width, img.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    // Linear filtering: HUD text is scaled by non-integer factors.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     return true;
+}
+
+HudImage Hud::loadImage(Vfs& vfs, const std::string& name) {
+    HudImage out;
+    std::vector<uint8_t> data;
+    IndexedImage img;
+    if (!vfs.read(name, data) || !decodePcx(data, img)) return out;
+    std::vector<uint8_t> rgba(img.pixels.size() * 4);
+    for (size_t i = 0; i < img.pixels.size(); ++i) {
+        const Rgb& c = img.palette[img.pixels[i]];
+        rgba[i * 4] = c.r; rgba[i * 4 + 1] = c.g; rgba[i * 4 + 2] = c.b;
+        rgba[i * 4 + 3] = (c.r | c.g | c.b) ? 255 : 0;
+    }
+    glGenTextures(1, &out.texture);
+    glBindTexture(GL_TEXTURE_2D, out.texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img.width, img.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    out.width = img.width;
+    out.height = img.height;
+    images_.push_back(out.texture);
+    texture_ = 0;   // force a rebind on the next draw
+    return out;
 }
 
 void Hud::begin(int width, int height) {
@@ -222,6 +262,27 @@ void Hud::puff(float cx, float cy, float r, Color c) {
 void Hud::image(GLuint texture, float x, float y, float w, float h, Color tint) {
     setMode(1, texture);
     quad(x, y, x + w, y + h, 0, 0, 1, 1, tint);
+}
+
+void Hud::imageUV(GLuint texture, float x, float y, float w, float h, float u0, float v0, float u1, float v1, Color tint) {
+    setMode(1, texture);
+    quad(x, y, x + w, y + h, u0, v0, u1, v1, tint);
+}
+
+void Hud::ring(float cx, float cy, float radius, float thickness, Color c) {
+    setMode(4, 0);
+    glUniform3f(locCircle_, cx, cy, radius);
+    glUniform1f(locThickness_, thickness);
+    const float e = radius + thickness;
+    quad(cx - e, cy - e, cx + e, cy + e, 0, 0, 0, 0, c);
+    flush();
+}
+
+void Hud::disc(float cx, float cy, float radius) {
+    setMode(5, 0);
+    glUniform3f(locCircle_, cx, cy, radius);
+    quad(cx - radius, cy - radius, cx + radius, cy + radius, 0, 0, 0, 0, {0, 0, 0, 0});
+    flush();
 }
 
 void Hud::scopeMask(float cx, float cy, float radius) {

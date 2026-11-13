@@ -20,14 +20,25 @@ namespace df {
 namespace {
 
 constexpr float kPi = 3.14159265f;
-const Color kGreen{0.45f, 0.95f, 0.45f, 1};
-const Color kAmber{1.0f, 0.8f, 0.3f, 1};
-const Color kWhite{0.95f, 0.95f, 0.9f, 1};
-const Color kPanel{0, 0, 0, 0.45f};
+
+// HUD colours, matched to the original screen.
+const Color kHudGreen{0.30f, 0.92f, 0.30f, 1};
+const Color kHudLine{0.12f, 0.62f, 0.12f, 1};
+const Color kHudBoxFill{0.0f, 0.12f, 0.0f, 1};
+const Color kHudScan{0.0f, 0.19f, 0.0f, 1};
+const Color kHudMessage{0.85f, 0.85f, 0.85f, 1};
+const Color kHudBlue{0.25f, 0.4f, 1.0f, 1};
+const Color kHudRed{0.95f, 0.15f, 0.1f, 1};
+
+// The original HUD is laid out for 640x480; these are its positions in those
+// units (measured from the original game). The screen is scaled by height and,
+// on wide screens, the right-hand group stays anchored to the right edge
+// instead of being stretched.
+constexpr float kTopBar = 59, kBottomBar = 60, kTopDivider = 350, kBottomDivider = 431;
 
 struct Message { std::string text; float age; };
 
-bool project(const Mat4& vp, Vec3 p, int w, int h, float& sx, float& sy, float& depth) {
+bool project(const Mat4& vp, Vec3 p, float w, float h, float& sx, float& sy, float& depth) {
     float x = vp.at(0, 0) * p.x + vp.at(0, 1) * p.y + vp.at(0, 2) * p.z + vp.at(0, 3);
     float y = vp.at(1, 0) * p.x + vp.at(1, 1) * p.y + vp.at(1, 2) * p.z + vp.at(1, 3);
     float cw = vp.at(3, 0) * p.x + vp.at(3, 1) * p.y + vp.at(3, 2) * p.z + vp.at(3, 3);
@@ -47,11 +58,19 @@ void writePpm(const std::string& path, int w, int h) {
     for (int y = h - 1; y >= 0; --y) f.write(reinterpret_cast<const char*>(&px[size_t(y) * w * 3]), w * 3);
 }
 
-std::string gridName(Vec3 feet, float extent) {
-    // 8 x 8 grid over the map, letters west→east, numbers north→south.
-    int col = std::clamp(int(feet.x / extent * 8), 0, 7);
-    int row = std::clamp(int(feet.z / extent * 8), 0, 7);
+// The original's grid: 64 m squares, letters west→east, numbers north→south
+// (e.g. "H12").
+constexpr float kGridSquare = 64.f;
+std::string gridName(Vec3 feet) {
+    int col = std::clamp(int(feet.x / kGridSquare), 0, 25);
+    int row = std::max(0, int(feet.z / kGridSquare));
     return std::string(1, char('A' + col)) + std::to_string(row + 1);
+}
+
+// "C03M03 - Blow Up C3" -> "Blow Up C3"
+std::string missionName(const std::string& title) {
+    auto dash = title.find(" - ");
+    return dash == std::string::npos ? title : title.substr(dash + 3);
 }
 
 class Game {
@@ -60,12 +79,31 @@ public:
     int run();
 
 private:
+    struct Screen {
+        float w, h, u;          // pixels; u = pixels per original 640x480 unit
+        float top, bottom;      // bar heights in pixels
+        float playY, playH;     // 3D view area (top-left origin)
+        float lx(float x) const { return x * u; }                 // left-anchored
+        float rx(float x) const { return w - (640.f - x) * u; }   // right-anchored
+        float y(float v) const { return v * u; }
+        float by(float v) const { return h - (480.f - v) * u; }   // bottom-bar y
+        // HUD text scale: the reference footage uses the 800x600 font size
+        // relative to the screen, i.e. 0.8 of a 640x480 pixel.
+        float text() const { return u * 0.8f; }
+    };
+
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
-    void drawWorld(const Mat4& view, const Mat4& proj, int w, int h);
-    void drawViewModel(int w, int h);
-    void drawHud(const Mat4& viewProj, int w, int h);
-    void drawCommandMap(int w, int h, float s);
+    void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView);
+    void drawViewModel(const Screen& s);
+    void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
+    void drawHud(const Screen& s, const Mat4& viewProj);
+    void drawTopBar(const Screen& s);
+    void drawBottomBar(const Screen& s);
+    void drawCommandMap(const Screen& s);
+    void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
+    float rangeToAim() const;
+    Vec3 aimDirection() const;
 
     Vfs& vfs_;
     GameOptions o_;
@@ -82,12 +120,14 @@ private:
     Terrain& terrain_ = *terrainPtr_;
     ModelRenderer& models_ = *modelsPtr_;
     Hud& hud_ = *hudPtr_;
+    HudImage stanceIcons_, weaponIcons_;
     World world_;
     Player player_;
     Arsenal arsenal_;
     std::deque<Message> messages_;
     float missionTime_ = 0;
     float viewDistance_ = 1200;
+    float mapScale_ = 1.f;   // command map zoom (- / =)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
     bool captured_ = true;
 };
@@ -125,7 +165,6 @@ bool Game::loadMission(int index) {
     arsenal_.init();
     missionTime_ = 0;
     messages_.clear();
-    messages_.push_back({mission_.title, 0});
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
                 world_.objects.size());
     return true;
@@ -139,24 +178,27 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
         else { SDL_Event q; q.type = SDL_QUIT; SDL_PushEvent(&q); }
         break;
-    // Stances, as on the original keyboard layout (Delete / End / Page Down),
-    // plus X and Z as toggles.
+    // Stances: Delete / End / Page Down as on the original keyboard, plus X / Z toggles.
     case SDLK_DELETE: player_.stance = Stance::Stand; break;
     case SDLK_END: player_.stance = Stance::Crouch; break;
     case SDLK_PAGEDOWN: player_.stance = Stance::Prone; break;
     case SDLK_x: player_.stance = player_.stance == Stance::Crouch ? Stance::Stand : Stance::Crouch; break;
     case SDLK_z: player_.stance = player_.stance == Stance::Prone ? Stance::Stand : Stance::Prone; break;
-    // Weapons: 2 sidearm, 3/4 primary single/auto, 6-8 others; Backspace cycles.
+    // Weapons as on the original keyboard: 2 sidearm, 3/4 primary modes,
+    // 6 secondary. 7 and 8 pick the other primaries (pressing again cycles
+    // their fire modes); Backspace cycles weapons.
     case SDLK_2: arsenal_.select(0); break;
     case SDLK_3: arsenal_.select(1, 0); break;
     case SDLK_4: arsenal_.select(1, 1); break;
     case SDLK_6: arsenal_.select(2); break;
-    case SDLK_7: arsenal_.select(3); break;
+    case SDLK_7: if (arsenal_.slotIndex() == 3) arsenal_.cycleMode(); else arsenal_.select(3); break;
     case SDLK_8: arsenal_.select(4); break;
     case SDLK_BACKSPACE: arsenal_.cycle(); break;
     case SDLK_m: case SDLK_r: arsenal_.reload(); break;           // M = "change magazine"
     case SDLK_c: showMap_ = !showMap_; showGoals_ = false; break; // command map
     case SDLK_g: showGoals_ = !showGoals_; showMap_ = false; break;
+    case SDLK_MINUS: mapScale_ = std::min(4.f, mapScale_ * 1.5f); break;    // map zoom in
+    case SDLK_EQUALS: mapScale_ = std::max(0.25f, mapScale_ / 1.5f); break; // map zoom out
     case SDLK_F3: crosshair_ = !crosshair_; break;
     case SDLK_F4: gunVisible_ = !gunVisible_; break;
     case SDLK_n: player_.fly = !player_.fly; break;               // debug flight
@@ -170,12 +212,27 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     }
 }
 
-void Game::drawWorld(const Mat4& view, const Mat4& proj, int w, int h) {
+Vec3 Game::aimDirection() const {
+    Player kicked = player_;
+    kicked.pitch = std::clamp(player_.pitch + arsenal_.recoilPitch(), -1.5f, 1.5f);
+    return kicked.forward();
+}
+
+float Game::rangeToAim() const {
+    Vec3 eye = player_.eye();
+    RayHit hit;
+    const float maxRange = 2000.f;
+    if (!world_.raycast(eye, eye + aimDirection() * maxRange, hit)) return -1;
+    return hit.t * maxRange;
+}
+
+void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     const Vec3 eye = player_.eye();
     terrain_.draw(view, proj, eye, viewDistance_);
     SceneLighting light{eye, terrain_.fogColor(), terrain_.sunDirection(), viewDistance_ * 0.35f, viewDistance_ * 0.98f};
     models_.begin(proj * view, light);
-    const Vec3 fwd = player_.forward();
+    const Vec3 fwd = aimDirection();
+    const float zoom = zoomView ? arsenal_.zoom() : 1.f;
     struct Visible { const WorldObject* o; Vec3 at; int lod; };
     std::vector<Visible> visible;
     for (const auto& o : world_.objects) {
@@ -184,29 +241,29 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, int w, int h) {
         Vec3 d = at - eye;
         float dist = std::sqrt(dot(d, d));
         if (dist > viewDistance_ + o.model->radius || dot(d, fwd) < -o.model->radius) continue;
-        // Zoomed views keep the detailed LOD further out.
-        visible.push_back({&o, at, ModelRenderer::chooseLod(*o.model, dist / arsenal_.zoom())});
+        visible.push_back({&o, at, ModelRenderer::chooseLod(*o.model, dist / zoom)});
     }
     for (auto& v : visible) models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
     for (auto& v : visible) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
     models_.end();
 }
 
-void Game::drawViewModel(int w, int h) {
-    if (!gunVisible_ || arsenal_.scoped() || showMap_) return;
+void Game::drawViewModel(const Screen& s) {
+    // The original hides the weapon while the zoom inset is up.
+    if (!gunVisible_ || arsenal_.zoomed() || showMap_) return;
     const GpuModel* m = models_.get(vfs_, arsenal_.def().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
     const auto& l = m->lods[0];
     const float length = l.max[0] - l.min[0];
-    const float aspect = float(w) / std::max(h, 1);
+    const float aspect = s.w / s.playH;
     const float fovY = 55.f * kPi / 180.f, t = std::tan(fovY * 0.5f);
 
-    // Placed like the original: the muzzle ends about 63% across and 60%
-    // down the screen and the barrel runs back past the bottom-right corner,
-    // so the open back of the model is never in view. Solve for the muzzle
-    // depth at which a weapon of this length spans from the muzzle point to
-    // just beyond that corner.
+    // Placement fitted to the original's screen (the engine's own offset has
+    // not been found in DF.EXE yet): the muzzle ends about 62% across and 60%
+    // down the 3D view and the barrel runs back past the bottom-right corner,
+    // so the open back of the model is never in view. The muzzle depth is
+    // solved so a weapon of this length spans from there to beyond the corner.
     const float mx = 0.14f, my = -0.22f;         // muzzle, normalised device coords
     const float rx = 1.10f, ry = -1.15f;         // where the barrel leaves the screen
     const float rz = 0.32f;                      // ... at this depth
@@ -218,7 +275,6 @@ void Game::drawViewModel(int w, int h) {
     const float depth = std::max(0.15f, (-qb + std::sqrt(disc)) / (2 * qa));
     Vec3 muzzle = A * depth;
 
-    // Recoil pushes the weapon back along its barrel; reloading lowers it.
     const Vec3 f = normalize(muzzle - R);
     const Vec3 right = normalize(cross(f, Vec3{0, 1, 0}));
     const Vec3 up = cross(right, f);
@@ -243,141 +299,235 @@ void Game::drawViewModel(int w, int h) {
     models_.end();
 }
 
-void Game::drawCommandMap(int w, int h, float s) {
-    hud_.rect(0, 0, float(w), float(h), {0, 0, 0, 0.85f});
-    const float size = std::min(w, h) * 0.86f;
-    const float x0 = (w - size) * 0.5f, y0 = (h - size) * 0.5f + 10 * s;
-    hud_.image(terrain_.colorTexture(), x0, y0, size, size);
-    const float ext = terrain_.mapExtent();
-    for (int i = 0; i <= 8; ++i) {
-        float t = size * i / 8.f;
-        hud_.line(x0 + t, y0, x0 + t, y0 + size, 1, {0, 0, 0, 0.5f});
-        hud_.line(x0, y0 + t, x0 + size, y0 + t, 1, {0, 0, 0, 0.5f});
-        if (i < 8) {
-            hud_.text(x0 + t + size / 16 - 4 * s, y0 - 15 * s, std::string(1, char('A' + i)), kWhite, s);
-            hud_.text(x0 - 16 * s, y0 + t + size / 16 - 6 * s, std::to_string(i + 1), kWhite, s);
-        }
-    }
-    // People killed so far, and the player as an arrow.
-    for (const auto& o : world_.objects)
-        if (o.dead) hud_.rect(x0 + o.pos.x / ext * size - 2 * s, y0 + o.pos.z / ext * size - 2 * s, 4 * s, 4 * s, {0.9f, 0.1f, 0.1f, 1});
-    float px = x0 + player_.feet.x / ext * size, py = y0 + player_.feet.z / ext * size;
-    float dx = std::sin(player_.yaw), dy = -std::cos(player_.yaw);
-    float L = 12 * s;
-    hud_.line(px - dx * L * 0.5f, py - dy * L * 0.5f, px + dx * L, py + dy * L, 3 * s, kAmber);
-    hud_.line(px + dx * L, py + dy * L, px + (dx * 0.4f - dy * 0.5f) * L, py + (dy * 0.4f + dx * 0.5f) * L, 3 * s, kAmber);
-    hud_.line(px + dx * L, py + dy * L, px + (dx * 0.4f + dy * 0.5f) * L, py + (dy * 0.4f - dx * 0.5f) * L, 3 * s, kAmber);
-    hud_.text(x0, y0 + size + 6 * s, "COMMAND MAP  -  GRID " + gridName(player_.feet, ext) + "  -  C TO CLOSE", kWhite, s);
+// The zoom view is a magnified circle on the right of the 3D view (the main
+// view stays as it is), like the original.
+void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
+    if (!arsenal_.zoomed() || showMap_) return;
+    const float cx = s.rx(480), cy = s.playY + s.playH * 0.5f, r = s.y(120);
+
+    glEnable(GL_STENCIL_TEST);
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    hud_.disc(cx, cy, r);
+    hud_.end();
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+
+    // Same pixel density as the main view, magnified by the weapon's zoom.
+    const float size = 2 * r;
+    const float insetFov = 2 * std::atan(std::tan(fovY * 0.5f) * (size / s.playH) / arsenal_.zoom());
+    glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    drawWorld(view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
+    glDisable(GL_STENCIL_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
 }
 
-void Game::drawHud(const Mat4& viewProj, int w, int h) {
-    const float s = std::max(1.f, std::round(h / 600.f));
-    hud_.begin(w, h);
+void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
+    // Dark green box with a scanline texture and a green outline.
+    const float X0 = right ? s.rx(x0) : s.lx(x0), X1 = right ? s.rx(x1) : s.lx(x1);
+    const float Y0 = s.y(y0), Y1 = s.y(y1);
+    hud_.rect(X0, Y0, X1 - X0, Y1 - Y0, kHudBoxFill);
+    for (float yy = Y0 + s.u; yy < Y1; yy += 2 * s.u) hud_.rect(X0, yy, X1 - X0, s.u * 0.5f, kHudScan);
+    const float t = std::max(1.f, s.u * 0.6f);
+    hud_.rect(X0, Y0, X1 - X0, t, kHudLine);
+    hud_.rect(X0, Y1 - t, X1 - X0, t, kHudLine);
+    hud_.rect(X0, Y0, t, Y1 - Y0, kHudLine);
+    hud_.rect(X1 - t, Y0, t, Y1 - Y0, kHudLine);
+}
+
+void Game::drawTopBar(const Screen& s) {
+    const float u = s.u, t = std::max(1.f, u * 0.8f), ts = s.text();
+    hud_.rect(0, 0, s.w, s.top, {0, 0, 0, 1});
+    hud_.rect(0, s.top - t, s.w, t, kHudLine);
+    hud_.rect(0, 0, s.w, t, kHudLine);
+    hud_.rect(s.rx(kTopDivider), 0, t, s.top, kHudLine);
+
+    // Stance icon (POS640.PCX: prone, crouch, stand from the top, 50x50 each).
+    if (stanceIcons_.texture) {
+        int frame = player_.stance == Stance::Prone ? 0 : player_.stance == Stance::Crouch ? 1 : 2;
+        float v0 = frame / 3.f, v1 = (frame + 1) / 3.f;
+        hud_.imageUV(stanceIcons_.texture, s.lx(24), s.y(6), s.y(46), s.y(46), 0, v0, 1, v1);
+    }
+
+    // Weapon line, magazines, rounds and the chamber indicator.
+    const auto& sl = arsenal_.current();
+    hud_.text(s.lx(74), s.y(5), arsenal_.mode().name, kHudGreen, ts);
+    hudBox(s, 74, 27, 136, 47, false);
+    hudBox(s, 141, 27, 201, 47, false);
+    // Magazine icon: a small slanted clip, then the spare magazine count.
+    hud_.line(s.lx(80), s.y(42), s.lx(84), s.y(31), 3 * u, kHudGreen);
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%d", sl.mags);
+    hud_.text(s.lx(105) - hud_.textWidth(buf, ts) / 2, s.y(31), buf, kHudGreen, ts);
+    std::snprintf(buf, sizeof buf, "%d", sl.rounds);
+    hud_.text(s.lx(171) - hud_.textWidth(buf, ts) / 2, s.y(31), buf, kHudGreen, ts);
+    if (sl.rounds > 0 && !arsenal_.reloading()) hud_.rect(s.lx(206), s.y(27), s.y(6), s.y(20), kHudGreen);
+    else hudBox(s, 206, 27, 212, 47, false);
+
+    // Weapon silhouette (WEAP640.PCX: 13 frames of 43 px).
+    if (weaponIcons_.texture) {
+        const int frame = arsenal_.def().icon;
+        const float frames = weaponIcons_.height / 43.f;
+        float v0 = frame / frames, v1 = (frame + 1) / frames;
+        float hgt = s.y(32), wid = hgt * weaponIcons_.width / 43.f;
+        hud_.imageUV(weaponIcons_.texture, s.lx(232), s.y(19), wid, hgt, 0, v0, 1, v1);
+    }
+
+    // Compass: north-up ring, blue needle for your heading.
+    {
+        const float cx = s.rx(382), cy = s.y(29), r = s.y(20);
+        hud_.ring(cx, cy, r, std::max(1.f, u * 0.8f), kHudLine);
+        hud_.text(cx - hud_.textWidth("N", u * 0.6f) / 2, cy - r - s.y(8), "N", kHudGreen, u * 0.6f);
+        hud_.text(cx - hud_.textWidth("S", u * 0.6f) / 2, cy + r - s.y(1), "S", kHudGreen, u * 0.6f);
+        hud_.text(cx + r + s.y(2), cy - s.y(4), "E", kHudGreen, u * 0.6f);
+        hud_.text(cx - r - s.y(7), cy - s.y(4), "W", kHudGreen, u * 0.6f);
+        hud_.ring(cx, cy, s.y(5), std::max(1.f, u * 0.8f), kHudBlue);
+        float dx = std::sin(player_.yaw), dy = -std::cos(player_.yaw);
+        hud_.line(cx + dx * s.y(5), cy + dy * s.y(5), cx + dx * s.y(13), cy + dy * s.y(13), std::max(1.f, u), kHudBlue);
+    }
+
+    // Grid square, carried item, waypoint.
+    hudBox(s, 419, 7, 481, 27, true);
+    hudBox(s, 487, 7, 632, 27, true);
+    hudBox(s, 419, 33, 632, 53, true);
+    std::string grid = gridName(player_.feet);
+    hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(11), grid, kHudGreen, ts);
+    hud_.text(s.rx(491), s.y(11), "Carrying: Nothing", kHudGreen, ts);
+    // Waypoint names and positions are in the .JIM files, not decoded yet.
+    hud_.text(s.rx(423), s.y(37), "WP: --", kHudGreen, ts);
+}
+
+void Game::drawBottomBar(const Screen& s) {
+    const float u = s.u, t = std::max(1.f, u * 0.8f), ts = s.text();
+    const float y0 = s.h - s.bottom;
+    hud_.rect(0, y0, s.w, s.bottom, {0, 0, 0, 1});
+    hud_.rect(0, y0, s.w, t, kHudLine);
+    hud_.rect(0, s.h - t, s.w, t, kHudLine);
+    hud_.rect(s.rx(kBottomDivider), y0, t, s.bottom, kHudLine);
+
+    // Radio / information messages, newest at the bottom.
+    float y = y0 + s.y(6);
+    size_t first = messages_.size() > 3 ? messages_.size() - 3 : 0;
+    for (size_t i = first; i < messages_.size(); ++i) {
+        hud_.text(s.lx(5), y, messages_[i].text, kHudMessage, ts);
+        y += s.y(14);
+    }
+
+    // Operative and mission.
+    hud_.text(s.rx(436), y0 + s.y(5), "OPERATIVE", kHudGreen, ts);
+    hud_.text(s.rx(436), y0 + s.y(20), missionName(mission_.title), kHudGreen, ts);
+}
+
+void Game::drawCommandMap(const Screen& s) {
+    // Satellite map over the 3D view, centred on you; 64 m grid.
+    const float x0 = 0, y0 = s.playY, w = s.w, h = s.playH;
+    const float pxPerM = s.u * mapScale_;
+    const float ext = terrain_.mapExtent();
+    const float halfW = w / pxPerM * 0.5f, halfH = h / pxPerM * 0.5f;
+    const Vec3 c = player_.feet;
+    const float u0 = (c.x - halfW) / ext, u1 = (c.x + halfW) / ext;
+    const float v0 = (c.z - halfH) / ext, v1 = (c.z + halfH) / ext;
+    hud_.imageUV(terrain_.colorTexture(), x0, y0, w, h, u0, v0, u1, v1);
+
+    const Color grid{0.2f, 0.95f, 0.2f, 0.85f};
+    const float lineW = std::max(1.f, s.u * 0.6f);
+    for (float gx = std::ceil((c.x - halfW) / kGridSquare) * kGridSquare; gx <= c.x + halfW; gx += kGridSquare) {
+        float sx = x0 + (gx - (c.x - halfW)) * pxPerM;
+        hud_.rect(sx, y0, lineW, h, grid);
+        int col = ((int(std::floor(gx / kGridSquare)) % 16) + 16) % 16;
+        std::string label(1, char('A' + col));
+        hud_.text(sx + kGridSquare * pxPerM * 0.5f - hud_.textWidth(label, s.text()) / 2, y0 + s.y(2), label, kHudGreen, s.text());
+    }
+    for (float gz = std::ceil((c.z - halfH) / kGridSquare) * kGridSquare; gz <= c.z + halfH; gz += kGridSquare) {
+        float sy = y0 + (gz - (c.z - halfH)) * pxPerM;
+        hud_.rect(x0, sy, w, lineW, grid);
+        int row = ((int(std::floor(gz / kGridSquare)) % 16) + 16) % 16;
+        hud_.text(x0 + s.y(3), sy + kGridSquare * pxPerM * 0.5f - s.y(5), std::to_string(row + 1), kHudGreen, s.text());
+    }
+
+    // Known casualties in red; you as a green circle with a heading line.
+    for (const auto& o : world_.objects) {
+        if (!o.dead) continue;
+        Vec3 at = world_.nearest(o.pos, c);
+        float sx = x0 + w / 2 + (at.x - c.x) * pxPerM, sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
+        float e = s.y(3);
+        hud_.line(sx - e, sy - e, sx + e, sy + e, std::max(1.f, s.u), kHudRed);
+        hud_.line(sx - e, sy + e, sx + e, sy - e, std::max(1.f, s.u), kHudRed);
+    }
+    const float px = x0 + w / 2, py = y0 + h / 2;
+    hud_.ring(px, py, s.y(4), std::max(1.f, s.u), kHudGreen);
+    hud_.line(px, py, px + std::sin(player_.yaw) * s.y(12), py - std::cos(player_.yaw) * s.y(12), std::max(1.f, s.u), kHudGreen);
+
+    // Compass rose, lower right.
+    const float rx = x0 + w - s.y(50), ry = y0 + h - s.y(50), rr = s.y(30);
+    hud_.line(rx, ry - rr, rx, ry + rr, std::max(1.f, s.u), kHudGreen);
+    hud_.line(rx - rr, ry, rx + rr, ry, std::max(1.f, s.u), kHudGreen);
+    hud_.line(rx, ry - rr, rx - s.y(5), ry - s.y(8), std::max(1.f, s.u), kHudGreen);
+    hud_.line(rx, ry - rr, rx + s.y(5), ry - s.y(8), std::max(1.f, s.u), kHudGreen);
+    hud_.text(rx - hud_.textWidth("N", s.text()) / 2, ry - rr - s.y(13), "N", kHudGreen, s.text());
+    hud_.text(rx + rr + s.y(2), ry - s.y(6), "E", kHudGreen, s.text());
+    hud_.text(rx - rr - s.y(10), ry - s.y(6), "W", kHudGreen, s.text());
+}
+
+void Game::drawHud(const Screen& s, const Mat4& viewProj) {
+    hud_.begin(int(s.w), int(s.h));
 
     // Bullet impacts as small puffs: dust on the ground, dark on objects.
     for (const auto& i : arsenal_.impacts()) {
         float sx, sy, depth;
-        if (!project(viewProj, i.pos, w, h, sx, sy, depth)) continue;
-        float r = std::clamp(60.f / depth, 1.5f, 18.f) * s * arsenal_.zoom() * (1 + i.age * 1.5f);
+        if (!project(viewProj, i.pos, s.w, s.playH, sx, sy, depth)) continue;
+        sy += s.playY;
+        float r = std::clamp(60.f / depth, 1.5f, 18.f) * s.u * (1 + i.age * 1.5f);
         float a = std::max(0.f, 1 - i.age / 1.5f) * 0.8f;
         Color c = i.object ? Color{0.15f, 0.15f, 0.15f, a} : Color{0.72f, 0.65f, 0.52f, a};
         hud_.puff(sx, sy, r, c);
     }
 
-    const float cx = w * 0.5f, cy = h * 0.5f;
-    if (arsenal_.scoped()) {
-        const float radius = std::min(w, h) * 0.46f;
-        hud_.scopeMask(cx, cy, radius);
-        hud_.line(cx - radius, cy, cx + radius, cy, 1.5f * s, {0, 0, 0, 1});
-        hud_.line(cx, cy - radius, cx, cy + radius, 1.5f * s, {0, 0, 0, 1});
-        for (int i = -4; i <= 4; ++i) {
-            if (!i) continue;
-            hud_.rect(cx + i * radius * 0.1f - 1.5f * s, cy - 1.5f * s, 3 * s, 3 * s, {0, 0, 0, 1});
-            hud_.rect(cx - 1.5f * s, cy + i * radius * 0.1f - 1.5f * s, 3 * s, 3 * s, {0, 0, 0, 1});
-        }
-    } else if (crosshair_ && !showMap_) {
-        const float g = 4 * s, len = 7 * s;
-        hud_.rect(cx - g - len, cy - s * 0.5f, len, s, kGreen);
-        hud_.rect(cx + g, cy - s * 0.5f, len, s, kGreen);
-        hud_.rect(cx - s * 0.5f, cy - g - len, s, len, kGreen);
-        hud_.rect(cx - s * 0.5f, cy + g, s, len, kGreen);
+    const float cx = s.w * 0.5f, cy = s.playY + s.playH * 0.5f;
+    if (showMap_) drawCommandMap(s);
+    else if (crosshair_) {
+        // Small green cross with a centre gap.
+        const float g = s.y(3), len = s.y(6), t = std::max(1.f, s.u);
+        hud_.rect(cx - g - len, cy - t * 0.5f, len, t, kHudGreen);
+        hud_.rect(cx + g, cy - t * 0.5f, len, t, kHudGreen);
+        hud_.rect(cx - t * 0.5f, cy - g - len, t, len, kHudGreen);
+        hud_.rect(cx - t * 0.5f, cy + g, t, len, kHudGreen);
     }
 
-    // Compass: heading strip across the top centre.
-    {
-        const float cw = 320 * s, ch = 22 * s, x0 = cx - cw / 2, y0 = 8 * s;
-        hud_.rect(x0, y0, cw, ch, kPanel);
-        const float deg = player_.yaw * 180.f / kPi;
-        for (int d = -180; d <= 540; d += 15) {
-            float rel = d - deg;
-            rel = std::fmod(std::fmod(rel + 180.f, 360.f) + 360.f, 360.f) - 180.f;
-            if (std::fabs(rel) > 60) continue;
-            float x = cx + rel / 60.f * (cw / 2 - 10 * s);
-            int dd = ((d % 360) + 360) % 360;
-            const char* card = dd == 0 ? "N" : dd == 90 ? "E" : dd == 180 ? "S" : dd == 270 ? "W" : nullptr;
-            if (card) hud_.text(x - hud_.textWidth(card, s) / 2, y0 + 4 * s, card, kAmber, s);
-            else hud_.rect(x - 0.5f * s, y0 + ch - 7 * s, s, 5 * s, kWhite);
-        }
-        hud_.rect(cx - s, y0 + ch, 2 * s, 5 * s, kGreen);
-        char buf[16];
-        std::snprintf(buf, sizeof buf, "%03d", (int(std::lround(deg)) % 360 + 360) % 360);
-        hud_.text(cx - hud_.textWidth(buf, s) / 2, y0 + ch + 6 * s, buf, kWhite, s);
+    // Zoom inset furniture: ring, crosshair ticks, range.
+    if (arsenal_.zoomed() && !showMap_) {
+        const float zx = s.rx(480), zy = cy, r = s.y(120), t = std::max(1.f, s.u);
+        hud_.ring(zx, zy, r, std::max(1.5f, s.u * 1.2f), kHudGreen);
+        const float in = r * 0.12f, out = r * 0.42f;
+        hud_.rect(zx - out, zy - t * 0.5f, out - in, t, kHudGreen);
+        hud_.rect(zx + in, zy - t * 0.5f, out - in, t, kHudGreen);
+        hud_.rect(zx - t * 0.5f, zy - out, t, out - in, kHudGreen);
+        hud_.rect(zx - t * 0.5f, zy + in, t, out - in, kHudGreen);
+        float range = rangeToAim();
+        char buf[32];
+        if (range >= 0) std::snprintf(buf, sizeof buf, "%.0fm", range);
+        else std::snprintf(buf, sizeof buf, "---m");
+        hud_.text(zx + r * 0.22f, zy + r * 0.68f, buf, kHudGreen, s.text());
     }
 
-    // Mission name and timer, top left; stance, top right.
-    {
-        int secs = int(missionTime_);
-        char buf[64];
-        std::snprintf(buf, sizeof buf, "%02d:%02d", secs / 60, secs % 60);
-        hud_.rect(6 * s, 6 * s, 260 * s, 34 * s, kPanel);
-        hud_.text(12 * s, 10 * s, mission_.title, kWhite, s);
-        hud_.text(12 * s, 24 * s, buf, kGreen, s);
-        const char* st = player_.fly ? "FLY" : stanceName(player_.stance);
-        float tw = hud_.textWidth(st, s);
-        hud_.rect(w - tw - 22 * s, 6 * s, tw + 16 * s, 20 * s, kPanel);
-        hud_.text(w - tw - 14 * s, 10 * s, st, kGreen, s);
-    }
-
-    // Weapon panel, bottom left: name, mode, magazines and rounds.
-    {
-        const auto& d = arsenal_.def();
-        const auto& sl = arsenal_.current();
-        const float pw = 220 * s, ph = 50 * s, x0 = 6 * s, y0 = h - ph - 6 * s;
-        hud_.rect(x0, y0, pw, ph, kPanel);
-        hud_.text(x0 + 6 * s, y0 + 4 * s, d.name, kWhite, s);
-        const char* mode = d.roundsPerMinute < 100 ? "BOLT" : sl.autoMode ? "AUTO" : "SEMI";
-        hud_.text(x0 + pw - hud_.textWidth(mode, s) - 6 * s, y0 + 4 * s, mode, kAmber, s);
-        char buf[64];
-        std::snprintf(buf, sizeof buf, "MAGS %d   RDS %d", sl.mags, sl.rounds);
-        hud_.text(x0 + 6 * s, y0 + 19 * s, buf, sl.rounds ? kGreen : kAmber, s);
-        // Chamber indicator box, as on the original HUD.
-        hud_.rect(x0 + pw - 16 * s, y0 + 20 * s, 10 * s, 10 * s, {0.6f, 0.6f, 0.6f, 0.8f});
-        if (sl.rounds > 0) hud_.rect(x0 + pw - 14 * s, y0 + 22 * s, 6 * s, 6 * s, kGreen);
-        std::string info = arsenal_.reloading() ? "RELOADING" : "GRID " + gridName(player_.feet, terrain_.mapExtent());
-        if (arsenal_.zoom() > 1) { char z[16]; std::snprintf(z, sizeof z, "   %.0fX", arsenal_.zoom()); info += z; }
-        hud_.text(x0 + 6 * s, y0 + 34 * s, info, arsenal_.reloading() ? kAmber : kWhite, s);
-    }
-
-    // Radio / information messages, bottom centre.
-    {
-        float y = h - 30 * s;
-        for (auto it = messages_.rbegin(); it != messages_.rend(); ++it) {
-            float a = std::clamp(5.f - it->age, 0.f, 1.f);
-            if (a <= 0) continue;
-            hud_.text(cx - hud_.textWidth(it->text, s) / 2, y, it->text, {kGreen.r, kGreen.g, kGreen.b, a}, s);
-            y -= 15 * s;
-        }
-    }
-
-    if (showMap_) drawCommandMap(w, h, s);
     if (showGoals_) {
-        const float bw = 420 * s, bh = 90 * s, x0 = cx - bw / 2, y0 = cy - bh / 2;
-        hud_.rect(x0, y0, bw, bh, {0, 0, 0, 0.8f});
-        hud_.text(x0 + 10 * s, y0 + 8 * s, "MISSION GOALS - " + mission_.title, kAmber, s);
-        hud_.text(x0 + 10 * s, y0 + 30 * s, "Objectives are not decoded from the mission", kWhite, s);
-        hud_.text(x0 + 10 * s, y0 + 45 * s, "files yet (planned for milestone 6).", kWhite, s);
-        hud_.text(x0 + 10 * s, y0 + 68 * s, "G TO CLOSE", kGreen, s);
+        const float bw = s.y(400), bh = s.y(70), x0 = cx - bw / 2, y0 = s.playY + s.y(20);
+        hud_.rect(x0, y0, bw, bh, {0, 0.08f, 0, 0.8f});
+        hudBox(s, x0 / s.u, y0 / s.u, (x0 + bw) / s.u, (y0 + bh) / s.u, false);
+        hud_.text(x0 + s.y(10), y0 + s.y(8), "Mission Goals: " + missionName(mission_.title), kHudGreen, s.text());
+        hud_.text(x0 + s.y(10), y0 + s.y(28), "The goal list is not decoded from the mission files yet.", kHudMessage, s.text());
+        hud_.text(x0 + s.y(10), y0 + s.y(46), "Press G to close.", kHudGreen, s.text());
     }
+
+    drawTopBar(s);
+    drawBottomBar(s);
     hud_.end();
 }
 
@@ -397,6 +547,7 @@ int Game::run() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);   // zoom inset mask
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     const bool test = !o_.screenshot.empty();
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height,
@@ -413,6 +564,8 @@ int Game::run() {
     else if (!loadMission(int(it - missions_.begin()))) rc = 1;
 
     if (rc == 0) {
+        stanceIcons_ = hud_.loadImage(vfs_, "POS640.PCX");
+        weaponIcons_ = hud_.loadImage(vfs_, "WEAP640.PCX");
         if (o_.hasCamera) {
             player_.feet = {o_.camera[0], 0, -o_.camera[1]};
             player_.feet.y = world_.groundHeight(player_.feet, 0.45f) + o_.camera[2];
@@ -444,7 +597,7 @@ int Game::run() {
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
-                    float sens = 0.0022f / arsenal_.zoom();
+                    const float sens = 0.0022f;
                     player_.yaw += e.motion.xrel * sens;
                     player_.pitch = std::clamp(player_.pitch - e.motion.yrel * sens, -1.5f, 1.5f);
                 } else if (e.type == SDL_KEYDOWN && !e.key.repeat) handleKey(e.key);
@@ -470,23 +623,35 @@ int Game::run() {
             prevTrigger = trigger;
             for (auto& m : msgs) messages_.push_back({m, 0});
             for (auto& m : messages_) m.age += dt;
-            while (messages_.size() > 6 || (!messages_.empty() && messages_.front().age > 6)) messages_.pop_front();
+            while (messages_.size() > 6 || (!messages_.empty() && messages_.front().age > 12)) messages_.pop_front();
             world_.update(dt);
             missionTime_ += dt;
 
             int dw, dh;
             SDL_GL_GetDrawableSize(win_, &dw, &dh);
+            Screen s;
+            s.w = float(dw);
+            s.h = float(dh);
+            s.u = s.h / 480.f;
+            s.top = kTopBar * s.u;
+            s.bottom = kBottomBar * s.u;
+            s.playY = s.top;
+            s.playH = std::max(1.f, s.h - s.top - s.bottom);
+
             glViewport(0, 0, dw, dh);
             glClearColor(0, 0, 0, 1);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            const float fov = 2 * std::atan(std::tan(30.f * kPi / 180.f) / arsenal_.zoom());
-            Mat4 proj = perspective(fov, float(dw) / std::max(dh, 1), 0.1f, viewDistance_ * 1.1f);
-            Player kicked = player_;
-            kicked.pitch = std::clamp(player_.pitch + arsenal_.recoilPitch(), -1.5f, 1.5f);
-            Mat4 view = lookDir(player_.eye(), kicked.forward(), {0, 1, 0});
-            drawWorld(view, proj, dw, dh);
-            drawViewModel(dw, dh);
-            drawHud(proj * view, dw, dh);
+            glClearStencil(0);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+            // 3D view between the two HUD bars.
+            glViewport(0, int(s.bottom), dw, int(s.playH));
+            const float fovY = 60.f * kPi / 180.f;
+            Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, viewDistance_ * 1.1f);
+            Mat4 view = lookDir(player_.eye(), aimDirection(), {0, 1, 0});
+            drawWorld(view, proj, false);
+            drawViewModel(s);
+            drawZoomInset(s, view, fovY);
+            glViewport(0, 0, dw, dh);
+            drawHud(s, proj * view);
 
             if (test && ++frame >= o_.frames) {
                 writePpm(o_.screenshot, dw, dh);

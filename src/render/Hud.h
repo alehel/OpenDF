@@ -14,10 +14,17 @@ namespace df {
 
 struct Color { float r, g, b, a; };
 
+struct HudImage {
+    GLuint texture = 0;
+    int width = 0, height = 0;
+};
+
 class Hud {
 public:
     ~Hud();
     bool init(Vfs& vfs, std::string* error);
+    // Loads a game PCX as a texture; pure black becomes transparent.
+    HudImage loadImage(Vfs& vfs, const std::string& name);
 
     void begin(int width, int height);
     void end();
@@ -31,6 +38,11 @@ public:
     void line(float x0, float y0, float x1, float y1, float thickness, Color c);
     void puff(float cx, float cy, float radius, Color c);   // soft-edged disc
     void image(GLuint texture, float x, float y, float w, float h, Color tint = {1, 1, 1, 1});
+    void imageUV(GLuint texture, float x, float y, float w, float h, float u0, float v0, float u1, float v1,
+                 Color tint = {1, 1, 1, 1});
+    void ring(float cx, float cy, float radius, float thickness, Color c);
+    // Writes only where inside the circle (used to fill the stencil buffer).
+    void disc(float cx, float cy, float radius);
     // Everything outside a circle of `radius` around (cx, cy) goes black.
     void scopeMask(float cx, float cy, float radius);
 
@@ -44,11 +56,12 @@ private:
     void quad(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, Color c);
 
     GLuint prog_ = 0, vao_ = 0, vbo_ = 0, font_ = 0;
-    GLint locScreen_ = -1, locMode_ = -1, locCircle_ = -1;
+    GLint locScreen_ = -1, locMode_ = -1, locCircle_ = -1, locThickness_ = -1;
     int width_ = 0, height_ = 0;
     int mode_ = -1;
     GLuint texture_ = 0;
     std::vector<Vertex> verts_;
+    std::vector<GLuint> images_;
     float glyphX_[256] = {}, glyphW_[256] = {};   // source column and width per character
 };
 

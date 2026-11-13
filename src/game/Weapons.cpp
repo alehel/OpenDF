@@ -10,13 +10,19 @@ constexpr float kPi = 3.14159265f;
 }
 
 const std::vector<WeaponDef>& weaponDefs() {
+    using F = FireMode;
+    // Names from the game's DFGAME.BIN string table; icons are WEAP640.PCX frames.
     static const std::vector<WeaponDef> defs = {
-        //  name          view     mag spare  rpm  auto   m/s   spread  zoom        scope dmg reload recoil
-        {".45 PISTOL",   "PM19",    7,  4,  300, false, 255,  1.4f, {1.5f, 1.5f}, false, 1, 1.6f, 1.6f},
-        {"M4 CARBINE",   "PM4",    30,  8,  800, true,  880,  0.5f, {2.0f, 2.0f}, false, 1, 2.2f, 0.6f},
-        {"M40 SNIPER",   "PM40",    5,  8,   45, false, 790,  0.08f,{4.0f, 10.f}, true,  2, 3.0f, 2.5f},
-        {"MP5SD",        "PMP5",   30,  8,  800, true,  285,  0.7f, {1.5f, 1.5f}, false, 1, 2.0f, 0.35f},
-        {"M249 SAW",     "PM249", 200,  3,  750, true,  915,  1.0f, {2.0f, 2.0f}, false, 1, 5.0f, 0.5f},
+        {{{"SpecOps .45 caliber pistol", F::Single}},
+         "PM19", 10, 7, 4, 300, 255, 1.4f, {2.f}, 1, 1.6f, 1.6f},
+        {{{"M4 Assault Rifle, Single Shot", F::Single}, {"M4 Assault Rifle, Burst", F::Burst}},
+         "PM4", 4, 30, 8, 800, 880, 0.5f, {4.f}, 1, 2.2f, 0.6f},
+        {{{"M40 Sniper Rifle", F::Single}},
+         "PM40", 9, 5, 8, 45, 790, 0.08f, {4.f, 10.f}, 2, 3.0f, 2.5f},
+        {{{"H&K MP5 SD, Single Shot", F::Single}, {"H&K MP5 SD, Burst", F::Burst}, {"H&K MP5 SD, Full Auto", F::Auto}},
+         "PMP5", 11, 30, 8, 800, 285, 0.7f, {2.f}, 1, 2.0f, 0.35f},
+        {{{"SAW Auto. Weap., Full Auto", F::Auto}},
+         "PM249", 8, 200, 3, 750, 915, 1.0f, {2.f}, 1, 5.0f, 0.5f},
     };
     return defs;
 }
@@ -25,7 +31,7 @@ void Arsenal::init() {
     slots_.clear();
     for (int i = 0; i < int(weaponDefs().size()); ++i) {
         const auto& d = weaponDefs()[i];
-        slots_.push_back({i, d.magazine, d.spareMags, d.canAuto});
+        slots_.push_back({i, d.magazine, d.spareMags, 0});
     }
     current_ = 1;   // start with the carbine
 }
@@ -37,11 +43,17 @@ void Arsenal::select(int slot, int mode) {
         zoomLevel_ = 0;
         reloadTimer_ = 0;
         cooldown_ = 0.4f;   // bring the weapon up
+        burstLeft_ = 0;
     }
-    if (mode >= 0 && def().canAuto) slots_[current_].autoMode = mode == 1;
+    if (mode >= 0) slots_[current_].mode = std::min(mode, int(def().modes.size()) - 1);
 }
 
 void Arsenal::cycle() { select((current_ + 1) % int(slots_.size())); }
+
+void Arsenal::cycleMode() {
+    Slot& s = slots_[current_];
+    s.mode = (s.mode + 1) % int(def().modes.size());
+}
 
 void Arsenal::reload() {
     Slot& s = slots_[current_];
@@ -52,9 +64,7 @@ void Arsenal::reload() {
 
 void Arsenal::toggleZoom() {
     if (reloadTimer_ > 0) return;
-    const WeaponDef& d = def();
-    int levels = d.zoom[1] != d.zoom[0] ? 2 : 1;
-    zoomLevel_ = (zoomLevel_ + 1) % (levels + 1);
+    zoomLevel_ = (zoomLevel_ + 1) % (int(def().zoom.size()) + 1);
 }
 
 void Arsenal::fire(Player& player, World& world) {
@@ -70,7 +80,7 @@ void Arsenal::fire(Player& player, World& world) {
     if (player.stance == Stance::Crouch) spread *= 0.6f;
     if (player.stance == Stance::Prone) spread *= 0.35f;
     if (player.moving()) spread *= 2.0f;
-    if (zoomLevel_) spread *= d.scope ? 0.25f : 0.6f;
+    if (zoomLevel_) spread *= 0.5f;
     std::normal_distribution<float> n(0.f, spread * kPi / 180.f * 0.5f);
     float yaw = player.yaw + n(rng_), pitch = player.pitch + recoilPitch() + n(rng_);
     Vec3 dir{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
@@ -99,12 +109,20 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             s.rounds = d.magazine;
         }
     } else {
-        const bool wantsFire = s.autoMode ? triggerDown : triggerPressed;
+        // Burst fires three rounds per press; full auto fires while held.
+        const FireMode fm = mode().fire;
+        if (fm == FireMode::Burst && triggerPressed && burstLeft_ == 0 && cooldown_ <= 0) burstLeft_ = 3;
+        const bool wantsFire = fm == FireMode::Auto ? triggerDown : fm == FireMode::Burst ? burstLeft_ > 0 : triggerPressed;
         if (wantsFire && cooldown_ <= 0) {
-            if (s.rounds > 0) fire(player, world);
-            else if (triggerPressed) {
-                if (s.mags > 0) { messages.push_back("RELOADING"); reload(); }
-                else messages.push_back("OUT OF AMMO");
+            if (s.rounds > 0) {
+                fire(player, world);
+                if (burstLeft_ > 0 && --burstLeft_ == 0) cooldown_ = std::max(cooldown_, 0.25f);
+            } else {
+                burstLeft_ = 0;
+                if (triggerPressed) {
+                    if (s.mags > 0) { messages.push_back("Reloading."); reload(); }
+                    else messages.push_back("Out of ammunition.");
+                }
             }
         }
     }

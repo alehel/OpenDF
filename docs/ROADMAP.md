@@ -27,10 +27,10 @@ Each milestone ends with something you can run.
 - Weapons: .45, M4 single/auto, M40 with 4×/10× scope, MP5SD, M249; magazines, reloads, recoil,
   simulated bullets with drop and travel time, muzzle flash from the models' flash materials
 - Damage: people go down, soft objects break into their husk models
-- HUD in the game's own font; command map (`C`); original key layout where possible
+- The original's HUD layout and art (see docs/ORIGINAL-UI.md), zoom inset, command map; original key layout where possible
 - Still open: knife, frag grenades, M203, satchels, binoculars, laser designator; player health
   (comes with enemies in M6); waypoint names (`.JIM`); footstep materials (with audio in M5);
-  the real weapon numbers from `DF.EXE`
+  the real weapon numbers and the first-person weapon offset from `DF.EXE`
 
 ## M5: Audio
 - WAV playback from `AUDIO.PFF` (SFX, radio chatter)
