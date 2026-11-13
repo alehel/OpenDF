@@ -1,9 +1,9 @@
 // OpenDF - a cross-platform reimplementation of the Delta Force (1998) engine.
 //
-//   opendf [--data DIR] [--terrain NAME]       free-roam terrain viewer
-//   opendf [--data DIR] models [NAME]           3DI model viewer
-//   opendf [--data DIR] list [EXT]              list archive contents
-//   opendf [--data DIR] extract OUTDIR [EXT]    extract (and decrypt) files
+//   opendf --game ROOT [--terrain NAME]       free-roam terrain viewer
+//   opendf --game ROOT models [NAME]           3DI model viewer
+//   opendf --game ROOT list [EXT]              list archive contents
+//   opendf --game ROOT extract OUTDIR [EXT]    extract (and decrypt) files
 //
 // DIR is the folder holding the game's PFF archives (the CD root or its
 // DFSETUP folder). It defaults to the current directory and its parent.
@@ -57,7 +57,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
-        if (a == "--data") o.dataDir = next();
+        if (a == "--game") o.dataDir = next();
         else if (a == "--terrain") o.terrain = next();
         else if (a == "--screenshot") o.screenshot = next();
         else if (a == "--spawn") o.spawn = true;
@@ -103,12 +103,12 @@ void usage() {
         "OpenDF - Delta Force engine reimplementation\n"
         "\n"
         "usage:\n"
-        "  opendf [--data DIR] [--terrain NAME] [--size WxH]   terrain viewer\n"
-        "  opendf [--data DIR] mission [C02M01]                play a mission in first person\n"
-        "  opendf [--data DIR] models [NAME]                   3DI model viewer\n"
-        "  opendf [--data DIR] list [EXT]                      list files in the archives\n"
-        "  opendf [--data DIR] extract OUTDIR [EXT]            extract files (PFF2 decrypted)\n"
-        "  opendf [--data DIR] check                           parse every model/terrain/image\n"
+        "  opendf --game ROOT [--terrain NAME] [--size WxH]   terrain viewer\n"
+        "  opendf --game ROOT mission [C02M01]                play a mission in first person\n"
+        "  opendf --game ROOT models [NAME]                   3DI model viewer\n"
+        "  opendf --game ROOT list [EXT]                      list files in the archives\n"
+        "  opendf --game ROOT extract OUTDIR [EXT]            extract files (PFF2 decrypted)\n"
+        "  opendf --game ROOT check                           parse every model/terrain/image\n"
         "  --camera X,Y,HEIGHT,YAW,PITCH  start at map metres X (east), Y (north), HEIGHT above\n"
         "                                 ground, compass YAW and PITCH in degrees\n"
         "\n"
@@ -127,29 +127,32 @@ void usage() {
         "  PageUp/PageDown jump 10, L cycle level of detail, Esc quit");
 }
 
+// The game to run is given with --game: the root folder of a supported
+// game, normally one of OpenDF/games/* (e.g. games/DeltaForce, the contents
+// of the Delta Force CD). OpenDF finds its archives there or in DFSETUP/.
 bool mountData(Vfs& vfs, Options& o) {
-    std::vector<fs::path> candidates;
-    if (!o.dataDir.empty()) candidates.push_back(o.dataDir);
-    else {
-        candidates = {fs::current_path(), fs::current_path().parent_path()};
+    if (o.dataDir.empty()) {
+        std::fprintf(stderr, "Which game? Use --game ROOT, e.g. --game games/DeltaForce\n");
+        // List what is installed next to the executable and in the current folder.
+        std::vector<fs::path> where = {fs::current_path() / "games"};
         if (char* base = SDL_GetBasePath()) {
             fs::path b = base;
             SDL_free(base);
-            candidates.push_back(b);
-            candidates.push_back(b.parent_path().parent_path());
-            candidates.push_back(b.parent_path().parent_path().parent_path());
+            where.push_back(b / "games");
+            where.push_back(b.parent_path().parent_path() / "games");
         }
-    }
-    for (auto& c : candidates) {
-        std::string err;
-        Vfs probe;
-        if (probe.mountGameDir(c, &err) && probe.exists("DFG1.TRN")) {
-            vfs.mountGameDir(c, nullptr);
-            o.dataDir = c;
-            return true;
+        for (const auto& dir : where) {
+            std::error_code ec;
+            if (!fs::is_directory(dir, ec)) continue;
+            for (const auto& e : fs::directory_iterator(dir, ec))
+                if (e.is_directory()) std::fprintf(stderr, "  installed: %s\n", e.path().string().c_str());
+            break;
         }
+        return false;
     }
-    std::fprintf(stderr, "Could not find the Delta Force data (DF.PFF etc.). Use --data DIR.\n");
+    std::string err;
+    if (vfs.mountGameDir(o.dataDir, &err) && vfs.exists("DFG1.TRN")) return true;
+    std::fprintf(stderr, "No Delta Force data (DF.PFF etc.) under %s\n%s", o.dataDir.string().c_str(), err.c_str());
     return false;
 }
 
