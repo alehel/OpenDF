@@ -126,10 +126,15 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     const float turn = 2 * kPi;   // binary angle -> radians
     const float ground = world.terrain->heightAt(o.pos.x, o.pos.z);
     const float rest = (o.item && o.item->id == 100000 + kGazelle) ? 0x3f000 / 65536.f : 0x37000 / 65536.f;
+    // Rotor angles advance by the speeds on every move call (0x47d064).
+    o.rotorAngle[0] += uint32_t(v.rotor);
+    o.rotorAngle[1] += uint32_t(v.rotor);
+    o.rotorSpeed = v.rotor;
     if (--v.think <= 0) {
         v.think = 8;
+        // Destroyed (+0x6C & 4): both rotor speeds 0 at once (0x47cac8).
         if (!v.dead) v.rotor = std::min(v.rotor + float(0x800000), float(0x1b000000));
-        else v.rotor = std::max(0.f, v.rotor - float(v.rotor > 0x700000 ? 0x400000 : 0x20000));
+        else v.rotor = 0;
         const bool onPath = !v.dead && pathStep(world, ai, v);
         if (onPath) { v.mode = 2; v.targetSpeed = teamSpeed; }
         else if (v.gunTarget != -1 && !v.dead) {

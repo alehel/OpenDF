@@ -1348,6 +1348,34 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         visible.push_back({&o, at, lod});
     }
     for (auto& v : visible) {
+        if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "helo" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
+            // 0x478114: mesh 0 and 6 static; mesh 1 (blades) or 2 (disc) at
+            // rotor speed >= 0x0C000000, about file +Z through hardpoint 0;
+            // mesh 3 or 4 about file +Y through hardpoint 2; mesh 5 (the
+            // gun) about hardpoint 4 (APPROXIMATION: not turned, the door
+            // gun's own yaw/pitch is not kept). Hardpoints of LOD 0 serve
+            // every LOD (they match in BLACKHWK and GAZELLE).
+            const GpuModel& m = *v.o->model;
+            const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
+            const bool fast = v.o->rotorSpeed >= float(0x0C000000);
+            const Mat4 hide = [] { Mat4 z; for (int i = 0; i < 16; ++i) z.m[i] = 0; return z; }();
+            auto about = [&](int hp, const Mat4& r) {
+                const auto& p = m.points[size_t(hp)];
+                return translate({p[0], p[1], p[2]}) * r * translate({-p[0], -p[1], -p[2]});
+            };
+            // File +Z (up) is OpenDF +Y; file +Y (left) is OpenDF -Z.
+            const float main = float(v.o->rotorAngle[0]) / 4294967296.f * 2 * kPi;
+            const float tail = float(v.o->rotorAngle[1]) / 4294967296.f * 2 * kPi;
+            Mat4 rz;
+            { const float c = std::cos(tail), s = std::sin(tail); rz.at(0, 0) = c; rz.at(0, 1) = -s; rz.at(1, 0) = s; rz.at(1, 1) = c; }
+            std::vector<Mat4> pose(meshes, Mat4{});
+            if (meshes > 1) pose[1] = fast ? hide : about(0, rotateY(main));
+            if (meshes > 2) pose[2] = fast ? about(0, rotateY(main)) : hide;
+            if (meshes > 3) pose[3] = fast ? hide : about(2, rz);
+            if (meshes > 4) pose[4] = fast ? about(2, rz) : hide;
+            models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
+            continue;
+        }
         if (v.o->chr && !v.o->anim.angles().empty()) {
             const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);

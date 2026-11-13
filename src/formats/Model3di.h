@@ -75,6 +75,9 @@ struct Model3di {
     std::string name;
     int version = 0;
     std::string kind;                // header +0x28: "efct" billboard effect, "ef3d", ...
+    // Header +0x28..+0x34: the draw routine per LOD slot as a FourCC stored
+    // byte-reversed ("oleh" = "helo"), looked up in DF.EXE's table 0x4E53DC.
+    std::string lodCodes[4];
     float lodThreshold[4] = {0, 0, 0, 0};   // header +0x18..+0x24: projected-radius pixels
     float radius = 1;                // header +0x60, metres
     std::vector<Model3diTexture> textures;

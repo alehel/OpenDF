@@ -63,6 +63,10 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
     for (int k = 0; k < 4; ++k) m.lodThreshold[k] = r.i32(0x18 + 4 * k) / 65536.f;
     m.radius = r.i32(0x60) / 65536.f;
     m.kind = r.str(0x28, 4);
+    for (int k = 0; k < 4; ++k) {
+        std::string c(reinterpret_cast<const char*>(&r.d[0x28 + 4 * size_t(k)]), 4);
+        m.lodCodes[k] = std::string(c.rbegin(), c.rend());
+    }
 
     // Textures: 36-byte header, pixels (frame 0 is used), 256 x RGBA palette.
     size_t p = 0x80;

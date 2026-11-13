@@ -27,6 +27,7 @@ struct GpuModel {
     };
     std::string name;
     std::string kind;                  // "efct" = billboard effect
+    std::string lodCodes[4];           // per-LOD draw routine ("helo", "gnrc", ...)
     float lodThreshold[4] = {0, 0, 0, 0};
     float headerRadius = 1;            // 3DI header +0x60 (LOD selection)
     // Material +0x12 of the model's largest LOD-0 material: OpenDF hit-tests
