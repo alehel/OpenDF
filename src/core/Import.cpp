@@ -342,7 +342,9 @@ int importGame(const fs::path& source, const fs::path& dest, std::string* error)
 
     uint64_t listedTotal = 0;
     for (auto& f : src.files) listedTotal += f.listed;
-    std::printf("Importing %s\n  from %s (%s, %zu files, %s listed)\n  to   %s\n", detect(src.files).c_str(),
+    std::string game = detect(src.files);
+    if (game.empty()) game = "game files";
+    std::printf("Importing %s\n  from %s (%s, %zu files, %s listed)\n  to   %s\n", game.c_str(),
                 source.string().c_str(), src.image ? src.image->layout() : "folder", src.files.size(),
                 mb(listedTotal).c_str(), dest.string().c_str());
 
