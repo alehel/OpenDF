@@ -157,6 +157,18 @@ private:
     int drawWrapped(const std::string& fontName, float x, float y, float w, float h, const std::string& s, uint32_t color,
                     int startLine = 0);
     void blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh, bool translucent);
+    void blitHalf(const HudImage& im, float x, float y, float w, float h);   // 50 % blend (0x407cd8)
+    // The teletype engine (0x418568 start, 0x418408 tick, 0x4184d4 draw):
+    // `rate` characters per 16 ms tick; while typing every draw plays a
+    // random Ttclick1..9 at fx*192/255; the text is word-wrapped in its rect
+    // in the font's own colour. ensureTty restarts it when the text changes.
+    struct Tty { bool active = false; std::string text; size_t count = 0; float x = 0, y = 0, w = 0, h = 0; std::string font; int rate = 1; };
+    Tty ttyHelp_, ttyNsLeft_, ttyNsRight_, ttyNsHelp_, ttyCamp_, ttyDebf_, ttyLo_;
+    int helpRow_ = -1;
+    void ensureTty(Tty& t, const std::string& text, float x, float y, float w, float h, const char* font, int rate);
+    void drawTty(Tty& t);
+    void tickTtys();
+    bool transitionDone() const { return true; }   // replaced by the wipe
 
     void enter(Screen s);
     void setMenu(const std::string& name);
@@ -441,6 +453,33 @@ void Frontend::blit(const HudImage& im, float x, float y, float sx, float sy, fl
     if (translucent) hud().setTranslucent(false);
 }
 
+void Frontend::blitHalf(const HudImage& im, float x, float y, float w, float h) {
+    if (!im.texture) return;
+    hud().setBlend(2);
+    hud().imageUV(im.texture, offX_ + x * scale_, offY_ + y * scale_, w * scale_, h * scale_, 0, 0, w / float(im.width), h / float(im.height));
+    hud().setBlend(0);
+}
+
+void Frontend::ensureTty(Tty& t, const std::string& text, float x, float y, float w, float h, const char* font, int rate) {
+    if (t.active && t.text == text) return;
+    t = {true, text.substr(0, 0x3FE), 0, x, y, w, h, font, rate};
+}
+
+void Frontend::tickTtys() {
+    for (Tty* t : {&ttyHelp_, &ttyNsLeft_, &ttyNsRight_, &ttyNsHelp_, &ttyCamp_, &ttyDebf_, &ttyLo_})
+        if (t->active) t->count = std::min(t->text.size(), t->count + size_t(t->rate));
+}
+
+void Frontend::drawTty(Tty& t) {
+    if (!t.active) return;
+    if (t.count < t.text.size()) {
+        char n[16];
+        std::snprintf(n, sizeof n, "TTCLICK%d.WAV", 1 + std::rand() % 9);
+        sound(n, 192);
+    }
+    drawWrapped(t.font, t.x, t.y, t.w, t.h, t.text.substr(0, t.count), 0xFF00FF00);
+}
+
 void Frontend::drawText(const std::string& fontName, float x, float y, const std::string& text, uint32_t color, int align) {
     // Link words are joined by non-breaking spaces (0xA0): drawn as spaces.
     std::string s = text;
@@ -521,6 +560,8 @@ void Frontend::setMenu(const std::string& name) {
 }
 
 void Frontend::enter(Screen s) {
+    for (Tty* t : {&ttyHelp_, &ttyNsLeft_, &ttyNsRight_, &ttyNsHelp_, &ttyCamp_, &ttyDebf_, &ttyLo_}) *t = Tty{};
+    helpRow_ = -1;
     if (screen_ == Macros && s != Macros) saveProfile(cur_);   // Macros exit hook 0x420ed4
     if (screen_ == Keyboard && s != Keyboard) {
         // 0x423118: any exit stores the working copy and saves the profile.
@@ -887,8 +928,14 @@ void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, 
         const float ax = x0 + t0 * dx, ay = y0 + t0 * dy, bx = x0 + t1 * dx, by = y0 + t1 * dy;
         x0 = ax; y0 = ay; x1 = bx; y1 = by;
     }
+    // DF.EXE's pixel op (0x409964): colour/2 plus half the background's
+    // blue; the alpha byte is ignored.
+    Color c = argb(color);
+    c.a = 1;
+    hud().setBlend(3);
     hud().line(offX_ + (x0 + 0.5f) * scale_, offY_ + (y0 + 0.5f) * scale_, offX_ + (x1 + 0.5f) * scale_, offY_ + (y1 + 0.5f) * scale_,
-               scale_, argb(color));
+               scale_, c);
+    hud().setBlend(0);
 }
 
 void Frontend::drawBriefingMap(const MnuButton& b) {
@@ -1636,33 +1683,73 @@ void Frontend::ownerDraw(MnuButton& b) {
     const std::string cb = upperCase(b.userdraw.empty() ? b.callback : b.userdraw);
     const uint32_t green = 0xFF00FF00;
     if (cb == "MNU_NS_RIGHTBOX") {
-        blit(image(b.image), float(b.x), float(b.y), 0, 0, 156, 175, false);
+        // 0x410498: only for a soldier in use and not renaming/creating:
+        // plate 50 %, face keyed, frame, and the connector tree.
         if (!prof().valid() || !editing_.empty()) return;
+        blitHalf(image(b.image), float(b.x), float(b.y), 156, 175);
         // The face (0x410498): face01..08, female01..03, 128x128 at +15, +14.
         const int f = std::clamp(int(prof().get(0x640)), 0, 10);
         char name[32];
         if (f < 8) std::snprintf(name, sizeof name, "FACE%02d.PCX", f + 1);
         else std::snprintf(name, sizeof name, "FEMALE%02d.PCX", f - 7);
         blit(file(name), float(b.x + 15), float(b.y + 14), 0, 0, 128, 128, false);
+        const uint32_t g = 0x0000FF00;
+        menuLine(439, 96, 566, 96, g); menuLine(439, 223, 566, 223, g); menuLine(439, 96, 439, 223, g); menuLine(566, 96, 566, 223, g);
+        const float yr = float(91 + 26 * cur_);
+        const MnuButton* ed = mnu_.button("but_ns_ed");
+        const MnuButton* de = mnu_.button("but_ns_de");
+        const float yE = ed ? float(ed->y + 9) : 273.f, yD = de ? float(de->y + 9) : 299.f;
+        menuLine(380, yr, 397, yr, g);
+        menuLine(397, yr, 397, yD, g);
+        menuLine(397, 169, 423, 169, g);
+        menuLine(397, yE, 423, yE, g);
+        menuLine(397, yD, 423, yD, g);
+        menuLine(397, yr, 397, 169, g);
         return;
     }
     if (cb == "MNU_NS_STATUSBOX") {
-        // 0x40ee6c: name ~ campaign kills ~ completed missions (left).
-        blit(image(b.image), float(b.x), float(b.y), 0, 0, 520, 61, false);
+        // 0x410338: delete -> green outline (60,332)-(380,394), no plate;
+        // create/rename -> ImageOperPlt3 50 %; else a soldier -> ImageOperPlt
+        // 50 %. Texts teletyped 2 characters per tick (0x40ee6c): name, kills,
+        // missions (left), multiplayer kills/deaths/wins (right); help texts
+        // at (68,340) 310x52.
         auto t = [&](const char* k) { const std::string* s = menuText_.find("GroupMainMenu", k); return s ? *s : std::string(k); };
-        std::string left;
-        if (deleting_) left = t("NSDELETEDIALOG");
-        else if (!editing_.empty()) left = t("NSCREATEHELP");
-        else if (prof().valid()) {
+        const uint32_t g = 0x0000FF00;
+        if (deleting_) {
+            menuLine(60, 332, 380, 332, g); menuLine(60, 394, 380, 394, g); menuLine(60, 332, 60, 394, g); menuLine(380, 332, 380, 394, g);
+        } else if (!editing_.empty()) {
+            blitHalf(image("ImageOperPlt3"), 60, 332, 320, 61);
+            if (editMode_ == 1) {
+                const float yb = float(82 + 26 * cur_ + 9);
+                menuLine(380, yb, 397, yb, g); menuLine(397, yb, 397, 341, g); menuLine(397, 341, 380, 341, g);
+            }
+        } else if (prof().valid()) {
+            blitHalf(image(b.image), float(b.x), float(b.y), 520, 61);
+            // The connector from the selected row's dot (0x40fbc0).
+            const float ym = float(82 + 26 * cur_ + 9);
+            menuLine(60, ym, 48, ym, g); menuLine(48, ym, 48, 361, g); menuLine(48, 361, 60, 361, g);
+        }
+        if (!transitionDone()) return;
+        if (deleting_) {
+            ensureTty(ttyNsHelp_, t("NSDELETEDIALOG"), 68, 340, 310, 52, "LCD10", 2);
+            drawTty(ttyNsHelp_);
+        } else if (!editing_.empty()) {
+            ensureTty(ttyNsHelp_, t(editMode_ == 1 ? "NSCREATEHELP" : "NSDELETEHELP"), 68, 340, 310, 52, "LCD10", 2);
+            drawTty(ttyNsHelp_);
+        } else if (prof().valid()) {
             int done = 0;
             for (int c = 1; c <= 5; ++c)
                 for (int i = 0; i < 16; ++i) done += prof().get(0x30 + c * 0x44 + 4 * i) != 0;
             char buf[256];
             std::snprintf(buf, sizeof buf, "%s: %s ~ %s: %d ~ %s: %d", t("NSOPERATIVENAME").c_str(), prof().name().c_str(),
                           t("NSSPKILLS").c_str(), int(prof().get(0x664)), t("NSSPSPK").c_str(), done);
-            left = buf;
+            ensureTty(ttyNsLeft_, buf, 68, 343, 258, 60, "LCD10", 2);
+            std::snprintf(buf, sizeof buf, "%s: %d ~ %s: %d ~ %s: %d", t("NSMULTIPLAYERKILLS").c_str(), int(prof().get(0x648)),
+                          t("NSMPDEATHS").c_str(), int(prof().get(0x650)), t("NSMPSPK").c_str(), int(prof().get(0x65c)));
+            ensureTty(ttyNsRight_, buf, 328, 343, 260, 60, "LCD10", 2);
+            drawTty(ttyNsLeft_);
+            drawTty(ttyNsRight_);
         }
-        drawWrapped("LCD10", float(b.x + 8), float(b.y + 6), 250, 50, left, green);
         return;
     }
     if (cb == "MNU_CAMP_MAP") {
@@ -1691,8 +1778,21 @@ void Frontend::ownerDraw(MnuButton& b) {
         blit(image(b.image), float(b.x), float(b.y), 0, 0, 256, 84, false);
         char key[32];
         std::snprintf(key, sizeof key, "C%dM%d", camp_ + 1, mis_ + 1);
-        if (const std::string* t = campsText_.find("Mission Statements", key))
-            drawWrapped("LCD10", float(b.x + 6), float(b.y + 6), 244, 74, *t, green);
+        // Teletyped at (69,292) 240x122 (0x410f65); connector from the
+        // selected campaign button (61,by+9)-(51,by+9)-(51,314)-(61,314) (0x410b60).
+        if (transitionDone()) {
+            const std::string* t = campsText_.find("Mission Statements", key);
+            ensureTty(ttyCamp_, t ? *t : "Unable to find mission overview text!", 69, 292, 240, 122, "LCD10", 1);
+            drawTty(ttyCamp_);
+        }
+        char cb2[32];
+        std::snprintf(cb2, sizeof cb2, "but_ca_%d", camp_ + 1);
+        if (const MnuButton* cbtn = mnu_.button(cb2)) {
+            const float yb = float(cbtn->y + 9);
+            menuLine(61, yb, 51, yb, 0x0000FF00);
+            menuLine(51, yb, 51, 314, 0x0000FF00);
+            menuLine(51, 314, 61, 314, 0x0000FF00);
+        }
         return;
     }
     if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
@@ -1733,7 +1833,11 @@ void Frontend::ownerDraw(MnuButton& b) {
     if (cb == "MNU_LO_GUNINFO") {
         blit(image(b.image), float(b.x), float(b.y), 0, 0, 252, 140, false);
         const GearEntry& e = loTab_ == 0 ? kPrimary[loSel_[0]] : loTab_ == 1 ? kSecondary[loSel_[1]] : kSidearm[loSel_[2]];
-        if (const std::string* t = menuText_.find("GroupMainMenu", e.text)) drawWrapped("LCD10", 104, 268, 238, 123, *t, green);
+        // Teletyped on item change (0x41fae5), 1 character per tick.
+        if (const std::string* t = menuText_.find("GroupMainMenu", e.text); t && transitionDone()) {
+            ensureTty(ttyLo_, *t, 104, 268, 238, 123, "LCD10", 1);
+            drawTty(ttyLo_);
+        }
         return;
     }
     if (cb == "MNU_LO_CURRENTLOADOUT") {
@@ -1928,8 +2032,9 @@ int Frontend::run() {
             if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
             if (screen_ == Credits && next_ == Credits) tickCredits();
             if (screen_ == Briefing && captionShown_ < caption_.size()) ++captionShown_;
+            if (transitionDone()) tickTtys();
             if (screen_ == Keyboard) {
-                if (kbShown_ < kbMsg_.size()) ++kbShown_;
+                if (transitionDone()) kbShown_ = std::min(kbMsg_.size(), kbShown_ + 2);   // 2 per tick (0x422dbd + 0x422e38)
                 if (kbTimer_ > 0 && --kbTimer_ == 0) kbMessage(kbMode_ == 0 ? "KBDKEYMOD" : kbMode_ == 1 ? "KBDMOUSEMOD" : "KBDDELETEMOD", -1);
             }   // 1 character per tick (0x418408)
         }
@@ -2017,28 +2122,38 @@ int Frontend::run() {
         if (screen_ == Options1 || screen_ == Options3 || screen_ == Macros || screen_ == Keyboard) {
             // The settings pages' separator under the tab strip: a green line
             // (37,108)-(600,108) after the buttons (0x40b00c, 0x41c4fc, 0x420eac).
-            hud().line(offX_ + 37 * scale_, offY_ + 108.5f * scale_, offX_ + 600 * scale_, offY_ + 108.5f * scale_, scale_, {0, 1, 0, 1});
+            menuLine(37, 108, 600, 108, 0x0000FF00);
         }
         if (screen_ == Main) {
-            // The hover help (0x40c788 / 0x418568): the hovered button's
-            // MM*TEXT in ImageMainPlt at (172, 324), 296x61, 8 px inset, LCD10
-            // green (APPROXIMATION: shown at once, not teletyped; no
-            // connector lines).
+            // The hover help (0x40c788, 0x40ce70): the hovered button's
+            // MM*TEXT teletyped at (180,332) 288x53 in LCD10; hover-out clears
+            // it; connector from the button row (yr = 30 row + 113); then
+            // ImageMainPlt at (172,324) blended src/2 + 3/4 dst over the text.
             static const std::pair<const char*, const char*> help[] = {
                 {"BUT_MAINNS", "MMNEWSOLDIERTEXT"}, {"BUT_MAINSP", "MMSINGLEPLAYERTEXT"}, {"BUT_MAINMP", "MMMULTIPLAYERTEXT"},
                 {"BUT_MAINOP", "MMGAMEOPTIONSTEXT"}, {"BUT_MAINCR", "MMGAMECREDITSTEXT"}, {"BUT_MAINUP", "MMUPDATETEXT"},
                 {"BUT_MAINEX", "MMEXITTEXT"}};
-            for (const auto& [bn, key] : help)
-                if (hover_ == bn) {
-                    blit(image("ImageMainPlt"), 172, 324, 0, 0, 296, 61, false);
-                    if (const std::string* t = menuText_.find("GroupMainMenu", key))
-                        drawWrapped("LCD10", 180, 332, 280, 45, *t, 0xFF00FF00);
-                }
+            int row = -1;
+            const char* key = nullptr;
+            for (const auto& [bn, k] : help)
+                if (hover_ == bn)
+                    if (const MnuButton* hb = mnu_.button(bn); hb && (hb->attrib & 0x20) && hb->drawstate != 4) { row = hb->userid; key = k; }
+            if (row != helpRow_) { ttyHelp_ = Tty{}; helpRow_ = row; }
+            if (key && transitionDone()) {
+                const std::string* t = menuText_.find("GroupMainMenu", key);
+                ensureTty(ttyHelp_, t ? *t : key, 180, 332, 288, 53, "LCD10", 1);
+                drawTty(ttyHelp_);
+                const float yr = float(30 * row + 113);
+                menuLine(172, yr, 162, yr, 0x0000FF00);
+                menuLine(162, yr, 162, 356, 0x0000FF00);
+                menuLine(162, 356, 171, 356, 0x0000FF00);
+                blit(image("ImageMainPlt"), 172, 324, 0, 0, 296, 61, true);
+            }
         }
         if (screen_ == Debrief) {
             // 0x423b78: "Mission Statistics ~ Number of Kills : n ~ ~ Win<m>",
             // or "Mission Statistics ~ ~ Lose<m>"; teletype box (86, 104)
-            // 468x272, AVA10B (shown at once: APPROXIMATION).
+            // 468x272, AVA10B.
             auto t = [&](const char* k) { const std::string* s = menuText_.find("GroupMainMenu", k); return s ? *s : std::string(k); };
             char sec[32], key[32];
             std::snprintf(sec, sizeof sec, "Briefing%d", mis_ + 1);
@@ -2048,7 +2163,10 @@ int Frontend::run() {
             if (outcome_.won) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
             else text += " ~ ~ ";
             text += body ? *body : "Unable to find mission debriefing text";
-            drawWrapped("AVA10B", 86, 104, 468, 272, text, 0xFF00FF00);
+            if (transitionDone()) {   // teletyped once from init, 1 char/tick (0x4240c3)
+                ensureTty(ttyDebf_, text, 86, 104, 468, 272, "AVA10B", 1);
+                drawTty(ttyDebf_);
+            }
         }
         hud().end();
         if (!o_.screenshot.empty() && ++frame >= o_.frames) {

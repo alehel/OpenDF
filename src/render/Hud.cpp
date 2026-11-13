@@ -164,6 +164,16 @@ HudImage Hud::makeImage(int width, int height, const std::vector<uint8_t>& rgba)
     return out;
 }
 
+void Hud::setBlend(int mode) {
+    flush();
+    switch (mode) {
+    case 1: glBlendColor(0.5f, 0.5f, 0.5f, 0.75f); glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_ALPHA); break;
+    case 2: glBlendColor(0.5f, 0.5f, 0.5f, 0.5f); glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_ALPHA); break;
+    case 3: glBlendColor(0.f, 0.f, 0.5f, 0.5f); glBlendFunc(GL_CONSTANT_ALPHA, GL_CONSTANT_COLOR); break;
+    default: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
+    }
+}
+
 void Hud::setTranslucent(bool on) {
     flush();
     if (on) {
