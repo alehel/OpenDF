@@ -47,6 +47,8 @@ struct Options {
     // Game testing aids (mission mode).
     int frames = 1, weapon = -1, stance = -1, zoom = 0;
     bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, killEnemies = false;
+    std::string inputScript, record;
+    bool watch = false;
     int width = 1280, height = 720;
 };
 
@@ -65,6 +67,9 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--fire") o.holdFire = true;
         else if (a == "--walk") o.walkForward = true;
         else if (a == "--kill-enemies") o.killEnemies = true;
+        else if (a == "--input") o.inputScript = next();
+        else if (a == "--watch") o.watch = true;
+        else if (a == "--record") o.record = next();
         else if (a == "--viewmodel-only") o.viewModelOnly = true;
         else if (a == "--map") o.showMap = true;
         else if (a == "--camera") {
@@ -695,6 +700,9 @@ int main(int argc, char** argv) {
             g.showMap = o.showMap;
             g.gameDir = o.dataDir;
             g.killEnemies = o.killEnemies;
+            g.inputScript = o.inputScript;
+            g.watch = o.watch;
+            g.record = o.record;
             rc = runGame(vfs, g);
         }
         else if (o.command == "check") rc = cmdCheck(vfs);

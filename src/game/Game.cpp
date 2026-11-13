@@ -18,6 +18,7 @@
 #include <deque>
 #include <fstream>
 #include <memory>
+#include <sstream>
 
 namespace df {
 
@@ -158,6 +159,17 @@ private:
     void drawMissionEnd(const Screen& s);
     void drawGoals(const Screen& s);
 
+    // Scripted test runs (--input / --watch / --record).
+    struct InputCmd { float t; std::string op, arg; float value; };
+    std::vector<InputCmd> inputCmds_;
+    size_t inputNext_ = 0;
+    float inputClock_ = 0, turnRate_ = 0, lookRate_ = 0, faceTarget_ = -1;
+    std::vector<SDL_Scancode> inputHeld_;
+    bool inputDone_ = false;
+    bool loadInputScript(const std::string& path);
+    void runInputScript(float dt);
+    bool held(SDL_Scancode sc) const;
+
     // Mission scripting.
     MissionScript script_;
     DialogIndex dialogs_;                 // DFDLGnn.DBF
@@ -297,6 +309,72 @@ void Game::updateRoute() {
     if (ax > p.radius || ay > p.radius) return;
     if (std::max(ax, ay) + std::min(ax, ay) / 2 >= p.radius) return;
     routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+}
+
+bool Game::loadInputScript(const std::string& path) {
+    // One command per line: "<seconds> <op> [arg] [value]", # comments.
+    //   press KEY      a key press (SDL key name: W, C, Tab, Left Shift, ...)
+    //   hold KEY       keep a key down; "hold Fire" holds the trigger
+    //   release KEY    let it go
+    //   turn DEG/S     keep turning (negative = left); "turn 0" stops
+    //   look DEG/S     keep pitching (positive = up)
+    //   face DEG       turn smoothly to a compass heading (0 = north, 90 = east)
+    //   end            finish the run
+    std::ifstream f(path);
+    if (!f) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (auto h = line.find('#'); h != std::string::npos) line.resize(h);
+        std::istringstream ls(line);
+        InputCmd c{0, {}, {}, 0};
+        if (!(ls >> c.t >> c.op)) continue;
+        std::string rest, word;
+        while (ls >> word) rest += (rest.empty() ? "" : " ") + word;
+        if (c.op == "turn" || c.op == "look" || c.op == "face") c.value = float(std::atof(rest.c_str()));
+        else c.arg = rest;
+        inputCmds_.push_back(c);
+    }
+    std::stable_sort(inputCmds_.begin(), inputCmds_.end(), [](const InputCmd& a, const InputCmd& b) { return a.t < b.t; });
+    return true;
+}
+
+bool Game::held(SDL_Scancode sc) const {
+    return std::find(inputHeld_.begin(), inputHeld_.end(), sc) != inputHeld_.end();
+}
+
+void Game::runInputScript(float dt) {
+    inputClock_ += dt;
+    while (inputNext_ < inputCmds_.size() && inputCmds_[inputNext_].t <= inputClock_) {
+        const InputCmd& c = inputCmds_[inputNext_++];
+        const SDL_Scancode sc = c.arg == "Fire" ? SDL_SCANCODE_UNKNOWN : SDL_GetScancodeFromName(c.arg.c_str());
+        if (c.op == "press" && sc != SDL_SCANCODE_UNKNOWN) {
+            SDL_KeyboardEvent k{};
+            k.type = SDL_KEYDOWN;
+            k.keysym.scancode = sc;
+            k.keysym.sym = SDL_GetKeyFromScancode(sc);
+            if (held(SDL_SCANCODE_LSHIFT)) k.keysym.mod = KMOD_LSHIFT;
+            handleKey(k);
+        } else if (c.op == "hold") {
+            inputHeld_.push_back(c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc);
+        } else if (c.op == "release") {
+            const SDL_Scancode r = c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc;
+            inputHeld_.erase(std::remove(inputHeld_.begin(), inputHeld_.end(), r), inputHeld_.end());
+        } else if (c.op == "turn") turnRate_ = c.value;
+        else if (c.op == "look") lookRate_ = c.value;
+        else if (c.op == "face") { faceTarget_ = c.value; turnRate_ = 0; }
+        else if (c.op == "end") inputDone_ = true;
+        else std::fprintf(stderr, "input script: unknown command \"%s %s\"\n", c.op.c_str(), c.arg.c_str());
+    }
+    if (inputNext_ >= inputCmds_.size() && !inputCmds_.empty()) inputDone_ = true;
+    if (faceTarget_ >= 0) {
+        // Shortest way round, at most 120 degrees a second.
+        float d = std::remainder(faceTarget_ * kPi / 180.f - player_.yaw, 2 * kPi);
+        const float step = 120.f * kPi / 180.f * dt;
+        if (std::abs(d) <= step) { player_.yaw += d; faceTarget_ = -1; }
+        else player_.yaw += d > 0 ? step : -step;
+    }
+    player_.yaw += turnRate_ * kPi / 180.f * dt;
+    player_.pitch = std::clamp(player_.pitch + lookRate_ * kPi / 180.f * dt, -1.5f, 1.5f);
 }
 
 int Game::teamCount(int team, bool aliveOnly) const {
@@ -819,8 +897,16 @@ int Game::run() {
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);   // zoom inset mask
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     const bool test = !o_.screenshot.empty();
+    const bool scripted = test || !o_.inputScript.empty() || !o_.record.empty();
+    // Fixed 60 Hz steps make a run repeatable; watching paces it in real time.
+    const bool fixedStep = !o_.record.empty() || (test && !o_.watch);
+    const bool hidden = scripted && !o_.watch;
+    if (!o_.inputScript.empty() && !loadInputScript(o_.inputScript)) {
+        std::fprintf(stderr, "cannot read input script %s\n", o_.inputScript.c_str());
+        return 1;
+    }
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height,
-                            SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (test ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE));
+                            SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE));
     if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
     SDL_GLContext ctx = SDL_GL_CreateContext(win_);
     if (!ctx) { std::fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); SDL_DestroyWindow(win_); return 1; }
@@ -853,7 +939,11 @@ int Game::run() {
             for (size_t i = 0; i < world_.objects.size(); ++i)
                 if (world_.objects[i].side == 2 && world_.objects[i].missionGroup == 3) world_.damage(int(i), 1000);
 
-        captured_ = !test;
+        captured_ = !scripted;
+        FILE* video = nullptr;
+        int videoW = 0, videoH = 0;
+        std::vector<uint8_t> videoFrame;
+        float endHold = -1;   // after a watched script ends: keep showing for a moment
         SDL_SetRelativeMouseMode(captured_ ? SDL_TRUE : SDL_FALSE);
         Uint64 last = SDL_GetPerformanceCounter();
         bool running = true, prevTrigger = false;
@@ -862,7 +952,7 @@ int Game::run() {
         int fpsFrames = 0;
         while (running) {
             Uint64 now = SDL_GetPerformanceCounter();
-            float dt = test ? 1.f / 60.f : std::min(float(now - last) / SDL_GetPerformanceFrequency(), 0.1f);
+            float dt = fixedStep ? 1.f / 60.f : std::min(float(now - last) / SDL_GetPerformanceFrequency(), 0.1f);
             last = now;
 
             SDL_Event e;
@@ -879,18 +969,20 @@ int Game::run() {
             }
             if (zoomClick) arsenal_.toggleZoom();
 
-            const Uint8* k = SDL_GetKeyboardState(nullptr);
+            if (!inputCmds_.empty()) runInputScript(dt);
+            const Uint8* kb = SDL_GetKeyboardState(nullptr);
+            auto k = [&](SDL_Scancode sc) { return kb[sc] || held(sc); };
             PlayerInput in;
-            in.forward = float((k[SDL_SCANCODE_W] || k[SDL_SCANCODE_UP]) - (k[SDL_SCANCODE_S] || k[SDL_SCANCODE_DOWN]));
-            in.strafe = float((k[SDL_SCANCODE_D] || k[SDL_SCANCODE_RIGHT]) - (k[SDL_SCANCODE_A] || k[SDL_SCANCODE_LEFT]));
-            in.walk = k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT];
-            in.jump = k[SDL_SCANCODE_SPACE];
-            in.up = k[SDL_SCANCODE_SPACE];
-            in.down = k[SDL_SCANCODE_C] && player_.fly;
+            in.forward = float((k(SDL_SCANCODE_W) || k(SDL_SCANCODE_UP)) - (k(SDL_SCANCODE_S) || k(SDL_SCANCODE_DOWN)));
+            in.strafe = float((k(SDL_SCANCODE_D) || k(SDL_SCANCODE_RIGHT)) - (k(SDL_SCANCODE_A) || k(SDL_SCANCODE_LEFT)));
+            in.walk = k(SDL_SCANCODE_LSHIFT) || k(SDL_SCANCODE_RSHIFT);
+            in.jump = k(SDL_SCANCODE_SPACE);
+            in.up = k(SDL_SCANCODE_SPACE);
+            in.down = k(SDL_SCANCODE_C) && player_.fly;
             if (o_.walkForward) in.forward = 1;
             if (showMap_) in = PlayerInput{};
             const bool trigger = !showMap_ && ((captured_ && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
-                                               k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_RCTRL] || o_.holdFire);
+                                               k(SDL_SCANCODE_LCTRL) || k(SDL_SCANCODE_RCTRL) || o_.holdFire);
 
             player_.oneHanded = arsenal_.def().oneHanded;
             player_.update(dt, in, world_);
@@ -940,6 +1032,28 @@ int Game::run() {
                 drawHud(s, proj * view);
             }
 
+            if (!o_.record.empty()) {
+                // Pipe the frame to ffmpeg (H.264, 30 fps, 1280 wide).
+                if (!video) {
+                    videoW = dw & ~1;
+                    videoH = dh & ~1;
+                    char cmd[1024];
+                    std::snprintf(cmd, sizeof cmd,
+                                  "ffmpeg -loglevel error -y -f rawvideo -pix_fmt rgb24 -s %dx%d -r 60 -i - "
+                                  "-vf vflip,fps=30,scale=1280:-2 -c:v libx264 -pix_fmt yuv420p -crf 20 \"%s\"",
+                                  videoW, videoH, o_.record.c_str());
+                    video = popen(cmd, "w");
+                    if (!video) std::fprintf(stderr, "cannot start ffmpeg for --record\n");
+                    videoFrame.resize(size_t(videoW) * videoH * 3);
+                }
+                if (video) {
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadPixels(0, 0, videoW, videoH, GL_RGB, GL_UNSIGNED_BYTE, videoFrame.data());
+                    fwrite(videoFrame.data(), 1, videoFrame.size(), video);
+                }
+            }
+            if (inputDone_ && endHold < 0) endHold = 1.5f;
+            if (endHold >= 0 && (endHold -= dt) < 0) running = false;
             if (test && ++frame >= o_.frames) {
                 writePpm(o_.screenshot, dw, dh);
                 std::printf("wrote %s (%dx%d)\n", o_.screenshot.c_str(), dw, dh);
@@ -951,6 +1065,7 @@ int Game::run() {
                 running = false;
             }
             SDL_GL_SwapWindow(win_);
+            if (!running && video) { pclose(video); video = nullptr; std::printf("recorded %s\n", o_.record.c_str()); }
 
             ++fpsFrames;
             fpsTimer += dt;
