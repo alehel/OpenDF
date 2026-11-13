@@ -171,6 +171,22 @@ private:
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     TextTable campText_;                  // DFCAMPxx.BIN
     TextTable menuText_;                  // DFMENU.BIN
+    TextTable gameTable_;                 // DFGAME.BIN by section and key
+    // Placed charges: satchels (schg), claymores (clay radio, cly2 motion).
+    struct Charge { int object; int item; int fuse; };
+    std::vector<Charge> charges_;
+    // Fire missions (0x4482e0 / 0x448368): strikes left (BMS header +0x84),
+    // up to 16 on the way, the lasered point and its 64-tick window.
+    int fireMissions_ = 0;
+    struct Strike { int timer; Vec3 target; };
+    std::vector<Strike> strikes_;
+    Vec3 laserPoint_{0, 0, 0};
+    int laserWindow_ = 0;
+    float laserRange_ = -1;
+    void weaponEvent(const WeaponEvent& e);
+    void tickCharges();
+    void blowCharge(Charge& c);
+    void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
     int carried_ = -1;                    // the object the player carries (+0x90)
     bool briefingShown_ = false, helpShown_ = false;   // [0x66f96c], [0x66f968]
     std::string briefing_;                // built at mission load (0x4813c4)
@@ -264,7 +280,7 @@ private:
                                         float aimPitch = 0);
     Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
-    void explode(Vec3 at, int surface, bool heavy = false);
+    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f);
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
     void spawnPuff(Vec3 at);
     void tickEffects();
@@ -402,6 +418,10 @@ bool Game::loadMission(int index) {
         if (o.item && (o.item->attrib & 0x20)) o.removed = true;
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
+    charges_.clear();
+    strikes_.clear();
+    fireMissions_ = mission_.fireMissions;
+    laserWindow_ = 0;
     {
         // Briefing (0x4813c4): campaign section "Briefing<n>", key "Mission<n>a";
         // (expanded below)
@@ -613,10 +633,10 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // water), blast type 1 with radius 10 m, and on terrain a smoke generator.
 // Sound 0x32 / 0x35: not yet (no sound). The LAW out of the water is blast
 // type 3 (`heavy`: objects lose 128 - 16 d).
-void Game::explode(Vec3 at, int surface, bool heavy) {
+void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
     spawnEffect(surface == 2 ? 4 : 3, at);
     playSound(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
-    for (auto& m : world_.blast(at, 10.f, heavy)) pushMessage(m);
+    for (auto& m : world_.blast(at, radius, heavy)) pushMessage(m);
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
     if (!playerDead()) {
@@ -629,7 +649,7 @@ void Game::explode(Vec3 at, int surface, bool heavy) {
         // Blast deaths (0x44fda8): type 2 under 4 m; 4-8 m type 3 one time in
         // four, else 2; farther type 2.
         const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
-        if (d <= 11.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
+        if (d <= radius + 1.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
     }
     if (surface == 0) smokeGens_.push_back({at, 0, 0});
 }
@@ -754,6 +774,146 @@ void Game::touchPickups() {
         default: break;
         }
     }
+}
+
+// One shrapnel round (0x44d730): speed ((rand*2) | 0x100) * factor >> 6 in
+// 16.16 m per tick; flags 0x20, 400 ticks, power 1, falloff 64.
+void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor) {
+    std::uniform_int_distribution<int> r(0, 0x7fff);
+    const float speed = float(((r(effectRng_) * 2) | 0x100) * speedFactor >> 6) / 65536.f * 60.f;
+    Projectile p;
+    p.pos = at;
+    p.from = at;
+    p.shooter = -1;
+    p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
+    p.lifetime = 0x190;
+    p.power = 1;
+    p.falloff = 0x40;
+    p.flags = 0x20;
+    arsenal_.addProjectile(p);
+}
+
+void Game::weaponEvent(const WeaponEvent& e) {
+    switch (e.kind) {
+    case WeaponEvent::Place: {
+        // Host create (0x447fd8): on the ground; sounds 0x79 satchel, 0x78 claymore.
+        const ItemDef* item = items_.byId(100000 + e.item);
+        const GpuModel* m = item && !item->graphic.empty() ? models_.get(vfs_, item->graphic) : nullptr;
+        if (!item || !m) break;
+        Vec3 at = e.pos;
+        const float ext = world_.extent();
+        at.x -= std::floor(at.x / ext) * ext;
+        at.z -= std::floor(at.z / ext) * ext;
+        at.y = world_.groundHeight({at.x, player_.feet.y + 0.25f, at.z}, 0.25f);
+        const int obj = world_.spawn(item, m, at, e.heading);
+        charges_.push_back({obj, e.item, -1});
+        playSound(e.item == 4020 ? 0x79 : 0x78, at);
+        break;
+    }
+    case WeaponEvent::Detonate:
+        // 0x447db4: every satchel and radio claymore of the player, at once.
+        for (auto& c : charges_)
+            if ((c.item == 4020 || c.item == 4040) && !world_.objects[size_t(c.object)].removed) world_.objects[size_t(c.object)].hp = 0;
+        break;
+    case WeaponEvent::LaserPressed:
+        sound_.play2D(0x1AE);
+        if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTED")) pushMessage(*t);
+        break;
+    case WeaponEvent::LaserRequest:
+        // 0x4482e0: a strike on the way if any are left and one of 16 slots
+        // is free: 1280 ticks, at the requester's position now.
+        if (fireMissions_ > 0 && strikes_.size() < 16) {
+            --fireMissions_;
+            strikes_.push_back({0x500, player_.feet});
+            sound_.play2D(0x1AF);
+            if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTOK")) pushMessage(*t);
+        } else {
+            sound_.play2D(0x1B0);
+            if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTDENIED")) pushMessage(*t);
+        }
+        break;
+    }
+}
+
+// A placed charge goes off (0x447d28 -> 0x46cdfc satchel: blast type 5,
+// radius 12, 200 shrapnel all round and upward; 0x447cac -> 0x46cc90
+// claymore: blast type 1 and a fan of 160 pieces).
+void Game::blowCharge(Charge& c) {
+    WorldObject& o = world_.objects[size_t(c.object)];
+    o.removed = true;
+    o.boxes.clear();
+    const Vec3 at = o.pos + Vec3{0, 0.2f, 0};
+    std::uniform_int_distribution<int> r(0, 0x7fff);
+    if (c.item == 4020) {
+        explode(at, 0, true, 12.f);
+        for (int k = 0; k < 200; ++k) {
+            const float yaw = o.heading + float(uint32_t(r(effectRng_) * 2) << 16) / 4294967296.f * 2 * kPi;
+            const float pitch = float(uint32_t(r(effectRng_) * 2) << 14) / 4294967296.f * 2 * kPi;
+            shrapnel(at, yaw, pitch, 0x1E);
+        }
+    } else {
+        explode(at, 0);
+        // Yaw heading - 30 degrees + k x 1.8 (DF.EXE's loop adds k x 0.3 to
+        // its 1.5-degree steps, so the fan is lopsided), pitch -2, 3, 8, 13.
+        for (int k = 0; k < 40; ++k)
+            for (int p = 0; p < 4; ++p)
+                shrapnel(at, o.heading + (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C);
+    }
+}
+
+// Per tick: charges hit or set off blow up; motion claymores (cly2, every
+// 0x20 ticks, 0x46cf48) sense anyone within 15 m ahead (+-33.75 degrees),
+// in sight and moving at least 1.1 m/s (vehicles 0.2), and go off 32 ticks
+// later. Fire missions count down; while the laser is on a point the strike
+// is pulled toward it 1 m a tick; at 0 a satchel-sized shell lands.
+void Game::tickCharges() {
+    for (auto& c : charges_) {
+        WorldObject& o = world_.objects[size_t(c.object)];
+        if (o.removed) continue;
+        if (o.hp <= 0 || o.wrecked) { blowCharge(c); continue; }
+        if (c.fuse > 0) { if (--c.fuse == 0) blowCharge(c); continue; }
+        if (c.item != 4014 || (ticks_ & 0x1f)) continue;
+        const Vec3 sensor = o.pos + Vec3{0, 0.3f, 0};
+        auto sees = [&](Vec3 at, float speed, float need) {
+            const Vec3 v = world_.nearest(at, sensor) - sensor;
+            float a = std::abs(v.x), b = std::abs(v.y), cc = std::abs(v.z);
+            if (a < b) std::swap(a, b);
+            if (a < cc) std::swap(a, cc);
+            if (b < cc) std::swap(b, cc);
+            if (a + b * 11.f / 32.f + cc * 0.25f > 15.f || speed < need) return false;
+            float rel = std::atan2(v.x, -v.z) - o.heading;
+            rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
+            if (std::abs(rel) > 0x18 / 256.f * 2 * kPi) return false;
+            RayHit h;
+            return !world_.raycast(sensor, sensor + v, h, true, c.object, false);
+        };
+        bool hit = !playerDead() && sees(player_.origin(), player_.speed(), 1.1f);
+        for (const auto& q : world_.objects) {
+            if (hit) break;
+            if (!q.person || !q.alive() || !q.moves) continue;
+            const char* n = moveName(q.moveNumber);
+            const AnimMove* mv = n ? q.moves->find(n) : nullptr;
+            hit = sees(q.pos, mv ? mv->velocity : 0.f, 1.1f);
+        }
+        if (hit) c.fuse = 32;
+    }
+    if (laserWindow_ > 0) --laserWindow_;
+    for (auto& st : strikes_) {
+        if (laserWindow_ > 0) {
+            const Vec3 d = world_.nearest(laserPoint_, st.target) - st.target;
+            const float dx = std::abs(d.x), dz = std::abs(d.z), len = std::max(dx, dz) + std::min(dx, dz) * 0.5f;
+            if (len > 1.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
+        }
+        if (--st.timer == 0) {
+            const Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0.1f, st.target.z};
+            explode(at, 0, true, 12.f);
+            std::uniform_int_distribution<int> r(0, 0x7fff);
+            for (int k = 0; k < 200; ++k)
+                shrapnel(at, float(uint32_t(r(effectRng_) * 2) << 16) / 4294967296.f * 2 * kPi,
+                         float(uint32_t(r(effectRng_) * 2) << 14) / 4294967296.f * 2 * kPi, 0x1E);
+        }
+    }
+    strikes_.erase(std::remove_if(strikes_.begin(), strikes_.end(), [](const Strike& s) { return s.timer <= 0; }), strikes_.end());
 }
 
 // Drop (0x46c9c0): 2 m ahead on the ground, or where the body lies.
@@ -1368,7 +1528,12 @@ void Game::drawTopBar(const Screen& s) {
     // Weapon name (0x483444) at (75, 10); red while reloading or with no
     // ammunition left at all (0x44b0a0 / 0x44b164).
     const ModeDef& md = arsenal_.mode();
-    const bool outOfAmmo = arsenal_.spares() <= 0 && arsenal_.rounds() <= 0 && !arsenal_.chambered();
+    // Red (0x44b074): types 7 / 9 also while the cooldown runs; 8 never; 10
+    // with no fire missions left.
+    const bool outOfAmmo = md.type == 8 ? false
+                         : md.type == 10 ? fireMissions_ <= 0
+                         : (arsenal_.spares() <= 0 && arsenal_.rounds() <= 0 && !arsenal_.chambered()) ||
+                               ((md.type == 7 || md.type == 9) && arsenal_.firing());
     hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), arsenal_.reloading() || outOfAmmo ? kHudRed : kHudGreen, ts);
 
     // Ammunition (0x483447, by fire type, jump table 0x483418), y 28.75-47.5:
@@ -1396,6 +1561,8 @@ void Game::drawTopBar(const Screen& s) {
         chamberBar(140);
     } else if (md.type == 6) {
         chamberBar(75);   // knife: the ready bar only (0x48353d)
+    } else if (md.type == 10) {
+        countBox(75, fireMissions_, false);   // fire missions left (0x483523, [0x933690])
     }
 
     // Weapon silhouette (0x484ae8): WEAP800.PCX, 13 frames, chosen per mode,
@@ -1648,10 +1815,27 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(zx, zy + in, t, out - in, kHudBright);
         const float range = rangeToAim();
         char buf[32];
-        if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "1km+");
-        else if (range < 1) std::snprintf(buf, sizeof buf, "1m-");
-        else std::snprintf(buf, sizeof buf, "%3dm", int(range));
-        hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
+        if (arsenal_.mode().type == 10) {
+            // Laser designator (0x4508be..0x450b4c): a diamond reticle,
+            // "Range: %3im" / "Range: 1km+", and "Laser Active" or a blinking
+            // "No Target" (APPROXIMATION: their positions and the reticle's size).
+            const float d = r * 0.1f;
+            hud_.line(zx - d, zy, zx, zy - d, t, kHudBright);
+            hud_.line(zx, zy - d, zx + d, zy, t, kHudBright);
+            hud_.line(zx + d, zy, zx, zy + d, t, kHudBright);
+            hud_.line(zx, zy + d, zx - d, zy, t, kHudBright);
+            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
+            else std::snprintf(buf, sizeof buf, "Range: %3im", int(range));
+            hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
+            const bool target = range >= 0 && range <= 999;
+            if (target || (ticks_ & 0x10))
+                hud_.text(s.cx(180), s.y(325.f), target ? "Laser Active" : "No Target", kHudBright, s.text());
+        } else {
+            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "1km+");
+            else if (range < 1) std::snprintf(buf, sizeof buf, "1m-");
+            else std::snprintf(buf, sizeof buf, "%3dm", int(range));
+            hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
+        }
     }
 
     if (showGoals_) drawGoals(s);
@@ -1917,6 +2101,7 @@ int Game::run() {
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
     if (vfs_.read("DFGAME.BIN", raw)) parseRtxt(raw, gameText_);
     if (vfs_.read("DFMENU.BIN", raw)) menuText_.parse(raw);
+    if (vfs_.read("DFGAME.BIN", raw)) gameTable_.parse(raw);
     {
         // The player soldier (ITEMS.DEF "player01") names its move table.
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
@@ -2108,6 +2293,16 @@ int Game::run() {
                 if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
             }
             for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);
+            for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
+            // The designator's point (0x4508be: the depth at the centre of the
+            // zoomed view), sent with the player's state: a 64-tick window.
+            if (arsenal_.mode().type == 10 && arsenal_.zoomed()) {
+                const float range = rangeToAim();
+                if (range >= 0 && range <= 999) {
+                    laserPoint_ = player_.eye() + aimDirection() * range;
+                    laserWindow_ = 64;
+                }
+            }
             for (int i : world_.takeDestroyed()) {
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
@@ -2125,6 +2320,7 @@ int Game::run() {
                 tickEffects();
                 tickDialogs();
                 touchPickups();
+                tickCharges();
                 // The player as a target: animated hit spheres (0x44dca4).
                 world_.playerBody.present = !playerDead();
                 world_.playerBody.origin = player_.origin();

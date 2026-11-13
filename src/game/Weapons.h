@@ -25,7 +25,7 @@ constexpr float kTick = 1.f / 60.f;
 
 // Player weapon table record (0x4E97D0, 168 bytes, 39 modes).
 struct ModeDef {
-    int type = 0;               // +0x6C fire type: 1 gun, 2 launcher (M203, LAW), 6 knife, 11 thrown grenade; others not done
+    int type = 0;               // +0x6C fire type: 1 gun, 2 launcher, 6 knife, 7 claymore, 8 detonator, 9 satchel, 10 laser, 11 grenade
     int gun = 0;                // +0x74 gun table index (ammunition is kept per gun)
     int item = 0;               // +0x64 first-person item (ITEMS.DEF id - 100000)
     int offset[3] = {};         // +0x78 first-person model offset: forward, left, up in 1/256 m
@@ -40,7 +40,9 @@ struct ModeDef {
     bool oneHanded() const { return !(flags & 4); }
     bool automatic() const { return flags & 0x20; }
     bool zoomable() const { return (flags & 1) && scope > 1; }
-    bool works() const { return type == 1 || type == 2 || type == 6 || type == 11; }
+    // Fire types OpenDF handles: 1 guns, 2 launchers, 6 knife, 7 claymore,
+    // 8 radio detonator, 9 satchel, 10 laser designator, 11 grenade.
+    bool works() const { return type == 1 || type == 2 || (type >= 6 && type <= 11); }
 };
 
 // Gun table record (0x4E9060, 52 bytes).
@@ -55,6 +57,17 @@ struct GunDef {
     int flags = 0;              // +0x30: 0x01 M203, 0x10 hand grenade, 0x40 LAW
     // +0x20 shot, +0x24 chamber / load, +0x28 reload, +0x2C dry fire (sound ids, 0 none)
     int sounds[4] = {0, 0, 0, 0};
+};
+
+// Things the weapons ask the game to do: place a charge (satchel 4020,
+// claymore 4014 motion / 4040 radio; 1 m ahead, the player's heading), set
+// off the player's satchels and radio claymores, ask for a fire mission
+// (the laser designator: pressed, then the request 180 ticks later).
+struct WeaponEvent {
+    enum Kind { Place, Detonate, LaserPressed, LaserRequest } kind;
+    int item = 0;
+    Vec3 pos{0, 0, 0};
+    float heading = 0;
 };
 
 // A sound the weapons asked for (DF.EXE 0x473220): id at a position.
@@ -165,6 +178,7 @@ public:
     // Rounds that hit the player: damage, body part, where they came from.
     struct PlayerHit { int damage; int part; Vec3 from; };
     std::vector<PlayerHit> takePlayerHits() { std::vector<PlayerHit> out; out.swap(playerHits_); return out; }
+    std::vector<WeaponEvent> takeEvents() { std::vector<WeaponEvent> out; out.swap(events_); return out; }
     std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
 
@@ -195,6 +209,7 @@ private:
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
     std::vector<SoundEvent> sounds_;
+    std::vector<WeaponEvent> events_;
     std::vector<PlayerHit> playerHits_;
     bool followUp_ = false;
     int projectileIds_ = 0;

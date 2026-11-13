@@ -393,6 +393,33 @@ void Arsenal::fire(Player& player) {
     cooldown_ = md.cooldown;
     std::uniform_real_distribution<float> unit(0.f, 1.f);
     std::uniform_real_distribution<float> turn(0.f, 2 * kPi);
+    if (md.type == 7 || md.type == 9) {
+        // Claymore (0x44ad50) / satchel (0x44ae90): placed 1 m ahead at the
+        // player's heading (ground snapped by the game); the same kick as a
+        // grenade; the next one after the 90-tick cooldown (0x44a548).
+        const float r = turn(rng_);
+        kick_[0] -= 0x1000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
+        const int item = md.type == 9 ? 4020 : slots_[size_t(current_)] == 37 ? 4014 : 4040;
+        events_.push_back({WeaponEvent::Place, item,
+                           player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
+        return;
+    }
+    if (md.type == 8) {
+        // Radio detonator (0x42cef8): all the player's satchels and radio
+        // claymores; no ammunition.
+        chamberedRef() = 1;
+        events_.push_back({WeaponEvent::Detonate});
+        return;
+    }
+    if (md.type == 10) {
+        // Laser designator (0x44a6f8): "Fire Mission request, over." with
+        // 0x1AE now; the request itself when the cooldown ends (0x44a764).
+        chamberedRef() = 1;
+        events_.push_back({WeaponEvent::LaserPressed});
+        return;
+    }
     if (md.type == 6) {
         // Knife (0x44a598): the model pulls back 0x2000 and down 0x2000 with
         // a random 0x400 wobble (0x44a5f1); the strike point is 0x8000 along
@@ -528,6 +555,11 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 if (burstLeft_ > 0) { --burstLeft_; followUp_ = true; fire(player); followUp_ = false; shot = true; }
                 else if (md.automatic() && triggerDown && !binoculars_) { fire(player); shot = true; }
             }
+        } else if (md.type == 10) {
+            chamberedRef() = 1;
+            events_.push_back({WeaponEvent::LaserRequest});   // 0x44a764
+        } else if (md.type == 8) {
+            chamberedRef() = 1;
         } else if (md.type == 6) {
             chamberedRef() = 1;   // 0x44a6c4: the knife is ready again
         } else if (sparesRef() > 0 && !chambered()) {
@@ -542,7 +574,9 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
         pressed_ = false;
         // The binoculars block the trigger (0x44a947).
         if (!shot && cooldown_ <= 0 && reloadTicks_ == 0 && !binoculars_) {
-            if (!chambered() && md.type != 1 && md.type != 6) {
+            if (md.type == 8 || md.type == 10) {
+                fire(player);   // the detonator and the designator need no round
+            } else if (!chambered() && md.type != 1 && md.type != 6) {
                 sound(3);                       // launcher / grenade dry fire (0x44a221, 0x44a3e3)
             } else if (chambered()) {
                 fire(player);

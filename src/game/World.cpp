@@ -159,6 +159,19 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         }
 }
 
+int World::spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float heading) {
+    WorldObject o;
+    o.item = item;
+    o.model = model;
+    o.pos = pos;
+    o.base = pos.y;
+    o.heading = heading;
+    o.hp = item ? item->hp : 0;
+    refreshBoxes(o);
+    objects.push_back(std::move(o));
+    return int(objects.size()) - 1;
+}
+
 bool World::startMove(WorldObject& o, int number) {
     if (!o.chr || !o.moves) return false;
     const char* name = moveName(number);

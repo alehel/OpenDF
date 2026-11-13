@@ -22,7 +22,7 @@ when DF.EXE is missing or a different version.
 | First-person model, offset and camera | Original | DF.EXE player weapon table `+0x64`, `+0x78`; matches footage |
 | Magazine size | Original | gun table `+0x08` (M4 30, M40 5, MP5 SD 30, SAW 200, .45 7) |
 | Spare magazines | Original | gun table `+0x04` = n; spares n−1, or 2n−1 for the primary when the secondary Change Gear kit is "Ammo" (profile +0x688 == 1; 0x449787 → 0x44b598) |
-| Default loadout and slots | Original | a new soldier (0x40ee14): sidearm .45, primary M4/M203, kit Ammo. Ten slots (0x44b598, keys 0-9 via 0x42de85): 0 laser designator, 1 knife, 2 sidearm, 3-5 the primary row's modes, 6-8 the kit row's, 9 frag grenade; rows from the item table 0x4E9610 (M4/M203 = burst, M203, single). Mission start on slot 3 (0x449791). OpenDF's `--loadout PRIMARY,KIT,SIDEARM` until Change Gear exists. Laser designator, knife, satchel and claymore modes are not implemented (their slots stay empty) |
+| Default loadout and slots | Original | a new soldier (0x40ee14): sidearm .45, primary M4/M203, kit Ammo. Ten slots (0x44b598, keys 0-9 via 0x42de85): 0 laser designator, 1 knife, 2 sidearm, 3-5 the primary row's modes, 6-8 the kit row's, 9 frag grenade; rows from the item table 0x4E9610 (M4/M203 = burst, M203, single). Mission start on slot 3 (0x449791). OpenDF's `--loadout PRIMARY,KIT,SIDEARM` until Change Gear exists. All slot modes work (see AUDIT X15, X20) |
 | Muzzle velocity | Original (units inferred: m/s) | gun table `+0x0C` (M4 1000, M40 950, MP5 SD 295, SAW 1000, .45 295) |
 | Scope power | Original | player table `+0xA0`, used by the scope view (0x450600); allowed when `+0xA4` bit 0 is set |
 | Fire rate and modes | Original | player table `+0x9C`: ticks between rounds at 60 ticks/s; `+0xA4` 0x20 full auto (refire on cooldown expiry while held, not with the binoculars up — [0x93367c] is the binocular flag, not the scope); bursts hard-coded for modes 6, 8, 21, 35, 36 in 0x46af90: three rounds a cooldown apart, finishing on their own (0x44988e); otherwise one shot per press (0x44a920). Ammunition per gun (+0x74): chambered flag, magazine, spares; the next round is chambered when the cooldown ends (0x449f58) |
@@ -98,6 +98,4 @@ when DF.EXE is missing or a different version.
 
 ## Not yet implemented, so not checkable
 
-Menus (main menu, campaign, briefing screens, Change Gear), pickups and
-carried items, satchels, claymores, the laser designator, vehicles and
-helicopters.
+Menus (main menu, campaign, briefing screens, Change Gear).

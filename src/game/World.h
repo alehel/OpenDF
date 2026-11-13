@@ -132,8 +132,11 @@ public:
     // Objects destroyed (not people) since the last call, for their sounds.
     std::vector<int> takeDestroyed() { std::vector<int> out; out.swap(destroyed_); return out; }
 
-private:
+    // A new object at run time (placed charges): its model, hit points and boxes.
+    int spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float heading);
     void refreshBoxes(WorldObject& o) const;
+
+private:
     std::vector<int> destroyed_;
     std::vector<AnimEvent> animEvents_;
     std::map<std::string, Chr> chrs_;
