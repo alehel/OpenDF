@@ -20,6 +20,7 @@ struct ItemDef {
     // class: 0 soft (bullets work), 1 armoured vehicles, 2 trees; inferred
     // from which items use which value.
     int hp = 0, damageClass = 0;
+    std::string aiFunction;   // `ai_function` (brrl: explosive barrel, sgen: smoke generator, ...)
 };
 
 class ItemDefs {

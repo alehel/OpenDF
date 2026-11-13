@@ -57,6 +57,9 @@ when DF.EXE is missing or a different version.
 | TRN keys | Original | sky_height in metres; sun_slope, camouflage never read; `type` lines only choose impact/footstep effects (0x4305b0) |
 | Terrain colour, detail, fog, sky, clouds, view distance | Original | see docs/AUDIT.md V4 |
 | Falling damage | Original | none: the landing code only zeroes the fall speed; no health write in DF.EXE depends on a fall |
+| Swimming | Original | DF.EXE 0x436158/0x43621a/0x43752e/0x449918: see AUDIT X9; Floating/Swimming origin heights from PLAYER01.CHR anims 134/133 |
+| Water splashes | Original | bullets: water plane 0x44f0e4, effect 2 (0x44fc20); falling in: effect 4 (0x4365a2) |
+| Frag grenade, explosions, smoke | Original (approximations noted in AUDIT X11/X12) | DF.EXE 0x44b598, 0x44a36c, 0x44f3e4, 0x44fda8, 0x480b88, 0x480bfc |
 | Water | Original | DF.EXE 0x43bfd8/0x43bd7a: W = T[(1−op)·lum + op·4r] over the already-drawn pixel's luminance; gradient from water palette 0..15 (0x431b3e); 16 texels/m, ±4-texel sine waves, phase tick·2; no fog; drawn last to 1023 m; under-water tint through r = 0 (0x43c500) |
 | Model material flags, LOD, lighting, fog | Original | see docs/AUDIT.md X8 |
 

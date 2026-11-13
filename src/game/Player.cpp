@@ -28,6 +28,10 @@ constexpr float kAirborne = 0x8000 / 65536.f;          // more than 0.5 m above 
 constexpr float kSlideStart = 0x14ccc / 65536.f;       // gradient 1.3 on either axis starts a slide
 constexpr float kSlideStop = 0xb333 / 65536.f;         // until both are under 0.7
 constexpr float kSlideRate = 0x1999 / 65536.f * 60.f;  // xy moves -gradient x 0.1 m per tick
+// Water (0x436158, 0x43621a, 0x449918):
+constexpr float kWaterDrag = 0xcccc / 65536.f;         // vertical speed x0.8 per tick, no gravity
+constexpr float kSwimDepth = 26214.4f / 65536.f;       // no rising once origin + 0.4 m is above the surface
+constexpr float kWaterEye = 0x4ccc / 65536.f;          // eye 0.3 m above the origin
 
 } // namespace
 
@@ -57,6 +61,12 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     const int pose = stance == Stance::Prone ? 2 : (stance == Stance::Crouch && !moving_) ? 1 : 0;
     const float target = eyeHeights[pose][oneHanded ? 1 : 0];
     eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
+
+    const float water = world.terrain->waterLevel();
+    if (inWater_ && !fly) {
+        updateInWater(dt, in, world, water);
+        return;
+    }
 
     if (fly) {
         Vec3 f = forward();
@@ -157,6 +167,76 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         if (d < 0) { feet.y -= d; vy_ = 0; onGround_ = true; }
     }
 
+    // Into the water (0x436577 airborne, 0x43697d walking): once the level is
+    // above the body origin. Falling in splashes: effect 4 "water exp" on the
+    // surface (0x4365a2).
+    if (water != 0 && water > feet.y + landOrigin()) {
+        if (!onGround_) spawns_.push_back({4, {feet.x, water, feet.z}});
+        inWater_ = true;
+        swimMove_ = false;
+        originY_ = feet.y + landOrigin();
+        eyeOffset_ = eyeHeight_ - landOrigin();
+        onGround_ = true;
+        sliding_ = false;
+    }
+
+    wrap(world.extent());
+}
+
+float Player::landOrigin() const {
+    // The eye table is the pose's origin height plus DF.EXE's eye offset.
+    const int pose = stance == Stance::Prone ? 2 : (stance == Stance::Crouch && !moving_) ? 1 : 0;
+    return eyeHeights[pose][oneHanded ? 1 : 0] - (pose == 2 ? 0.4f : 0.7f);
+}
+
+// DF.EXE in water: the move is Swimming while the forward key is held,
+// otherwise Floating (0x43752e, before any stance). No gravity: vertical
+// speed decays x0.8 per tick (0x436912). Swimming moves along the heading
+// and view pitch, vertically at half rate, and does not rise once the
+// origin is within 0.4 m of the surface (0x43621a / 0x43628f). The bottom
+// holds the body up (lowest contact point of the pose); the water is left
+// when the origin is above the level (0x4368ee).
+void Player::updateInWater(float dt, const PlayerInput& in, const World& world, float water) {
+    swimMove_ = in.forward > 0;
+    moving_ = swimMove_;
+    const float poseOrigin = swimMove_ ? swimOrigin : floatOrigin;
+    eyeOffset_ = kWaterEye + (eyeOffset_ - kWaterEye) * std::pow(0.9f, dt * 60.f);
+    vy_ *= std::pow(kWaterDrag, dt * 60.f);
+    originY_ += vy_ * dt;
+
+    speed_ = 0;
+    Vec3 horiz{0, 0, 0};
+    float vert = 0;
+    if (swimMove_) {
+        const AnimMove* m = moves ? moves->find("Swimming") : nullptr;
+        speed_ = m ? m->velocity : 2.0f;
+        horiz = Vec3{std::sin(yaw), 0, -std::cos(yaw)} * (speed_ * std::cos(pitch));
+        vert = speed_ * std::sin(pitch) * 0.5f;
+        if (vert > 0 && originY_ + kSwimDepth > water) vert = 0;
+    }
+    Vec3 f{feet.x + horiz.x * dt, originY_ - poseOrigin, feet.z + horiz.z * dt};
+    f = world.resolve(f, kRadius, kHeight, kStep);
+    feet.x = f.x;
+    feet.z = f.z;
+    originY_ += vert * dt;
+    const float ground = world.groundHeight({feet.x, originY_ - poseOrigin, feet.z}, kStep);
+    if (originY_ - poseOrigin < ground) {
+        originY_ = ground + poseOrigin;
+        if (vy_ < 0) vy_ = 0;
+    }
+    feet.y = originY_ - poseOrigin;
+
+    if (originY_ > water) {
+        // Out: the standing pose's origin is higher, so the feet go to the
+        // ground and the eye eases from where it was.
+        const float eyeY = originY_ + eyeOffset_;
+        inWater_ = false;
+        swimMove_ = false;
+        feet.y = std::max(originY_ - landOrigin(), world.groundHeight(feet, kStep));
+        eyeHeight_ = eyeY - feet.y;
+        onGround_ = true;
+        vy_ = 0;
+    }
     wrap(world.extent());
 }
 

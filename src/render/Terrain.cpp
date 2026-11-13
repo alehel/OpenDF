@@ -149,10 +149,12 @@ layout(location = 0) in vec2 aPos;
 uniform vec3 uEye;
 uniform float uLevel, uExtent;
 uniform mat4 uViewProj;
+uniform bool uBelow;
 out vec3 vWorld;
 void main() {
     vWorld = vec3(uEye.x + aPos.x * uExtent, uLevel, uEye.z + aPos.y * uExtent);
-    gl_Position = uViewProj * vec4(vWorld, 1.0);
+    // Under water: the whole view (a full-screen quad).
+    gl_Position = uBelow ? vec4(aPos, 0.0, 1.0) : uViewProj * vec4(vWorld, 1.0);
 }
 )";
 

@@ -51,27 +51,34 @@ struct WeaponDef {
     int falloff = 30;           // +0x14, ticks
     int lifetime = 70;          // +0x18, ticks of flight
     int accuracy = 1;           // +0x1C: spread ±0.0824°·(A−1) per axis, none at 1
+    int gunFlags = 0;           // +0x30: 0x10 hand grenade (thrown, explodes on impact), 0x01 M203, 0x40 LAW
+    bool thrown() const { return gunFlags & 0x10; }
 };
 
 // Built-in copy of the original's values (fallback).
 const std::vector<WeaponDef>& builtinWeaponDefs();
-// Index of a weapon by short name (".45", "M4", "M40", "MP5", "SAW"); -1 for
-// "Ammo" or anything unknown.
+// Index of a weapon by short name (".45", "M4", "M40", "MP5", "SAW",
+// "Grenade"); -1 for "Ammo" or anything unknown.
 int weaponIndex(const std::string& name);
 
 struct Projectile {
     Vec3 pos, vel;              // metres, metres per second
     int age = 0, lifetime = 0;  // ticks
     int power = 1, falloff = 30;
+    int flags = 0;              // gun table +0x30
     float tickClock = 0;
+    // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
+    bool explosive() const { return flags & 0x51; }
 };
 
 // A bullet hit, for spawning the impact effect (DF.EXE 0x44f71f: 0.25 m
 // back along the path).
 struct Impact {
     Vec3 pos;
-    int object = -1;   // -1 = terrain
+    int object = -1;   // -1 = terrain, -2 = water
     int part = -1;     // people: body part
+    bool explosive = false;   // grenade / M203 round: explodes here
+    bool armed = true;        // explosive: armed (old enough or impact-armed)
 };
 
 class Arsenal {
@@ -94,6 +101,8 @@ public:
     // keeps that weapon's current fire mode. A mode the weapon does not have
     // does nothing, like an empty slot in the original.
     void select(int slot, int mode = -1);
+    void selectGrenade() { if (grenadeSlot_ >= 0) select(grenadeSlot_); }
+    void selectSecondary(int mode) { if (secondarySlot_ >= 0) select(secondarySlot_, mode); }
     void cycle();
     void cycleMode();
     void reload();
@@ -121,6 +130,7 @@ public:
     void cancelZoom() { zoomLevel_ = 0; }
     float flash() const { return flashTimer_; }
     // Hits since the last call.
+    const std::vector<Projectile>& projectiles() const { return bullets_; }
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
 
 private:
@@ -138,6 +148,7 @@ private:
     int burstLeft_ = 0;
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
+    int grenadeSlot_ = -1, secondarySlot_ = -1;
     std::mt19937 rng_{1998};
 };
 

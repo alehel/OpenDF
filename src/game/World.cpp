@@ -209,7 +209,7 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
     return feet;
 }
 
-bool World::raycast(Vec3 a, Vec3 b, RayHit& hit) const {
+bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects) const {
     hit = RayHit{};
     bool found = false;
     Vec3 d = b - a;
@@ -238,8 +238,8 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit) const {
     }
 
     Vec3 mid = a + d * 0.5f;
-    for (size_t i = 0; i < objects.size(); ++i) {
-        const auto& o = objects[i];
+    for (size_t i = 0; objects && i < this->objects.size(); ++i) {
+        const auto& o = this->objects[i];
         // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m
         // of the body origin, then each part's sphere; the nearest along the
         // path wins.
@@ -321,8 +321,56 @@ std::string World::damage(int index, int amount, int power) {
         o.removed = true;
     }
     o.hp = 0;
+    // An explosive barrel goes off 10 ticks after it is destroyed (0x45a3c0).
+    if (o.item->aiFunction == "brrl" && o.detonate < 0) o.detonate = 10;
     refreshBoxes(o);
     return o.item->name + " destroyed";
+}
+
+std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
+    std::vector<std::string> out;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        WorldObject& o = objects[i];
+        if (!o.alive()) continue;
+        const Vec3 p = nearest(o.pos, at);
+        if (o.person) {
+            // Characters (0x785b60): within radius + 1 m of the body origin.
+            const Vec3 v = p - at;
+            const float dist = std::sqrt(dot(v, v));
+            if (dist > radius + 1.f) continue;
+            // Line of sight (0x45be04): from the body to the blast point
+            // raised 0.5 m, then from 0.5 m higher; both blocked: no damage
+            // for type 1, double distance otherwise.
+            RayHit h;
+            const Vec3 target = at + Vec3{0, 0.5f, 0};
+            float d = dist;
+            if (raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)) {
+                if (!heavy) continue;
+                d *= 2;
+            }
+            const int amount = d < 4 ? 4 : d < 8 ? 2 : 1;
+            std::string m = damage(int(i), amount);
+            if (!m.empty()) out.push_back(m);
+            continue;
+        }
+        if (o.hp <= 0 || !o.model) continue;
+        // Objects (0x820f60): distance outside the object's half extents
+        // (horizontal, vertical). APPROXIMATION: OpenDF uses the model's
+        // LOD-0 bounds for DF.EXE's +0x64 / +0x68 extents.
+        const auto& l = o.model->lods[0];
+        const float hx = std::max({std::abs(l.min[0]), std::abs(l.max[0]), std::abs(l.min[2]), std::abs(l.max[2])});
+        const float hz = (l.max[1] - l.min[1]) * 0.5f;
+        const Vec3 c = p + Vec3{0, (l.max[1] + l.min[1]) * 0.5f, 0};
+        const float ex = std::max(0.f, std::sqrt((c.x - at.x) * (c.x - at.x) + (c.z - at.z) * (c.z - at.z)) - hx);
+        const float ey = std::max(0.f, std::abs(c.y - at.y) - hz);
+        const float d = std::sqrt(ex * ex + ey * ey);
+        if (d > radius) continue;
+        const int amount = heavy ? std::max(0, int(128 - 16 * d)) : std::max(0, int(32 - 4 * d));
+        if (amount <= 0) continue;
+        std::string m = damage(int(i), amount);
+        if (!m.empty()) out.push_back(m);
+    }
+    return out;
 }
 
 void World::update(float dt) {

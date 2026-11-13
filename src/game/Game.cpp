@@ -158,6 +158,7 @@ private:
     Controls controls_;                   // the original's key table (from DF.EXE)
     AnimDefs playerMoves_;                // the player soldier's .ANM move table
     float eyeHeightTable_[3][2] = {{1.7558f, 1.7677f}, {1.3768f, 1.3768f}, {0.5031f, 0.5031f}};
+    float floatOrigin_ = 0.1489f, swimOrigin_ = 0.3184f;   // PLAYER01.CHR Floating / Swimming
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     TextTable campText_;                  // DFCAMPxx.BIN
     // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
@@ -191,8 +192,22 @@ private:
     // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
     // billboarded toward the camera, animated frame by frame, removed after
     // frames x ticks-per-frame.
-    struct Effect { const GpuModel* model; Vec3 pos; float scale; int age, life, ticksPerFrame, frames; };
+    struct Effect {
+        const GpuModel* model; Vec3 pos; float scale; int age, life, ticksPerFrame, frames;
+        // Smoke puffs ("smok", 0x480bfc): drift and rise speeds in m/tick,
+        // roll in turns.
+        bool smoke = false; float drift = 0, rise = 0, roll = 0;
+    };
     std::vector<Effect> effects_;
+    // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
+    // every 16..23 ticks, 100 puffs.
+    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; };
+    std::vector<SmokeGen> smokeGens_;
+    int playerHp_ = 4;                    // character word +0x74
+    bool playerDead() const { return playerHp_ <= 0; }
+    void explode(Vec3 at, int surface);   // surface: 0 terrain, 1 object, 2 water
+    void spawnPuff(Vec3 at);
+    void tickEffects();
     std::mt19937 effectRng_{1998};
     void spawnImpact(const Impact& hit);
     void spawnEffect(int slot, Vec3 pos);
@@ -250,6 +265,8 @@ bool Game::loadMission(int index) {
     player_ = Player{};
     player_.moves = &playerMoves_;
     std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
+    player_.floatOrigin = floatOrigin_;
+    player_.swimOrigin = swimOrigin_;
     player_.feet = {512, 0, 512};
     for (const auto& obj : mission_.objects) {
         const ItemDef* item = items_.byMissionType(obj.type);
@@ -263,6 +280,11 @@ bool Game::loadMission(int index) {
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
     arsenal_.init(gameText_, &exe_, &items_, weaponIndex(o_.primary), weaponIndex(o_.secondary));
+    // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
+    {
+        const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
+        playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
+    }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
     missionName_ = missionName(mission_.title);
@@ -430,15 +452,97 @@ void Game::spawnEffect(int slot, Vec3 pos) {
     // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5.
     std::uniform_real_distribution<float> u(0.5f, 1.5f);
     effects_.push_back({m, pos, u(effectRng_), 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
+    if (std::getenv("OPENDF_DEBUGHITS"))
+        std::fprintf(stderr, "effect slot %d %s: %d frames x %d ticks at (%.2f %.2f %.2f) radius %.2f\n", slot, item->graphic.c_str(),
+                     l.frames, l.ticksPerFrame, pos.x, pos.y, pos.z, m->radius);
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());   // 0x400 slots
 }
 
+// Explosion (DF.EXE 0x44f776 terrain, 0x44f90a / 0x44fb78 object or person,
+// 0x44fc20 water; barrels 0x46cb64): effect 3 "ground exp" (4 "water exp" in
+// water), blast type 1 with radius 10 m, and on terrain a smoke generator.
+// Sound 0x32 / 0x35: not yet (no sound).
+void Game::explode(Vec3 at, int surface) {
+    spawnEffect(surface == 2 ? 4 : 3, at);
+    for (auto& m : world_.blast(at, 10.f, false)) messages_.push_back({m, 0});
+    // The player is a character like the others (0x785b60): body origin
+    // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
+    if (!playerDead()) {
+        const Vec3 p = world_.nearest(player_.origin(), at);
+        const Vec3 v = p - at;
+        const float d = std::sqrt(dot(v, v));
+        RayHit h;
+        const Vec3 target = at + Vec3{0, 0.5f, 0};
+        const bool blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
+        if (d <= 11.f && !blocked) playerHp_ -= d < 4 ? 4 : d < 8 ? 2 : 1;
+    }
+    if (surface == 0) smokeGens_.push_back({at, 0, 0});
+}
+
+// New puff (0x480aac): item 107016, no speed yet, random roll, scale
+// (rand*2 + 0x20000) >> 4 in 16.16 (0.125..0.19).
+void Game::spawnPuff(Vec3 at) {
+    const ItemDef* item = items_.byId(107016);
+    const GpuModel* m = item && !item->graphic.empty() ? models_.get(vfs_, item->graphic) : nullptr;
+    if (!m || m->lods.empty()) return;
+    const auto& l = m->lods[0];
+    std::uniform_int_distribution<int> r(0, 0x7fff);
+    Effect e{m, at, float((r(effectRng_) * 2 + 0x20000) >> 4) / 65536.f, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame,
+             l.frames};
+    e.smoke = true;
+    e.roll = float(r(effectRng_) & 0xff) / 256.f;
+    effects_.push_back(e);
+    if (effects_.size() > 0x400) effects_.erase(effects_.begin());
+}
+
+// Per 60 Hz tick: effects age; smoke puffs move (0x480bfc): x += v, north
+// += v/4, up += w; scale grows 1/128 up to 2.0; roll one step; then w +=
+// 0x20 and v += 8 (16.16 per tick). Generators emit their puffs; barrels
+// count down to their explosion.
+void Game::tickEffects() {
+    for (auto& e : effects_) {
+        ++e.age;
+        if (!e.smoke) continue;
+        e.pos.x += e.drift;
+        e.pos.z -= e.drift * 0.25f;
+        e.pos.y += e.rise;
+        e.scale = std::min(2.f, e.scale + e.scale / 128.f);
+        e.roll += 1.f / 256.f;
+        e.rise += 0x20 / 65536.f;
+        e.drift += 8 / 65536.f;
+    }
+    effects_.erase(std::remove_if(effects_.begin(), effects_.end(), [](const Effect& e) { return e.age >= e.life; }),
+                   effects_.end());
+    std::uniform_int_distribution<int> r(0, 0x7fff);
+    for (auto& g : smokeGens_) {
+        if (--g.wait > 0) continue;
+        spawnPuff(g.pos);
+        ++g.puffs;
+        g.wait = ((r(effectRng_) * 2) >> 13) + 16;
+    }
+    smokeGens_.erase(std::remove_if(smokeGens_.begin(), smokeGens_.end(), [](const SmokeGen& g) { return g.puffs >= 100; }),
+                     smokeGens_.end());
+    for (auto& o : world_.objects)
+        if (o.detonate > 0 && --o.detonate == 0) {
+            // 0x46cb64: the barrel's blast; its shrapnel (10 pieces) and smoke
+            // generator. Shrapnel: not yet.
+            o.detonate = -1;
+            explode(o.pos, 0);
+        }
+}
+
 void Game::spawnImpact(const Impact& hit) {
+    if (hit.explosive) {
+        if (!hit.armed) return;
+        explode(hit.pos, hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1);
+        return;
+    }
     // Terrain (0x46a054): surface 1..6 -> dirt, grass, snow, stone, sand,
     // heavy dirt. People (0x44f9e3): flesh. Objects: by the hit material's
     // +0x12 bits (metal, wood, stone, foliage; armour, cloth), else dirt.
     int slot = 0;
-    if (hit.object < 0) {
+    if (hit.object == -2) slot = 2;   // water: "water splash" (0x44fc20)
+    else if (hit.object < 0) {
         static const int bySurface[7] = {0, 5, 7, 9, 13, 8, 6};
         slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
     } else {
@@ -532,14 +636,15 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Prone: player_.stance = Stance::Prone; break;
     // Weapon keys select the original's slots (DF.EXE 0x44b598/0x44aa74):
     // 1 knife, 2 sidearm, 3-5 the primary's fire modes, 6-8 the secondary's,
-    // 9 and 0 grenade / laser designator (not implemented yet).
+    // 9 frag grenade (always carried), 0 laser designator (not implemented yet).
     case Action::Weapon2: arsenal_.select(0); break;
     case Action::Weapon3: arsenal_.select(1, 0); break;
     case Action::Weapon4: arsenal_.select(1, 1); break;
     case Action::Weapon5: arsenal_.select(1, 2); break;
-    case Action::Weapon6: arsenal_.select(2, 0); break;
-    case Action::Weapon7: arsenal_.select(2, 1); break;
-    case Action::Weapon8: arsenal_.select(2, 2); break;
+    case Action::Weapon6: arsenal_.selectSecondary(0); break;
+    case Action::Weapon7: arsenal_.selectSecondary(1); break;
+    case Action::Weapon8: arsenal_.selectSecondary(2); break;
+    case Action::Weapon9: arsenal_.selectGrenade(); break;
     case Action::Cycle: arsenal_.cycle(); break;
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
@@ -612,12 +717,25 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
         // Model +X faces the heading; the quad's normal is +X, turned to the camera.
         Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
+        // Puffs turn about the axis facing the camera (model +X).
+        if (e.smoke) m = m * rotateX(e.roll * 2 * kPi);
         Mat4 sc;
         sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
         m = m * sc;
         models_.draw(*e.model, 0, m, false, false, frame);
         models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
+    // Thrown grenades in flight: ITEMS.DEF "grenade" (0x44d96d: item 4033
+    // for gun flag 0x10), turned to the direction of travel (APPROXIMATION:
+    // DF.EXE's in-flight orientation not traced).
+    if (const ItemDef* gi = items_.byId(104033); gi && !gi->graphic.empty())
+        if (const GpuModel* gm = models_.get(vfs_, gi->graphic))
+            for (const auto& p : arsenal_.projectiles()) {
+                if (!(p.flags & 0x10)) continue;
+                const Vec3 at = world_.nearest(p.pos, eye);
+                const float yaw = std::atan2(p.vel.x, -p.vel.z);
+                models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - yaw));
+            }
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     terrain_.drawWater(view, proj, eye, float(ticks_));
@@ -1088,6 +1206,11 @@ int Game::run() {
                     const ChrAnimation* a = mv ? chr.animation(mv->animation) : nullptr;
                     if (a) eyeHeightTable_[st][h] = Chr::originHeight(a->frames[0]) + (st == 2 ? 0.4f : 0.7f);
                 }
+            for (int k = 0; k < 2; ++k) {
+                const AnimMove* mv = playerMoves_.find(k ? "Swimming" : "Floating");
+                const ChrAnimation* a = mv ? chr.animation(mv->animation) : nullptr;
+                if (a) (k ? swimOrigin_ : floatOrigin_) = Chr::originHeight(a->frames[0]);
+            }
         }
     }
     {
@@ -1135,6 +1258,8 @@ int Game::run() {
             player_ = Player{};
             player_.moves = &playerMoves_;
     std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
+    player_.floatOrigin = floatOrigin_;
+    player_.swimOrigin = swimOrigin_;
             player_.feet = {o_.camera[0], 0, -o_.camera[1]};
             player_.wrap(terrain_.mapExtent());
             player_.feet.y = world_.groundHeight(player_.feet, 0.45f) + o_.camera[2];
@@ -1197,7 +1322,9 @@ int Game::run() {
             in.up = down(Action::Jump);
             in.down = down(Action::Crouch) && player_.fly;
             if (o_.walkForward) in.forward = 1;
-            if (showMap_) in = PlayerInput{};
+            // Dead (0x45a234): no more control. The death sequence itself
+            // (animation, mission end 0x444d24 / 0x46c9c0) is not done yet.
+            if (showMap_ || playerDead()) in = PlayerInput{};
             // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
             // angle per 30 Hz controller tick (84.375°/s), half that with NoRun
             // held; the same for pitch, which stays within -67.5°..+90° (0x437435).
@@ -1209,19 +1336,25 @@ int Game::run() {
             player_.pitch = std::clamp(player_.pitch, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
             // Any move or jump key turns the scope off (0x4373ab).
             if (in.forward != 0 || in.strafe != 0 || in.jump) arsenal_.cancelZoom();
-            const bool trigger = !showMap_ && (down(Action::Fire) || o_.holdFire);
+            const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.def().oneHanded;
             in.shooting = arsenal_.firing();
             player_.update(dt, in, world_);
+            if (std::getenv("OPENDF_DEBUGPLAYER") && (ticks_ % 30) == 0) {
+                const Vec3 f = player_.feet, e = player_.eye();
+                std::fprintf(stderr, "t %.1f hp %d mission (%.1f, %.1f) feet %.2f ground %.2f eye %.2f water %.2f %s speed %.1f\n", ticks_ / 60.f, playerHp_,
+                             player_.missionX(), player_.missionY(), f.y, terrain_.heightAt(f.x, f.z), e.y,
+                             terrain_.waterLevel(), player_.swimming() ? "SWIM" : player_.inWater() ? "FLOAT" : "land",
+                             player_.speed());
+            }
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
             for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
+            for (const auto& sp : player_.takeSpawns()) spawnEffect(sp.slot, sp.pos);
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
-                for (auto& e : effects_) ++e.age;
-                effects_.erase(std::remove_if(effects_.begin(), effects_.end(), [](const Effect& e) { return e.age >= e.life; }),
-                               effects_.end());
+                tickEffects();
                 if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;

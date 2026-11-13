@@ -41,6 +41,9 @@ const std::vector<WeaponDef>& builtinWeaponDefs() {
          "PMP5", 11, {84, -35, -72}, 30, 12, 295, 0.7f, {}, 1, reload, 0.35f},
         {{{"SAW Auto. Weap., Full Auto", F::Auto, 12, 6}},
          "PM249", 8, {85, -43, -73}, 200, 3, 1000, 1.0f, {}, 1, reload, 0.5f},
+        // Frag grenade: mode 33 (class 11, gun 12), first-person item 4037.
+        {{{"Frag Grenade", F::Single, 33, 90}},
+         "PGRENADE", 0, {36, -57, -107}, 1, 6, 20, 0.f, {}, 0, 0.f, 0.f},
     };
     return defs;
 }
@@ -49,12 +52,14 @@ namespace {
 
 // Built-in copies of the gun-table projectile fields, per weapon above.
 void builtinProjectiles(std::vector<WeaponDef>& defs) {
-    const int v[5][4] = {{1, 10, 200, 8}, {1, 30, 70, 1}, {2, 40, 70, 1}, {0, 10, 100, 5}, {1, 30, 70, 4}};
-    for (size_t i = 0; i < defs.size() && i < 5; ++i) {
+    const int v[6][5] = {{1, 10, 200, 8, 0}, {1, 30, 70, 1, 0}, {2, 40, 70, 1, 0}, {0, 10, 100, 5, 0}, {1, 30, 70, 4, 0},
+                         {0, 1, 1000, 6, 0x10}};
+    for (size_t i = 0; i < defs.size() && i < 6; ++i) {
         defs[i].power = v[i][0];
         defs[i].falloff = v[i][1];
         defs[i].lifetime = v[i][2];
         defs[i].accuracy = v[i][3];
+        defs[i].gunFlags = v[i][4];
     }
 }
 
@@ -86,7 +91,8 @@ bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<Weapo
         if (!gun(g, 0x04, n) || !gun(g, 0x08, d.magazine) || !gun(g, 0x0C, velocity)) return false;
         d.magazines = std::max(1, int(n));
         d.muzzleVelocity = float(velocity);
-        if (!gun(g, 0x10, d.power) || !gun(g, 0x14, d.falloff) || !gun(g, 0x18, d.lifetime) || !gun(g, 0x1C, d.accuracy))
+        if (!gun(g, 0x10, d.power) || !gun(g, 0x14, d.falloff) || !gun(g, 0x18, d.lifetime) || !gun(g, 0x1C, d.accuracy) ||
+            !gun(g, 0x30, d.gunFlags))
             return false;
         d.falloff = std::max(1, d.falloff);
         if (items && mode(first, 0x64, fp))
@@ -103,8 +109,8 @@ bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<Weapo
 } // namespace
 
 int weaponIndex(const std::string& name) {
-    const char* names[] = {".45", "M4", "M40", "MP5", "SAW"};
-    for (int i = 0; i < 5; ++i)
+    const char* names[] = {".45", "M4", "M40", "MP5", "SAW", "Grenade"};
+    for (int i = 0; i < 6; ++i)
         if (name == names[i]) return i;
     return -1;
 }
@@ -133,7 +139,16 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     };
     add(0, false);                              // sidearm: the .45 (the HS .22 is not implemented)
     add(primary >= 0 ? primary : 1, ammoKit);   // primary
+    secondarySlot_ = -1;
+    if (secondary >= 0 && secondary < n) secondarySlot_ = int(slots_.size());
     add(secondary, false);                      // secondary gun, if not the Ammo kit
+    // Slot 9: the frag grenade, whatever the kit (DF.EXE 0x44b598: item row
+    // 26, mode 33; 1 in hand + 5 spare).
+    grenadeSlot_ = -1;
+    if (const int g = weaponIndex("Grenade"); g >= 0 && secondary != g) {
+        grenadeSlot_ = int(slots_.size());
+        add(g, false);
+    }
     current_ = 1;   // the primary weapon (the original starts with the knife, not implemented yet)
     zoomLevel_ = 0;
     cooldown_ = reloadTimer_ = flashTimer_ = 0;
@@ -199,7 +214,15 @@ void Arsenal::fire(Player& player, World& world) {
     flashTimer_ = kTick;   // the flash mesh shows for about one frame (DF.EXE 0x4045f9)
     // DF.EXE 0x449cbc (fire class 1): the gun model jumps 0x800 back and a
     // random 0x400 sideways/up (16.16 m); it settles at 0x80 per tick (0x4498a9).
-    {
+    // Thrown grenade (0x44a36c): 0x1000 back, 0x400 sideways and 0x2000 down.
+    if (d.thrown()) {
+        std::uniform_real_distribution<float> a(0.f, 2 * kPi);
+        const float r = a(rng_);
+        kick_[0] = -0x1000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
+        flashTimer_ = 0;
+    } else {
         std::uniform_real_distribution<float> a(0.f, 2 * kPi);
         const float r = a(rng_);
         kick_[0] = -0x800 / 65536.f;
@@ -211,7 +234,9 @@ void Arsenal::fire(Player& player, World& world) {
     // uniform; nothing else (stance, movement, scope) changes it.
     float yaw = player.yaw, pitch = player.pitch;
     if (d.accuracy > 1) {
-        const float maxDev = float(0xF0000) / 4294967296.f * 2 * kPi * float(d.accuracy - 1);
+        // Thrown (0x44a36c): (A-1)·30·0x8000 binary angle (±0.41° at A = 6).
+        const float unit = d.thrown() ? 30.f * 0x8000 : float(0xF0000);
+        const float maxDev = unit / 4294967296.f * 2 * kPi * float(d.accuracy - 1);
         std::uniform_real_distribution<float> u(-1.f, 1.f);
         yaw += u(rng_) * maxDev;
         pitch += u(rng_) * maxDev;
@@ -241,6 +266,7 @@ void Arsenal::fire(Player& player, World& world) {
     p.lifetime = d.lifetime;
     p.power = d.power;
     p.falloff = d.falloff;
+    p.flags = d.gunFlags;
     bullets_.push_back(p);
 }
 
@@ -263,6 +289,10 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             s.rounds = d.magazine;
             messages.push_back("Ammo reloaded");   // DF.EXE's own message
         }
+    } else if (d.thrown() && s.rounds == 0 && cooldown_ <= 0 && s.mags > 0) {
+        // 0x44a318: the next grenade is in hand when the 90-tick cooldown ends.
+        s.rounds = 1;
+        --s.mags;
     } else {
         // Burst fires three rounds per press; full auto fires while held.
         // Full auto (table +0xA4 bit 0x20) refires while held, but not while zoomed (0x449fc3).
@@ -273,8 +303,9 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             if (s.rounds > 0) {
                 fire(player, world);
                 if (burstLeft_ > 0) --burstLeft_;   // a burst: three rounds, fireTicks apart
-                // DF.EXE 0x449f58: the last round starts the reload at once.
-                if (s.rounds == 0) { burstLeft_ = 0; reload(); }
+                // DF.EXE 0x449f58: the last round starts the reload at once
+                // (a grenade is replaced when the cooldown ends instead).
+                if (s.rounds == 0 && !d.thrown()) { burstLeft_ = 0; reload(); }
             } else {
                 burstLeft_ = 0;
                 if (triggerPressed && s.mags > 0) reload();
@@ -289,10 +320,32 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
-            if (world.raycast(b.pos, next, hit)) {
+            bool hitSomething = world.raycast(b.pos, next, hit);
+            // Water (0x44f0e4, tested after terrain and objects; the nearest
+            // wins): a start under or within 0x200 of the surface hits at
+            // t = 0, otherwise where the segment crosses the level. The bullet
+            // ends there (0x44fc20): it never travels under water.
+            if (const float w = world.terrain->waterLevel(); w != 0) {
+                float t = 2;
+                if (b.pos.y <= w + 0x200 / 65536.f) t = 0;
+                else if (next.y < w) t = (b.pos.y - w) / (b.pos.y - next.y);
+                if (t <= 1 && (!hitSomething || t < hit.t)) {
+                    hit = RayHit{};
+                    hit.t = t;
+                    hit.object = -2;
+                    hit.point = b.pos + (next - b.pos) * t;
+                    hitSomething = true;
+                }
+            }
+            if (hitSomething) {
                 {
                     const Vec3 dir = normalize(b.vel);
-                    impacts_.push_back({hit.point - dir * 0.25f, hit.object, hit.part});
+                    Impact im{hit.point - dir * 0.25f, hit.object, hit.part};
+                    // Explosive rounds are armed after 8 ticks of flight, or at
+                    // once when thrown (0x10); unarmed ones just vanish.
+                    im.explosive = b.explosive();
+                    im.armed = b.age > 8 || (b.flags & 0x10);
+                    impacts_.push_back(im);
                 }
                 // Damage (0x44f184): 1 << (power >> (age / falloff)).
                 // ×4 on the head (part 2) (0x44f184).
@@ -309,14 +362,16 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
                                          o.spheres[k][2], o.spheres[k][3]);
                     }
                 }
+                // A grenade's direct hit is a bullet hit too (0x44f90a), before its blast.
                 if (hit.object >= 0)
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power);
                 b.age = b.lifetime;
                 break;
             }
             b.pos = next;
-            b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
+            if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;   // not the LAW
             ++b.age;
+            if (b.pos.y < -1.f) b.age = b.lifetime;   // below -1 m: gone (0x44f40b)
         }
     }
     bullets_.erase(std::remove_if(bullets_.begin(), bullets_.end(), [](const Projectile& p) { return p.age >= p.lifetime; }),

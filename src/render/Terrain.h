@@ -35,6 +35,9 @@ public:
     // World-space ground height at (x, z), bilinear, wrapping.
     float heightAt(float x, float z) const;
     float mapExtent() const { return size_ * scale.cellSize; }
+    // DF.EXE [0x68bfe8]: the water level in metres, 0 when the map has none
+    // (0x430d28); every water test is skipped when it is 0.
+    float waterLevel() const { return desc_.waterHeight * scale.heightScale; }
 
     const TerrainDesc& desc() const { return desc_; }
     Vec3 fogColor() const;

@@ -27,6 +27,7 @@ struct WorldObject {
     float fall = 0;                    // 0..1 while a killed person falls
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
     bool wrecked = false;              // destroyed, husk shown
+    int detonate = -1;                 // explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0)
     // From the mission record: its group in the file (0 moving objects,
     // 1 scenery, 2 markers, 3 people), team (byte +0x48), side (+0x43) and
     // position in mission coordinates.
@@ -68,8 +69,17 @@ public:
     // Pushes a vertical cylinder (feet at `feet`) out of solid boxes.
     Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
 
-    // First thing hit on the segment a→b (terrain or object box).
-    bool raycast(Vec3 a, Vec3 b, RayHit& hit) const;
+    // First thing hit on the segment a→b (terrain or object box);
+    // `objects` false tests the terrain only.
+    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true) const;
+
+    // Explosion damage (DF.EXE blast queue 0x44fd4c / 0x450134, handler
+    // 0x44fda8) at `at` with radius `radius` m; `heavy` = blast types 3/5
+    // (LAW, satchel). Returns messages for what was killed or destroyed.
+    // People take 4 / 2 / 1 hit points within 4 / 8 / radius + 1 m, if the
+    // terrain does not block the way; objects max(0, 32 - 4 d), or
+    // 128 - 16 d for heavy blasts; armour is not checked.
+    std::vector<std::string> blast(Vec3 at, float radius, bool heavy);
 
     // Applies damage from a bullet. Returns a short message when something
     // is destroyed or killed, empty otherwise.

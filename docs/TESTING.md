@@ -29,6 +29,8 @@ One command per line, `<seconds> <command> [argument]`, `#` starts a comment:
 Other test options: `--camera x,y,h,yaw,pitch`, `--weapon N`, `--stance N`,
 `--zoom N`, `--fire`, `--walk`, `--map`, `--kill-enemies`, `--viewmodel-only`.
 
-Debugging aid: `OPENDF_DEBUGHITS=1` prints every bullet hit (object, body
-part, position) and, for people, their hit spheres. `opendf --game … chr`
+Debugging aids: `OPENDF_DEBUGHITS=1` prints every bullet hit (object, body
+part, position; object −2 is water), every effect spawned and, for people,
+their hit spheres. `OPENDF_DEBUGPLAYER=1` prints the player's hit points,
+position, ground, eye, water level and land/FLOAT/SWIM state twice a second. `opendf --game … chr`
 prints the stance origin heights and head sphere from PLAYER01.CHR.

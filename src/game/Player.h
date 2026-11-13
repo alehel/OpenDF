@@ -10,6 +10,8 @@
 #include "../formats/Anm.h"
 #include "World.h"
 
+#include <vector>
+
 namespace df {
 
 enum class Stance { Stand, Crouch, Prone };
@@ -34,21 +36,40 @@ public:
     // DF.EXE's eye offset (0x449913). Filled from the game data; defaults
     // are the PLAYER01.CHR values.
     float eyeHeights[3][2] = {{1.7558f, 1.7677f}, {1.3768f, 1.3768f}, {0.5031f, 0.5031f}};
+    // Origin (pelvis) height above the lowest contact point of the Floating
+    // and Swimming poses (PLAYER01.CHR animations 134 / 133).
+    float floatOrigin = 0.1489f, swimOrigin = 0.3184f;
 
     void update(float dt, const PlayerInput& in, const World& world);
+    float landOrigin() const;
+    // Effect slots spawned since the last call (water entry splash), with
+    // their position.
+    struct Spawn { int slot; Vec3 pos; };
+    std::vector<Spawn> takeSpawns() { std::vector<Spawn> out; out.swap(spawns_); return out; }
+    bool inWater() const { return inWater_; }
+    bool swimming() const { return inWater_ && swimMove_; }
     // `feet` is kept inside the repeating terrain tile (0..ext); missions use
     // one continuous coordinate space, so count the wraps to recover it.
     void wrap(float ext);
     // Position in mission coordinates: metres, x east, y north.
     double missionX() const { return feet.x + double(wrapX_) * wrapExtent_; }
     double missionY() const { return -(feet.z + double(wrapZ_) * wrapExtent_); }
-    Vec3 eye() const { return {feet.x, feet.y + eyeHeight_, feet.z}; }
+    Vec3 eye() const { return inWater_ ? Vec3{feet.x, originY_ + eyeOffset_, feet.z} : Vec3{feet.x, feet.y + eyeHeight_, feet.z}; }
     Vec3 forward() const;
+    // Body origin (the pelvis; DF.EXE's object z): what blasts measure to.
+    Vec3 origin() const { return inWater_ ? Vec3{feet.x, originY_, feet.z} : Vec3{feet.x, feet.y + landOrigin(), feet.z}; }
     bool moving() const { return moving_; }
     float speed() const { return speed_; }
 
 private:
+    void updateInWater(float dt, const PlayerInput& in, const World& world, float water);
+
     float eyeHeight_ = 1.7558f;
+    // In water (DF.EXE obj+0x6e bit 2) the body origin is tracked directly
+    // and the eye sits eyeOffset_ above it.
+    bool inWater_ = false, swimMove_ = false;
+    float originY_ = 0, eyeOffset_ = 0;
+    std::vector<Spawn> spawns_;
     bool sliding_ = false, jumpHeld_ = false;
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)
     float vy_ = 0;

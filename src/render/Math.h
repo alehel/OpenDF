@@ -57,6 +57,14 @@ inline Mat4 translate(Vec3 t) {
     return r;
 }
 
+inline Mat4 rotateX(float a) {
+    Mat4 r;
+    float c = std::cos(a), s = std::sin(a);
+    r.at(1, 1) = c; r.at(1, 2) = -s;
+    r.at(2, 1) = s; r.at(2, 2) = c;
+    return r;
+}
+
 inline Mat4 rotateY(float a) {
     Mat4 r;
     float c = std::cos(a), s = std::sin(a);
