@@ -80,6 +80,11 @@ public:
     // terrain does not block the way; objects max(0, 32 - 4 d), or
     // 128 - 16 d for heavy blasts; armour is not checked.
     std::vector<std::string> blast(Vec3 at, float radius, bool heavy);
+    // Knife (blast kind 2, 0x44ffd0, radius 1 m): every living person whose
+    // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
+    // whatever the armour; no line of sight; among objects only the piranha
+    // (item 4048) is hurt.
+    std::vector<std::string> stab(Vec3 at);
 
     // Applies damage from a bullet. Returns a short message when something
     // is destroyed or killed, empty otherwise.

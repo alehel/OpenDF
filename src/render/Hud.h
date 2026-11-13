@@ -37,6 +37,8 @@ public:
     float lineHeight(float scale = 1) const { return 13 * scale; }
 
     void rect(float x, float y, float w, float h, Color c);
+    // Multiplies what is already drawn by `c` (the damage flash).
+    void multiply(float x, float y, float w, float h, Color c);
     void line(float x0, float y0, float x1, float y1, float thickness, Color c);
     void puff(float cx, float cy, float radius, Color c);   // soft-edged disc
     void image(GLuint texture, float x, float y, float w, float h, Color tint = {1, 1, 1, 1});

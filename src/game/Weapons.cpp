@@ -321,6 +321,18 @@ void Arsenal::fire(Player& player) {
     cooldown_ = md.cooldown;
     std::uniform_real_distribution<float> unit(0.f, 1.f);
     std::uniform_real_distribution<float> turn(0.f, 2 * kPi);
+    if (md.type == 6) {
+        // Knife (0x44a598): the model pulls back 0x2000 and down 0x2000 with
+        // a random 0x400 wobble (0x44a5f1); the strike point is 0x8000 along
+        // the view from the body origin (0x42ca8c). No ammunition; ready
+        // again when the cooldown ends (0x44a6c4).
+        const float r = turn(rng_);
+        kick_[0] -= 0x2000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
+        stabs_.push_back(player.origin() + player.forward() * (0x8000 / 65536.f));
+        return;
+    }
     if (md.type == 1) {
         // 0x449cbc: the gun model jumps 0x800 back and a random 0x400
         // sideways/up (16.16 m); it settles at 0x80 per tick (0x4498a9).
@@ -430,6 +442,8 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 if (burstLeft_ > 0) { --burstLeft_; fire(player); shot = true; }
                 else if (md.automatic() && triggerDown && !zoomLevel_) { fire(player); shot = true; }
             }
+        } else if (md.type == 6) {
+            chamberedRef() = 1;   // 0x44a6c4: the knife is ready again
         } else if (sparesRef() > 0 && !chambered()) {
             // 0x44a318: the next grenade / launcher round.
             chamberedRef() = 1;

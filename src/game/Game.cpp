@@ -204,6 +204,12 @@ private:
     struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; };
     std::vector<SmokeGen> smokeGens_;
     int playerHp_ = 4;                    // character word +0x74
+    int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
+    void hurtPlayer(int amount);
+    // The camera: the player's eye, or once dead the orbit around the body
+    // (0x404104 / 0x481224).
+    Vec3 viewEye() const;
+    Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
     void explode(Vec3 at, int surface, bool heavy = false);   // surface: 0 terrain, 1 object, 2 water
     void spawnPuff(Vec3 at);
@@ -485,9 +491,36 @@ void Game::explode(Vec3 at, int surface, bool heavy) {
         RayHit h;
         const Vec3 target = at + Vec3{0, 0.5f, 0};
         const bool blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
-        if (d <= 11.f && !blocked) playerHp_ -= d < 4 ? 4 : d < 8 ? 2 : 1;
+        if (d <= 11.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1);
     }
     if (surface == 0) smokeGens_.push_back({at, 0, 0});
+}
+
+// Damage to the player (0x44fe9e blast, 0x44f2b2 bullets): hit points, and
+// the red flash +0x78 up to 0xFF (0x44b6d0).
+void Game::hurtPlayer(int amount) {
+    if (playerDead()) return;
+    playerHp_ -= amount;
+    damageFlash_ = std::min(0xFF, damageFlash_ + 0x78);
+}
+
+// Dead (0x404104 -> 0x481224): third-person orbit around the body, yaw
+// = tick << 21 (one turn per 2048 ticks), pitch 0x4000000 (5.625° down),
+// 3 m away from the body position raised 0.5 m (0x480d40), at least 1 m
+// above the ground.
+Vec3 Game::viewDir() const {
+    if (!playerDead()) return player_.forward();
+    const float yaw = float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi;
+    const float pitch = -float(0x4000000) / 4294967296.f * 2 * kPi;
+    return {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+}
+
+Vec3 Game::viewEye() const {
+    if (!playerDead()) return player_.eye();
+    const Vec3 pivot = player_.feet + Vec3{0, 0.5f, 0};
+    Vec3 e = pivot - viewDir() * 3.f;
+    e.y = std::max(e.y, terrain_.heightAt(e.x, e.z) + 1.f);
+    return e;
 }
 
 // New puff (0x480aac): item 107016, no speed yet, random roll, scale
@@ -718,7 +751,7 @@ float Game::rangeToAim() const {
 }
 
 void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
-    const Vec3 eye = player_.eye();
+    const Vec3 eye = viewEye();
     // Terrain rings scale with the original's focal length: F = 320 per 640
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
@@ -731,7 +764,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
     light.highlight = terrain_.highlight();
-    const Vec3 fwd = aimDirection();
+    const Vec3 fwd = viewDir();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
     struct Visible { const WorldObject* o; Vec3 at; int lod; };
@@ -749,6 +782,21 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     }
     for (auto& v : visible) models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
     for (auto& v : visible) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
+    // The dead player's body, seen from the orbit camera: the soldier's
+    // model laid down like the other dead (APPROXIMATION: DF.EXE plays the
+    // .CHR death animation chosen by 0x46c920).
+    if (playerDead())
+        if (const ItemDef* it = items_.byId(kItemPlayerSoldier); it && !it->graphic.empty())
+            if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
+                WorldObject body;
+                body.model = bm;
+                body.hip = -bm->lods[0].min[1];
+                body.pos = player_.feet + Vec3{0, body.hip, 0};
+                body.heading = player_.yaw;
+                body.fall = 1;
+                models_.draw(*bm, 0, body.matrix(world_.nearest(body.pos, eye)));
+                models_.drawTranslucent(*bm, 0, body.matrix(world_.nearest(body.pos, eye)));
+            }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.
     const float camYaw = std::atan2(fwd.x, -fwd.z);
     for (const auto& e : effects_) {
@@ -786,7 +834,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
 
 void Game::drawViewModel(const Screen& s) {
     // The original hides the weapon while the zoom inset is up.
-    if (!gunVisible_ || scopeShown() || showMap_) return;
+    // Nor is it drawn once the player is dead (0x4042df).
+    if (!gunVisible_ || scopeShown() || showMap_ || playerDead()) return;
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
@@ -935,6 +984,8 @@ void Game::drawTopBar(const Screen& s) {
     } else if (md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11) {
         countBox(75, arsenal_.spares(), false);
         chamberBar(140);
+    } else if (md.type == 6) {
+        chamberBar(75);   // knife: the ready bar only (0x48353d)
     }
 
     // Weapon silhouette (0x484ae8): WEAP800.PCX, 13 frames, chosen per mode,
@@ -1178,9 +1229,22 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
 
     if (showGoals_) drawGoals(s);
     if (missionResult_ >= 0) drawMissionEnd(s);
+    // 0x482f02: dead, until the mission is over: "You Are Dead" centred at
+    // x 512, top + 0x14 (as the end panel), in the message colour
+    // ([0x66f948]: colour table entry [0x66fa48], white by default).
+    if (playerDead() && missionResult_ < 0) {
+        const char* dead = "You Are Dead";
+        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
+    }
 
     drawTopBar(s);
     drawBottomBar(s);
+    // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
+    // multiplied by (255, 255 - v, 255 - v) / 256, a red tint of strength v.
+    if (damageFlash_ > 0) {
+        const float c = float(255 - damageFlash_) / 256.f;
+        hud_.multiply(0, s.playY, s.w, s.playH, {1, c, c, 1});
+    }
     hud_.end();
 }
 
@@ -1405,10 +1469,17 @@ int Game::run() {
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
             for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
+            for (const auto& at : arsenal_.takeStabs())
+                for (auto& m : world_.stab(at)) messages_.push_back({m, 0});
             for (const auto& sp : player_.takeSpawns()) spawnEffect(sp.slot, sp.pos);
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
                 tickEffects();
+                // 0x449830: the damage flash fades 2 per tick.
+                damageFlash_ = damageFlash_ > 1 ? damageFlash_ - 2 : 0;
+                // 0x446148, every 64 ticks: a dead player ends the mission
+                // (0x44663c(2)); no side wins.
+                if (playerDead() && missionResult_ < 0 && (ticks_ & 63) == 0) endMission(0);
                 if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;
@@ -1447,7 +1518,7 @@ int Game::run() {
             // While zoomed the camera carries the scope's random offset (0x404246).
             Player cam = player_;
             if (arsenal_.zoomed()) { cam.yaw += arsenal_.scopeYaw(); cam.pitch += arsenal_.scopePitch(); }
-            Mat4 view = lookDir(player_.eye(), cam.forward(), {0, 1, 0});
+            Mat4 view = playerDead() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
                 glClearColor(1, 0, 1, 1);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

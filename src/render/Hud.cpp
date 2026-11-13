@@ -189,6 +189,14 @@ void Hud::begin(int width, int height) {
     texture_ = 0;
 }
 
+void Hud::multiply(float x, float y, float w, float h, Color c) {
+    flush();
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    rect(x, y, w, h, c);
+    flush();
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
 void Hud::end() {
     flush();
     glBindVertexArray(0);

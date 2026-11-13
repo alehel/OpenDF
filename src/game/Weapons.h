@@ -25,7 +25,7 @@ constexpr float kTick = 1.f / 60.f;
 
 // Player weapon table record (0x4E97D0, 168 bytes, 39 modes).
 struct ModeDef {
-    int type = 0;               // +0x6C fire type: 1 gun, 2 launcher (M203, LAW), 11 thrown grenade; others not done
+    int type = 0;               // +0x6C fire type: 1 gun, 2 launcher (M203, LAW), 6 knife, 11 thrown grenade; others not done
     int gun = 0;                // +0x74 gun table index (ammunition is kept per gun)
     int item = 0;               // +0x64 first-person item (ITEMS.DEF id - 100000)
     int offset[3] = {};         // +0x78 first-person model offset: forward, left, up in 1/256 m
@@ -40,7 +40,7 @@ struct ModeDef {
     bool oneHanded() const { return !(flags & 4); }
     bool automatic() const { return flags & 0x20; }
     bool zoomable() const { return (flags & 1) && scope > 1; }
-    bool works() const { return type == 1 || type == 2 || type == 11; }
+    bool works() const { return type == 1 || type == 2 || type == 6 || type == 11; }
 };
 
 // Gun table record (0x4E9060, 52 bytes).
@@ -134,6 +134,9 @@ public:
     // graphic name, for the muzzle (player table +0x90); null if unknown.
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
+    // Knife strikes since the last call: the point 0.5 m along the view
+    // from the body origin (0x42ca8c), for blast kind 2.
+    std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
 
 private:
     void tick(bool triggerDown, Player& player, std::vector<std::string>& messages);
@@ -159,6 +162,7 @@ private:
     float scopeYaw_ = 0, scopePitch_ = 0;
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
+    std::vector<Vec3> stabs_;
     std::mt19937 rng_{1998};
 };
 

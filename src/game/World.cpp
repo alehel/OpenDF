@@ -378,4 +378,19 @@ void World::update(float dt) {
         if (o.dead && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
 }
 
+std::vector<std::string> World::stab(Vec3 at) {
+    std::vector<std::string> out;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        WorldObject& o = objects[i];
+        if (!o.alive()) continue;
+        const Vec3 v = nearest(o.pos, at) - at;
+        const float d = std::sqrt(dot(v, v));
+        if (o.person ? d > 2.f : (!o.item || o.item->id != 104048 || d > 1.f)) continue;
+        std::string m = damage(int(i), 8);
+        if (std::getenv("OPENDF_DEBUGHITS")) std::fprintf(stderr, "stab hits %s at %.2f m\n", o.item ? o.item->name.c_str() : "?", d);
+        if (!m.empty()) out.push_back(m);
+    }
+    return out;
+}
+
 } // namespace df
