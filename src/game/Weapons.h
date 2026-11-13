@@ -109,6 +109,7 @@ public:
     float zoom() const { return zoomLevel_ ? def().zoom[zoomLevel_ - 1] : 1.f; }
     bool zoomed() const { return zoomLevel_ > 0; }
     bool reloading() const { return reloadTimer_ > 0; }
+    bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick (DF.EXE 0x449cbc, fire class 1): metres back, left, up
     // in the weapon's own axes; firing never moves the view.
     const float* kick() const { return kick_; }

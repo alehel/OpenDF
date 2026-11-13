@@ -40,9 +40,9 @@ when DF.EXE is missing or a different version.
 | Scope view | Original | 0x450600: FOV parameter 28 / magnification, half-angle (fov+1)>>1 whole degrees, inset radius 100; M4 ×4 ≈ 8°, M40 ×8 ≈ 4° across the inset. Allowed when the weapon's table +0xA4 bit 0 is set |
 | Binocular view (22° main view) | Not implemented | 0x44b870 / 0x404489 path; also adds view sway |
 | Movement speeds | Original | the soldier's `.ANM` move table (`PLAYANIM.ANM`, via `anim_def` in ITEMS.DEF), read at run time: velocity in m/s per move, eight directions, one- or two-handed weapon. Running forward with a rifle 5.0 m/s (footage: ~5 m/s), pistol 6.0; walking (Shift) 1.5/1.0; crawling 1.0 forward and back, 0.5 sideways |
-| Crouched movement | Inferred, confirmed by the user | the original has no crouched moves (DF.EXE's move names: standing, walking, running, crawling, swimming only), so OpenDF stands the soldier up to move |
-| Walking moves 5 and 7 | Unclear | `PLAYANIM.ANM`'s comments for walking disagree with those for running about which of 5/7 is right-forward; OpenDF uses the running order |
-| Moving while shooting (`*_S_*` moves) | Not yet used | different speeds while firing |
+| Crouched movement | Original | DF.EXE moves a crouched soldier with the standing walk/run and keeps the crouch flag, so he crouches again when he stops (0x437902) |
+| Walking moves 5 and 7 | Original | slot index decides (5 back-right, 7 forward-right); the ANM's walking comments are swapped (0x437583) |
+| Moving while shooting (`*_S_*` moves) | Original | used while the refire time runs; missing entries have speed 0 (0x436fd0) |
 | Eye heights, jump, step height, slope limit, radius | Original | see docs/AUDIT.md X3, X4 (crouched/prone eye heights still open) |
 | Weapon bob, recoil kick, reload lowering | Original | none in DF.EXE except the gun-model kick (docs/AUDIT.md V2b) |
 

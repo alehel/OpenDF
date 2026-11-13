@@ -1138,10 +1138,10 @@ int Game::run() {
             if (o_.walkForward) in.forward = 1;
             if (showMap_) in = PlayerInput{};
             // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
-            // angle per tick (168.75°/s), half that with NoRun held; the same
-            // for pitch, which stays within -67.5°..+90° (0x437435).
+            // angle per 30 Hz controller tick (84.375°/s), half that with NoRun
+            // held; the same for pitch, which stays within -67.5°..+90° (0x437435).
             if (!showMap_) {
-                const float rate = (in.walk ? 84.375f : 168.75f) * kPi / 180.f * dt;
+                const float rate = (in.walk ? 42.1875f : 84.375f) * kPi / 180.f * dt;
                 player_.yaw += rate * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
                 player_.pitch += rate * (float(down(Action::LookUp)) - float(down(Action::LookDown)));
             }
@@ -1151,6 +1151,7 @@ int Game::run() {
             const bool trigger = !showMap_ && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.def().oneHanded;
+            in.shooting = arsenal_.firing();
             player_.update(dt, in, world_);
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.

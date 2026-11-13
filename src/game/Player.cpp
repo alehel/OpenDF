@@ -44,17 +44,19 @@ Vec3 Player::forward() const {
 }
 
 void Player::update(float dt, const PlayerInput& in, const World& world) {
-    // The eye eases toward its target by a factor 0.9 per 60 Hz tick (DF.EXE
-    // 0x449913; the pose change itself follows the animation in the original).
-    const float target = eyeHeights[stance == Stance::Prone ? 2 : stance == Stance::Crouch ? 1 : 0][oneHanded ? 1 : 0];
-    eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
-
     Vec3 flatFwd{std::sin(yaw), 0, -std::cos(yaw)};
     Vec3 right{-flatFwd.z, 0, flatFwd.x};
     Vec3 wish = flatFwd * in.forward + right * in.strafe;
     float len = std::sqrt(dot(wish, wish));
     if (len > 1) wish = wish * (1.f / len);
     moving_ = len > 0.01f;
+
+    // The eye eases toward its target by a factor 0.9 per 60 Hz tick (DF.EXE
+    // 0x449913; the pose change itself follows the animation in the original).
+    // Moving while crouched plays the standing gait (the crouch stays set).
+    const int pose = stance == Stance::Prone ? 2 : (stance == Stance::Crouch && !moving_) ? 1 : 0;
+    const float target = eyeHeights[pose][oneHanded ? 1 : 0];
+    eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
 
     if (fly) {
         Vec3 f = forward();
@@ -68,11 +70,14 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         return;
     }
 
+    // Move selection (DF.EXE 0x436fd0): prone crawls; otherwise walk (NoRun
+    // or steep uphill) or run in the standard gait, also when crouched (the
+    // crouch flag stays set, the soldier is crouched again when he stops);
+    // the *_S_* moves while the weapon's refire time runs. A move the .ANM
+    // does not list has speed 0 in DF.EXE's table (e.g. running while
+    // shooting: PLAYANIM.ANM has no Running*_S_* entries).
     speed_ = 0;
     if (moving_) {
-        // The original has no crouched moves: a crouching soldier stands up
-        // to move (inferred from the move tables, which have none).
-        if (stance == Stance::Crouch) stance = Stance::Stand;
         const int dir = moveDirection(in.forward, in.strafe);
         std::string move;
         float fallback;
@@ -80,11 +85,16 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
             move = "Crawling_CR" + std::to_string(dir);
             fallback = 0.5f;
         } else {
-            move = std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) + (oneHanded ? "_1HW" : "_2HW");
+            move = std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) + (in.shooting ? "_S" : "") +
+                   (oneHanded ? "_1HW" : "_2HW");
             fallback = in.walk ? 1.0f : 5.0f;
         }
-        const AnimMove* m = moves ? moves->find(move) : nullptr;
-        speed_ = m ? m->velocity : fallback;
+        if (moves && !moves->empty()) {
+            const AnimMove* m = moves->find(move);
+            speed_ = m ? m->velocity : 0.f;
+        } else {
+            speed_ = fallback;
+        }
     }
 
     // Terrain gradient (DF.EXE 0x4332ac) for sliding and uphill walking.
@@ -100,8 +110,20 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         const std::string walk = "Walking" + std::to_string(moveDirection(in.forward, in.strafe)) + (oneHanded ? "_1HW" : "_2HW");
         if (const AnimMove* w = moves->find(walk)) speed_ = std::min(speed_, w->velocity);
     }
-    Vec3 delta = wish * (speed_ * dt);
-    if (sliding_) delta = delta + Vec3{-gx, 0, -gz} * (kSlideRate * dt);
+    // Direction: heading + dir·45°, at the move's speed (0x43661c); in the air
+    // the take-off motion is kept (0x43678c); sliding replaces movement.
+    Vec3 delta;
+    if (sliding_ && onGround_) delta = Vec3{-gx, 0, -gz} * (kSlideRate * dt);
+    else if (!onGround_) delta = airDelta_ * dt;
+    else {
+        Vec3 dirv{0, 0, 0};
+        if (moving_) {
+            const float a = yaw - float(moveDirection(in.forward, in.strafe)) * 3.14159265f / 4.f;
+            dirv = Vec3{std::sin(a), 0, -std::cos(a)};
+        }
+        airDelta_ = dirv * speed_;
+        delta = airDelta_ * dt;
+    }
 
     feet = feet + delta;
     feet = world.resolve(feet, kRadius, kHeight, kStep);

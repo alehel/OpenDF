@@ -17,6 +17,7 @@ enum class Stance { Stand, Crouch, Prone };
 struct PlayerInput {
     float forward = 0, strafe = 0;   // -1..1
     bool walk = false, jump = false;
+    bool shooting = false;           // the weapon's refire time is running (DF.EXE [0x93334c] > 0)
     bool up = false, down = false;   // fly mode only
 };
 
@@ -49,6 +50,7 @@ public:
 private:
     float eyeHeight_ = 1.7558f;
     bool sliding_ = false, jumpHeld_ = false;
+    Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)
     float vy_ = 0;
     bool onGround_ = true, moving_ = false;
     float speed_ = 0;

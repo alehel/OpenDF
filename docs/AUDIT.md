@@ -64,7 +64,7 @@ approximation), **todo** = not checked yet.
 |---|---|---|---|
 | K1 | Every default key binding | fixed | DF.EXE default table at 0x4df4f8 (read at run time, built-in copy as fallback). Was wrong: Y next waypoint (original W), map zoom keys reversed, Tab/R/X/Z/WASD invented. Now the original table + mouse look (user's choice); N = debug flight only |
 | K2 | Weapon keys | fixed | slots per DF.EXE 0x44b598: 2 sidearm, 3-5 primary modes, 6-8 secondary modes (1 knife, 9/0 grenade/laser not implemented). Was: invented 2/3/4/6/7/8 with all five guns carried |
-| K3 | Keyboard turn/look, mouse | fixed | 168.75°/s, 84.375°/s with NoRun, same for pitch; pitch −67.5°..+90° (0x436fec, 0x437435); mouse 0.1758° per count, a quarter zoomed (0x42eba0) |
+| K3 | Keyboard turn/look, mouse | fixed | 0x1fffffe per 30 Hz controller tick = 84.375°/s, 42.1875°/s with NoRun (corrected: the controller runs every second tick, 0x436c74), same for pitch; pitch −67.5°..+90° (0x436fec, 0x437435); mouse 0.1758° per count, a quarter zoomed (0x42eba0) |
 
 ## Gameplay
 
@@ -88,3 +88,4 @@ approximation), **todo** = not checked yet.
 | X4 | Eye height | fixed | origin height of the stance pose (.CHR contact points: standing 1.056 m, crouched 0.677, prone 0.103 for 2HW) + 0.7 m (0.4 prone) (0x449913, 0x4364c8): 1.76 / 1.38 / 0.50 m; eases 0.9 per tick |
 | X5 | Scope behaviour | fixed | moving turns it off; random aim offset up to 2.8° per zoom (0x44b870); full auto does not refire while zoomed |
 | X6 | Impact effects | open | DF.EXE spawns effect items 107001-107016 by surface/material (0x46a054); OpenDF still draws puffs until it has an effect-object system |
+| X7 | Move selection | fixed | 0x436fd0 at 30 Hz: crawl when prone; walk (NoRun or steep uphill) / run otherwise, also when crouched (crouch stays set, back to crouched when stopping); *_S_* moves while the refire time runs, speed 0 for moves the .ANM lacks (no Running*_S_* in PLAYANIM.ANM: running stops while firing); speed v m/s along heading + dir·45°, instantly; take-off motion kept in the air; sliding replaces movement. Swimming and override (root-motion) moves: open, with water |
