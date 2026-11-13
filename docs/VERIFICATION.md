@@ -33,9 +33,11 @@ of the original. **Inferred**: deduced from data, plausible but unconfirmed.
 
 | Item | Status | Source |
 |---|---|---|
-| 1 m per terrain pixel, mission y = north | Original data | building pads, bridges, barbed wire; waypoint distances in footage agree |
+| 1 m per terrain pixel, map wraps every 1024 | Original | DF.EXE terrain sampling (0x432F94): cell = (x & 0x3FF) + ((y & 0x3FF0000) >> 6) on 16.16 coordinates; also building pads, bridges, footage waypoint distances |
+| Mission y = north | Original data | building pads, bridges |
 | No north/south mirroring | Footage | direction from start to camp matches the original's command map |
-| Height per elevation step (0.25 m) | Approximation | |
+| Height per elevation step: 0.25 m | Original | DF.EXE: `elevation_byte << 14` in 16.16 metres (0x432F98); TRN `water_height` uses the same units (`<< 14`) |
+| TRN `sky_height`, `sun_slope` | Units unknown | stored unscaled by the TRN parser (0x42FD39..) |
 | Terrain lighting, detail textures, sky, clouds, haze, water | Approximation | |
 | Model material flags | Inferred | |
 | LOD distances, model lighting | Approximation | |

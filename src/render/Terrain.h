@@ -21,8 +21,8 @@ struct WorldScale {
     // One map pixel is one metre: mission coordinates (also metres, matching
     // the 1/256 m model units) land 1:1 on terrain pixels; see docs/FORMATS.md.
     float cellSize = 1.0f;
-    // Metres per elevation step. Estimated from slope statistics (keeps typical
-    // ground walkable, canyon walls steep); not yet confirmed from the engine.
+    // Metres per elevation step: DF.EXE converts elevation bytes with
+    // `<< 14` into 16.16 metres, i.e. 0.25 m per step.
     float heightScale = 0.25f;
 };
 
