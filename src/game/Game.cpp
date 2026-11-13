@@ -19,6 +19,7 @@
 #include "World.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -169,6 +170,18 @@ private:
     float floatOrigin_ = 0.1489f, swimOrigin_ = 0.3184f;   // PLAYER01.CHR Floating / Swimming
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     TextTable campText_;                  // DFCAMPxx.BIN
+    TextTable menuText_;                  // DFMENU.BIN
+    int carried_ = -1;                    // the object the player carries (+0x90)
+    bool briefingShown_ = false, helpShown_ = false;   // [0x66f96c], [0x66f968]
+    std::string briefing_;                // built at mission load (0x4813c4)
+    int briefStart_ = 1, briefLast_ = 1, briefPage_ = 0;   // [0xc73704], [0xc73700], [0x4f30dc]
+    void touchPickups();
+    void dropCarried();
+    bool teamCarrying(int team, int itemTeam) const override {
+        return team == kPlayerTeam && carried_ >= 0 && world_.objects[size_t(carried_)].team == itemTeam;
+    }
+    void drawBriefing(const Screen& s);
+    void drawHelp(const Screen& s);
     // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
     // 0x4838ac shows it): points of the first path flagged 2.
     struct RoutePoint { double x, y; float radius; std::string name; const MissionObject* object; };
@@ -383,6 +396,50 @@ bool Game::loadMission(int index) {
         }
     }
     buildRoute();
+    // Powerups (attrib 0x20: ammo and medical crates) are removed at the start
+    // in single player (0x402aa4, unless option bit 8).
+    for (auto& o : world_.objects)
+        if (o.item && (o.item->attrib & 0x20)) o.removed = true;
+    carried_ = -1;
+    briefingShown_ = helpShown_ = false;
+    {
+        // Briefing (0x4813c4): campaign section "Briefing<n>", key "Mission<n>a";
+        // (expanded below)
+        int cn = 0, mn = 0;
+        std::sscanf(name.c_str(), "C%dM%d", &cn, &mn);
+        char sec[32], key[32];
+        std::snprintf(sec, sizeof sec, "Briefing%d", mn);
+        std::snprintf(key, sizeof key, "Mission%da", mn);
+        const std::string* t = campText_.find(sec, key);
+        briefing_ = t ? *t : "UNABLE TO FIND MISSION BRIEFING";
+        // {ADD}<key> appends another key; {CV:n}<key> / {CV:!n}<key> append it
+        // only if campaign flag n is set / clear (0x412620 / 0x4125c8).
+        for (int guard = 0; guard < 64; ++guard) {
+            size_t a = briefing_.find("{ADD}"), c = briefing_.find("{CV:");
+            if (a == std::string::npos && c == std::string::npos) break;
+            bool include = true;
+            size_t tagEnd;
+            if (c != std::string::npos && (a == std::string::npos || c < a)) {
+                a = c;
+                tagEnd = briefing_.find('}', c);
+                if (tagEnd == std::string::npos) break;
+                std::string cond = briefing_.substr(c + 4, tagEnd - c - 4);
+                const bool neg = !cond.empty() && cond[0] == '!';
+                const int flag = std::atoi(cond.c_str() + (neg ? 1 : 0));
+                const bool set = flag >= 0 && flag < 32 && (campaignFlags() >> flag & 1);
+                include = neg ? !set : set;
+                ++tagEnd;
+            } else {
+                tagEnd = a + 5;
+            }
+            size_t e = tagEnd;
+            while (e < briefing_.size() && !std::isspace(static_cast<unsigned char>(briefing_[e]))) ++e;
+            const std::string* more = include ? campText_.find(sec, briefing_.substr(tagEnd, e - tagEnd)) : nullptr;
+            briefing_.replace(a, e - a, more ? *more : "");
+        }
+        briefStart_ = briefLast_ = 1;
+        briefPage_ = 0;
+    }
     {
         // Radio dialogs: the mission header names the set ("dfdlg02").
         std::vector<uint8_t> raw;
@@ -646,12 +703,82 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet) {
     playSound((set1 ? ids1 : ids0)[std::clamp(surface, 0, 6)], origin);
 }
 
+// Pickups by touch (0x437a28 -> 0x437f60): objects with the movecb
+// attribute within 0.75 m + their model radius on both axes (APPROXIMATION:
+// DF.EXE then asks the model's collision callback). By item: mission goal
+// items are carried (sound 0x166; one at a time); the medical crate restores
+// full health (0x165); ammunition crates refill everything ("Ammo reloaded",
+// 0x164); a land mine explodes. Picked crates are removed.
+void Game::touchPickups() {
+    if (playerDead()) return;
+    const Vec3 feet = player_.feet;
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        WorldObject& o = world_.objects[i];
+        if (o.removed || !o.item || !(o.item->attrib & 0x10) || !o.model) continue;
+        const Vec3 at = world_.nearest(o.pos, feet);
+        if (std::getenv("OPENDF_DEBUGPICK") && (ticks_ % 30) == 0)
+            std::fprintf(stderr, "pickup %s at (%.1f %.1f %.1f) feet (%.1f %.1f %.1f) r %.2f\n", o.item->name.c_str(), at.x, at.y, at.z,
+                         feet.x, feet.y, feet.z, o.model->radius);
+        const float reach = 0.75f + o.model->radius;
+        if (std::abs(at.x - feet.x) > reach || std::abs(at.z - feet.z) > reach || std::abs(at.y - feet.y) > 3.f) continue;
+        const int id = o.item->id - 100000;
+        switch (id) {
+        case 4008: case 4018: case 4021: case 4034: case 4038: case 4077:
+            if (carried_ >= 0) break;
+            carried_ = int(i);
+            o.removed = true;   // carried: not drawn or hit (+0x6c 0x2)
+            o.boxes.clear();
+            sound_.play2D(0x166);
+            break;
+        case 4045:
+            playerHp_ = std::max(playerHp_, items_.byId(kItemPlayerSoldier) ? items_.byId(kItemPlayerSoldier)->hp : 4);
+            sound_.play2D(0x165);
+            o.removed = true;
+            o.boxes.clear();
+            break;
+        case 4010: case 4055:
+            arsenal_.refill();
+            pushMessage("Ammo reloaded");
+            sound_.play2D(0x164);
+            o.removed = true;
+            o.boxes.clear();
+            break;
+        case 4054:
+            if (o.hp > 0) {
+                o.hp = 0;
+                o.removed = true;
+                o.boxes.clear();
+                detonate(o.pos + Vec3{0, 1, 0}, 60, o.heading);
+            }
+            break;
+        default: break;
+        }
+    }
+}
+
+// Drop (0x46c9c0): 2 m ahead on the ground, or where the body lies.
+void Game::dropCarried() {
+    if (carried_ < 0) return;
+    WorldObject& o = world_.objects[size_t(carried_)];
+    Vec3 at = player_.feet;
+    if (!playerDead()) at = at + Vec3{std::sin(player_.yaw), 0, -std::cos(player_.yaw)} * 2.f;
+    const float ext = world_.extent();
+    at.x -= std::floor(at.x / ext) * ext;
+    at.z -= std::floor(at.z / ext) * ext;
+    o.pos = {at.x, terrain_.heightAt(at.x, at.z) + o.lift, at.z};
+    o.base = o.pos.y - o.lift;
+    o.removed = false;
+    o.boxes = o.model ? o.model->collision : std::vector<CollisionBox>{};
+    carried_ = -1;
+}
+
 // Damage to the player (0x44fe9e blast, 0x44f2b2 bullets): hit points, and
 // the red flash +0x78 up to 0xFF (0x44b6d0).
 void Game::hurtPlayer(int amount, int deathType, Vec3 from, int part) {
     if (playerDead()) return;
     playerHp_ -= amount;
     damageFlash_ = std::min(0xFF, damageFlash_ + 0x78);
+    if (playerDead()) dropCarried();   // 0x46c9c0 at death: where the body is
     if (!playerDead() || playerChr_.partCount() == 0) return;
     // 0x45a234: the death move (0x46c920), as for any character.
     const float water = terrain_.waterLevel();
@@ -913,6 +1040,18 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // Debug keys (not in the original): N free flight.
     if (k.keysym.sym == SDLK_n) { player_.fly = !player_.fly; return; }
     (void)shift;
+    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
+    if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
+        if (k.keysym.sym == SDLK_PAGEDOWN) {
+            if (briefStart_ != briefLast_) {
+                briefPage_ = std::max(briefPage_, briefLast_ - briefStart_);
+                briefStart_ = briefLast_;
+            }
+        } else {
+            briefStart_ = std::max(1, briefStart_ - briefPage_);
+        }
+        return;
+    }
     const Action act = controls_.actionFor(k.keysym.scancode);
     // While paused, the game's commands (flag 0x10000) are ignored (0x42d9e3).
     if (paused_ && act != Action::Pause && act != Action::Escape) return;
@@ -922,6 +1061,8 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         // map / goals; else (OpenDF) frees the mouse or quits.
         if (paused_) { paused_ = false; break; }
         if (oldMessages_) { oldMessages_ = false; break; }
+        if (briefingShown_) { briefingShown_ = false; break; }
+        if (helpShown_) { helpShown_ = false; break; }
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
         if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
         else { SDL_Event q; q.type = SDL_QUIT; SDL_PushEvent(&q); }
@@ -949,6 +1090,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
         break;
     case Action::Pause: paused_ = !paused_; break;
+    case Action::Drop: if (!playerDead()) dropCarried(); break;
+    case Action::Briefing: briefingShown_ = !briefingShown_; break;
+    case Action::Help: helpShown_ = !helpShown_; break;
     case Action::OldMessages: oldMessages_ = !oldMessages_; break;
     case Action::ShowFriendly:
         friendlyTags_ = !friendlyTags_;
@@ -1293,7 +1437,24 @@ void Game::drawTopBar(const Screen& s) {
     hudBox(s, 418.75f, 35, 631.25f, 53.75f, true);
     std::string grid = gridName(player_.missionX(), player_.missionY());
     hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(13.1f), grid, kHudGreen, ts);
-    hud_.text(s.rx(490.6f), s.y(13.1f), "Carrying: Nothing", kHudGreen, ts);
+    {
+        // 0x48375b: the carried item's name by id.
+        std::string what = "Nothing";
+        if (carried_ >= 0 && world_.objects[size_t(carried_)].item) {
+            switch (world_.objects[size_t(carried_)].item->id - 100000) {
+            case 4008: what = "Metal Case"; break;
+            case 4018: what = "Case"; break;
+            case 4021: what = "Black Box"; break;
+            case 4034: what = "Laptop"; break;
+            case 4035: what = "Red Flag"; break;
+            case 4036: what = "Blue Flag"; break;
+            case 4038: what = "Code Book"; break;
+            case 4077: what = "Bomb!"; break;
+            default: what = "Unknown"; break;
+            }
+        }
+        hud_.text(s.rx(490.6f), s.y(13.1f), "Carrying: " + what, kHudGreen, ts);
+    }
     // "WP%i: %s (%s)", distance "%im" or "%ikm+" (0x4838ac): whole metres of
     // x and y difference, integer square root; "None" without a route.
     std::string wp = "None";
@@ -1506,6 +1667,8 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (friendlyTags_) drawFriendlyTags(s, viewProj);
     if (binoculars_ && !playerDead()) drawBinoculars(s);
     if (oldMessages_) drawOldMessages(s);
+    if (briefingShown_) drawBriefing(s);
+    if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
 
     drawTopBar(s);
@@ -1517,6 +1680,114 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.multiply(0, s.playY, s.w, s.playH, {1, c, c, 1});
     }
     hud_.end();
+}
+
+void Game::drawBriefing(const Screen& s) {
+    // 0x482cb8: darkened box (200, 200)-(824, 568); "Mission Briefing"
+    // (DFMENU.BIN) centred at (512, 225) in bright green; the text wrapped
+    // by 0x482970 into x0 + 5, y0 + 35, width - 10, height - 40: words split
+    // at spaces, "{...}" tags removed, "~" a line break, a word that would
+    // pass the right edge starts a line; lines before the start line are
+    // skipped; stop when the next line would pass the bottom.
+    const float x0 = s.vx(200), x1 = s.vx(824), y0 = s.vy(200), y1 = s.vy(568);
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    const std::string* title = menuText_.find("GroupMainMenu", "HELPMISSIONBRIEFING");
+    const std::string t = title ? *title : "Mission Briefing";
+    hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(225), t, kHudBright, s.text());
+    const float bx = x0 + s.vx(5) - s.vx(0), by = y0 + s.vy(35), bw = (x1 - x0) - (s.vx(10) - s.vx(0)), bh = (y1 - y0) - s.vy(40);
+    const float lh = hud_.lineHeight(s.text());
+    float x = bx, y = by;
+    int line = 1;
+    std::istringstream words(briefing_);
+    std::string w;
+    while (words >> w) {
+        if (w[0] == '{') {
+            const size_t e = w.find('}');
+            w = e == std::string::npos ? std::string() : w.substr(e + 1);
+            if (w.empty()) continue;
+        }
+        if (w[0] == '~') {
+            ++line;
+            if (line > briefStart_) { y += line - 1 > briefStart_ - 1 ? lh : 0; }
+            x = bx;
+            if (y + lh > by + bh) break;
+            continue;
+        }
+        if (w.size() > 63) w.resize(63);
+        w += ' ';
+        const float ww = hud_.textWidth(w, s.text());
+        if (x + ww > bx + bw && x > bx) {
+            ++line;
+            if (line > briefStart_) y += lh;
+            x = bx;
+            if (y + lh > by + bh) break;
+        }
+        if (line >= briefStart_) hud_.text(x, y, w, kHudBright, s.text());
+        x += ww;
+    }
+    briefLast_ = line;
+}
+
+void Game::drawHelp(const Screen& s) {
+    // 0x48232c: darkened box (7, 98)-(1023, 666); labels (DFMENU.BIN HELP*)
+    // and keys in two columns, rows 25 apart from y 115, bright green: left
+    // labels at x 40 / keys at 200, right at 540 / 770 (0x4822f4 draws at
+    // x + 20, y + 100). Key names: the bound keys' names (APPROXIMATION:
+    // SDL's names; DF.EXE uses Windows' key names).
+    const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    auto label = [&](const char* key) {
+        const std::string* t = menuText_.find("GroupMainMenu", key);
+        return t ? *t : std::string(key);
+    };
+    auto keyOf = [&](Action a) { return controls_.describe(a); };
+    auto put = [&](float lx, float kx, float y, const std::string& l, const std::string& k) {
+        hud_.text(s.vx(lx + 20), s.vy(y + 100), l, kHudBright, s.text());
+        hud_.text(s.vx(kx + 20), s.vy(y + 100), k, kHudBright, s.text());
+    };
+    struct Row { const char* label; std::string key; };
+    const std::vector<Row> left = {
+        {"HELPLOOKAROUND", label("HELPMOUSE")},
+        {"HELPMOVE", keyOf(Action::MoveForward) + ", " + keyOf(Action::MoveBack) + ", " + keyOf(Action::SlideLeft) + ", " +
+                         keyOf(Action::SlideRight)},
+        {"HELPCROUCH", keyOf(Action::Crouch)}, {"HELPSTAND", keyOf(Action::Stand)}, {"HELPGOPRONE", keyOf(Action::Prone)},
+        {"HELPJUMP", keyOf(Action::Jump)}, {"HELPWALK", keyOf(Action::NoRun)}, {nullptr, ""},
+        {"HELPEXITGAME", label("HELPESC")}, {"HELPBINOCULARS", keyOf(Action::Binoculars)}, {"HELPTALK", "T (Y)"},
+        {"HELPRESOLUTION", "V"}, {"HELPFOCAMERA", label("HELPF9")}, {"HELPCYCLEFO", "Tab"}, {"HELPFIRSTPERSON", label("HELPF2")},
+        {"HELPTHIRDPERSON", label("HELPF5F6F7")}, {"HELPBRIEFINGS", keyOf(Action::Briefing)},
+        {"HELPRECENT", keyOf(Action::OldMessages)}, {"HELPFRIENDLYTAGS", keyOf(Action::ShowFriendly)},
+        {"HELPGOALS", keyOf(Action::MissionGoals)}, {"HELPTURBO", "H"}, {"HELPNEXTFLAG", "Q"},
+    };
+    float y = 15;
+    for (const auto& r : left) {
+        if (r.label) put(20, 180, y, label(r.label), r.key);
+        y += 25;
+    }
+    // Right: the carried weapons (slots 1-9, then 0) with their keys, then
+    // fire and scope; 50 lower the maps.
+    y = 15;
+    static const Action slotKeys[10] = {Action::Weapon0, Action::Weapon1, Action::Weapon2, Action::Weapon3, Action::Weapon4,
+                                        Action::Weapon5, Action::Weapon6, Action::Weapon7, Action::Weapon8, Action::Weapon9};
+    for (int k = 1; k <= 10; ++k) {
+        const int slot = k % 10;
+        const ModeDef* md = arsenal_.slotMode(slot);
+        if (!md || md->name.empty()) continue;
+        put(520, 750, y, md->name, keyOf(slotKeys[slot]));
+        y += 25;
+    }
+    put(520, 750, y, label("HELPFIRE"), keyOf(Action::Fire) + ", " + label("KBDMOUSELEFT"));
+    y += 25;
+    put(520, 750, y, label("HELPSCOPE"), keyOf(Action::Scope) + ", " + label("KBDMOUSERIGHT"));
+    y += 75;
+    put(520, 750, y, label("HELPTERRAINMAP"), label("HELPF10"));
+    y += 25;
+    put(520, 750, y, label("HELPCONTOURMAP"), label("HELPF11"));
+    y += 25;
+    put(520, 750, y, label("HELPZOOM"), keyOf(Action::MapZoomIn) + ", " + keyOf(Action::MapZoomOut));
+    y += 25;
+    put(520, 750, y, label("HELPWAYPOINT"), keyOf(Action::NextWaypoint));
+    y += 25;
+    put(520, 750, y, label("HELPBIGMAP"), keyOf(Action::BigMap));
 }
 
 void Game::drawPaused(const Screen& s) {
@@ -1645,6 +1916,7 @@ int Game::run() {
     }
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
     if (vfs_.read("DFGAME.BIN", raw)) parseRtxt(raw, gameText_);
+    if (vfs_.read("DFMENU.BIN", raw)) menuText_.parse(raw);
     {
         // The player soldier (ITEMS.DEF "player01") names its move table.
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
@@ -1852,6 +2124,7 @@ int Game::run() {
                 ++ticks_;
                 tickEffects();
                 tickDialogs();
+                touchPickups();
                 // The player as a target: animated hit spheres (0x44dca4).
                 world_.playerBody.present = !playerDead();
                 world_.playerBody.origin = player_.origin();

@@ -118,6 +118,9 @@ public:
     // 3-5 the primary's modes, 6-8 the kit's, 9 frag grenade. A slot without
     // a working mode does nothing.
     void select(int slot);
+    // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
+    // as at the mission start.
+    void refill();
     void cycle();                 // 0x44b81c: next slot with a mode, wrapping
     void reload();                // 0x44a004
     void toggleZoom();
@@ -128,6 +131,8 @@ public:
                 std::vector<std::string>& messages);
 
     int slot() const { return current_; }
+    // The mode in a slot (null if empty), e.g. for the help screen.
+    const ModeDef* slotMode(int i) const { return i >= 0 && i < kSlots && slots_[size_t(i)] ? &modes_[size_t(slots_[size_t(i)])] : nullptr; }
     const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
     const GunDef& gun() const { return guns_[size_t(mode().gun)]; }
     const std::string& modeName() const { return mode().name; }
@@ -177,6 +182,7 @@ private:
     bool fromExe_ = false;
     std::array<int, kSlots> slots_{};   // mode per slot, 0 = empty
     int current_ = 3;
+    int kit_ = 1;
     std::vector<int> chambered_, mag_, spares_;   // per gun
     int cooldown_ = 0, reloadTicks_ = 0, burstLeft_ = 0;
     bool pressed_ = false;

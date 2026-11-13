@@ -25,7 +25,10 @@ struct ItemDef {
     int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)
     // Vehicles (parser 0x448cec): `acceleration` (m/s^2 at 64 ticks/s,
     // item +0xdc), `turn_rate` (degrees/s, +0xe0), `axle_dist` (m, +0xe4).
-    float acceleration = 0, turnRate = 0, axleDist = 0;   // `interrupt_sound_id`: sound id the object repeats (ambience)
+    float acceleration = 0, turnRate = 0, axleDist = 0;
+    // `attrib:` flags (0x449262, def +0x24): good 1, evil 2, AIData 4, FO 8,
+    // movecb 0x10 (touch callback: pickups), powerup 0x20, flesh 0x40, NoAK 0x80.
+    uint32_t attrib = 0;   // `interrupt_sound_id`: sound id the object repeats (ambience)
 };
 
 class ItemDefs {

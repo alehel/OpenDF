@@ -299,20 +299,8 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     for (int& s : slots_)
         if (s < 0 || s >= kModeCount || !modes_[size_t(s)].works()) s = 0;
 
-    // Ammunition per gun (0x44b634): n - 1 spare, a full magazine, a round
-    // chambered; the Ammo kit (row 1) gives the primary's guns 2n - 1.
-    chambered_.assign(kGunCount, 0);
-    mag_.assign(kGunCount, 0);
-    spares_.assign(kGunCount, 0);
-    for (int i = 0; i < kSlots; ++i) {
-        if (!slots_[size_t(i)]) continue;
-        const int g = modes_[size_t(slots_[size_t(i)])].gun;
-        const GunDef& gd = guns_[size_t(g)];
-        const bool doubled = loadout.kit == 1 && i >= 3 && i <= 5;
-        spares_[size_t(g)] = doubled ? 2 * gd.n - 1 : gd.n - 1;
-        mag_[size_t(g)] = gd.magazine;
-        chambered_[size_t(g)] = 1;
-    }
+    kit_ = loadout.kit;
+    refill();
     // Mission start: slot 3, the primary's first mode (0x449791).
     current_ = 3;
     if (!slots_[3]) cycle();
@@ -323,6 +311,24 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
     impacts_.clear();
+}
+
+void Arsenal::refill() {
+    // Ammunition per gun (0x44b634): n - 1 spare, a full magazine, a round
+    // chambered; the Ammo kit (row 1) gives the primary's guns 2n - 1.
+    chambered_.assign(kGunCount, 0);
+    mag_.assign(kGunCount, 0);
+    spares_.assign(kGunCount, 0);
+    for (int i = 0; i < kSlots; ++i) {
+        if (!slots_[size_t(i)]) continue;
+        const int g = modes_[size_t(slots_[size_t(i)])].gun;
+        const GunDef& gd = guns_[size_t(g)];
+        const bool doubled = kit_ == 1 && i >= 3 && i <= 5;
+        spares_[size_t(g)] = doubled ? 2 * gd.n - 1 : gd.n - 1;
+        mag_[size_t(g)] = gd.magazine;
+        chambered_[size_t(g)] = 1;
+    }
+    reloadTicks_ = 0;
 }
 
 void Arsenal::select(int slot) {

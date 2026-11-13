@@ -8,8 +8,7 @@
 // A fired event runs its actions at once or after its delay (the conditions
 // are checked again when the delay ends); repeating events re-arm.
 //
-// The AI conditions and actions go to the host's AI (game/Ai.*); only
-// "carrying" (needs pickups) is still always false.
+// The AI conditions and actions go to the host's AI (game/Ai.*).
 #pragma once
 
 #include "../formats/Mission.h"
@@ -42,6 +41,8 @@ public:
     virtual void followPath(int team, int path) { (void)team; (void)path; }
     virtual void aiProperty(int team, int subtype, int value) { (void)team; (void)subtype; (void)value; }
     virtual void teamSpeed(int team, int kmh) { (void)team; (void)kmh; }
+    // 0x46ca54: someone of team p1 carries an item whose mission team is p2.
+    virtual bool teamCarrying(int team, int itemTeam) const { (void)team; (void)itemTeam; return false; }
 };
 
 class MissionScript {

@@ -52,6 +52,19 @@ bool ItemDefs::parse(const std::string& text) {
             open = false;
             continue;
         }
+        if (line.compare(0, 7, "attrib:") == 0) {
+            std::istringstream as(line.substr(7));
+            std::string a;
+            while (as >> a) {
+                for (auto& ch : a) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                static const std::pair<const char*, uint32_t> bits[] = {{"good", 1}, {"evil", 2}, {"aidata", 4}, {"fo", 8},
+                                                                        {"movecb", 0x10}, {"powerup", 0x20}, {"flesh", 0x40},
+                                                                        {"noak", 0x80}};
+                for (const auto& b : bits)
+                    if (a == b.first) cur.attrib |= b.second;
+            }
+            continue;
+        }
         size_t sp = line.find_first_of(" \t");
         std::string key = line.substr(0, sp);
         std::string val = sp == std::string::npos ? "" : trim(line.substr(sp));

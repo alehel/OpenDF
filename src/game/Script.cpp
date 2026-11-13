@@ -75,7 +75,8 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
         case 2: return host.teamEngaging(p1);                 // team engaging (0xa8d5e0)
         case 3: return host.teamAlerted(p1);                  // team alerted (team record +4 == 2)
         case 7: return host.reachedWaypoint(p1, p2, c[5]);    // team reached point p3 of path p2
-        // 11 carrying: needs pickups. 0 and 8 are always false.
+        case 11: return host.teamCarrying(p1, p2);            // team carries an item of team p2
+        // 0 and 8 are always false.
         default: return false;
         }
     case 2: return p1 >= 0 && p1 < int(events_.size()) && events_[size_t(p1)].fired;
