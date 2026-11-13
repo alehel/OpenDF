@@ -1,6 +1,8 @@
 #include "Frontend.h"
 
 #include "../audio/Audio.h"
+#include "../audio/Music.h"
+#include "../core/ExeImage.h"
 #include "../formats/Pcx.h"
 #include "../formats/Rtxt.h"
 #include "../render/Gl.h"
@@ -156,6 +158,9 @@ private:
     std::unique_ptr<Hud> hudPtr_;
     Hud& hud() { return *hudPtr_; }
     Audio audio_;
+    Music music_;
+    bool musicLoaded_ = false;
+    void musicVar(int n, int v) { music_.setVar(n, v); }
     float scale_ = 1, offX_ = 0, offY_ = 0;
     int width_ = 0, height_ = 0;
 
@@ -174,6 +179,7 @@ private:
     std::string editing_, editBackup_;
     int editMax_ = 16, editMode_ = 0;   // 1 delete-recreate, 2 rename
     bool deleting_ = false;
+    Screen prevScreen_ = Start;
     int ticks_ = 0, screenTicks_ = 0;
     // Campaign / briefing / loadout state.
     int camp_ = 1, mis_ = 0, lastMapClick_ = -100;
@@ -425,31 +431,38 @@ void Frontend::setMenu(const std::string& name) {
 }
 
 void Frontend::enter(Screen s) {
+    prevScreen_ = screen_;
     screen_ = s;
     screenTicks_ = 0;
     switch (s) {
     case Start: menu_.clear(); break;
     case Soldier:
+        // After the logo (0x419b51): music_start, Var00=0 (Begin plays Intro).
+        if (screen_ == Soldier && prevScreen_ == Start) { music_.start(); musicVar(0, 0); }
+        musicVar(1, 4);   // 0x40ea5f
         setMenu("NewSoldierMenu");
         deleting_ = false;
         editMode_ = 0;
         refreshSoldier();
         break;
     case Main:
+        musicVar(1, 0);   // 0x40cc54
         setMenu("menu1");
         saveProfile(cur_);   // saved whenever the main menu opens (0x40f718)
         if (MnuButton* b = mnu_.button("but_mainmp")) b->drawstate = 4;   // multiplayer: not in OpenDF
         if (MnuButton* b = mnu_.button("but_mainup")) b->drawstate = 4;   // online update: not in OpenDF
         break;
-    case Options1: setMenu("OptionsMenu"); break;
-    case Options3: setMenu("Options3Menu"); refreshOptions(); break;
+    case Options1: musicVar(1, 3); setMenu("OptionsMenu"); break;   // 0x40af83
+    case Options3: musicVar(1, 11); setMenu("Options3Menu"); refreshOptions(); break;   // 0x41c47c
     case Campaign:
+        musicVar(1, 1);   // 0x4114b8
         setMenu("CampMenu");
         camp_ = std::clamp(int(prof().get(0x28)), 1, 5);
         prof().set(0x28, camp_);
         refreshCampaign();
         break;
     case Briefing: {
+        musicVar(1, 6);   // 0x41243a
         setMenu("MissionMenu");
         // 0x412620: section Briefing<m>, key Mission<m>a; {ADD}, {CV:n}, {CV:!n}.
         char sec[32], key[32];
@@ -486,6 +499,7 @@ void Frontend::enter(Screen s) {
         break;
     }
     case Loadout:
+        musicVar(1, 7);   // 0x41fd58
         setMenu("LoadoutMenu");
         loSel_[0] = std::clamp(int(prof().get(0x698)), 0, 4);
         loSel_[1] = std::clamp(int(prof().get(0x69C)), 0, 3);
@@ -498,6 +512,7 @@ void Frontend::enter(Screen s) {
         saveProfile(cur_);
         break;
     case End:
+        music_.stop();    // 0x41cadf
         setMenu("EndMenu");
         for (int i = 0; i < 9; ++i) saveProfile(i);
         break;
@@ -994,6 +1009,14 @@ int Frontend::run() {
     if (!loadData()) { std::fprintf(stderr, "cannot read DF.MNU\n"); return 1; }
     loadProfiles();
     audio_.openDevice();
+    // DF.EXE opens DFMUSIC.SBF from its own folder (0x4b81b0).
+    if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
+        std::error_code ec;
+        for (auto& e : std::filesystem::directory_iterator(exe.parent_path(), ec))
+            if (toUpper(e.path().filename().string()) == "DFMUSIC.SBF") musicLoaded_ = music_.load(vfs_, e.path());
+    }
+    if (!musicLoaded_) std::fprintf(stderr, "no menu music (DFMUSIC.SBF / DFMUSIC.BIN)\n");
+    audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
     if (!openWindow()) return 1;
     enter(Start);
     next_ = Start;
@@ -1002,7 +1025,7 @@ int Frontend::run() {
         Screen first = s == "soldier" ? Soldier : s == "main" ? Main : s == "campaign" ? Campaign : s == "briefing" ? Briefing
                      : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "debrief" ? Debrief : Start;
         if (first == Briefing || first == Loadout || first == Debrief) { enter(Campaign); }
-        if (first != Start) { enter(first); next_ = first; }
+        if (first != Start) { enter(first); next_ = first; music_.start(); musicVar(0, 0); musicVar(1, first == Soldier ? 4 : first == Main ? 0 : first == Campaign ? 1 : first == Briefing ? 6 : first == Loadout ? 7 : first == Options3 ? 11 : first == Options1 ? 3 : 0); }
     }
     int frame = 0;
     Uint64 last = SDL_GetPerformanceCounter();
@@ -1063,10 +1086,12 @@ int Frontend::run() {
             ++screenTicks_;
             if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
         }
+        music_.update();   // once per menu frame (0x406bf8 -> 0x4b8490)
         if (next_ != screen_) {
             if (next_ == Mission) {
                 // Pre Menu -> Game Loop: the mission with the soldier's gear and
                 // campaign flags; then Post Menu -> Debriefing.
+                music_.stop();   // 0x406ab9: silent in the mission
                 closeWindow();
                 GameOptions g = o_.game;
                 char m[32];
@@ -1088,6 +1113,11 @@ int Frontend::run() {
                 if (outcome_.won) prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
                 prof().set(0x664, prof().get(0x664) + outcome_.kills);
                 if (!openWindow()) return 1;
+                // Post Menu (0x41e480): music_start, then Var00=1 (single
+                // player); Debf init: Var02 = 0 won / 1 lost (0x423f18).
+                music_.start();
+                musicVar(0, 1);
+                musicVar(2, outcome_.won ? 0 : 1);
                 enter(Debrief);
                 next_ = Debrief;
             } else if (next_ == Quit) {
@@ -1109,6 +1139,22 @@ int Frontend::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         hud().begin(dw, dh);
         drawMenu();
+        if (screen_ == Main) {
+            // The hover help (0x40c788 / 0x418568): the hovered button's
+            // MM*TEXT in ImageMainPlt at (172, 324), 296x61, 8 px inset, LCD10
+            // green (APPROXIMATION: shown at once, not teletyped; no
+            // connector lines).
+            static const std::pair<const char*, const char*> help[] = {
+                {"BUT_MAINNS", "MMNEWSOLDIERTEXT"}, {"BUT_MAINSP", "MMSINGLEPLAYERTEXT"}, {"BUT_MAINMP", "MMMULTIPLAYERTEXT"},
+                {"BUT_MAINOP", "MMGAMEOPTIONSTEXT"}, {"BUT_MAINCR", "MMGAMECREDITSTEXT"}, {"BUT_MAINUP", "MMUPDATETEXT"},
+                {"BUT_MAINEX", "MMEXITTEXT"}};
+            for (const auto& [bn, key] : help)
+                if (hover_ == bn) {
+                    blit(image("ImageMainPlt"), 172, 324, 0, 0, 296, 61, false);
+                    if (const std::string* t = menuText_.find("GroupMainMenu", key))
+                        drawWrapped("LCD10", 180, 332, 280, 45, *t, 0xFF00FF00);
+                }
+        }
         if (screen_ == Debrief) {
             // 0x423b78: "Mission Statistics ~ Number of Kills : n ~ ~ Win<m>",
             // or "Mission Statistics ~ ~ Lose<m>"; teletype box (86, 104)

@@ -287,7 +287,6 @@ emitters. OpenDF starts the camera at the first `start, player`.
 | `.JIM` | binary | briefing-map annotations: 9-byte points (u8 kind, u16 x, u16 y, u32 n) then 16-byte names like `2-CP ALPHA`; for the M7 briefing screen |
 | `.PAL` | binary | mission map palettes |
 | `.KDV` | `xVDK`/`sVDK`/`pVDK` chunks | video: 640×480, includes `SAMP` audio chunks |
-| `.SBF` | `SBF0` | music bank with named tracks (`Intro`, …) |
 | `.MNU`, `.BIN`, `.RC`, `.H`, `.I` | | menu system resources |
 | `.ANM`, `.CHR` | | soldier animations / character data |
 
@@ -400,3 +399,30 @@ offsets at +0x10. Variant 28 bytes: u32 sample, pitch base and random range
 (16.16), gain, cap.
 
 LOOP.DEF: `"name" "wav" volume clip maxdist pitcha pitchb` (loose WAV files).
+
+## DFMUSIC.SBF and DFMUSIC.BIN (menu music)
+
+DFMUSIC.SBF ("SBF0", read from disk next to DF.EXE):
+
+```
+0x00 "SBF0"  0x04 u32 0x100  0x08 u32 0  0x0C u32 0  0x10 u32 tableOffset (0x18)  0x14 u32 count (82)
+table: count x 32 bytes { char name[16]; u32 offset; u32 size; u32 blockSize (0x1008); u32 0 }
+block (0x1008 bytes): u32 nbytes (4096, less in the last block); u8 shiftL; u8 shiftR; u16 unused;
+                      u8 pcm[4096] unsigned 8-bit stereo L,R at 22050 Hz
+```
+
+The gain of a block is (V>>1)>>shift per channel, V the stream volume 0..255.
+
+DFMUSIC.BIN ("SCR0", in DFBASE.PFF) is a compiled music script:
+
+```
+0x00 "SCR0"  0x04 u32 0x100  0x08 u32 trackCount (1)  0x0C u32 offset of the track-offset table (0x20)
+track header "MU00" (file 0x24), offsets relative to it:
+  +0x08 name "DFMenu"  +0x20 codeBase (0x80)  +0x24 stateTable (0x68)  +0x28 stateCount (6)
+  +0x2C defaultState (0)
+states (track-relative): Begin, BasicLoop, Lost, Won, Cancelled, FromMP
+```
+
+Byte-coded stack VM (DF.EXE 0x4ab5ce, table 0x4ab070); jumps are relative to the code base, calls
+and states to the track. Globals Var00..Var15 at byte offsets 0x00..0x3C, `i` 0x40, `lastTime`
+0x44; the game writes Var0n with 0x4b8570. The full opcode table is in src/audio/Music.cpp.

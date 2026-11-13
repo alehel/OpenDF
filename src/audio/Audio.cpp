@@ -148,6 +148,7 @@ void Audio::mix(int16_t* out, int frames) {
             v.pos += v.step;
         }
     }
+    if (stream_) stream_(scratch_.data(), frames);
     voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
                                  [](const Voice& v) { return !v.loop && v.pos >= (uint64_t(v.clip->samples.size()) << 32); }),
                   voices_.end());

@@ -96,6 +96,15 @@ when DF.EXE is missing or a different version.
 | Team membership and counts | Original | team = record byte +0x48, side = +0x43; counts over players, people and moving objects (0x4409f4) |
 | Player death | Original | see AUDIT X13, A6 |
 
+## Front end
+
+| Item | Status | Source |
+|---|---|---|
+| Menu layout, fonts, buttons, screen flow | Original | DF.MNU, DFMENU.BIN; see AUDIT F1-F3 |
+| Menu music: stems, script, variables, stem timing | Original | DFMUSIC.SBF, DFMUSIC.BIN, DF.EXE VM 0x4ab5ce; see AUDIT F4 |
+| Menu music loudness against sound effects | APPROXIMATION | the block gain (V>>1)>>shift is DF.EXE's; it is applied as a float, (pcm − 128)/128 · 2^−shift · V/255, in OpenDF's mixer, whose overall scale against DF.EXE's mixer was not measured |
+| Music volume control and df.cfg | Not yet | cd_volume is fixed at its default 255 until the Settings volume control and df.cfg are read |
+
 ## Not yet implemented, so not checkable
 
-Menus (main menu, campaign, briefing screens, Change Gear).
+Credits, keyboard remap and message macros screens; multiplayer.

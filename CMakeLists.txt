@@ -24,6 +24,7 @@ find_package(OpenGL REQUIRED)
 add_executable(opendf
   src/main.cpp
   src/audio/Audio.cpp
+  src/audio/Music.cpp
   src/audio/Pwf.cpp
   src/core/ExeImage.cpp
   src/core/Pff.cpp

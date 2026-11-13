@@ -9,6 +9,7 @@
 #include <SDL.h>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -50,6 +51,12 @@ public:
     bool playing(int voice) const;
     void stopAll();
     void setMasterVolume(float v) { master_ = v; }
+    // A stereo stream added to the mix (the front-end music); it adds
+    // `frames` interleaved float frames at kRate into its buffer.
+    void setStream(std::function<void(float*, int)> stream) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stream_ = std::move(stream);
+    }
 
     // Mixes `frames` stereo frames (interleaved s16) at kRate.
     void mix(int16_t* out, int frames);
@@ -75,6 +82,7 @@ private:
     static constexpr int kOneShotVoices = 10, kLoopVoices = 6;
     float master_ = 1;
     std::vector<float> scratch_;
+    std::function<void(float*, int)> stream_;
 };
 
 } // namespace df
