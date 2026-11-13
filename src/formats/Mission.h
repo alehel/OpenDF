@@ -14,6 +14,8 @@ struct ItemDef {
     std::string type;      // decoration, building, vehicle, person, object, marker, effect
     std::string graphic;   // .3DI name, empty for markers
     std::string husk;      // destroyed graphic
+    std::string animDef;   // soldiers: .ANM move table (`anim_def`)
+    std::string chrFile;   // soldiers: .CHR animation file (`chr_file`)
     // `hp A B`: A = hit points (0 = indestructible). B looks like a damage
     // class: 0 soft (bullets work), 1 armoured vehicles, 2 trees; inferred
     // from which items use which value.
@@ -34,6 +36,7 @@ private:
 };
 
 constexpr int kItemPlayerStart = 106001;
+constexpr int kItemPlayerSoldier = 105003;   // "player01": the player's soldier
 
 struct MissionObject {
     uint32_t type = 0;         // ITEMS.DEF id - 100000

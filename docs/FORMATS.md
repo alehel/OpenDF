@@ -290,3 +290,15 @@ emitters. OpenDF starts the camera at the first `start, player`.
 | `.SBF` | `SBF0` | music bank with named tracks (`Intro`, …) |
 | `.MNU`, `.BIN`, `.RC`, `.H`, `.I` | | menu system resources |
 | `.ANM`, `.CHR` | | soldier animations / character data |
+
+## .ANM move tables
+
+Plain text, one move per line: `name animation-number velocity [override]`,
+`//` comments. The name is one of DF.EXE's fixed move names
+(`Standing_2HW`, `Walking0_1HW` .. `Walking7_1HW`, `Running0_2HW`,
+`Crawling_CR0` .. `Crawling_CR7`, `Swimming`, `Death_B_P03DF`, ...). The
+animation number indexes the soldier's `.CHR` file; the velocity is in m/s
+(the file's own header says so). Directions 0..7: forward, left-forward,
+left, left-back, back, right-back, right, right-forward. `1HW`/`2HW` = one-
+or two-handed weapon; `_S_` = while shooting. Each soldier item in ITEMS.DEF
+names its table with `anim_def` and its animation file with `chr_file`.

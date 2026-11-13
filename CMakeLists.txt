@@ -25,6 +25,7 @@ add_executable(opendf
   src/main.cpp
   src/core/ExeImage.cpp
   src/core/Pff.cpp
+  src/formats/Anm.cpp
   src/formats/Mission.cpp
   src/formats/Model3di.cpp
   src/formats/Pcx.cpp

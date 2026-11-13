@@ -1,7 +1,13 @@
 // First-person soldier movement: stances, running (the default in Delta
 // Force; Shift walks), jumping, slopes and collision with the world.
+//
+// Movement speeds come from the soldier's .ANM move table (PLAYANIM.ANM for
+// the player, chosen by `anim_def` in ITEMS.DEF), as in the original: each
+// move (Running0_2HW, Crawling_CR4, ...) has a velocity in m/s, per stance,
+// one of eight directions, and one- or two-handed weapon.
 #pragma once
 
+#include "../formats/Anm.h"
 #include "World.h"
 
 namespace df {
@@ -20,6 +26,8 @@ public:
     float yaw = 0, pitch = 0;        // yaw: compass radians, pitch: up positive
     Stance stance = Stance::Stand;
     bool fly = false;                // debug free flight (N)
+    const AnimDefs* moves = nullptr; // the soldier's .ANM table
+    bool oneHanded = false;          // pistol: the *_1HW moves
 
     void update(float dt, const PlayerInput& in, const World& world);
     Vec3 eye() const { return {feet.x, feet.y + eyeHeight_, feet.z}; }

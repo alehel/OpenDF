@@ -32,8 +32,11 @@ when DF.EXE is missing or a different version.
 | Item | Status | Source |
 |---|---|---|
 | Field of view (90° horizontal on the 640×362 view) | Original-equivalent | reproduces footage exactly with the engine's gun offsets |
-| Running speed ≈ 5 m/s | Footage | waypoint distance falling ~5 m per second while running |
-| Walk speed, crouch/prone speeds, eye heights, jump, step height, slope limit, radius | Approximation | |
+| Movement speeds | Original + footage | the soldier's `.ANM` move table (`PLAYANIM.ANM`, via `anim_def` in ITEMS.DEF), read at run time: velocity in m/s per move, eight directions, one- or two-handed weapon. Running forward with a rifle 5.0 m/s (footage: ~5 m/s), pistol 6.0; walking (Shift) 1.5/1.0; crawling 1.0 forward and back, 0.5 sideways |
+| Crouched movement | Inferred | the original has no crouched moves (DF.EXE's move names: standing, walking, running, crawling, swimming only), so OpenDF stands the soldier up to move. To check against footage |
+| Walking moves 5 and 7 | Unclear | `PLAYANIM.ANM`'s comments for walking disagree with those for running about which of 5/7 is right-forward; OpenDF uses the running order |
+| Moving while shooting (`*_S_*` moves) | Not yet used | different speeds while firing |
+| Eye heights, jump, step height, slope limit, radius | Approximation | |
 | Weapon bob, recoil kick, reload lowering | Approximation | |
 
 ## World

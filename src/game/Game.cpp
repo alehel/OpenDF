@@ -120,6 +120,7 @@ private:
     ItemDefs items_;
     std::vector<std::string> gameText_;   // DFGAME.BIN
     ExeImage exe_;                        // the original DF.EXE, for its tables
+    AnimDefs playerMoves_;                // the player soldier's .ANM move table
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     std::vector<std::string> missions_;
     int current_ = 0;
@@ -165,6 +166,7 @@ bool Game::loadMission(int index) {
     world_.build(vfs_, models_, items_, mission_);
 
     player_ = Player{};
+    player_.moves = &playerMoves_;
     player_.feet = {512, 0, 512};
     for (const auto& obj : mission_.objects) {
         const ItemDef* item = items_.byMissionType(obj.type);
@@ -554,6 +556,13 @@ int Game::run() {
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
     if (vfs_.read("DFGAME.BIN", raw)) parseRtxt(raw, gameText_);
     {
+        // The player soldier (ITEMS.DEF "player01") names its move table.
+        const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
+        const std::string anm = toUpper(soldier && !soldier->animDef.empty() ? soldier->animDef : "playanim") + ".ANM";
+        if (!vfs_.read(anm, raw) || !playerMoves_.parse(std::string(raw.begin(), raw.end())))
+            std::fprintf(stderr, "cannot read %s; using built-in movement speeds\n", anm.c_str());
+    }
+    {
         const auto exePath = findGameExe(o_.gameDir);
         std::string err;
         if (exePath.empty()) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
@@ -638,6 +647,7 @@ int Game::run() {
             const bool trigger = !showMap_ && ((captured_ && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
                                                k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_RCTRL] || o_.holdFire);
 
+            player_.oneHanded = arsenal_.def().oneHanded;
             player_.update(dt, in, world_);
             std::vector<std::string> msgs;
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);

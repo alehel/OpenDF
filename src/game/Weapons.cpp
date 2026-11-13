@@ -29,7 +29,7 @@ const std::vector<WeaponDef>& builtinWeaponDefs() {
     constexpr float reload = kReloadTicks * kTick;
     static const std::vector<WeaponDef> defs = {
         {{{"SpecOps .45 caliber pistol", F::Single, 5, 10}},
-         "PM19", 10, {102, -34, -43}, 7, 2 * 3 - 1, 295, 1.4f, {}, 1, reload, 1.6f},
+         "PM19", 10, {102, -34, -43}, 7, 2 * 3 - 1, 295, 1.4f, {}, 1, reload, 1.6f, true},
         {{{"M4 Assault Rifle, Single Shot", F::Single, 7, 10}, {"M4 Assault Rifle, Burst", F::Burst, 6, 6}},
          "PM4", 4, {72, -44, -75}, 30, 2 * 12 - 1, 1000, 0.5f, {4.f}, 1, reload, 0.6f},
         {{{"M40 Sniper Rifle", F::Single, 32, 70}},

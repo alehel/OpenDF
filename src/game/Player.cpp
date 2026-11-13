@@ -2,20 +2,29 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace df {
 
 namespace {
 
-struct StanceSpec { float eye, height, run, walk; };
+struct StanceSpec { float eye, height; };
 
-// Speeds in m/s. Approximations: a jog when running, a careful walk with Shift.
+// Eye height and body height in metres: approximations.
 StanceSpec spec(Stance s) {
     switch (s) {
-    case Stance::Crouch: return {1.0f, 1.15f, 2.0f, 1.0f};
-    case Stance::Prone: return {0.35f, 0.5f, 0.7f, 0.4f};
-    default: return {1.65f, 1.8f, 5.0f, 2.0f};
+    case Stance::Crouch: return {1.0f, 1.15f};
+    case Stance::Prone: return {0.35f, 0.5f};
+    default: return {1.65f, 1.8f};
     }
+}
+
+// The original's eight move directions: 0 forward, then counter-clockwise
+// (1 left-forward, 2 left, 3 left-back, 4 back, 5 right-back, 6 right,
+// 7 right-forward), as the PLAYANIM.ANM comments for the running moves say.
+int moveDirection(float forward, float strafe) {
+    const float a = std::atan2(-strafe, forward);   // left positive
+    return (int(std::lround(a / (3.14159265f / 4))) + 8) % 8;
 }
 
 constexpr float kRadius = 0.3f;
@@ -59,7 +68,24 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         return;
     }
 
-    speed_ = in.walk ? st.walk : st.run;
+    speed_ = 0;
+    if (moving_) {
+        // The original has no crouched moves: a crouching soldier stands up
+        // to move (inferred from the move tables, which have none).
+        if (stance == Stance::Crouch) stance = Stance::Stand;
+        const int dir = moveDirection(in.forward, in.strafe);
+        std::string move;
+        float fallback;
+        if (stance == Stance::Prone) {
+            move = "Crawling_CR" + std::to_string(dir);
+            fallback = 0.5f;
+        } else {
+            move = std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) + (oneHanded ? "_1HW" : "_2HW");
+            fallback = in.walk ? 1.0f : 5.0f;
+        }
+        const AnimMove* m = moves ? moves->find(move) : nullptr;
+        speed_ = m ? m->velocity : fallback;
+    }
     Vec3 delta = wish * (speed_ * dt);
 
     // Refuse to walk up walls of terrain that are too steep.

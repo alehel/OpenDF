@@ -44,6 +44,7 @@ struct WeaponDef {
     int damage;
     float reloadSeconds;
     float recoilDeg;
+    bool oneHanded = false;     // held in one hand: the soldier uses the *_1HW moves
 };
 
 // Built-in copy of the original's values (fallback).
