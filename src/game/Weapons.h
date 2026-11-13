@@ -1,10 +1,14 @@
 // Player weapons: magazines, fire modes, reloads, scopes and simulated
 // bullets (gravity drop and travel time) hitting terrain and objects.
 //
-// The weapon numbers below are real-world approximations, not values from
-// DF.EXE (not yet located there).
+// Weapon values come from DF.EXE's own weapon tables, read from the user's
+// copy at start-up (see docs/FORMATS.md); the built-in copies of those values
+// are used if DF.EXE is missing or not the expected version. Spread, damage
+// and recoil are still OpenDF approximations.
 #pragma once
 
+#include "../core/ExeImage.h"
+#include "../formats/Mission.h"
 #include "Player.h"
 #include "World.h"
 
@@ -16,21 +20,24 @@ namespace df {
 
 enum class FireMode { Single, Burst, Auto };
 
+// The original's logic runs at 60 ticks per second.
+constexpr float kTick = 1.f / 60.f;
+
 struct WeaponMode {
     const char* name;           // fallback if DFGAME.BIN is unavailable
     FireMode fire;
-    int textIndex;              // index into DFGAME.BIN (= DF.EXE weapon table index)
+    int table;                  // DF.EXE player weapon table index (= DFGAME.BIN string)
+    int fireTicks;              // ticks between rounds (table +0x9C)
 };
 
 struct WeaponDef {
     std::vector<WeaponMode> modes;
-    const char* viewModel;      // first-person .3DI
+    std::string viewModel;      // first-person .3DI (ITEMS.DEF item at table +0x64)
     int icon;                   // frame in WEAP640.PCX
     // First-person model offset from the eye, from DF.EXE's player weapon
     // table (record +0x78): forward, left, up in 1/256 m.
     int gunOffset[3];
     int magazine, spareMags;
-    float roundsPerMinute;
     float muzzleVelocity;       // m/s
     float spreadDeg;            // standing, still, unzoomed
     std::vector<float> zoom;    // magnifications of the zoom inset (none = no scope)
@@ -39,7 +46,8 @@ struct WeaponDef {
     float recoilDeg;
 };
 
-const std::vector<WeaponDef>& weaponDefs();
+// Built-in copy of the original's values (fallback).
+const std::vector<WeaponDef>& builtinWeaponDefs();
 
 struct Projectile {
     Vec3 pos, vel;
@@ -58,7 +66,11 @@ public:
     struct Slot { int def; int rounds; int mags; int mode; };
 
     // `gameText`: DFGAME.BIN strings, for the weapon names (may be empty).
-    void init(const std::vector<std::string>& gameText = {});
+    // `exe`: the original DF.EXE, for the weapon tables (may be null).
+    void init(const std::vector<std::string>& gameText = {}, const ExeImage* exe = nullptr,
+              const ItemDefs* items = nullptr);
+    // True if the weapon values were read from DF.EXE.
+    bool fromExe() const { return fromExe_; }
     const std::string& modeName() const;
     // Selects a weapon slot; `mode` < 0 keeps that weapon's current fire mode.
     void select(int slot, int mode = -1);
@@ -72,7 +84,7 @@ public:
                 std::vector<std::string>& messages);
 
     const Slot& current() const { return slots_[current_]; }
-    const WeaponDef& def() const { return weaponDefs()[slots_[current_].def]; }
+    const WeaponDef& def() const { return defs_[slots_[current_].def]; }
     const WeaponMode& mode() const { return def().modes[slots_[current_].mode]; }
     int slotIndex() const { return current_; }
     // Magnification of the zoom inset (1 = not zoomed).
@@ -87,6 +99,8 @@ public:
 private:
     void fire(Player& player, World& world);
 
+    std::vector<WeaponDef> defs_;
+    bool fromExe_ = false;
     std::vector<Slot> slots_;
     std::vector<std::vector<std::string>> names_;   // per weapon, per mode
     int current_ = 0;

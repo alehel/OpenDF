@@ -692,6 +692,7 @@ int main(int argc, char** argv) {
             g.walkForward = o.walkForward;
             g.viewModelOnly = o.viewModelOnly;
             g.showMap = o.showMap;
+            g.gameDir = o.dataDir;
             rc = runGame(vfs, g);
         }
         else if (o.command == "check") rc = cmdCheck(vfs);

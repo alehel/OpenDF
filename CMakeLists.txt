@@ -23,6 +23,7 @@ find_package(OpenGL REQUIRED)
 
 add_executable(opendf
   src/main.cpp
+  src/core/ExeImage.cpp
   src/core/Pff.cpp
   src/formats/Mission.cpp
   src/formats/Model3di.cpp

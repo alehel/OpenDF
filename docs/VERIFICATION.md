@@ -6,6 +6,10 @@ value or behaviour and where it comes from. **Original**: read from the game
 of the original. **Inferred**: deduced from data, plausible but unconfirmed.
 **Approximation**: OpenDF's own choice, to be replaced.
 
+Values that live in DF.EXE are read from the user's own copy at start-up
+(`DFSETUP/DF.EXE`); OpenDF keeps built-in copies of them as a fallback for
+when DF.EXE is missing or a different version.
+
 ## Weapons
 
 | Item | Status | Source |
@@ -16,7 +20,10 @@ of the original. **Inferred**: deduced from data, plausible but unconfirmed.
 | Starting magazines | Original + footage | gun table `+0x04` = n; player gets 2n−1 spares (M4 23, as in the footage). The doubling is gated by a soldier-profile flag (`+0x688`) whose meaning is unknown |
 | Muzzle velocity | Original (units inferred: m/s) | gun table `+0x0C` (M4 1000, M40 950, MP5 SD 295, SAW 1000, .45 295) |
 | Scope power | Inferred | player table `+0xA0` (M4 4, M40 8, 0 = no scope) |
-| Fire rate, spread, damage, reload time, recoil, burst length | Approximation | candidate fields: player table `+0x9C`, `+0xA4`; gun table `+0x10..+0x1C` — not yet traced in code |
+| Fire rate | Original + footage | player table `+0x9C`: ticks between rounds at 60 ticks/s (M4 single 10, burst 6, M40 70, MP5 SD 10/6/6, SAW 6, .45 10); bursts of 3 about 0.1 s apart in footage |
+| Reload time | Original + footage | fixed 0x78 = 120 ticks (2 s) in DF.EXE; matches footage |
+| Weapon text red while reloading | Footage | |
+| Spread, damage, recoil | Approximation | candidate fields: player table `+0xA4`; gun table `+0x10..+0x1C` — not yet traced in code |
 | Sounds | Original (not played yet) | gun table `+0x24..+0x30` sound ids |
 | Loadout | Approximation | the original starts with the knife in hand and the weapons chosen on Change Gear; OpenDF gives all five |
 

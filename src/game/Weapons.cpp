@@ -3,53 +3,105 @@
 #include <algorithm>
 #include <cmath>
 
+#include "../core/Pff.h"
+
 namespace df {
 
 namespace {
 constexpr float kPi = 3.14159265f;
 }
 
-const std::vector<WeaponDef>& weaponDefs() {
+// DF.EXE (US release) tables; see docs/FORMATS.md.
+constexpr uint32_t kPlayerTable = 0x4E97D0, kPlayerRecord = 168;   // per fire mode
+constexpr uint32_t kGunTable = 0x4E9060, kGunRecord = 52;           // per gun
+// Reload time: a fixed 0x78 ticks in DF.EXE.
+constexpr int kReloadTicks = 120;
+
+const std::vector<WeaponDef>& builtinWeaponDefs() {
     using F = FireMode;
-    // Names: DFGAME.BIN (index = DF.EXE weapon table index). Icons: WEAP640.PCX.
-    // From DF.EXE's weapon tables (see docs/FORMATS.md):
-    //  - gun offset (player table +0x78) and scope power (+0xA0);
-    //  - magazine size (gun table +0x08), magazines (+0x04; the player gets
-    //    2n-1 spares, which is what footage of the original shows, e.g. 23
-    //    for the M4) and muzzle velocity in m/s (+0x0C).
-    // Still approximations: fire rate, spread, damage, reload time, recoil.
+    // Copies of DF.EXE's values, used when DF.EXE cannot be read:
+    //  - per mode: table index, fire cooldown in ticks (+0x9C);
+    //  - first-person model (+0x64), gun offset (+0x78), scope power (+0xA0);
+    //  - per gun: magazine size (+0x08), magazines n (+0x04; the player gets
+    //    2n-1 spares, as footage of the original shows: 23 for the M4) and
+    //    muzzle velocity in m/s (+0x0C).
+    // Icons: WEAP640.PCX frames. Spread, damage and recoil are approximations.
+    constexpr float reload = kReloadTicks * kTick;
     static const std::vector<WeaponDef> defs = {
-        {{{"SpecOps .45 caliber pistol", F::Single, 5}},
-         "PM19", 10, {102, -34, -43}, 7, 2 * 3 - 1, 300, 295, 1.4f, {}, 1, 1.6f, 1.6f},
-        {{{"M4 Assault Rifle, Single Shot", F::Single, 7}, {"M4 Assault Rifle, Burst", F::Burst, 6}},
-         "PM4", 4, {72, -44, -75}, 30, 2 * 12 - 1, 800, 1000, 0.5f, {4.f}, 1, 2.2f, 0.6f},
-        {{{"M40 Sniper Rifle", F::Single, 32}},
-         "PM40", 9, {60, -35, -45}, 5, 2 * 12 - 1, 45, 950, 0.08f, {8.f}, 2, 3.0f, 2.5f},
-        {{{"H&K MP5 SD, Single Shot", F::Single, 22}, {"H&K MP5 SD, Burst", F::Burst, 21},
-          {"H&K MP5 SD, Full Auto", F::Auto, 20}},
-         "PMP5", 11, {84, -35, -72}, 30, 2 * 12 - 1, 800, 295, 0.7f, {}, 1, 2.0f, 0.35f},
-        {{{"SAW Auto. Weap., Full Auto", F::Auto, 12}},
-         "PM249", 8, {85, -43, -73}, 200, 2 * 3 - 1, 750, 1000, 1.0f, {}, 1, 5.0f, 0.5f},
+        {{{"SpecOps .45 caliber pistol", F::Single, 5, 10}},
+         "PM19", 10, {102, -34, -43}, 7, 2 * 3 - 1, 295, 1.4f, {}, 1, reload, 1.6f},
+        {{{"M4 Assault Rifle, Single Shot", F::Single, 7, 10}, {"M4 Assault Rifle, Burst", F::Burst, 6, 6}},
+         "PM4", 4, {72, -44, -75}, 30, 2 * 12 - 1, 1000, 0.5f, {4.f}, 1, reload, 0.6f},
+        {{{"M40 Sniper Rifle", F::Single, 32, 70}},
+         "PM40", 9, {60, -35, -45}, 5, 2 * 12 - 1, 950, 0.08f, {8.f}, 2, reload, 2.5f},
+        {{{"H&K MP5 SD, Single Shot", F::Single, 22, 10}, {"H&K MP5 SD, Burst", F::Burst, 21, 6},
+          {"H&K MP5 SD, Full Auto", F::Auto, 20, 6}},
+         "PMP5", 11, {84, -35, -72}, 30, 2 * 12 - 1, 295, 0.7f, {}, 1, reload, 0.35f},
+        {{{"SAW Auto. Weap., Full Auto", F::Auto, 12, 6}},
+         "PM249", 8, {85, -43, -73}, 200, 2 * 3 - 1, 1000, 1.0f, {}, 1, reload, 0.5f},
     };
     return defs;
 }
 
+namespace {
+
+// Overrides `defs` with the values in the user's DF.EXE. Returns false (and
+// leaves `defs` alone) if the tables are not where the US release has them.
+bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<WeaponDef>& defs) {
+    auto mode = [&](int m, uint32_t field, int32_t& v) { return exe.i32(kPlayerTable + m * kPlayerRecord + field, v); };
+    auto gun = [&](int g, uint32_t field, int32_t& v) { return exe.i32(kGunTable + g * kGunRecord + field, v); };
+    // Sanity check: M4 single shot uses item 4057 and a 30-round magazine.
+    int32_t item = 0, gunIndex = 0, size = 0;
+    if (!mode(7, 0x64, item) || !mode(7, 0x74, gunIndex) || item != 4057 || gunIndex != 7) return false;
+    if (!gun(7, 0x08, size) || size != 30) return false;
+
+    std::vector<WeaponDef> out = defs;
+    for (auto& d : out) {
+        const int first = d.modes[0].table;
+        int32_t g = 0, n = 0, velocity = 0, scope = 0, fp = 0;
+        if (!mode(first, 0x74, g) || g < 0 || g >= 28) return false;
+        for (int i = 0; i < 3; ++i)
+            if (!mode(first, 0x78 + 4 * i, d.gunOffset[i])) return false;
+        for (auto& m : d.modes)
+            if (!mode(m.table, 0x9C, m.fireTicks) || m.fireTicks <= 0) return false;
+        if (!mode(first, 0xA0, scope)) return false;
+        d.zoom = scope > 1 ? std::vector<float>{float(scope)} : std::vector<float>{};
+        if (!gun(g, 0x04, n) || !gun(g, 0x08, d.magazine) || !gun(g, 0x0C, velocity)) return false;
+        d.spareMags = std::max(0, 2 * n - 1);
+        d.muzzleVelocity = float(velocity);
+        if (items && mode(first, 0x64, fp))
+            if (const ItemDef* it = items->byId(fp); it && !it->graphic.empty()) {
+                std::string name = it->graphic;
+                if (auto dot = name.rfind('.'); dot != std::string::npos) name.resize(dot);
+                d.viewModel = toUpper(name);
+            }
+    }
+    defs = std::move(out);
+    return true;
+}
+
+} // namespace
+
 const std::string& Arsenal::modeName() const { return names_[current_][slots_[current_].mode]; }
 
-void Arsenal::init(const std::vector<std::string>& gameText) {
+void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items) {
+    defs_ = builtinWeaponDefs();
+    fromExe_ = exe && exe->loaded() && readExeTables(*exe, items, defs_);
     names_.clear();
-    for (const auto& d : weaponDefs()) {
+    for (const auto& d : defs_) {
         std::vector<std::string> n;
         for (const auto& m : d.modes)
-            n.push_back(m.textIndex < int(gameText.size()) && !gameText[m.textIndex].empty() ? gameText[m.textIndex] : m.name);
+            n.push_back(m.table < int(gameText.size()) && !gameText[m.table].empty() ? gameText[m.table] : m.name);
         names_.push_back(std::move(n));
     }
     slots_.clear();
-    for (int i = 0; i < int(weaponDefs().size()); ++i) {
-        const auto& d = weaponDefs()[i];
-        slots_.push_back({i, d.magazine, d.spareMags, 0});
-    }
+    for (int i = 0; i < int(defs_.size()); ++i) slots_.push_back({i, defs_[i].magazine, defs_[i].spareMags, 0});
     current_ = 1;   // start with the carbine
+    zoomLevel_ = 0;
+    cooldown_ = reloadTimer_ = recoil_ = flashTimer_ = 0;
+    burstLeft_ = 0;
+    bullets_.clear();
+    impacts_.clear();
 }
 
 void Arsenal::select(int slot, int mode) {
@@ -88,7 +140,7 @@ void Arsenal::fire(Player& player, World& world) {
     Slot& s = slots_[current_];
     const WeaponDef& d = def();
     --s.rounds;
-    cooldown_ = 60.f / d.roundsPerMinute;
+    cooldown_ = mode().fireTicks * kTick;
     flashTimer_ = 0.05f;
     recoil_ += d.recoilDeg;
 
@@ -134,7 +186,7 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
         if (wantsFire && cooldown_ <= 0) {
             if (s.rounds > 0) {
                 fire(player, world);
-                if (burstLeft_ > 0 && --burstLeft_ == 0) cooldown_ = std::max(cooldown_, 0.25f);
+                if (burstLeft_ > 0) --burstLeft_;   // a burst: three rounds, fireTicks apart
             } else {
                 burstLeft_ = 0;
                 if (triggerPressed && s.mags > 0) reload();

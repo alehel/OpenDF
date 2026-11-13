@@ -3,12 +3,14 @@
 
 #include "../core/Pff.h"
 
+#include <filesystem>
 #include <string>
 
 namespace df {
 
 struct GameOptions {
     std::string mission = "C02M01";
+    std::filesystem::path gameDir;       // where DF.EXE is looked for
     int width = 1280, height = 720;
     // Testing aids: render after `frames` frames to a .ppm and exit.
     std::string screenshot;

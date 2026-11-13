@@ -119,6 +119,7 @@ private:
     SDL_Window* win_ = nullptr;
     ItemDefs items_;
     std::vector<std::string> gameText_;   // DFGAME.BIN
+    ExeImage exe_;                        // the original DF.EXE, for its tables
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     std::vector<std::string> missions_;
     int current_ = 0;
@@ -175,7 +176,7 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    arsenal_.init(gameText_);
+    arsenal_.init(gameText_, &exe_, &items_);
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
     missionName_ = missionName(mission_.title);
@@ -192,6 +193,9 @@ bool Game::loadMission(int index) {
     }
     missionTime_ = 0;
     messages_.clear();
+    if (exe_.loaded() && !arsenal_.fromExe())
+        std::fprintf(stderr, "DF.EXE is not the expected version; using built-in weapon values\n");
+    else if (arsenal_.fromExe()) std::printf("weapon tables read from DF.EXE\n");
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
                 world_.objects.size());
     return true;
@@ -367,7 +371,8 @@ void Game::drawTopBar(const Screen& s) {
 
     // Weapon line, magazines, rounds and the chamber indicator.
     const auto& sl = arsenal_.current();
-    hud_.text(s.lx(74), s.y(5), arsenal_.modeName(), kHudGreen, ts);
+    // The weapon name turns red while reloading, as in the original.
+    hud_.text(s.lx(74), s.y(5), arsenal_.modeName(), arsenal_.reloading() ? kHudRed : kHudGreen, ts);
     hudBox(s, 74, 27, 136, 47, false);
     hudBox(s, 141, 27, 201, 47, false);
     // Magazine icon: a small slanted clip, then the spare magazine count.
@@ -548,6 +553,12 @@ int Game::run() {
     }
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
     if (vfs_.read("DFGAME.BIN", raw)) parseRtxt(raw, gameText_);
+    {
+        const auto exePath = findGameExe(o_.gameDir);
+        std::string err;
+        if (exePath.empty()) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
+        else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
+    }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
     if (it == missions_.end()) { std::fprintf(stderr, "unknown mission %s\n", o_.mission.c_str()); return 1; }
