@@ -61,7 +61,12 @@ private:
         float floorHeight = 0;
         int gunTarget = -1;       // world object, -3 the player
         Vec3 gunAcquired{0, 0, 0};
+        // Door gun relative to the body in DF.EXE's sense (radians; yaw
+        // anticlockwise from the nose, pitch up +): current +0xC4/+0xC8 and
+        // target +0xCC/+0xD0.
         float gunYaw = 0, gunPitch = 0, bias = 0;
+        float gunTgtYaw = 0, gunTgtPitch = 0;
+        bool gunInit = false;
         int burst = 0, pause = 0, wait = 0, fireTimer = 0, cooldown = 0;
         int lastHp = 0;
     };

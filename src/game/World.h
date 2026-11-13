@@ -60,7 +60,8 @@ struct WorldObject {
     // tick, 0x47d064) and the rotor speed (blades/disc choice, 0x478114).
     uint32_t rotorAngle[2] = {0, 0};
     float rotorSpeed = 0;
-    float steer = 0;                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
+    float steer = 0;
+    float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;

@@ -109,4 +109,8 @@ when DF.EXE is missing or a different version.
 
 ## Not yet implemented, so not checkable
 
-Multiplayer (screens, network). Helicopter door gun turning (0x47d0e8; the gun mesh is drawn unturned and the gun aims at once) and the helicopter hit-test pose quirk (0x478070). The briefing text scrollbar's exact range (0x4129e0 not traced; arrows step one line).
+Multiplayer (screens, network).
+
+| Item | Status | Source |
+|---|---|---|
+| Rounds against objects (vehicles, buildings, props) | APPROXIMATION | OpenDF tests the model's collision volumes (or its bounds); DF.EXE tests each posed mesh of the hit model in mesh space (0x44e440..), skipping meshes flagged by the model's pose routine, e.g. the helicopter's hit pose (0x478070: unrotated rotors; meshes 3 and 5 unhittable while the main rotor is slow, 2 and 4 when fast). Not yet traced or implemented |

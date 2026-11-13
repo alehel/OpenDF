@@ -228,15 +228,51 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
 // The door gun (0x47c148 / 0x47c734): the SAW (mode 12) at targets within
 // reach, in bursts of a round every 8 ticks for 16..47 ticks, pauses of
 // 64..127, after a wait of 32..95 ticks; per-shot error +-0x200000 and a
-// yaw bias shrinking by 1/4 after each burst. APPROXIMATIONS: targets are
-// the nearest visible enemy under 100 m (DF.EXE scores them as soldiers do
-// and draws against distance); the muzzle is 1 m below the helicopter; the
-// gun turns to the aim at once (DF.EXE slews 0x800000 per tick).
+// yaw bias shrinking by 1/4 after each burst. The gun's aim target is the
+// target's direction relative to the body, clamped to the gun's limits,
+// every think (0x47c220); the gun turns 0x800000 per tick toward it when
+// more than 0x1000000 off (0x47d0e8); it fires only while its yaw is within
+// 0x0C000000 of the target (0x47d28b); each round flies straight at the
+// target with the error, and is not fired when the target lies outside the
+// limits (0x47c340). Limits (DF sense, yaw anticlockwise): Gazelle yaw
+// +-45, pitch -45..0; Black Hawk yaw -135..-45 (its right-side door), pitch
+// -16.9..0; the Black Hawk gun starts at -90 (0x47ca81). APPROXIMATIONS:
+// targets are the nearest visible enemy under 100 m (DF.EXE scores them as
+// soldiers do and draws against distance); the muzzle is 1 m below the
+// helicopter (DF.EXE: hardpoint 4 turned with the gun, 0x47c148).
 void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound, const Target& player) {
     WorldObject& o = world.objects[size_t(v.object)];
+    const float turn = 2 * kPi / 4294967296.f;
+    const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
+    const float deg = kPi / 180.f;
+    const float yawLo = hawk ? -135 * deg : -45 * deg, yawHi = hawk ? -45 * deg : 45 * deg;
+    const float pitchLo = hawk ? -float(0x0C000000) * turn : -45 * deg;
+    if (!v.gunInit) {   // 0x47ca6c: the Black Hawk's gun starts pointing out of its door
+        v.gunInit = true;
+        if (hawk) v.gunYaw = v.gunTgtYaw = -90 * deg;
+    }
+    const Vec3 muzzle = o.pos - Vec3{0, 1.f, 0};
+    auto relative = [&](Vec3 at, float& yaw, float& pitch) {
+        const Vec3 d = world.nearest(at, muzzle) - muzzle;
+        yaw = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);   // DF: anticlockwise
+        pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) - o.pitch;
+    };
+    // Aim target every think (0x47c220), clamped to the limits.
+    if (v.think == 8 && v.gunTarget != -1) {
+        const Vec3 at = v.gunTarget == -3 ? player.at : world.objects[size_t(v.gunTarget)].pos;
+        float y, p;
+        relative(at, y, p);
+        v.gunTgtYaw = std::clamp(y, yawLo, yawHi);
+        v.gunTgtPitch = std::clamp(p, pitchLo, 0.f);
+    }
+    // Turning (0x47d0e8), every tick.
+    const float step = float(0x800000) * turn, dead = float(0x1000000) * turn;
+    if (std::abs(v.gunTgtYaw - v.gunYaw) > dead) v.gunYaw += v.gunTgtYaw > v.gunYaw ? step : -step;
+    if (std::abs(v.gunTgtPitch - v.gunPitch) > dead) v.gunPitch += v.gunTgtPitch > v.gunPitch ? step : -step;
+    o.gunYaw = v.gunYaw;
+    o.gunPitch = v.gunPitch;
     if (v.dead || (v.flags & 1) || v.rotor < float(0x14000000)) return;
     if (v.cooldown > 0) { --v.cooldown; return; }
-    const Vec3 muzzle = o.pos - Vec3{0, 1.f, 0};
     auto visible = [&](Vec3 at) {
         RayHit h;
         return !world.raycast(muzzle, world.nearest(at, muzzle), h, true, v.object, false);
@@ -266,6 +302,7 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
         return;
     }
     if (v.gunTarget == -1) return;
+    if (std::abs(v.gunTgtYaw - v.gunYaw) >= float(0x0C000000) * turn) return;   // 0x47d28b
     if (v.wait > 0) { --v.wait; return; }
     if (v.burst <= 0) {
         if (v.pause > 0) { --v.pause; if (v.pause == 0) v.burst = 16 + int(rnd() >> 10) % 32; return; }
@@ -276,24 +313,15 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     --v.burst;
     if (++v.fireTimer % 8) return;
     const Vec3 d = world.nearest(targetPos(v.gunTarget), muzzle) - muzzle;
-    const float turn = 2 * kPi / 4294967296.f;
     auto err = [&]() { return (float(int(rnd()) - 0x8000) / 32768.f) * float(0x200000) * turn; };
-    float yaw = std::atan2(d.x, -d.z) + v.bias * turn + err();
-    float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) + err();
-    // Gun limits relative to the body (0x47c220 / 0x47c340); it fires only
-    // within 16.9 degrees of the aim: gazelle yaw +-45, pitch 0..-45; Black
-    // Hawk yaw -135..-45 (its door), pitch 0..-16.9.
+    // 0x47c340: straight at the target, refused outside the gun's limits.
     {
-        const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
-        float rel = wrapAngle(yaw - o.heading);
-        const float deg = kPi / 180.f;
-        const float lo = hawk ? -135 * deg : -45 * deg, hi = hawk ? -45 * deg : 45 * deg;
-        const float plo = hawk ? -16.9f * deg : -45 * deg;
-        const float cr = std::clamp(rel, lo, hi), cp = std::clamp(pitch, plo, 0.f);
-        if (std::abs(cr - rel) > 16.9f * deg || std::abs(cp - pitch) > 16.9f * deg) return;
-        yaw = o.heading + cr;
-        pitch = cp;
+        float ry, rp;
+        relative(targetPos(v.gunTarget), ry, rp);
+        if (ry < yawLo || ry > yawHi || rp < pitchLo || rp > 0) return;
     }
+    const float yaw = std::atan2(d.x, -d.z) + v.bias * turn + err();
+    const float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) + err();
     const ModeDef& md = modeInfo(12);
     const GunDef& g = gunInfo(md.gun);
     Projectile p;
@@ -335,9 +363,9 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
         const float teamSpeed = ai.teamSpeedMs(o.team);
         static int dbg = 0;
         if (std::getenv("OPENDF_DEBUGVEH") && (++dbg % (120 * int(vehicles_.size()))) < int(vehicles_.size()))
-            std::fprintf(stderr, "veh %d %s team %d path %d wp %d speed %.1f/%.1f pos (%.1f %.1f %.1f) hdg %.0f rotor %.0f mode %d\n",
+            std::fprintf(stderr, "veh %d %s team %d path %d wp %d speed %.1f/%.1f pos (%.1f %.1f %.1f) hdg %.0f rotor %.0f mode %d gun %d %.0f/%.0f\n",
                          v.object, v.helo ? "helo" : "veh0", o.team, v.path, v.waypoint, v.speed, teamSpeed, o.pos.x, o.pos.y, o.pos.z,
-                         o.heading * 57.3f, v.rotor / 1e6f, v.mode);
+                         o.heading * 57.3f, v.rotor / 1e6f, v.mode, v.gunTarget, v.gunYaw * 57.3f, v.gunTgtYaw * 57.3f);
         if (v.helo) {
             fly(world, ai, v, teamSpeed);
             doorGun(world, v, shots, sound, player);

@@ -1352,9 +1352,9 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             // 0x478114: mesh 0 and 6 static; mesh 1 (blades) or 2 (disc) at
             // rotor speed >= 0x0C000000, about file +Z through hardpoint 0;
             // mesh 3 or 4 about file +Y through hardpoint 2; mesh 5 (the
-            // gun) about hardpoint 4 (APPROXIMATION: not turned, the door
-            // gun's own yaw/pitch is not kept). Hardpoints of LOD 0 serve
-            // every LOD (they match in BLACKHWK and GAZELLE).
+            // gun) about hardpoint 4 by its yaw (Z) then pitch (Y).
+            // Hardpoints of LOD 0 serve every LOD (they match in BLACKHWK
+            // and GAZELLE).
             const GpuModel& m = *v.o->model;
             const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
             const bool fast = v.o->rotorSpeed >= float(0x0C000000);
@@ -1373,6 +1373,12 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             if (meshes > 2) pose[2] = fast ? about(0, rotateY(main)) : hide;
             if (meshes > 3) pose[3] = fast ? hide : about(2, rz);
             if (meshes > 4) pose[4] = fast ? about(2, rz) : hide;
+            if (meshes > 5 && m.points.size() > 4) {
+                Mat4 gp;
+                const float c = std::cos(v.o->gunPitch), sn = std::sin(v.o->gunPitch);
+                gp.at(0, 0) = c; gp.at(0, 1) = -sn; gp.at(1, 0) = sn; gp.at(1, 1) = c;
+                pose[5] = about(4, rotateY(v.o->gunYaw) * gp);
+            }
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
         }
