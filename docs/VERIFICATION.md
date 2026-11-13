@@ -90,14 +90,14 @@ when DF.EXE is missing or a different version.
 |---|---|---|
 | Event engine: schedule (every 128 ticks, one eighth per 16 ticks), condition chaining, NOT, delays with re-check, repeats | Original | DF.EXE 0x445914, 0x45c534, 0x45c48c |
 | Conditions: team all dead / alive / losses / at least n alive / none lost, team inside area, event fired, campaign flags, load toggle, squad option | Original | 0x45c17c; areas from Area Trigger markers by tag (0x45c9a0) |
-| Conditions needing AI: team spotted / engaging / alerted / reached waypoint / carrying | **Not yet** | always false until AI exists |
+| Conditions needing AI: team spotted / engaging / alerted / reached waypoint | Original | see AUDIT A4/A5; carrying: not yet (pickups) |
 | Actions: kill team, remove team, campaign flag, text, radio, end mission (win/lose/none), goals met, lose conditions | Original | 0x45c368 |
-| Actions needing AI: follow path, AI properties, team speed | **Not yet** | ignored until AI exists |
+| Actions needing AI: follow path, AI properties, team speed | Original | see AUDIT A5 |
 | Team membership and counts | Original | team = record byte +0x48, side = +0x43; counts over players, people and moving objects (0x4409f4) |
-| Player death | **Not yet** | bullets can hurt the player only once AI shoots; "Bravo 1 is down" and failures from it cannot happen yet |
+| Player death | Original | see AUDIT X13, A6 |
 
 ## Not yet implemented, so not checkable
 
-Death animations (`.ANM`/`.CHR`), bullet impact effects (`EXP_B.3DI` via
-`ITEMS.DEF` effect items), knife/grenades/M203/satchels, player health, AI,
-mission triggers and goals, menus.
+Menus (main menu, campaign, briefing screens, Change Gear), pickups and
+carried items, satchels, claymores, the laser designator, vehicles and
+helicopters.

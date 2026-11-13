@@ -53,6 +53,7 @@ struct WorldObject {
     int missionIndex = -1;             // index in Mission::objects
     int moveNumber = -1;               // DF move number playing (obj+0x80)
     int killer = -1;                   // who killed it (obj+0xf8; -3 the player)
+    int weaponMode = 0;                // people: the weapon held (obj+0x94, player-table mode)
     bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;

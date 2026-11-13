@@ -1004,7 +1004,29 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     }
     for (auto& v : visible) {
         if (v.o->chr && !v.o->anim.angles().empty()) {
-            models_.drawPosed(*v.o->model, v.lod, v.o->matrix(v.at), personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles()));
+            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles());
+            const Mat4 body = v.o->matrix(v.at);
+            models_.drawPosed(*v.o->model, v.lod, body, pose);
+            // The held weapon (0x44cc34): the mode's third-person item (+0x68),
+            // its LOD's first mesh, at the right hand (mesh 7) turned by the
+            // fixed offset 0x44d3c0 (-30, -65, -30 degrees as yaw, pitch, roll).
+            if (const int item = modeThirdPersonItem(v.o->weaponMode); item > 0 && pose.size() > 7 && !v.o->dead)
+                if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
+                    if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty()) {
+                        static const Mat4 offset = [] {
+                            const ChrMatrix c = Chr::partRotation({30.f / 360.f, -65.f / 360.f, 30.f / 360.f});
+                            Mat4 r;
+                            const int map[3] = {0, 2, 1};
+                            const float sign[3] = {1, 1, -1};
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j) r.at(i, j) = sign[i] * sign[j] * c.m[map[i]][map[j]];
+                            return r;
+                        }();
+                        const auto& l = v.o->model->lods[size_t(std::clamp(v.lod, 0, int(v.o->model->lods.size()) - 1))];
+                        const auto& pv = l.meshPivot[7];
+                        const Mat4 hand = pose[7] * translate({pv[0], pv[1], pv[2]});
+                        models_.draw(*wm, std::min(v.lod, int(wm->lods.size()) - 1), body * hand * offset);
+                    }
             continue;
         }
         models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));

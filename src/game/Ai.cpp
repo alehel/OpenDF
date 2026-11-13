@@ -72,6 +72,7 @@ void AiSystem::init(World& world, const Mission& mission) {
         stagger += 11;
         p.lastHp = o.hp;
         if (p.alert == 2 && o.team >= 0 && o.team < 64) teamAlert_[size_t(o.team)] = 2;
+        o.weaponMode = p.weapon;
         people_.push_back(p);
         world.requestMove(o, idleMove(world, p));
     }
@@ -600,7 +601,7 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
     for (auto& p : people_) {
         if (world.objects[size_t(p.object)].team != team) continue;
         switch (subtype) {
-        case 1: p.weapon = aiWeaponMode(value); break;
+        case 1: p.weapon = aiWeaponMode(value); world.objects[size_t(p.object)].weaponMode = p.weapon; break;
         case 2: p.flags |= 2; break;
         case 3: p.flags |= 0x10; break;
         case 4: p.flags |= 0x20; break;
