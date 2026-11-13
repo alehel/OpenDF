@@ -14,6 +14,10 @@ struct ItemDef {
     std::string type;      // decoration, building, vehicle, person, object, marker, effect
     std::string graphic;   // .3DI name, empty for markers
     std::string husk;      // destroyed graphic
+    // `hp A B`: A = hit points (0 = indestructible). B looks like a damage
+    // class: 0 soft (bullets work), 1 armoured vehicles, 2 trees; inferred
+    // from which items use which value.
+    int hp = 0, damageClass = 0;
 };
 
 class ItemDefs {

@@ -108,7 +108,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t fOff = q; q += size_t(nf) * 72;
         const size_t mOff = q; q += size_t(nm) * layout.mesh;
         q += size_t(nh) * 12;                  // hardpoints (unused for now)
-        q += size_t(nvol) * 72;                // collision volumes (unused for now)
+        const size_t volOff = q; q += size_t(nvol) * 72;
         const size_t matOff = q; q += size_t(nmat) * 76;
         if (!r.ok(p + layout.lodHeader, q - (p + layout.lodHeader))) return fail("truncated LOD data");
 
@@ -118,10 +118,10 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             const size_t o = matOff + size_t(i) * 76;
             const uint32_t flags = r.u32(o + 0x10);
             Mat mt{-1, {r.u8(o + 0x28) / 255.f, r.u8(o + 0x29) / 255.f, r.u8(o + 0x2A) / 255.f},
-                   // 0x0800 hidden, 0x0008 effect trails, 0x0020 muzzle flash
-                   // (only shown while firing)
-                   (flags & (0x0800 | 0x0008 | 0x0020)) != 0,
-                   (flags & 0x8000) ? 2 : (flags & 0x0081) == 0x0081 ? 1 : 0};
+                   // 0x0800 hidden, 0x0008 effect trails
+                   (flags & (0x0800 | 0x0008)) != 0,
+                   // 0x0020 muzzle flash, 0x8000 multiply, 0x0081 translucent
+                   (flags & 0x0020) ? 3 : (flags & 0x8000) ? 2 : (flags & 0x0081) == 0x0081 ? 1 : 0};
             if (flags & 0x0001) {
                 const uint8_t ti = r.u8(o + 0x34);
                 if (auto it = bySequence.find(ti); ti != 0xFF && it != bySequence.end()) mt.tex = it->second;
@@ -140,6 +140,16 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         };
 
         ModelLod lod;
+        // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
+        // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.
+        for (uint32_t i = 0; i < nvol; ++i) {
+            const size_t o = volOff + size_t(i) * 72 + 0x30;
+            float xmin = r.i32(o) / 65536.f, xmax = r.i32(o + 4) / 65536.f;
+            float ymin = r.i32(o + 8) / 65536.f, ymax = r.i32(o + 12) / 65536.f;
+            float zmin = r.i32(o + 16) / 65536.f, zmax = r.i32(o + 20) / 65536.f;
+            if (xmax < xmin || ymax < ymin || zmax < zmin) continue;
+            lod.collision.push_back({{xmin, zmin, -ymax}, {xmax, zmax, -ymin}});
+        }
         std::map<int, size_t> batchIndex;   // material -> batch
         bool first = true;
         uint32_t face = 0, vBase = 0, nBase = 0;

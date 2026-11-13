@@ -129,9 +129,20 @@ LOD × count, each: header (v5: 184 bytes, v2-v4: 176) then data
                        faces are consumed mesh by mesh in order; add the running
                        vertex/normal totals of earlier meshes to the indices
     hardpoint 12 bytes i32 x, y, z (/256)
-    volume  72 bytes   collision box/plane (v5)
+    volume  72 bytes   collision volume (v5), all values 16.16 metres in file axes:
+                       u32 type (1 box, 3 cylinder); 0; centre x, y, z @0x08;
+                       radii @0x14; half-extents x, y, z @0x20; 0;
+                       box xmin, xmax, ymin, ymax, zmin, zmax @0x30
+                       (e.g. the rope bridge has 24: posts and deck planks)
     material 76 bytes  name[12]; u32 flags @0x10; u8 flat RGB @0x28; u8 texture sequence @0x34
 ```
+
+**Character models** (soldiers, hostages) have their origin at the hips (for
+`PLAYER01`, z runs from −1.01 m to +0.82 m), so they have to be raised by
+their leg length. Everything else sits on its origin.
+
+**First-person weapons** are the `P*` models (`PM4`, `PM40`, `PMP5`, `PM249`,
+`PM19`): one LOD, the gun with the hand holding it.
 
 **Units and axes:** vertices are 1/256 metre (soldier 470 units, about 1.84 m;
 Humvee 1236, about 4.8 m), **+Z up, +X forward, +Y left**. OpenDF maps
@@ -173,8 +184,24 @@ Delta Force itself draws `.3DI` via `ITEMS.DEF`, so OpenDF ignores these for now
 
 ## ITEMS.DEF
 
-Text: `begin "name"` … `end` blocks with `id`, `type` (decoration, vehicle,
-…), `graphic` (`.3DI`), `husk` (destroyed graphic), `hp`, `ai_function`.
+Text: `begin "name"` … `end` blocks with `id`, `type` (decoration, building,
+vehicle, person, object, marker, effect), `graphic` (`.3DI`), `husk`
+(destroyed graphic), `hp A B`, `ai_function`, `move_function`, `chr_file` and
+`anim_def` (people), and vehicle handling values.
+
+`hp A B`: A is hit points (every person has 1). B looks like a damage class:
+0 for soft things such as crates and barrels, 1 for vehicles, 2 for trees.
+OpenDF lets bullets damage class 0 only; the other classes presumably need
+explosives. This reading is inferred from which items use which value.
+
+## F_SML640.PCX (HUD font)
+
+256×256, one 16-pixel line per 16 characters (line = code / 16, so line 2 is
+space to `/`), glyphs packed proportionally from x = 9. Ink is palette index
+9; index 3 (magenta) marks the extent of glyphs with little or no ink (space,
+`!`, `'`, `.`); index 1 (green) is the line separator. Runs of ink or marker
+columns give exactly 16 glyphs per text line. `F_SML320/400/512/800` are the
+same font for other screen resolutions.
 
 ## BMS mission
 

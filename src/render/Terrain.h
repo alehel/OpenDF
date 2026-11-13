@@ -39,6 +39,8 @@ public:
     const TerrainDesc& desc() const { return desc_; }
     Vec3 fogColor() const;
     Vec3 sunDirection() const;
+    GLuint colorTexture() const { return texColor_; }
+    int mapSize() const { return size_; }
     WorldScale scale;
 
 private:

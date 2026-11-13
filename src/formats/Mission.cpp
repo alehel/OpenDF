@@ -58,6 +58,10 @@ bool ItemDefs::parse(const std::string& text) {
         else if (key == "type") cur.type = val;
         else if (key == "graphic") cur.graphic = val;
         else if (key == "husk") cur.husk = val;
+        else if (key == "hp") {
+            std::istringstream hs(val);
+            hs >> cur.hp >> cur.damageClass;
+        }
     }
     return !items_.empty();
 }

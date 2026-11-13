@@ -28,7 +28,12 @@ add_executable(opendf
   src/formats/Model3di.cpp
   src/formats/Pcx.cpp
   src/formats/Trn.cpp
+  src/game/Game.cpp
+  src/game/Player.cpp
+  src/game/Weapons.cpp
+  src/game/World.cpp
   src/render/Gl.cpp
+  src/render/Hud.cpp
   src/render/Models.cpp
   src/render/Terrain.cpp
 )

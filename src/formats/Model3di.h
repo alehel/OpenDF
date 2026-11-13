@@ -30,13 +30,20 @@ struct ModelBatch {
     int texture = -1;                // index into Model3di::textures, -1 = flat colour
     float color[3] = {0.7f, 0.7f, 0.7f};
     // 0 = opaque (alpha-tested), 1 = 50% translucent, 2 = multiply/darken
-    // (ground shadows, rotor blur discs).
+    // (ground shadows, rotor blur discs), 3 = muzzle flash (additive, only
+    // drawn while the weapon fires).
     int blend = 0;
     std::vector<ModelVertex> vertices;   // triangle list
 };
 
+// Axis-aligned box in model space (already in OpenDF axes, metres).
+struct CollisionBox {
+    float min[3], max[3];
+};
+
 struct ModelLod {
     std::vector<ModelBatch> batches;
+    std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
 };

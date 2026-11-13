@@ -9,6 +9,7 @@
 // DFSETUP folder). It defaults to the current directory and its parent.
 
 #include "core/Pff.h"
+#include "game/Game.h"
 #include "formats/Mission.h"
 #include "formats/Model3di.h"
 #include "formats/Pcx.h"
@@ -43,6 +44,9 @@ struct Options {
     bool spawn = false;      // place the sample objects at start (for testing)
     bool hasCamera = false;  // --camera x,y,height,yaw,pitch (map metres, degrees)
     float camera[5] = {0, 0, 0, 0, 0};
+    // Game testing aids (mission mode).
+    int frames = 1, weapon = -1, stance = -1, zoom = 0;
+    bool holdFire = false, showMap = false, walkForward = false;
     int width = 1280, height = 720;
 };
 
@@ -54,6 +58,13 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--terrain") o.terrain = next();
         else if (a == "--screenshot") o.screenshot = next();
         else if (a == "--spawn") o.spawn = true;
+        else if (a == "--frames") o.frames = std::atoi(next().c_str());
+        else if (a == "--weapon") o.weapon = std::atoi(next().c_str());
+        else if (a == "--stance") o.stance = std::atoi(next().c_str());
+        else if (a == "--zoom") o.zoom = std::atoi(next().c_str());
+        else if (a == "--fire") o.holdFire = true;
+        else if (a == "--walk") o.walkForward = true;
+        else if (a == "--map") o.showMap = true;
         else if (a == "--camera") {
             std::string s = next();
             float* c = o.camera;
@@ -77,7 +88,7 @@ void usage() {
         "\n"
         "usage:\n"
         "  opendf [--data DIR] [--terrain NAME] [--size WxH]   terrain viewer\n"
-        "  opendf [--data DIR] mission [C02M01]                load a mission: terrain + all objects\n"
+        "  opendf [--data DIR] mission [C02M01]                play a mission in first person\n"
         "  opendf [--data DIR] models [NAME]                   3DI model viewer\n"
         "  opendf [--data DIR] list [EXT]                      list files in the archives\n"
         "  opendf [--data DIR] extract OUTDIR [EXT]            extract files (PFF2 decrypted)\n"
@@ -91,6 +102,11 @@ void usage() {
         "  F walk/fly, Tab / Shift+Tab next/previous terrain or mission,\n"
         "  M place sample objects, N clear them\n"
         "  [ ] height scale, - = view distance, Esc release mouse / quit\n"
+        "mission: mouse look, WASD/arrows move (running; Shift walks), Space jump,\n"
+        "  left mouse/Ctrl fire, right mouse zoom/scope, M or R reload,\n"
+        "  Delete/End/PageDown stand/crouch/prone (X, Z toggle crouch/prone),\n"
+        "  2 pistol, 3/4 M4 single/auto, 6 M40 sniper, 7 MP5SD, 8 M249, Backspace cycle,\n"
+        "  C command map, G goals, F3 crosshair, F4 gun, N fly, Tab next mission\n"
         "model viewer: drag to orbit, wheel to zoom, Tab / Shift+Tab model,\n"
         "  PageUp/PageDown jump 10, L cycle level of detail, Esc quit");
 }
@@ -659,7 +675,23 @@ int main(int argc, char** argv) {
         if (o.command == "list") rc = cmdList(vfs, o);
         else if (o.command == "extract") rc = cmdExtract(vfs, o);
         else if (o.command == "models") rc = cmdModels(vfs, o);
-        else if (o.command == "mission") rc = cmdView(vfs, o);
+        else if (o.command == "mission") {
+            GameOptions g;
+            if (!o.args.empty()) g.mission = o.args[0];
+            g.width = o.width;
+            g.height = o.height;
+            g.screenshot = o.screenshot;
+            g.frames = std::max(1, o.frames);
+            g.hasCamera = o.hasCamera;
+            std::copy(o.camera, o.camera + 5, g.camera);
+            g.weapon = o.weapon;
+            g.stance = o.stance;
+            g.zoom = o.zoom;
+            g.holdFire = o.holdFire;
+            g.walkForward = o.walkForward;
+            g.showMap = o.showMap;
+            rc = runGame(vfs, g);
+        }
         else if (o.command == "check") rc = cmdCheck(vfs);
         else rc = cmdView(vfs, o);
     }

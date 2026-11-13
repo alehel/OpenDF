@@ -32,7 +32,7 @@ uniform sampler2D uTex;
 uniform bool uTextured;
 uniform vec3 uColor, uEye, uFog, uSun;
 uniform float uAlpha, uFogStart, uFogEnd;
-uniform int uMode;   // 0 opaque, 1 translucent, 2 multiply
+uniform int uMode;   // 0 opaque, 1 translucent, 2 multiply, 3 additive flash
 out vec4 oColor;
 void main() {
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
@@ -40,6 +40,10 @@ void main() {
     float fogF = smoothstep(uFogStart, uFogEnd, length(vWorld - uEye));
     if (uMode == 2) {               // darkens what is behind; fades out with distance
         oColor = vec4(mix(c.rgb, vec3(1.0), fogF), 1.0);
+        return;
+    }
+    if (uMode == 3) {               // muzzle flash: added on top, unlit
+        oColor = vec4(c.rgb * (1.0 - fogF), 1.0);
         return;
     }
     vec3 n = normalize(vNormal);
@@ -165,6 +169,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         r2 += e * e;
     }
     g->radius = std::max(std::sqrt(r2), 0.1f);
+    g->collision = src.lods[0].collision;
     const GpuModel* out = g.get();
     cache_[name] = std::move(g);
     return out;
@@ -189,16 +194,18 @@ void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
     glDisable(GL_CULL_FACE);
 }
 
-void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent) {
+void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool flash) {
     if (m.lods.empty()) return;
     const auto& l = m.lods[std::clamp(lod, 0, int(m.lods.size()) - 1)];
     glUniformMatrix4fv(locModel_, 1, GL_FALSE, model.m);
     glBindVertexArray(l.vao);
     for (const auto& b : l.batches) {
         if ((b.blend != 0) != translucent) continue;
+        if (b.blend == 3 && !flash) continue;
         glUniform1i(locMode_, b.blend);
         glUniform1f(locAlpha_, b.blend == 1 ? 0.5f : 1.0f);
         if (b.blend == 2) glBlendFunc(GL_DST_COLOR, GL_ZERO);
+        else if (b.blend == 3) glBlendFunc(GL_ONE, GL_ONE);
         else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         const bool textured = b.texture >= 0 && b.texture < int(m.textures.size());
         glUniform1i(locTextured_, textured);
@@ -208,15 +215,15 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
     }
 }
 
-void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model) { drawBatches(m, lod, model, false); }
+void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model) { drawBatches(m, lod, model, false, false); }
 
-void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model) {
+void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool flash) {
     glEnable(GL_BLEND);
     glDepthMask(GL_FALSE);
     // Ground shadows sit exactly on the terrain; pull them slightly forward.
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(-1.f, -4.f);
-    drawBatches(m, lod, model, true);
+    drawBatches(m, lod, model, true, flash);
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);

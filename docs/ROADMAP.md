@@ -21,11 +21,16 @@ Each milestone ends with something you can run.
 - `.JIM` identified as briefing-map annotations (moved to M7)
 - Still open: BMS triggers/objectives and the per-object AI fields (needed in M6)
 
-## M4: Player
-- First-person soldier: movement, stances (stand/crouch/prone), stamina
-- Weapons (M4/M16, M249, M40 sniper with scope, MP5, grenades, satchels): firing, ballistics, reload, zoom
-- Collision with objects, footstep materials from the TRN `type` table
-- HUD (compass, ammo, waypoint marker), command map (`C`), goals (`G`)
+## M4: Player ✅
+- First-person soldier: run (default) / walk, jump, stand / crouch / prone, slope limits
+- Collision against the models' own collision volumes (bounds as a fallback), standing on bridge decks
+- Weapons: .45, M4 single/auto, M40 with 4×/10× scope, MP5SD, M249; magazines, reloads, recoil,
+  simulated bullets with drop and travel time, muzzle flash from the models' flash materials
+- Damage: people go down, soft objects break into their husk models
+- HUD in the game's own font; command map (`C`); original key layout where possible
+- Still open: knife, frag grenades, M203, satchels, binoculars, laser designator; player health
+  (comes with enemies in M6); waypoint names (`.JIM`); footstep materials (with audio in M5);
+  the real weapon numbers from `DF.EXE`
 
 ## M5: Audio
 - WAV playback from `AUDIO.PFF` (SFX, radio chatter)

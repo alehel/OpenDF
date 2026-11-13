@@ -19,6 +19,7 @@ struct GpuModel {
     std::string name;
     std::vector<GLuint> textures;
     std::vector<Lod> lods;
+    std::vector<CollisionBox> collision;   // LOD 0 collision volumes (may be empty)
     float radius = 1.f;  // of LOD 0, around the origin
 };
 
@@ -38,14 +39,15 @@ public:
     void begin(const Mat4& viewProj, const SceneLighting& light);
     // Opaque and alpha-tested parts; call drawTranslucent afterwards for blended ones.
     void draw(const GpuModel& m, int lod, const Mat4& model);
-    void drawTranslucent(const GpuModel& m, int lod, const Mat4& model);
+    // Blended parts; muzzle-flash parts only when `flash` is set.
+    void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool flash = false);
     void end();
 
     // Picks a LOD from the camera distance and on-screen size.
     static int chooseLod(const GpuModel& m, float distance);
 
 private:
-    void drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent);
+    void drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool flash);
     GLuint prog_ = 0;
     GLint locModel_ = -1, locColor_ = -1, locTextured_ = -1, locAlpha_ = -1, locMode_ = -1;
     std::map<std::string, std::unique_ptr<GpuModel>> cache_;

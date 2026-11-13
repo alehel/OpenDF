@@ -8,7 +8,8 @@ from your own copy of the CD.
 
 ## Status
 
-This project is in its early stages and **not yet playable as a game**. What works today:
+You can walk around every mission in first person and shoot, but **enemies
+don't react yet** (AI is milestone 6), so it is not a game yet. What works today:
 
 | Area | State |
 |---|---|
@@ -22,7 +23,12 @@ This project is in its early stages and **not yet playable as a game**. What wor
 | `.3DI` models (every object, vehicle, soldier, weapon): textures, LODs, materials, transparency, shadows | ✅ 359 of 362 load; the other 3 are damaged or unused on the disc |
 | Model viewer, and placing objects in the world at real scale | ✅ |
 | `ITEMS.DEF`, `.BMS` missions: every object placed with position, height and heading; player start | ✅ all 62 missions, 26,510 objects |
-| Mission triggers/objectives, AI state, `.JIM` briefing maps | ⏳ |
+| First-person soldier: run/walk, jump, stand/crouch/prone, collision with buildings and objects (the models' own collision volumes), standing on bridges | ✅ |
+| Weapons: .45, M4 (semi/auto), M40 sniper (4×/10× scope), MP5SD, M249 SAW; magazines, reloads, recoil, bullet drop and travel time, muzzle flash | ✅ (weapon numbers are real-world approximations) |
+| Damage: people go down, crates/barrels/etc. break into their `husk` wreck models | ✅ |
+| HUD in the game's own font: compass, weapon/mags/rounds/chamber, stance, grid, mission timer, messages; command map (C) | ✅ |
+| Knife, grenades, M203, binoculars, laser designator; player health | ⏳ |
+| Mission triggers/objectives, AI state, waypoint names (`.JIM`) | ⏳ |
 | Soldier animation (`.ANM`, `PLAYER01.CHR`) | ⏳ |
 | Weapons, AI soldiers, mission scripting, HUD, menus | ⏳ |
 | Audio (WAV/MIDI in `AUDIO.PFF`, `DFMUSIC.SBF`), `.KDV` video | ⏳ |
@@ -74,7 +80,7 @@ If the `OpenDF` folder sits inside the CD folder, as it does here, `--data ..` w
 | Command | Purpose |
 |---|---|
 | `opendf [--data DIR] [--terrain DFG1] [--size 1600x900]` | terrain viewer |
-| `opendf --data DIR mission [C02M01]` | load a mission: its terrain and all its objects, starting where the player starts |
+| `opendf --data DIR mission [C02M01]` | play a mission in first person, starting where the player starts |
 | `opendf --data DIR models [HUMVEE]` | browse all 362 `.3DI` models |
 | `opendf --data DIR check` | parse every model, terrain, image and mission and report failures |
 | `--camera X,Y,HEIGHT,YAW,PITCH` | start at map metres X (east), Y (north), HEIGHT above ground, facing compass YAW, PITCH (degrees) |
@@ -87,6 +93,24 @@ Viewer controls: mouse to look, **WASD** to move, **Shift** to go faster,
 **- =** for view distance, **M** to place a row of sample objects in front of you
 (soldier, hostage, Humvee, pickup, crates, trees, hut, barracks, tower, Black Hawk),
 **N** to clear them, and **Esc** to release the mouse and then quit.
+
+Mission controls follow the original keyboard layout where it doesn't clash
+with mouse + WASD:
+
+| Action | Keys |
+|---|---|
+| Look / fire / zoom or scope | mouse / left button or Ctrl / right button |
+| Move | WASD or arrow keys (running is the default, Shift walks), Space jumps |
+| Stand / crouch / prone | Delete / End / Page Down (original keys), or X / Z to toggle crouch / prone |
+| Weapons | 2 .45 pistol, 3 M4 single, 4 M4 auto, 6 M40 sniper, 7 MP5SD, 8 M249, Backspace cycles |
+| Change magazine | M (original key) or R |
+| Command map / goals | C / G |
+| Crosshair / gun on-off | F3 / F4 (original keys) |
+| Debug flight / next mission | N / Tab |
+
+![Firefight at the radio station in C03M03](docs/screenshot-firefight.png)
+
+![Through the M40's scope](docs/screenshot-scope.png)
 
 Model viewer controls: drag to orbit, mouse wheel to zoom, **Tab / Shift+Tab** for
 the next / previous model, **PageUp / PageDown** to jump 10, **L** to cycle the
