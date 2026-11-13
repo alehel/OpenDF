@@ -8,14 +8,15 @@ Each milestone ends with something you can run.
 - GPU terrain renderer (chunked LOD, wrap-around, detail tiles), sky, clouds, water, haze
 - Fly / walk camera with ground collision
 
-## M2: Objects in the world
-- Decode `.3DO` (static objects with LODs) and `.AI` descriptors, including camo variants
-- Decode `.3DI` (characters and weapons) with textures
-- Model viewer mode (`opendf models`)
-- Pin down world scale against object sizes (a door ≈ 2 m)
+## M2: Objects in the world ✅
+- `.3DI` decoded: textures, LODs, materials, cut-out/translucent/multiply blending (359/362 files)
+- `.3DO`/`.AI` identified as a legacy library, mostly unused; header layout documented
+- Model viewer mode (`opendf models`), `check` command
+- Objects placed on terrain at true scale (1/256 m units)
 
 ## M3: Missions
-- Decode `.BMS` mission files: terrain, object placement, objectives
+- Pin down terrain cell size and height scale by matching mission objects to terrain features
+- Parse `ITEMS.DEF`; decode `.BMS` mission files: terrain, object placement, objectives
 - Decode `.JIM` waypoints
 - Load a mission and place every object on its terrain
 - Mission picker

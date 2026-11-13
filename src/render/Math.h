@@ -51,6 +51,20 @@ inline Mat4 lookDir(Vec3 eye, Vec3 fwd, Vec3 up) {
     return r;
 }
 
+inline Mat4 translate(Vec3 t) {
+    Mat4 r;
+    r.m[12] = t.x; r.m[13] = t.y; r.m[14] = t.z;
+    return r;
+}
+
+inline Mat4 rotateY(float a) {
+    Mat4 r;
+    float c = std::cos(a), s = std::sin(a);
+    r.at(0, 0) = c; r.at(0, 2) = s;
+    r.at(2, 0) = -s; r.at(2, 2) = c;
+    return r;
+}
+
 inline Mat4 inverseRotationOnly(const Mat4& v) {
     // Transpose of the upper 3x3 (view rotation is orthonormal).
     Mat4 r;

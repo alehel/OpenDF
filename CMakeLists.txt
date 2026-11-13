@@ -24,9 +24,11 @@ find_package(OpenGL REQUIRED)
 add_executable(opendf
   src/main.cpp
   src/core/Pff.cpp
+  src/formats/Model3di.cpp
   src/formats/Pcx.cpp
   src/formats/Trn.cpp
   src/render/Gl.cpp
+  src/render/Models.cpp
   src/render/Terrain.cpp
 )
 target_include_directories(opendf PRIVATE src)

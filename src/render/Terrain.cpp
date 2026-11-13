@@ -391,6 +391,11 @@ float Terrain::heightAt(float x, float z) const {
 
 Vec3 Terrain::fogColor() const { return {horizon_.r / 255.f, horizon_.g / 255.f, horizon_.b / 255.f}; }
 
+Vec3 Terrain::sunDirection() const {
+    const float sun = float(std::clamp(desc_.sunSlope, 5, 90)) * 3.14159265f / 180.f;
+    return normalize(Vec3{std::cos(sun) * 0.6f, std::sin(sun), std::cos(sun) * 0.8f});
+}
+
 void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDistance) {
     const Mat4 viewProj = proj * view;
     const Vec3 fog = fogColor();
@@ -429,8 +434,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     setV3(progTerrain_, "uEye", eye);
     setV3(progTerrain_, "uFog", fog);
     setV3(progTerrain_, "uTint", {desc_.filter[0] / 128.f, desc_.filter[1] / 128.f, desc_.filter[2] / 128.f});
-    const float sun = float(std::clamp(desc_.sunSlope, 5, 90)) * 3.14159265f / 180.f;
-    setV3(progTerrain_, "uSun", normalize(Vec3{std::cos(sun) * 0.6f, std::sin(sun), std::cos(sun) * 0.8f}));
+    setV3(progTerrain_, "uSun", sunDirection());
     setF(progTerrain_, "uFogStart", fogStart);
     setF(progTerrain_, "uFogEnd", fogEnd);
     setF(progTerrain_, "uSat", desc_.saturation / 128.f);

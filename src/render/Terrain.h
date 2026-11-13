@@ -33,6 +33,8 @@ public:
     float mapExtent() const { return size_ * scale.cellSize; }
 
     const TerrainDesc& desc() const { return desc_; }
+    Vec3 fogColor() const;
+    Vec3 sunDirection() const;
     WorldScale scale;
 
 private:
@@ -40,7 +42,6 @@ private:
     void buildMeshes();
     void release();
     Mesh makeGrid(int resolution);
-    Vec3 fogColor() const;
 
     TerrainDesc desc_;
     int size_ = 0;

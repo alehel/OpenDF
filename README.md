@@ -19,7 +19,10 @@ This project is in its early stages and **not yet playable as a game**. What wor
 | `.TRN` terrain descriptors | ✅ |
 | Terrain rendering: colour and elevation maps, detail tiles, sky, clouds, water, haze, endless wrap-around | ✅ (scale approximated) |
 | Free-fly and walk camera with ground collision | ✅ |
-| 3DO / 3DI models, `.AI` object descriptors, `.JIM` waypoints, `.BMS` missions | ⏳ next |
+| `.3DI` models (every object, vehicle, soldier, weapon): textures, LODs, materials, transparency, shadows | ✅ 359 of 362 load; the other 3 are damaged or unused on the disc |
+| Model viewer, and placing objects in the world at real scale | ✅ |
+| `.BMS` missions (object placement), `ITEMS.DEF`, `.JIM` waypoints | ⏳ next |
+| Soldier animation (`.ANM`, `PLAYER01.CHR`) | ⏳ |
 | Weapons, AI soldiers, mission scripting, HUD, menus | ⏳ |
 | Audio (WAV/MIDI in `AUDIO.PFF`, `DFMUSIC.SBF`), `.KDV` video | ⏳ |
 | NovaWorld multiplayer | ❌ out of scope for now |
@@ -70,13 +73,23 @@ If the `OpenDF` folder sits inside the CD folder, as it does here, `--data ..` w
 | Command | Purpose |
 |---|---|
 | `opendf [--data DIR] [--terrain DFG1] [--size 1600x900]` | terrain viewer |
+| `opendf --data DIR models [HUMVEE]` | browse all 362 `.3DI` models |
+| `opendf --data DIR check` | parse every model, terrain and image and report failures |
 | `opendf --data DIR list [.EXT]` | list every file in the archives |
 | `opendf --data DIR extract OUTDIR [.EXT]` | extract files (encrypted ones decoded) |
 
 Viewer controls: mouse to look, **WASD** to move, **Shift** to go faster,
 **Space / C** for up / down, **F** to switch between walking and flying,
 **Tab / Shift+Tab** for the next / previous terrain, **[ ]** for height scale,
-**- =** for view distance, **Esc** to release the mouse and then quit.
+**- =** for view distance, **M** to place a row of sample objects in front of you
+(soldier, hostage, Humvee, pickup, crates, trees, hut, barracks, tower, Black Hawk),
+**N** to clear them, and **Esc** to release the mouse and then quit.
+
+Model viewer controls: drag to orbit, mouse wheel to zoom, **Tab / Shift+Tab** for
+the next / previous model, **PageUp / PageDown** to jump 10, **L** to cycle the
+level of detail. The title bar shows the size in metres.
+
+![Sample objects placed on the jungle terrain](docs/screenshot-objects.png)
 
 ## Legal
 
