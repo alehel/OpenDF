@@ -12,6 +12,7 @@
 #include "Player.h"
 #include "Script.h"
 #include "Sound.h"
+#include "Ai.h"
 #include "Moves.h"
 #include "Weapons.h"
 #include "World.h"
@@ -219,13 +220,22 @@ private:
     // recording (--record).
     Audio audio_;
     SoundSystem sound_;
+    AiSystem ai_;
+    // ScriptHost: the AI's conditions and actions.
+    bool teamSpotted(int team, int targetTeam) const override { return ai_.spotted(team, targetTeam); }
+    bool teamEngaging(int team) const override { return ai_.engaging(team); }
+    bool teamAlerted(int team) const override { return ai_.alerted(team); }
+    bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
+    void followPath(int team, int path) override { ai_.followPath(world_, team, path); }
+    void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
+    void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
     void playSound(int id, Vec3 at) { sound_.play(id, at); }
     FILE* audioOut_ = nullptr;
     double audioClock_ = 0;
     std::vector<SmokeGen> smokeGens_;
     int playerHp_ = 4;                    // character word +0x74
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
-    void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0});
+    void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0}, int part = 0);
     // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
     // 0x12-0x16 (0x473f70, slots 7-11) of a body at `origin`.
     void animEvent(int event, Vec3 origin, int phraseSet);
@@ -313,6 +323,7 @@ bool Game::loadMission(int index) {
     world_.terrain = &terrain_;
     models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
+    ai_.init(world_, mission_);
 
     player_ = Player{};
     player_.moves = &playerMoves_;
@@ -623,7 +634,7 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet) {
 
 // Damage to the player (0x44fe9e blast, 0x44f2b2 bullets): hit points, and
 // the red flash +0x78 up to 0xFF (0x44b6d0).
-void Game::hurtPlayer(int amount, int deathType, Vec3 from) {
+void Game::hurtPlayer(int amount, int deathType, Vec3 from, int part) {
     if (playerDead()) return;
     playerHp_ -= amount;
     damageFlash_ = std::min(0xFF, damageFlash_ + 0x78);
@@ -637,7 +648,7 @@ void Game::hurtPlayer(int amount, int deathType, Vec3 from) {
         float rel = std::atan2(v.x, -v.z) - player_.yaw;
         rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
         const int dir = std::abs(rel) <= kPi / 4 ? 0 : std::abs(rel) >= 3 * kPi / 4 ? 2 : rel < 0 ? 1 : 3;
-        move = deathType == 1 ? 0xBE + dir : deathType == 2 ? 0xFA + dir : 0xFF;
+        move = deathType == 1 ? 0xBE + std::clamp(part, 0, 14) * 4 + dir : deathType == 2 ? 0xFA + dir : 0xFF;
     }
     const char* name = moveName(move);
     const AnimMove* mv = name ? playerMoves_.find(name) : nullptr;
@@ -749,7 +760,7 @@ void Game::spawnImpact(const Impact& hit) {
     }
     // An M203 round before it is armed (0x44f3e0): like a bullet on the
     // ground or water; effect 5 on an object or person.
-    if (hit.explosive && hit.object >= 0) {
+    if (hit.explosive && (hit.object >= 0 || hit.object == -3)) {
         spawnEffect(5, hit.pos);
         return;
     }
@@ -762,6 +773,7 @@ void Game::spawnImpact(const Impact& hit) {
         int id = 0;
         const bool shrapnel = hit.flags & 0x20;
         if (hit.object == -2) id = SoundSystem::BulletWater;
+        else if (hit.object == -3) id = SoundSystem::BulletFlesh;   // the player
         else if (hit.object < 0) {
             static const int bySurface[7] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
                                              SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt};
@@ -783,6 +795,7 @@ void Game::spawnImpact(const Impact& hit) {
     }
     int slot = 0;
     if (hit.object == -2) slot = 2;   // water: "water splash" (0x44fc20)
+    else if (hit.object == -3) slot = 16;   // the player: flesh
     else if (hit.object < 0) {
         static const int bySurface[7] = {0, 5, 7, 9, 13, 8, 6};
         slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
@@ -1778,7 +1791,10 @@ int Game::run() {
             for (const auto& e : arsenal_.takeSounds()) {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
+                // The player's gunshots are heard (0x46c228: range / 2).
+                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
             }
+            for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);
             for (int i : world_.takeDestroyed()) {
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
@@ -1795,6 +1811,25 @@ int Game::run() {
                 ++ticks_;
                 tickEffects();
                 tickDialogs();
+                // The player as a target: animated hit spheres (0x44dca4).
+                world_.playerBody.present = !playerDead();
+                world_.playerBody.origin = player_.origin();
+                world_.playerBody.heading = player_.yaw;
+                if (!playerBody_.angles().empty()) world_.playerBody.spheres = playerChr_.spheres(playerBody_.angles());
+                {
+                    AiSystem::PlayerView pv;
+                    pv.alive = !playerDead();
+                    pv.origin = player_.origin();
+                    const int mn = moveNumber(player_.move());
+                    pv.moveNumber = mn >= 0 ? mn : 2;
+                    pv.side = kPlayerSide;
+                    pv.team = kPlayerTeam;
+                    ai_.tick(world_, arsenal_, sound_, pv);
+                }
+                // plyr (0x45a27c): every 64 ticks the route's points count as
+                // reached for the player's side.
+                if ((ticks_ & 63) == 0 && !playerDead())
+                    ai_.playerRoute({float(player_.missionX()), 0, float(player_.missionY())}, kPlayerSide);
                 // The player's body animates like any soldier's (30 Hz): the
                 // current move's animation, whose events make footsteps.
                 if (ticks_ & 1) {

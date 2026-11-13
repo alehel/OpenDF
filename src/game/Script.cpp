@@ -71,8 +71,11 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
         case 9: return total(p1) == alive(p1);               // team lost nobody
         case 10: return conditionAreas_[self].valid && host.teamInArea(p1, conditionAreas_[self]);
         case 12: return alive(p1) >= p2;                     // at least p2 alive
-        // 1 spotted, 2 engaging, 3 alerted, 7 reached waypoint, 11 carrying:
-        // need AI (not implemented yet). 0 and 8 are always false.
+        case 1: return host.teamSpotted(p1, p2);              // team spotted team (0xa957e0)
+        case 2: return host.teamEngaging(p1);                 // team engaging (0xa8d5e0)
+        case 3: return host.teamAlerted(p1);                  // team alerted (team record +4 == 2)
+        case 7: return host.reachedWaypoint(p1, p2, c[5]);    // team reached point p3 of path p2
+        // 11 carrying: needs pickups. 0 and 8 are always false.
         default: return false;
         }
     case 2: return p1 >= 0 && p1 < int(events_.size()) && events_[size_t(p1)].fired;
@@ -126,7 +129,10 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
         case 10: host.endMission(0); break;
         case 14: if (p1 >= 0 && p1 < 32) goals_ |= 1u << p1; break;
         case 15: if (p1 >= 0 && p1 < 32) fails_ |= 1u << p1; break;
-        // 1 follow path, 3/12/13 AI properties, 11 team speed: need AI.
+        case 1: host.followPath(p1, a[4]); break;
+        case 3: host.aiProperty(p1, a[2], a[4]); break;
+        case 11: host.teamSpeed(p1, a[4]); break;
+        // 12 / 13 (AI properties of a side in a box) are not used by any mission.
         default: ++unhandled_; break;
         }
     }

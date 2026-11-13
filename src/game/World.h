@@ -50,6 +50,9 @@ struct WorldObject {
     const AnimDefs* moves = nullptr;
     Animator anim;
     float base = 0;                    // ground + lift: the origin sits its pose's height above this
+    int missionIndex = -1;             // index in Mission::objects
+    int moveNumber = -1;               // DF move number playing (obj+0x80)
+    int killer = -1;                   // who killed it (obj+0xf8; -3 the player)
     bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;
@@ -80,9 +83,16 @@ public:
     // Pushes a vertical cylinder (feet at `feet`) out of solid boxes.
     Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
 
-    // First thing hit on the segment a→b (terrain or object box);
-    // `objects` false tests the terrain only.
-    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true) const;
+    // First thing hit on the segment a→b (terrain or object box, or the
+    // player's hit spheres: object -3); `objects` false tests the terrain
+    // only; `ignore` skips one object (the shooter; -3 the player).
+    // `people` false: people and the player do not block (lines of sight).
+    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true) const;
+
+    // The player as a target for others' rounds: body origin, heading and
+    // the .CHR hit spheres of the current pose (set by the game each tick).
+    struct PlayerBody { bool present = false; Vec3 origin{0, 0, 0}; float heading = 0; std::vector<std::array<float, 4>> spheres; };
+    PlayerBody playerBody;
 
     // Explosion damage (DF.EXE blast queue 0x44fd4c / 0x450134, handler
     // 0x44fda8) at `at` with radius `radius` m; `heavy` = blast types 3/5
@@ -101,7 +111,7 @@ public:
     // is destroyed or killed, empty otherwise.
     // DF.EXE 0x44f184: no effect unless `power` reaches the target's armour
     // class (ITEMS.DEF `hp A B`, B); people die when their hit points reach 0.
-    std::string damage(int index, int amount, int power = 99, int deathMove = -1);
+    std::string damage(int index, int amount, int power = 99, int deathMove = -1, int killer = -1);
     // DF.EXE's death move (0x46c920): 0xFE in water; type 1 (bullets, knife)
     // 0xBE + part x 4 + direction; type 2 (blasts) 0xFA + direction; type
     // 3 0xFF. Direction: where the attacker is, 0 front, 1 left, 2 back,
@@ -109,6 +119,8 @@ public:
     int deathMove(int index, int type, int part, Vec3 from) const;
     // Starts a person's move by DF.EXE number; false if their .ANM lacks it.
     bool startMove(WorldObject& o, int number);
+    // Keeps a person in a move (obj+0x7c vs +0x80): starts it if it changed.
+    void requestMove(WorldObject& o, int number);
     // Events of people's animations since the last call (footsteps).
     struct AnimEvent { int object; int event; };
     std::vector<AnimEvent> takeAnimEvents() { std::vector<AnimEvent> out; out.swap(animEvents_); return out; }

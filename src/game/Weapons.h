@@ -58,7 +58,7 @@ struct GunDef {
 };
 
 // A sound the weapons asked for (DF.EXE 0x473220): id at a position.
-struct SoundEvent { int id; Vec3 pos; };
+struct SoundEvent { int id; Vec3 pos; bool shot = false; };
 
 // A shot in flight.
 struct Projectile {
@@ -68,6 +68,7 @@ struct Projectile {
     int flags = 0;              // gun +0x30
     int id = 0;                 // unique, for sounds that follow it
     Vec3 from{0, 0, 0};         // where it was fired from (the attacker, for death moves)
+    int shooter = -3;           // world object that fired it (-3 the player)
     float tickClock = 0;
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }
@@ -93,6 +94,16 @@ struct Loadout { int sidearm = 6, primary = 9, kit = 1; };
 // Row for a short name (".45", "HS22", "M4", "M40", "Barrett", "MP5", "SAW",
 // "Ammo", "LAW", "Satchel", "Claymore"); -1 if unknown.
 int loadoutRow(const std::string& name);
+
+// The original's weapon tables for any soldier (DF.EXE's values; the player's
+// Arsenal reads the same from the user's DF.EXE): mode -> gun, cooldown,
+// +0xA4 flags, third-person item (+0x68, ITEMS.DEF id - 100000); gun ->
+// record. The AI's weapons (BMS byte +0x46, "AI properties" 1) index
+// 0x4eb168.
+const ModeDef& modeInfo(int mode);
+const GunDef& gunInfo(int gun);
+int modeThirdPersonItem(int mode);
+int aiWeaponMode(int index);
 
 class Arsenal {
 public:
@@ -146,6 +157,9 @@ public:
     // from the body origin (0x42ca8c), for blast kind 2.
     // The listener, for bullets whizzing by (0x44f330).
     void setListener(Vec3 p) { listener_ = p; }
+    // Rounds that hit the player: damage, body part, where they came from.
+    struct PlayerHit { int damage; int part; Vec3 from; };
+    std::vector<PlayerHit> takePlayerHits() { std::vector<PlayerHit> out; out.swap(playerHits_); return out; }
     std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
 
@@ -175,6 +189,7 @@ private:
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
     std::vector<SoundEvent> sounds_;
+    std::vector<PlayerHit> playerHits_;
     bool followUp_ = false;
     int projectileIds_ = 0;
     Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst

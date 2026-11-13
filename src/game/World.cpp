@@ -137,6 +137,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
 
         o.missionX = mo.x;
         o.missionY = mo.y;
+        o.missionIndex = int(&mo - mission.objects.data());
         refreshBoxes(o);
         objects.push_back(std::move(o));
     }
@@ -154,7 +155,12 @@ bool World::startMove(WorldObject& o, int number) {
     const AnimMove* mv = name ? o.moves->find(name) : nullptr;
     if (!mv || !o.chr->animation(mv->animation)) return false;
     o.anim.start(*o.chr, mv->animation);
+    o.moveNumber = number;
     return true;
+}
+
+void World::requestMove(WorldObject& o, int number) {
+    if (o.moveNumber != number) startMove(o, number);
 }
 
 void World::poseUpdate(WorldObject& o) {
@@ -249,7 +255,7 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
     return feet;
 }
 
-bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects) const {
+bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool people) const {
     hit = RayHit{};
     bool found = false;
     Vec3 d = b - a;
@@ -278,8 +284,42 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects) const {
     }
 
     Vec3 mid = a + d * 0.5f;
+    // People (and the player): only if the path passes within 1.5 m of the
+    // body origin, then each part's sphere (0x44dca4); nearest wins.
+    auto approxLen = [](Vec3 v) {
+        float x = std::abs(v.x), y = std::abs(v.y), z = std::abs(v.z);
+        if (x < y) std::swap(x, y);
+        if (x < z) std::swap(x, z);
+        if (y < z) std::swap(y, z);
+        return x + y * 11.f / 32.f + z * 0.25f;
+    };
+    if (objects && people && ignore != -3 && playerBody.present) {
+        const Vec3 at = nearest(playerBody.origin, mid);
+        auto closest = [&](Vec3 c, float& t) {
+            t = std::clamp(dot(c - a, d) / (len * len), 0.f, 1.f);
+            return approxLen(a + d * t - c);
+        };
+        float tc;
+        if (closest(at, tc) <= 1.5f) {
+            const float h = playerBody.heading;
+            const Vec3 fwd{std::sin(h), 0, -std::cos(h)}, left{-std::cos(h), 0, -std::sin(h)};
+            for (size_t k = 0; k < playerBody.spheres.size(); ++k) {
+                const auto& sp = playerBody.spheres[k];
+                const Vec3 c = at + fwd * sp[0] + left * sp[1] + Vec3{0, sp[2], 0};
+                float t;
+                if (closest(c, t) <= sp[3] && t < hit.t) {
+                    hit.t = t;
+                    hit.object = -3;
+                    hit.part = int(k);
+                    found = true;
+                }
+            }
+        }
+    }
     for (size_t i = 0; objects && i < this->objects.size(); ++i) {
+        if (int(i) == ignore) continue;
         const auto& o = this->objects[i];
+        if (!people && o.person) continue;
         // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m
         // of the body origin, then each part's sphere; the nearest along the
         // path wins.
@@ -335,7 +375,7 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects) const {
     return found;
 }
 
-std::string World::damage(int index, int amount, int power, int deathMove) {
+std::string World::damage(int index, int amount, int power, int deathMove, int killer) {
     if (index < 0 || index >= int(objects.size())) return {};
     WorldObject& o = objects[index];
     if (o.removed || o.dead) return {};
@@ -346,6 +386,7 @@ std::string World::damage(int index, int amount, int power, int deathMove) {
         o.hp -= amount;
         if (o.hp > 0) return {};
         o.dead = true;
+        o.killer = killer;
         // The death animation (0x46c920 / 0x469764); without one, topple.
         if (!(deathMove >= 0 && startMove(o, deathMove)) && !startMove(o, 0xBE)) o.fall = 0.001f;
         refreshBoxes(o);

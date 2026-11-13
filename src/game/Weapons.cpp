@@ -173,6 +173,48 @@ bool isBurst(int mode) { return mode == 6 || mode == 8 || mode == 21 || mode == 
 
 } // namespace
 
+const ModeDef& modeInfo(int mode) {
+    static std::vector<ModeDef> modes = [] {
+        std::vector<ModeDef> out(kModeCount);
+        for (int m = 0; m < kModeCount; ++m) {
+            const int* v = kBuiltinModes[m];
+            ModeDef& d = out[size_t(m)];
+            d.type = v[0]; d.gun = v[1]; d.item = v[2];
+            d.offset[0] = v[3]; d.offset[1] = v[4]; d.offset[2] = v[5];
+            d.muzzleVertex = v[6]; d.cooldown = v[7]; d.scope = v[8]; d.flags = v[9];
+            d.burst = isBurst(m);
+        }
+        return out;
+    }();
+    return modes[size_t(std::clamp(mode, 0, kModeCount - 1))];
+}
+
+const GunDef& gunInfo(int gun) {
+    static std::vector<GunDef> guns = [] {
+        std::vector<GunDef> out(kGunCount);
+        for (int g = 0; g < kGunCount; ++g) {
+            const int* v = kBuiltinGuns[g];
+            out[size_t(g)] = {v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]};
+            out[size_t(g)].falloff = std::max(1, out[size_t(g)].falloff);
+            for (int k = 0; k < 4; ++k) out[size_t(g)].sounds[k] = kBuiltinGunSounds[g][k];
+        }
+        return out;
+    }();
+    return guns[size_t(std::clamp(gun, 0, kGunCount - 1))];
+}
+
+int modeThirdPersonItem(int mode) {
+    static const int items[kModeCount] = {0,    4004, 0,    0,    4031, 4006, 4056, 4056, 4002, 4002, 4056, 4002, 4023,
+                                          4023, 4023, 4027, 4002, 4002, 4002, 4002, 4029, 4029, 4029, 4002, 4002, 4002,
+                                          4002, 4074, 4041, 0,    4072, 4002, 4025, 4033, 4002, 4022, 4022, 0,    0};
+    return mode >= 0 && mode < kModeCount ? items[mode] : 0;
+}
+
+int aiWeaponMode(int index) {
+    static const int table[12] = {0, 8, 35, 36, 32, 23, 23, 20, 26, 5, 4, 0};   // 0x4eb168
+    return index >= 0 && index < 12 ? table[index] : 0;
+}
+
 int loadoutRow(const std::string& name) {
     static const std::pair<const char*, int> rows[] = {{".45", 6}, {"HS22", 5}, {"M4", 9}, {"M40", 23}, {"Barrett", 12},
                                                        {"MP5", 15}, {"SAW", 11}, {"Ammo", 1}, {"LAW", 20},
@@ -433,10 +475,10 @@ void Arsenal::fire(Player& player) {
     if (const int bg = burstGun(slots_[size_t(current_)]); bg >= 0) {
         if (!followUp_) {
             const int id = guns_[size_t(bg)].sounds[0];
-            if (id > 0) sounds_.push_back({id, origin});
+            if (id > 0) sounds_.push_back({id, origin, true});
         }
     } else if (g.sounds[0] > 0) {
-        sounds_.push_back({g.sounds[0], origin});
+        sounds_.push_back({g.sounds[0], origin, true});
     }
     // A launcher loads its next round at once, with the load sound (0x44a290).
     if (md.type == 2) sound(1);
@@ -517,7 +559,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
-            bool hitSomething = world.raycast(b.pos, next, hit);
+            bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter);
             // Water (0x44f0e4, tested after terrain and objects; the nearest
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
@@ -558,9 +600,12 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 }
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
-                if (hit.object >= 0)
+                if (hit.object == -3) {
+                    // The player (0x44f184 / 0x44f2b2): armour class 0.
+                    playerHits_.push_back({(1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), hit.part, b.from});
+                } else if (hit.object >= 0)
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
-                                 world.deathMove(hit.object, 1, std::max(0, hit.part), b.from));
+                                 world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
                 b.age = b.lifetime;
                 break;
             }
