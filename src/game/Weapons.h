@@ -66,10 +66,12 @@ struct Projectile {
     float tickClock = 0;
 };
 
+// A bullet hit, for spawning the impact effect (DF.EXE 0x44f71f: 0.25 m
+// back along the path).
 struct Impact {
     Vec3 pos;
-    float age;
-    bool object;
+    int object = -1;   // -1 = terrain
+    int part = -1;     // people: body part
 };
 
 class Arsenal {
@@ -118,7 +120,8 @@ public:
     float scopePitch() const { return scopePitch_; }
     void cancelZoom() { zoomLevel_ = 0; }
     float flash() const { return flashTimer_; }
-    const std::vector<Impact>& impacts() const { return impacts_; }
+    // Hits since the last call.
+    std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
 
 private:
     void fire(Player& player, World& world);

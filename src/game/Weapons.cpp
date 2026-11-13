@@ -290,7 +290,10 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
             if (world.raycast(b.pos, next, hit)) {
-                impacts_.push_back({hit.point, 0, hit.object >= 0});
+                {
+                    const Vec3 dir = normalize(b.vel);
+                    impacts_.push_back({hit.point - dir * 0.25f, hit.object, hit.part});
+                }
                 // Damage (0x44f184): 1 << (power >> (age / falloff)).
                 // ×4 on the head (part 2) (0x44f184).
                 if (std::getenv("OPENDF_DEBUGHITS"))
@@ -318,9 +321,6 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
     }
     bullets_.erase(std::remove_if(bullets_.begin(), bullets_.end(), [](const Projectile& p) { return p.age >= p.lifetime; }),
                    bullets_.end());
-    for (auto& i : impacts_) i.age += dt;
-    impacts_.erase(std::remove_if(impacts_.begin(), impacts_.end(), [](const Impact& i) { return i.age > 1.5f; }),
-                   impacts_.end());
 }
 
 } // namespace df

@@ -21,6 +21,7 @@
 #include <deque>
 #include <fstream>
 #include <memory>
+#include <random>
 #include <sstream>
 
 namespace df {
@@ -60,16 +61,6 @@ const float kOriginalFovY = 2.f * std::atan(1.f / (640.f / 360.f));
 
 struct Message { std::string text; float age; };
 
-bool project(const Mat4& vp, Vec3 p, float w, float h, float& sx, float& sy, float& depth) {
-    float x = vp.at(0, 0) * p.x + vp.at(0, 1) * p.y + vp.at(0, 2) * p.z + vp.at(0, 3);
-    float y = vp.at(1, 0) * p.x + vp.at(1, 1) * p.y + vp.at(1, 2) * p.z + vp.at(1, 3);
-    float cw = vp.at(3, 0) * p.x + vp.at(3, 1) * p.y + vp.at(3, 2) * p.z + vp.at(3, 3);
-    if (cw <= 0.05f) return false;
-    sx = (x / cw * 0.5f + 0.5f) * w;
-    sy = (1 - (y / cw * 0.5f + 0.5f)) * h;
-    depth = cw;
-    return true;
-}
 
 void writePpm(const std::string& path, int w, int h) {
     std::vector<uint8_t> px(size_t(w) * h * 3);
@@ -197,6 +188,14 @@ private:
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
     float scriptClock_ = 0;
     uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
+    // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
+    // billboarded toward the camera, animated frame by frame, removed after
+    // frames x ticks-per-frame.
+    struct Effect { const GpuModel* model; Vec3 pos; float scale; int age, life, ticksPerFrame, frames; };
+    std::vector<Effect> effects_;
+    std::mt19937 effectRng_{1998};
+    void spawnImpact(const Impact& hit);
+    void spawnEffect(int slot, Vec3 pos);
     int missionResult_ = -1;              // winning side once the mission has ended
     int missionNumber_ = 0;               // m of CccMmm
     static constexpr int kPlayerTeam = 1, kPlayerSide = 1;
@@ -418,6 +417,42 @@ void Game::useHudMode(int modeW) {
     if (!hud_.loadFont(vfs_, name, &err)) std::fprintf(stderr, "%s\n", err.c_str());
 }
 
+// Effect slots (DF.EXE table 0xab3400) -> ITEMS.DEF items.
+void Game::spawnEffect(int slot, Vec3 pos) {
+    static const int kItems[17] = {0, 107016, 107015, 107013, 107014, 107001, 107002, 107003, 107004,
+                                   107005, 107006, 107007, 107008, 107009, 107010, 107011, 107012};
+    if (slot < 1 || slot > 16) return;
+    const ItemDef* item = items_.byId(kItems[slot]);
+    if (!item || item->graphic.empty()) return;
+    const GpuModel* m = models_.get(vfs_, item->graphic);
+    if (!m || m->lods.empty()) return;
+    const auto& l = m->lods[0];
+    // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5.
+    std::uniform_real_distribution<float> u(0.5f, 1.5f);
+    effects_.push_back({m, pos, u(effectRng_), 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
+    if (effects_.size() > 0x400) effects_.erase(effects_.begin());   // 0x400 slots
+}
+
+void Game::spawnImpact(const Impact& hit) {
+    // Terrain (0x46a054): surface 1..6 -> dirt, grass, snow, stone, sand,
+    // heavy dirt. People (0x44f9e3): flesh. Objects: by the hit material's
+    // +0x12 bits (metal, wood, stone, foliage; armour, cloth), else dirt.
+    int slot = 0;
+    if (hit.object < 0) {
+        static const int bySurface[7] = {0, 5, 7, 9, 13, 8, 6};
+        slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+    } else {
+        const auto& o = world_.objects[size_t(hit.object)];
+        if (o.person) slot = 16;
+        else {
+            const uint16_t f = o.model ? o.model->impact : 0;
+            const uint8_t lo = f & 0xFF, hi = f >> 8;
+            slot = (lo & 1) ? 11 : (lo & 2) ? 10 : (lo & 4) ? 13 : (lo & 8) ? 15 : (hi & 4) ? 12 : (hi & 8) ? 14 : 5;
+        }
+    }
+    spawnEffect(slot, hit.pos);
+}
+
 int Game::teamCount(int team, bool aliveOnly) const {
     // DF.EXE 0x440904/0x4409f4 counts the players and every object of a team
     // in file groups 0 (moving objects), 1 (scenery and props) and 3 (people);
@@ -568,6 +603,21 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     }
     for (auto& v : visible) models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
     for (auto& v : visible) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
+    // Effects: billboards facing the camera (yaw only), scaled, at their frame.
+    const float camYaw = std::atan2(fwd.x, -fwd.z);
+    for (const auto& e : effects_) {
+        const Vec3 at = world_.nearest(e.pos, eye);
+        const Vec3 d = at - eye;
+        if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f || dot(d, fwd) < 0.5f) continue;
+        const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
+        // Model +X faces the heading; the quad's normal is +X, turned to the camera.
+        Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
+        Mat4 sc;
+        sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
+        m = m * sc;
+        models_.draw(*e.model, 0, m, false, false, frame);
+        models_.drawTranslucent(*e.model, 0, m, false, false, frame);
+    }
     models_.end();
 }
 
@@ -922,17 +972,6 @@ void Game::drawCommandMap(const Screen& s) {
 void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     hud_.begin(int(s.w), int(s.h));
 
-    // Bullet impacts as small puffs: dust on the ground, dark on objects.
-    for (const auto& i : arsenal_.impacts()) {
-        float sx, sy, depth;
-        if (!project(viewProj, i.pos, s.w, s.playH, sx, sy, depth)) continue;
-        sy += s.playY;
-        float r = std::clamp(60.f / depth, 1.5f, 18.f) * s.u * (1 + i.age * 1.5f);
-        float a = std::max(0.f, 1 - i.age / 1.5f) * 0.8f;
-        Color c = i.object ? Color{0.15f, 0.15f, 0.15f, a} : Color{0.72f, 0.65f, 0.52f, a};
-        hud_.puff(sx, sy, r, c);
-    }
-
     const float cx = s.w * 0.5f, cy = s.playY + s.playH * 0.5f, t = s.px();
     if (showMap_) drawCommandMap(s);
     else if (crosshair_) {
@@ -1175,8 +1214,12 @@ int Game::run() {
             player_.update(dt, in, world_);
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
+            for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
+                for (auto& e : effects_) ++e.age;
+                effects_.erase(std::remove_if(effects_.begin(), effects_.end(), [](const Effect& e) { return e.age >= e.life; }),
+                               effects_.end());
                 if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;

@@ -21,11 +21,16 @@ struct GpuModel {
     struct Lod {
         GLuint vao = 0, vbo = 0; std::vector<Batch> batches; float min[3], max[3]; int triangles = 0;
         int frames = 1, ticksPerFrame = 1;
+        std::vector<int> materialTextures;
     };
     std::string name;
     std::string kind;                  // "efct" = billboard effect
     float lodThreshold[4] = {0, 0, 0, 0};
     float headerRadius = 1;            // 3DI header +0x60 (LOD selection)
+    // Material +0x12 of the model's largest LOD-0 material: OpenDF hit-tests
+    // objects with boxes, not polygons, so this stands in for the hit face's
+    // material when choosing the impact effect.
+    uint16_t impact = 0;
     std::vector<GLuint> textures;
     std::vector<GLuint> indexTextures; // raw 8-bit texels (R8, nearest)
     std::vector<Lod> lods;

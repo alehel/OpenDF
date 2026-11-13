@@ -265,6 +265,27 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     heights_ = elev.pixels;
 
     texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, color.palette).data(), true, true);
+    {
+        uint8_t byIndex[256];
+        for (int i = 0; i < 256; ++i) {
+            int best = 1;
+            long bestD = -1;
+            for (const auto& t : desc_.types) {
+                const long dr = color.palette[size_t(i)].r - t.r, dg = color.palette[size_t(i)].g - t.g,
+                           db = color.palette[size_t(i)].b - t.b;
+                const long d = dr * dr + dg * dg + db * db;
+                if (bestD < 0 || d < bestD) {
+                    bestD = d;
+                    const std::string& m = t.material;
+                    best = m == "dirt" ? 1 : m == "grass" ? 2 : m == "snow" ? 3 : m == "cement" ? 4 : m == "sand" ? 5
+                         : m == "packed_dirt" ? 6 : 0;
+                }
+            }
+            byIndex[i] = uint8_t(desc_.types.empty() ? 1 : best);
+        }
+        surface_.resize(color.pixels.size());
+        for (size_t i = 0; i < color.pixels.size(); ++i) surface_[i] = byIndex[color.pixels[i]];
+    }
     texHeight_ = makeTex2D(size_, size_, GL_R8, GL_RED, heights_.data(), true, false);
 
     if (!loadImage(vfs, desc_.detailMap, detail) || detail.width != size_ || detail.height != size_) {
@@ -437,6 +458,13 @@ float Terrain::heightAt(float x, float z) const {
     float a = h(ix, iz) + (h(ix + 1, iz) - h(ix, iz)) * tx;
     float b = h(ix, iz + 1) + (h(ix + 1, iz + 1) - h(ix, iz + 1)) * tx;
     return (a + (b - a) * tz) * scale.heightScale;
+}
+
+int Terrain::surfaceAt(float x, float z) const {
+    if (size_ == 0 || surface_.empty()) return 0;
+    const long ix = ((long(std::floor(x / scale.cellSize)) % size_) + size_) % size_;
+    const long iz = ((long(std::floor(z / scale.cellSize)) % size_) + size_) % size_;
+    return surface_[size_t(iz) * size_t(size_) + size_t(ix)];
 }
 
 Vec3 Terrain::fogColor() const { return {horizon_.r / 255.f, horizon_.g / 255.f, horizon_.b / 255.f}; }

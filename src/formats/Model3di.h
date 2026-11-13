@@ -44,6 +44,7 @@ struct ModelBatch {
     float specular = 0;              // +0x38, 16.16
     int specularPower = 0;           // +0x40: s is squared this many times
     float fullbright = -1;           // +0x3c when flag 0x0020, else -1
+    uint16_t impact = 0;             // +0x12: surface for impact effects (metal, wood, stone, ...)
     bool doubleSided = false;
     std::vector<ModelVertex> vertices;   // triangle list
 };
@@ -56,6 +57,7 @@ struct CollisionBox {
 struct ModelLod {
     std::vector<ModelBatch> batches;
     int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
+    std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;

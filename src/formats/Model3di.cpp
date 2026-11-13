@@ -151,14 +151,15 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t matOff = q; q += size_t(nmat) * 76;
         if (!r.ok(p + layout.lodHeader, q - (p + layout.lodHeader))) return fail("truncated LOD data");
 
-        struct Mat { int tex; float rgb[3]; bool hidden; int blend; uint32_t flags; float spec; int specPow; float bright; };
+        struct Mat { int tex; float rgb[3]; bool hidden; int blend; uint32_t flags; float spec; int specPow; float bright; uint16_t impact; };
         std::vector<Mat> mats(nmat);
         for (uint32_t i = 0; i < nmat; ++i) {
             const size_t o = matOff + size_t(i) * 76;
             uint32_t flags = r.u16(o + 0x10);
             const size_t rgbAt = o + 0x28 + 3 * size_t(variant);
             Mat mt{-1, {r.u8(rgbAt) / 255.f, r.u8(rgbAt + 1) / 255.f, r.u8(rgbAt + 2) / 255.f}, false, 0, flags,
-                   r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f};
+                   r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f,
+                   r.u16(o + 0x12)};
             // Textured only if a texture has the variant's sequence id (0x43f217).
             if (flags & 0x0001) {
                 const uint8_t ti = r.u8(o + 0x34 + size_t(variant));
@@ -172,6 +173,8 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             mt.blend = (flags & 0x8000) ? 2 : (flags & 0x0080) ? 1 : 0;
             mats[i] = mt;
         }
+        std::vector<int> matTextures;
+        for (const auto& mt : mats) matTextures.push_back(mt.tex);
 
         auto vertex = [&](uint32_t i) {
             const size_t o = vOff + size_t(i) * 8;
@@ -183,6 +186,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         };
 
         ModelLod lod;
+        lod.materialTextures = matTextures;
         lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
@@ -229,6 +233,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                     b.specularPower = mt.specPow;
                     b.fullbright = mt.bright;
                     b.doubleSided = (mt.flags & 0x0002) != 0;
+                    b.impact = mt.impact;
                     it = batchIndex.emplace(key, lod.batches.size()).first;
                     lod.batches.push_back(std::move(b));
                 }

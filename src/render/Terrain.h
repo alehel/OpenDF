@@ -41,6 +41,10 @@ public:
     // The TRN's colour finish, for models: gamma/filter table, saturation,
     // and sky palette entry 16 (shade table highlight).
     GLuint lutTexture() const { return texSkyPal_; }
+    // Surface at (x, z): 1 dirt, 2 grass, 3 snow, 4 cement, 5 sand, 6 packed
+    // dirt, 0 none; each colour-map palette colour is matched to the nearest
+    // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects).
+    int surfaceAt(float x, float z) const;
     float saturationFactor() const { return desc_.saturation / 128.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
@@ -69,6 +73,7 @@ private:
     Mesh lods_[5];
     Rgb horizon_{170, 200, 230};
     Rgb skyColors_[17];
+    std::vector<uint8_t> surface_;   // per colour-map pixel
     bool hasWater_ = false;
 };
 

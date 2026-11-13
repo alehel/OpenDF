@@ -223,6 +223,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         std::copy(l.max, l.max + 3, gl.max);
         gl.triangles = l.triangleCount;
         gl.frames = l.frames;
+        gl.materialTextures = l.materialTextures;
         gl.ticksPerFrame = l.ticksPerFrame;
         glGenVertexArrays(1, &gl.vao);
         glBindVertexArray(gl.vao);
@@ -247,6 +248,11 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     }
     g->radius = std::max(std::sqrt(r2), 0.1f);
     g->collision = src.lods[0].collision;
+    {
+        size_t most = 0;
+        for (const auto& b : src.lods[0].batches)
+            if (b.vertices.size() > most) { most = b.vertices.size(); g->impact = b.impact; }
+    }
     const GpuModel* out = g.get();
     cache_[name] = std::move(g);
     return out;
@@ -279,30 +285,10 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
     const auto& l = m.lods[std::clamp(lod, 0, int(m.lods.size()) - 1)];
     glUniformMatrix4fv(locModel_, 1, GL_FALSE, model.m);
     glBindVertexArray(l.vao);
-    // Animated materials (flag 0x4000): the batch of material base + frame is
-    // drawn instead of the base (0x46f72f); the others of the group are skipped.
-    auto animatedHidden = [&](const GpuModel::Batch& b) {
-        if (!(b.flags & 0x4000)) return false;
-        // Find this batch's position in its run of consecutive animated materials.
-        int start = b.material;
-        for (const auto& o : l.batches)
-            if ((o.flags & 0x4000) && o.material < start && o.material >= b.material - 64 && o.mesh == b.mesh) {
-                bool contiguous = true;
-                for (int k = o.material; k < b.material; ++k) {
-                    bool found = false;
-                    for (const auto& q : l.batches)
-                        if (q.material == k && (q.flags & 0x4000)) found = true;
-                    if (!found) contiguous = false;
-                }
-                if (contiguous) start = std::min(start, o.material);
-            }
-        return b.material - start != frame;
-    };
     for (const auto& b : l.batches) {
         if ((b.blend != 0) != translucent) continue;
         // First-person weapons: the fullbright muzzle-flash parts only while firing.
         if (weapon && b.fullbright >= 0 && !flash) continue;
-        if (animatedHidden(b)) continue;
         if (b.doubleSided) glDisable(GL_CULL_FACE);
         else glEnable(GL_CULL_FACE);
         if (b.flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)
@@ -314,14 +300,19 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         glUniform1f(locSpec_, b.specular);
         glUniform1i(locSpecPow_, b.specularPower);
         glUniform1f(locBright_, b.fullbright);
-        const bool textured = b.texture >= 0 && b.texture < int(m.textures.size());
+        // Animated materials (flag 0x4000): material base + frame is used
+        // instead (DF.EXE 0x46f72f); here, its texture.
+        int texture = b.texture;
+        if ((b.flags & 0x4000) && frame > 0 && b.material + frame < int(l.materialTextures.size()))
+            texture = l.materialTextures[size_t(b.material + frame)];
+        const bool textured = texture >= 0 && texture < int(m.textures.size());
         glUniform1i(locTextured_, textured);
         glUniform3f(locColor_, b.color[0], b.color[1], b.color[2]);
         if (textured) {
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, m.indexTextures[size_t(b.texture)]);
+            glBindTexture(GL_TEXTURE_2D, m.indexTextures[size_t(texture)]);
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, m.textures[size_t(b.texture)]);
+            glBindTexture(GL_TEXTURE_2D, m.textures[size_t(texture)]);
         }
         glDrawArrays(GL_TRIANGLES, b.first, b.count);
         if (b.flags & 0x0040) glDisable(GL_POLYGON_OFFSET_FILL);
