@@ -28,6 +28,11 @@ public:
     bool fly = false;                // debug free flight (N)
     const AnimDefs* moves = nullptr; // the soldier's .ANM table
     bool oneHanded = false;          // pistol: the *_1HW moves
+    // Eye height above the feet per stance (stand, crouch, prone) and hand
+    // (two-, one-handed): the pose's origin height (.CHR contact points) plus
+    // DF.EXE's eye offset (0x449913). Filled from the game data; defaults
+    // are the PLAYER01.CHR values.
+    float eyeHeights[3][2] = {{1.7558f, 1.7677f}, {1.3768f, 1.3768f}, {0.5031f, 0.5031f}};
 
     void update(float dt, const PlayerInput& in, const World& world);
     // `feet` is kept inside the repeating terrain tile (0..ext); missions use
@@ -42,7 +47,7 @@ public:
     float speed() const { return speed_; }
 
 private:
-    float eyeHeight_ = 1.45f;
+    float eyeHeight_ = 1.7558f;
     bool sliding_ = false, jumpHeld_ = false;
     float vy_ = 0;
     bool onGround_ = true, moving_ = false;

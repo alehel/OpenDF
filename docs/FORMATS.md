@@ -356,3 +356,27 @@ records, then 21-byte names ("Player", "1-Start Point", "2-CP ALPHA", ...).
 Named per terrain (C2M1.JIM), including terrains with no mission; DF.EXE
 does not reference them, so they look like a leftover of the mission tools.
 Coordinate units not decoded.
+
+## .CHR (soldier skeleton and animations)
+
+PLAYER01.CHR, shared by all soldiers (ITEMS.DEF `chr_file`). Loader 0x467810,
+load-time scale ×0x1d2b0/65536 (0x469270), posing 0x4701f4 / 0x46df64.
+
+- Header: "CHR1" (frame header 0x34) or "CHR0" (0x24); +4 part array, +8
+  part count (15), +0xC part order list, +0x10 its count, +0x14 animation
+  table (255 entries), +0x18 animation count.
+- Part (0x5c bytes): vertex/face/normal arrays and counts (its own skinned
+  mesh), +0x1c joint offset from the parent, +0x28 hit-sphere centre,
+  +0x34 radius, +0x38 parent (−1 root), +0x3c bounding box. Parts: 0 pelvis
+  (origin), 1 torso, 2 head, 3/4 upper arms, 5/6 forearms, 7/8 hands,
+  9/10 thighs, 11/12 shins, 13/14 feet.
+- Axes: x lateral, y up, z backward; model = (−z, −x, y).
+- Animation (number = the ANM's animation number): frame count, part count,
+  contact-point count (4: hands, feet), …; frames chained by a next offset;
+  frame: flags (bit 16+k: contact k not touching), u16 ticks, root-motion
+  offset, anchor contact index, contact-point array, then per part three
+  angle bytes (256 per turn: yaw = −a0, pitch = a1, roll = −a2) + pad.
+- Posing: positions chain through parents (joint offsets transformed by the
+  parent matrix), rotations are absolute per part; M = T·Rz(yaw)·R(pitch)·Rx(roll).
+- Ground contact: the origin sits above the lowest touching contact point.
+- Hit spheres: part matrix × raw centre (no axis remap, as DF.EXE does).

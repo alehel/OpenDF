@@ -8,20 +8,6 @@ namespace df {
 
 namespace {
 
-// Eye height above the feet. DF.EXE (0x449913) puts the eye 0.7 m above the
-// body origin (0.4 m prone, 0.3 m in water) and eases toward it by 0.9 per
-// tick. Standing, the origin is 0.75 m above the feet (the collision box,
-// 0x437a28, runs from -0.75 to +1.0 m), so the eye is 1.45 m up. Crouched and
-// prone the origin follows the animation frames (.CHR), not decoded yet, so
-// those two heights are still approximations.
-float eyeTarget(Stance s) {
-    switch (s) {
-    case Stance::Crouch: return 1.0f;    // approximation
-    case Stance::Prone: return 0.35f;    // approximation
-    default: return 0.75f + 0.7f;
-    }
-}
-
 // The original's eight move directions: 0 forward, then counter-clockwise
 // (1 left-forward, 2 left, 3 left-back, 4 back, 5 right-back, 6 right,
 // 7 right-forward), as the PLAYANIM.ANM comments for the running moves say.
@@ -58,8 +44,10 @@ Vec3 Player::forward() const {
 }
 
 void Player::update(float dt, const PlayerInput& in, const World& world) {
-    // The eye eases toward its target by a factor 0.9 per 60 Hz tick.
-    eyeHeight_ = eyeTarget(stance) + (eyeHeight_ - eyeTarget(stance)) * std::pow(0.9f, dt * 60.f);
+    // The eye eases toward its target by a factor 0.9 per 60 Hz tick (DF.EXE
+    // 0x449913; the pose change itself follows the animation in the original).
+    const float target = eyeHeights[stance == Stance::Prone ? 2 : stance == Stance::Crouch ? 1 : 0][oneHanded ? 1 : 0];
+    eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
 
     Vec3 flatFwd{std::sin(yaw), 0, -std::cos(yaw)};
     Vec3 right{-flatFwd.z, 0, flatFwd.x};

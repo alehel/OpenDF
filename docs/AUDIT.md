@@ -74,7 +74,7 @@ approximation), **todo** = not checked yet.
 | G2 | Reload rules | fixed | DF.EXE 0x44a004 / 0x449f58: reload discards the rounds left; the last round fired starts the reload at once; empty trigger reloads |
 | G7 | Loadout | fixed | default from DF.EXE 0x40ee14: .45, M4(/M203), Ammo; Ammo doubles the primary's spares (0x44b598); `--loadout` until Change Gear exists |
 | G3 | Bullet flight | fixed | projectile per 60 Hz tick: speed velocity·60/62 m/s, gravity 9.78 m/s², no drag, lifetime gun +0x18 ticks, no penetration (0x44d450, 0x44f3e4); origin at the gun muzzle, or the eye along the view when scoped |
-| G4 | Damage | fixed | 1 << (P >> age/falloff), no effect if P < armour class B (0x44f184); people lose ITEMS.DEF hp and die at 0. Head ×4 needs the .CHR body-part spheres: **open** |
+| G4 | Damage | fixed | 1 << (P >> age/falloff), no effect if P < armour class B (0x44f184); people lose ITEMS.DEF hp and die at 0; head (part 2) ×4 using the .CHR hit spheres of the standing pose: the path must pass within 1.5 m of the body origin, then the nearest sphere along it wins, distance by DF.EXE's approximation (0x44dca4, 0x435bf8). The large upper-arm and hand spheres often take shots aimed at the head from behind or the far side, as in the original |
 | G5 | Scope | fixed | magnification table +0xA0, FOV 28/mag whole degrees (0x450600); one zoom step |
 | G6 | Message lifetime | fixed | see B1 |
 
@@ -85,6 +85,6 @@ approximation), **todo** = not checked yet.
 | X1 | Fern (FERN2) drawn magenta inside the scope inset | fixed | transparent texels (palette entry 0, magenta) bled through texture filtering when magnified; they now take their opaque neighbours' colour. The original samples textures unfiltered |
 | X2 | Spread | fixed | uniform ±0.0824°·(A−1) on yaw and pitch, A = gun +0x1C; stance, movement and scope do not matter (0x46af90). Were invented modifiers |
 | X3 | Player physics | fixed | jump 4 m/s (+1/16 m), prone jump stands up; gravity 9.78; ground glue 1/32 m, airborne past 0.5 m; step 0.5 m; slides on gradients > 1.3 until < 0.7; uphill > 0.7 forces walking; collision box ±0.75 m (0x436158, 0x436fd0, 0x437a28) |
-| X4 | Eye height | partly | standing 1.45 m (0.7 above the origin, origin 0.75 above the feet), eases 0.9 per tick (0x449913); crouched/prone come from .CHR animation frames: **open** |
+| X4 | Eye height | fixed | origin height of the stance pose (.CHR contact points: standing 1.056 m, crouched 0.677, prone 0.103 for 2HW) + 0.7 m (0.4 prone) (0x449913, 0x4364c8): 1.76 / 1.38 / 0.50 m; eases 0.9 per tick |
 | X5 | Scope behaviour | fixed | moving turns it off; random aim offset up to 2.8° per zoom (0x44b870); full auto does not refire while zoomed |
 | X6 | Impact effects | open | DF.EXE spawns effect items 107001-107016 by surface/material (0x46a054); OpenDF still draws puffs until it has an effect-object system |

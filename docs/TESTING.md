@@ -28,3 +28,7 @@ One command per line, `<seconds> <command> [argument]`, `#` starts a comment:
 
 Other test options: `--camera x,y,h,yaw,pitch`, `--weapon N`, `--stance N`,
 `--zoom N`, `--fire`, `--walk`, `--map`, `--kill-enemies`, `--viewmodel-only`.
+
+Debugging aid: `OPENDF_DEBUGHITS=1` prints every bullet hit (object, body
+part, position) and, for people, their hit spheres. `opendf --game … chr`
+prints the stance origin heights and head sphere from PLAYER01.CHR.

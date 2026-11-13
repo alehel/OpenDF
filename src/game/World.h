@@ -7,6 +7,7 @@
 #include "../render/Models.h"
 #include "../render/Terrain.h"
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,10 @@ struct WorldObject {
     bool mapMarker = false;            // record +0x4C nonzero: shown on the command map
     double missionX = 0, missionY = 0;
     bool alive() const { return !dead && !removed && !wrecked; }
+    // People: the .CHR hit spheres of their current pose (standing until
+    // there is AI), centre in model axes (x forward, y left, z up) relative
+    // to the body origin, and radius; metres.
+    std::vector<std::array<float, 4>> spheres;
     std::vector<CollisionBox> boxes;   // model-space solid boxes
 
     Mat4 matrix(Vec3 at) const;
@@ -41,6 +46,7 @@ struct WorldObject {
 struct RayHit {
     float t = 1;          // fraction along the segment
     int object = -1;      // -1 = terrain
+    int part = -1;        // people: body part hit (2 = head), from the .CHR hit spheres
     Vec3 point;
 };
 

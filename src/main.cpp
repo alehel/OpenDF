@@ -10,6 +10,8 @@
 
 #include "core/Pff.h"
 #include "game/Game.h"
+#include "formats/Anm.h"
+#include "formats/Chr.h"
 #include "formats/Mission.h"
 #include "formats/Model3di.h"
 #include "formats/Pcx.h"
@@ -92,7 +94,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission")) o.command = a;
+                 (a == "list" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr")) o.command = a;
         else o.args.push_back(a);
     }
     return true;
@@ -302,6 +304,28 @@ bool placeMission(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
 }
 
 // Parses every file type OpenDF understands and reports anything that fails.
+// Prints what DF.EXE's skeleton code derives for a few moves: the body
+// origin's height above the ground and the head's hit sphere.
+int cmdChr(Vfs& vfs, const Options& o) {
+    std::vector<uint8_t> raw;
+    Chr chr;
+    AnimDefs anm;
+    if (!vfs.read("PLAYER01.CHR", raw) || !chr.parse(raw)) { std::fprintf(stderr, "cannot read PLAYER01.CHR\n"); return 1; }
+    if (!vfs.read("PLAYANIM.ANM", raw) || !anm.parse(std::string(raw.begin(), raw.end()))) return 1;
+    std::vector<std::string> moves = o.args;
+    if (moves.empty()) moves = {"Standing_2HW", "Crouched_2HW", "Prone_2HW", "Standing_1HW"};
+    for (const auto& m : moves) {
+        const AnimMove* mv = anm.find(m);
+        const ChrAnimation* a = mv ? chr.animation(mv->animation) : nullptr;
+        if (!a) { std::printf("%s: no animation\n", m.c_str()); continue; }
+        const auto& f = a->frames[0];
+        const auto sp = chr.spheres(f);
+        std::printf("%-14s anim %3d  %2zu frames  origin %.4f m above ground  head (%.3f, %.3f, %.3f) r %.3f\n", m.c_str(),
+                    mv->animation, a->frames.size(), Chr::originHeight(f), sp[2][0], sp[2][1], sp[2][2], sp[2][3]);
+    }
+    return 0;
+}
+
 int cmdCheck(Vfs& vfs) {
     std::vector<uint8_t> buf;
     int total = 0, failed = 0;
@@ -721,6 +745,7 @@ int main(int argc, char** argv) {
             g.record = o.record;
             rc = runGame(vfs, g);
         }
+        else if (o.command == "chr") rc = cmdChr(vfs, o);
         else if (o.command == "check") rc = cmdCheck(vfs);
         else rc = cmdView(vfs, o);
     }

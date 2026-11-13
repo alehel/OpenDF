@@ -1,4 +1,7 @@
 #include "World.h"
+#include <map>
+#include "../formats/Anm.h"
+#include "../formats/Chr.h"
 
 #include <algorithm>
 #include <cmath>
@@ -88,6 +91,24 @@ void World::refreshBoxes(WorldObject& o) const {
 
 void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const Mission& mission) {
     objects.clear();
+    // Skeletons and move tables for people's hit spheres.
+    std::map<std::string, Chr> chrs;
+    std::map<std::string, AnimDefs> anms;
+    auto spheresFor = [&](const ItemDef& item) -> std::vector<std::array<float, 4>> {
+        if (item.chrFile.empty() || item.animDef.empty()) return {};
+        const std::string c = toUpper(item.chrFile) + ".CHR", a = toUpper(item.animDef) + ".ANM";
+        if (!chrs.count(c)) {
+            std::vector<uint8_t> raw;
+            if (!vfs.read(c, raw) || !chrs[c].parse(raw)) chrs[c] = Chr{};
+        }
+        if (!anms.count(a)) {
+            std::vector<uint8_t> raw;
+            if (vfs.read(a, raw)) anms[a].parse(std::string(raw.begin(), raw.end()));
+        }
+        const AnimMove* mv = anms[a].find("Standing_2HW");
+        const ChrAnimation* an = mv ? chrs[c].animation(mv->animation) : nullptr;
+        return an ? chrs[c].spheres(an->frames[0]) : std::vector<std::array<float, 4>>{};
+    };
     const float ext = extent();
     for (const auto& mo : mission.objects) {
         const ItemDef* item = items.byMissionType(mo.type);
@@ -112,6 +133,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
         o.mapMarker = (mo.raw[19] & 0xFFFF) != 0;
+        if (o.person) o.spheres = spheresFor(*item);
         o.missionX = mo.x;
         o.missionY = mo.y;
         refreshBoxes(o);
@@ -218,6 +240,41 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit) const {
     Vec3 mid = a + d * 0.5f;
     for (size_t i = 0; i < objects.size(); ++i) {
         const auto& o = objects[i];
+        // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m
+        // of the body origin, then each part's sphere; the nearest along the
+        // path wins.
+        if (o.person && !o.dead && !o.spheres.empty()) {
+            const Vec3 at = nearest(o.pos, mid);
+            // Distance as DF.EXE measures it (0x435bf8): largest component +
+            // 11/32 of the middle one + 1/4 of the smallest.
+            auto approxLen = [](Vec3 v) {
+                float x = std::abs(v.x), y = std::abs(v.y), z = std::abs(v.z);
+                if (x < y) std::swap(x, y);
+                if (x < z) std::swap(x, z);
+                if (y < z) std::swap(y, z);
+                return x + y * 11.f / 32.f + z * 0.25f;
+            };
+            auto closest = [&](Vec3 c, float& t) {
+                const Vec3 ac = c - a;
+                t = std::clamp(dot(ac, d) / (len * len), 0.f, 1.f);
+                return approxLen(a + d * t - c);
+            };
+            float tc;
+            if (closest(at, tc) > 1.5f) continue;
+            const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, left{-std::cos(o.heading), 0, -std::sin(o.heading)};
+            for (size_t k = 0; k < o.spheres.size(); ++k) {
+                const auto& sp = o.spheres[k];
+                const Vec3 c = at + fwd * sp[0] + left * sp[1] + Vec3{0, sp[2], 0};
+                float t;
+                if (closest(c, t) <= sp[3] && t < hit.t) {
+                    hit.t = t;
+                    hit.object = int(i);
+                    hit.part = int(k);
+                    found = true;
+                }
+            }
+            continue;
+        }
         if (o.boxes.empty()) continue;
         Vec3 at = nearest(o.pos, mid);
         Vec3 off = at - mid;

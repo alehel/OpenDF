@@ -5,6 +5,7 @@
 #include "../render/Models.h"
 #include "../render/Terrain.h"
 #include "../formats/Rtxt.h"
+#include "../formats/Chr.h"
 #include "../formats/Dlg.h"
 #include "Controls.h"
 #include "Player.h"
@@ -165,6 +166,7 @@ private:
     ExeImage exe_;                        // the original DF.EXE, for its tables
     Controls controls_;                   // the original's key table (from DF.EXE)
     AnimDefs playerMoves_;                // the player soldier's .ANM move table
+    float eyeHeightTable_[3][2] = {{1.7558f, 1.7677f}, {1.3768f, 1.3768f}, {0.5031f, 0.5031f}};
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     TextTable campText_;                  // DFCAMPxx.BIN
     // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
@@ -247,6 +249,7 @@ bool Game::loadMission(int index) {
 
     player_ = Player{};
     player_.moves = &playerMoves_;
+    std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
     player_.feet = {512, 0, 512};
     for (const auto& obj : mission_.objects) {
         const ItemDef* item = items_.byMissionType(obj.type);
@@ -1012,6 +1015,19 @@ int Game::run() {
         const std::string anm = toUpper(soldier && !soldier->animDef.empty() ? soldier->animDef : "playanim") + ".ANM";
         if (!vfs_.read(anm, raw) || !playerMoves_.parse(std::string(raw.begin(), raw.end())))
             std::fprintf(stderr, "cannot read %s; using built-in movement speeds\n", anm.c_str());
+        // Eye heights: the pose's origin height (.CHR contact points) plus the
+        // eye offset, 0.7 m, or 0.4 m prone (DF.EXE 0x449913).
+        Chr chr;
+        const std::string chrName = toUpper(soldier && !soldier->chrFile.empty() ? soldier->chrFile : "player01") + ".CHR";
+        if (vfs_.read(chrName, raw) && chr.parse(raw)) {
+            const char* stances[3] = {"Standing", "Crouched", "Prone"};
+            for (int st = 0; st < 3; ++st)
+                for (int h = 0; h < 2; ++h) {
+                    const AnimMove* mv = playerMoves_.find(std::string(stances[st]) + (h ? "_1HW" : "_2HW"));
+                    const ChrAnimation* a = mv ? chr.animation(mv->animation) : nullptr;
+                    if (a) eyeHeightTable_[st][h] = Chr::originHeight(a->frames[0]) + (st == 2 ? 0.4f : 0.7f);
+                }
+        }
     }
     {
         const auto exePath = findGameExe(o_.gameDir);
@@ -1057,6 +1073,7 @@ int Game::run() {
         if (o_.hasCamera) {
             player_ = Player{};
             player_.moves = &playerMoves_;
+    std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
             player_.feet = {o_.camera[0], 0, -o_.camera[1]};
             player_.wrap(terrain_.mapExtent());
             player_.feet.y = world_.groundHeight(player_.feet, 0.45f) + o_.camera[2];

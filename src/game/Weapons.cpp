@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 #include "../core/Pff.h"
 
@@ -290,7 +292,22 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
             if (world.raycast(b.pos, next, hit)) {
                 impacts_.push_back({hit.point, 0, hit.object >= 0});
                 // Damage (0x44f184): 1 << (power >> (age / falloff)).
-                if (hit.object >= 0) world.damage(hit.object, 1 << (b.power >> (b.age / b.falloff)), b.power);
+                // ×4 on the head (part 2) (0x44f184).
+                if (std::getenv("OPENDF_DEBUGHITS"))
+                {
+                    std::fprintf(stderr, "hit obj %d part %d at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part, hit.point.x,
+                                 hit.point.y, hit.point.z, b.age);
+                    if (hit.object >= 0) {
+                        const auto& o = world.objects[size_t(hit.object)];
+                        std::fprintf(stderr, "  origin (%.2f %.2f %.2f) heading %.1f deg hip %.2f\n", o.pos.x, o.pos.y, o.pos.z,
+                                     o.heading * 57.2958f, o.hip);
+                        for (size_t k = 0; k < o.spheres.size(); ++k)
+                            std::fprintf(stderr, "  part %zu c (%.3f %.3f %.3f) r %.3f\n", k, o.spheres[k][0], o.spheres[k][1],
+                                         o.spheres[k][2], o.spheres[k][3]);
+                    }
+                }
+                if (hit.object >= 0)
+                    world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power);
                 b.age = b.lifetime;
                 break;
             }
