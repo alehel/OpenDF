@@ -59,7 +59,7 @@ height, outlined in green.
 | Weapon silhouette | x 0.36–0.48 | green picture of the weapon (`WEAP640.PCX`: 13 frames of 43 px — frag grenade, laser designator, satchel, Barrett, M4/M203, LAW, claymore, HS .22, SAW, M40, .45, MP5, knife) |
 | Divider | x 0.547 | |
 | Compass | centre x 0.597, y 0.061 | north-up ring with N/E/S/W; blue needle = your heading; green dot on the ring = direction to the next waypoint |
-| Grid box | x 0.654–0.752 | grid square, e.g. "H12" (16×16 grid of 64 m squares; letters west→east, numbers north→south) |
+| Grid box | x 0.654–0.752 | grid square, e.g. "H12": 100 m squares in mission coordinates from (−1000, +1000); letters west→east (A..Z, AA..), numbers north→south (DF.EXE 0x43DCE0) |
 | Carrying box | x 0.761–0.987 | "Carrying: Nothing" (or Black Box, Laptop, Code Book, Case, ...) |
 | Waypoint box | x 0.654–0.987, y 0.07–0.11 | "WP3: CP BRAVO (83m)" (format `WP%i: %s (%s)`) |
 
@@ -78,7 +78,7 @@ the crosshair at its lower right ("265m"). The normal view continues around
 it and the first-person weapon is hidden while zoomed.
 
 **Command map (C):** drawn over the 3D view (bars stay). A zoomed-in
-satellite map around the player with a bright green 64 m grid, column letters
+satellite map around the player with a bright green 100 m grid (75 px per square at 640×480), column letters
 along the top and row numbers down the left, the waypoint route as a green
 polyline with circles, enemies as red marks, friendlies blue, and a compass
 rose at the lower right.

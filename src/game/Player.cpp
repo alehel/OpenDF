@@ -121,9 +121,16 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         onGround_ = false;
     }
 
-    const float ext = world.extent();
-    feet.x = std::fmod(std::fmod(feet.x, ext) + ext, ext);
-    feet.z = std::fmod(std::fmod(feet.z, ext) + ext, ext);
+    wrap(world.extent());
+}
+
+void Player::wrap(float ext) {
+    wrapExtent_ = ext;
+    const float wx = std::floor(feet.x / ext), wz = std::floor(feet.z / ext);
+    wrapX_ += int(wx);
+    wrapZ_ += int(wz);
+    feet.x -= wx * ext;
+    feet.z -= wz * ext;
 }
 
 } // namespace df

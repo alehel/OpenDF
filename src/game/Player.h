@@ -30,6 +30,12 @@ public:
     bool oneHanded = false;          // pistol: the *_1HW moves
 
     void update(float dt, const PlayerInput& in, const World& world);
+    // `feet` is kept inside the repeating terrain tile (0..ext); missions use
+    // one continuous coordinate space, so count the wraps to recover it.
+    void wrap(float ext);
+    // Position in mission coordinates: metres, x east, y north.
+    double missionX() const { return feet.x + double(wrapX_) * wrapExtent_; }
+    double missionY() const { return -(feet.z + double(wrapZ_) * wrapExtent_); }
     Vec3 eye() const { return {feet.x, feet.y + eyeHeight_, feet.z}; }
     Vec3 forward() const;
     bool moving() const { return moving_; }
@@ -40,6 +46,8 @@ private:
     float vy_ = 0;
     bool onGround_ = true, moving_ = false;
     float speed_ = 0;
+    int wrapX_ = 0, wrapZ_ = 0;
+    float wrapExtent_ = 1024;
 };
 
 const char* stanceName(Stance s);

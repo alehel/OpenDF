@@ -66,14 +66,26 @@ void writePpm(const std::string& path, int w, int h) {
     for (int y = h - 1; y >= 0; --y) f.write(reinterpret_cast<const char*>(&px[size_t(y) * w * 3]), w * 3);
 }
 
-// The original's grid: 64 m squares, letters west→east, numbers north→south
-// (e.g. "H12").
-constexpr float kGridSquare = 64.f;
-std::string gridName(Vec3 feet) {
-    int col = std::clamp(int(feet.x / kGridSquare), 0, 25);
-    int row = std::max(0, int(feet.z / kGridSquare));
-    return std::string(1, char('A' + col)) + std::to_string(row + 1);
+// The original's grid (DF.EXE 0x43DCE0): 100 m squares in mission
+// coordinates, origin at x = -1000, y = +1000; letters west to east (A..Z,
+// then AA, AB, ...), numbers north to south from 1. E.g. "I12".
+constexpr double kGridSquare = 100, kGridOrigin = 1000;
+std::string gridColumn(double x) {
+    int m = int(std::floor(x + kGridOrigin));
+    if (m < 0) m += 70200;   // as DF.EXE does
+    int col = m / 100;
+    if (col < 0) col += 702;
+    char buf[3] = {};
+    if (col < 26) buf[0] = char('A' + col);
+    else { buf[0] = char('@' + col / 26); buf[1] = char('A' + col % 26); }
+    return buf;
 }
+int gridRow(double y) {
+    double d = kGridOrigin - y;
+    if (d < 0) d += 10000;   // as DF.EXE does
+    return int(d / kGridSquare) + 1;
+}
+std::string gridName(double x, double y) { return gridColumn(x) + std::to_string(gridRow(y)); }
 
 // "C03M03 - Blow Up C3" -> "Blow Up C3"
 std::string missionName(const std::string& title) {
@@ -140,7 +152,9 @@ private:
     std::deque<Message> messages_;
     float missionTime_ = 0;
     float viewDistance_ = 1200;
-    float mapScale_ = 1.f;   // command map zoom (- / =)
+    // Command map zoom (- / =), in 640x480 pixels per metre; footage of the
+    // original shows 0.75 (a 100 m square is 75 px).
+    float mapScale_ = 0.75f;
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
     bool captured_ = true;
 };
@@ -172,7 +186,8 @@ bool Game::loadMission(int index) {
         const ItemDef* item = items_.byMissionType(obj.type);
         if (item && item->id == kItemPlayerStart) {
             const float ext = terrain_.mapExtent();
-            player_.feet = {std::fmod(std::fmod(obj.x, ext) + ext, ext), 0, std::fmod(std::fmod(-obj.y, ext) + ext, ext)};
+            player_.feet = {obj.x, 0, -obj.y};
+            player_.wrap(ext);
             player_.yaw = obj.heading * kPi / 180.f;
             break;
         }
@@ -413,7 +428,7 @@ void Game::drawTopBar(const Screen& s) {
     hudBox(s, 419, 7, 481, 27, true);
     hudBox(s, 487, 7, 632, 27, true);
     hudBox(s, 419, 33, 632, 53, true);
-    std::string grid = gridName(player_.feet);
+    std::string grid = gridName(player_.missionX(), player_.missionY());
     hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(11), grid, kHudGreen, ts);
     hud_.text(s.rx(491), s.y(11), "Carrying: Nothing", kHudGreen, ts);
     // Waypoint names and positions are in the .JIM files, not decoded yet.
@@ -442,7 +457,7 @@ void Game::drawBottomBar(const Screen& s) {
 }
 
 void Game::drawCommandMap(const Screen& s) {
-    // Satellite map over the 3D view, centred on you; 64 m grid.
+    // Satellite map over the 3D view, centred on you; 100 m grid.
     const float x0 = 0, y0 = s.playY, w = s.w, h = s.playH;
     const float pxPerM = s.u * mapScale_;
     const float ext = terrain_.mapExtent();
@@ -454,18 +469,19 @@ void Game::drawCommandMap(const Screen& s) {
 
     const Color grid{0.2f, 0.95f, 0.2f, 0.85f};
     const float lineW = std::max(1.f, s.u * 0.6f);
-    for (float gx = std::ceil((c.x - halfW) / kGridSquare) * kGridSquare; gx <= c.x + halfW; gx += kGridSquare) {
-        float sx = x0 + (gx - (c.x - halfW)) * pxPerM;
+    // Grid lines and labels in mission coordinates, as the original's map.
+    const double mx = player_.missionX(), my = player_.missionY();
+    const float sq = float(kGridSquare) * pxPerM;
+    for (double gx = std::ceil((mx - halfW) / kGridSquare) * kGridSquare; gx <= mx + halfW; gx += kGridSquare) {
+        float sx = x0 + w / 2 + float(gx - mx) * pxPerM;
         hud_.rect(sx, y0, lineW, h, grid);
-        int col = ((int(std::floor(gx / kGridSquare)) % 16) + 16) % 16;
-        std::string label(1, char('A' + col));
-        hud_.text(sx + kGridSquare * pxPerM * 0.5f - hud_.textWidth(label, s.text()) / 2, y0 + s.y(2), label, kHudGreen, s.text());
+        std::string label = gridColumn(gx + kGridSquare / 2);
+        hud_.text(sx + sq * 0.5f - hud_.textWidth(label, s.text()) / 2, y0 + s.y(2), label, kHudGreen, s.text());
     }
-    for (float gz = std::ceil((c.z - halfH) / kGridSquare) * kGridSquare; gz <= c.z + halfH; gz += kGridSquare) {
-        float sy = y0 + (gz - (c.z - halfH)) * pxPerM;
+    for (double gy = std::floor((my + halfH) / kGridSquare) * kGridSquare; gy >= my - halfH; gy -= kGridSquare) {
+        float sy = y0 + h / 2 + float(my - gy) * pxPerM;
         hud_.rect(x0, sy, w, lineW, grid);
-        int row = ((int(std::floor(gz / kGridSquare)) % 16) + 16) % 16;
-        hud_.text(x0 + s.y(3), sy + kGridSquare * pxPerM * 0.5f - s.y(5), std::to_string(row + 1), kHudGreen, s.text());
+        hud_.text(x0 + s.y(3), sy + sq * 0.5f - s.y(5), std::to_string(gridRow(gy - kGridSquare / 2)), kHudGreen, s.text());
     }
 
     // Known casualties in red; you as a green circle with a heading line.
@@ -597,7 +613,10 @@ int Game::run() {
         stanceIcons_ = hud_.loadImage(vfs_, "POS640.PCX");
         weaponIcons_ = hud_.loadImage(vfs_, "WEAP640.PCX");
         if (o_.hasCamera) {
+            player_ = Player{};
+            player_.moves = &playerMoves_;
             player_.feet = {o_.camera[0], 0, -o_.camera[1]};
+            player_.wrap(terrain_.mapExtent());
             player_.feet.y = world_.groundHeight(player_.feet, 0.45f) + o_.camera[2];
             player_.yaw = o_.camera[3] * kPi / 180.f;
             player_.pitch = o_.camera[4] * kPi / 180.f;
@@ -695,7 +714,8 @@ int Game::run() {
                 writePpm(o_.screenshot, dw, dh);
                 std::printf("wrote %s (%dx%d)\n", o_.screenshot.c_str(), dw, dh);
                 for (auto& m : messages_) std::printf("  message: %s\n", m.text.c_str());
-                std::printf("  player at map %.2f, %.2f, %.2f m above ground\n", player_.feet.x, -player_.feet.z,
+                std::printf("  player at %.2f, %.2f (grid %s), %.2f m above ground\n", player_.missionX(), player_.missionY(),
+                            gridName(player_.missionX(), player_.missionY()).c_str(),
                             player_.feet.y - terrain_.heightAt(player_.feet.x, player_.feet.z));
                 running = false;
             }

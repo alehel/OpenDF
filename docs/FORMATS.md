@@ -302,3 +302,20 @@ animation number indexes the soldier's `.CHR` file; the velocity is in m/s
 left, left-back, back, right-back, right, right-forward. `1HW`/`2HW` = one-
 or two-handed weapon; `_S_` = while shooting. Each soldier item in ITEMS.DEF
 names its table with `anim_def` and its animation file with `chr_file`.
+
+## Mission coordinates and the grid
+
+BMS positions are metres (16.16) in one continuous space, x east and y
+north; missions span several kilometres while the 1024 m terrain repeats
+underneath. The HUD grid (DF.EXE 0x43DCE0) is 100 m squares with its corner
+at (−1000, +1000): letter(s) from ⌊(x + 1000) / 100⌋ (A..Z, then AA, AB, ...;
+negative values get +70200 m first), number ⌊(1000 − y) / 100⌋ + 1
+(negative values get +10000 m first).
+
+## .JIM
+
+`count:u8`, then 9-byte waypoints (`x:u16 y:u16 index:u32 0x7F`), further
+records, then 21-byte names ("Player", "1-Start Point", "2-CP ALPHA", ...).
+Named per terrain (C2M1.JIM), including terrains with no mission; DF.EXE
+does not reference them, so they look like a leftover of the mission tools.
+Coordinate units not decoded.

@@ -60,8 +60,9 @@ when DF.EXE is missing or a different version.
 | "Carrying: Nothing", "Ammo reloaded", mission-end texts | Original | DF.EXE strings |
 | Mission names ("Insurrection") | Original | `DFCAMPcc.BIN` entry m−1, read at run time |
 | Radio messages ("Charlie 2 is down.", opening orders) | Original text known, not shown yet | `DFDLGcc.BIN`; triggered by mission scripts (not decoded) |
-| Grid square names | **Wrong** | the original's grid is offset from the terrain origin (start of Insurrection is I12 in the original, N2 in OpenDF); linked to the `.JIM` waypoint coordinates |
-| Waypoint box | Missing | needs `.JIM` |
+| Grid square names and map grid | Original + footage | DF.EXE 0x43DCE0: column = ⌊(x + 1000) / 100⌋ as A..Z, AA.., row = ⌊(1000 − y) / 100⌋ + 1, in mission coordinates (not the 1024 m terrain tile). Start of Insurrection is I12, as in footage; the command map's grid lines up with the terrain as in footage |
+| Command map zoom | Footage | 0.75 px per metre at 640×480 |
+| Waypoint box and route | Missing | the player's route is among the BMS waypoint markers (item 6005), linked by the mission data; to come with mission scripts. `.JIM` files are not used by DF.EXE (no reference to them; named per terrain, with route names that differ from the game's) |
 
 ## Not yet implemented, so not checkable
 
