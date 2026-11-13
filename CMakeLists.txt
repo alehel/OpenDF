@@ -35,6 +35,8 @@ add_executable(opendf
   src/formats/Pcx.cpp
   src/formats/Rtxt.cpp
   src/formats/Trn.cpp
+  src/menu/Frontend.cpp
+  src/menu/Mnu.cpp
   src/game/Ai.cpp
   src/game/Animator.cpp
   src/game/Controls.cpp

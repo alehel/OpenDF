@@ -188,6 +188,17 @@ private:
     void blowCharge(Charge& c);
     void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
     int carried_ = -1;                    // the object the player carries (+0x90)
+    bool leaveMission_ = false, quit_ = false;
+public:
+    MissionOutcome outcome() const {
+        MissionOutcome o;
+        o.played = true;
+        o.won = missionResult_ == kPlayerSide;
+        for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
+        o.quit = quit_;
+        return o;
+    }
+private:
     bool briefingShown_ = false, helpShown_ = false;   // [0x66f96c], [0x66f968]
     std::string briefing_;                // built at mission load (0x4813c4)
     int briefStart_ = 1, briefLast_ = 1, briefPage_ = 0;   // [0xc73704], [0xc73700], [0x4f30dc]
@@ -1195,9 +1206,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     if (missionResult_ >= 0) {
         // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
         if (k.keysym.sym == SDLK_RETURN || k.keysym.sym == SDLK_KP_ENTER) {
-            SDL_Event q;
-            q.type = SDL_QUIT;
-            SDL_PushEvent(&q);
+            leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
         }
         if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
@@ -1230,7 +1239,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (helpShown_) { helpShown_ = false; break; }
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
         if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
-        else { SDL_Event q; q.type = SDL_QUIT; SDL_PushEvent(&q); }
+        else leaveMission_ = true;   // (OpenDF) leave the mission
         break;
     case Action::Stand: player_.stance = Stance::Stand; break;
     case Action::Crouch: player_.stance = Stance::Crouch; break;
@@ -2213,6 +2222,7 @@ int Game::run() {
         float fpsTimer = 0;
         int fpsFrames = 0;
         while (running) {
+            if (leaveMission_) break;   // Enter on the end panel / Esc: back to the front end
             Uint64 now = SDL_GetPerformanceCounter();
             float dt = fixedStep ? 1.f / 60.f : std::min(float(now - last) / SDL_GetPerformanceFrequency(), 0.1f);
             const float realDt = dt;   // the input script keeps time while paused
@@ -2222,7 +2232,8 @@ int Game::run() {
             SDL_Event e;
             bool zoomClick = false;
             while (SDL_PollEvent(&e)) {
-                if (e.type == SDL_QUIT) running = false;
+                if (e.type == SDL_QUIT) { running = false; quit_ = true; }
+                if (leaveMission_) running = false;
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
@@ -2532,9 +2543,13 @@ int Game::run() {
 
 } // namespace
 
-int runGame(Vfs& vfs, const GameOptions& options) {
+int runGame(Vfs& vfs, const GameOptions& options, MissionOutcome* outcome, uint32_t* flags) {
+    if (flags) savedCampaignFlags() = *flags;
     Game game(vfs, options);
-    return game.run();
+    const int rc = game.run();
+    if (outcome) *outcome = game.outcome();
+    if (flags) *flags = savedCampaignFlags();
+    return rc;
 }
 
 } // namespace df

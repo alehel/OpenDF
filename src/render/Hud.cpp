@@ -147,7 +147,34 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
     return true;
 }
 
-HudImage Hud::loadImage(Vfs& vfs, const std::string& name) {
+HudImage Hud::makeImage(int width, int height, const std::vector<uint8_t>& rgba) {
+    HudImage out;
+    glGenTextures(1, &out.texture);
+    glBindTexture(GL_TEXTURE_2D, out.texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    out.width = width;
+    out.height = height;
+    images_.push_back(out.texture);
+    texture_ = 0;
+    return out;
+}
+
+void Hud::setTranslucent(bool on) {
+    flush();
+    if (on) {
+        glBlendColor(0.5f, 0.5f, 0.5f, 0.75f);
+        glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_ALPHA);
+    } else {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+}
+
+HudImage Hud::loadImage(Vfs& vfs, const std::string& name, bool blackTransparent) {
     HudImage out;
     std::vector<uint8_t> data;
     IndexedImage img;
@@ -156,7 +183,7 @@ HudImage Hud::loadImage(Vfs& vfs, const std::string& name) {
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const Rgb& c = img.palette[img.pixels[i]];
         rgba[i * 4] = c.r; rgba[i * 4 + 1] = c.g; rgba[i * 4 + 2] = c.b;
-        rgba[i * 4 + 3] = (c.r | c.g | c.b) ? 255 : 0;
+        rgba[i * 4 + 3] = (!blackTransparent || (c.r | c.g | c.b)) ? 255 : 0;
     }
     glGenTextures(1, &out.texture);
     glBindTexture(GL_TEXTURE_2D, out.texture);

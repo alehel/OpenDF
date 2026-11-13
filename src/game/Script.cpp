@@ -15,6 +15,7 @@ constexpr uint32_t kItemArea = 6013;   // "Area Trigger" marker (ITEMS.DEF 10601
 } // namespace
 
 uint32_t& campaignFlags() { return g_flags; }
+uint32_t& savedCampaignFlags() { return g_savedFlags; }
 
 void MissionScript::load(const Mission& m) {
     mission_ = &m;

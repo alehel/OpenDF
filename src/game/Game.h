@@ -4,6 +4,7 @@
 #include "../core/Pff.h"
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
 
 namespace df {
@@ -43,6 +44,16 @@ struct GameOptions {
     std::string record;
 };
 
-int runGame(Vfs& vfs, const GameOptions& options);
+// What the front end needs back from a mission (debriefing, profile).
+struct MissionOutcome {
+    bool played = false;     // the mission ran
+    bool won = false;        // side 1 won
+    int kills = 0;           // people the player killed
+    bool quit = false;       // the window was closed: leave the program (exit code 2)
+};
+
+// `campaignFlags`: in, the soldier's campaign flags; out, updated only when
+// the mission was won (DF.EXE 0x401b47).
+int runGame(Vfs& vfs, const GameOptions& options, MissionOutcome* outcome = nullptr, uint32_t* campaignFlags = nullptr);
 
 } // namespace df

@@ -81,5 +81,7 @@ private:
 // Campaign flags (DF.EXE 0x66f9d8): restored at mission start, saved back
 // when side 1 wins. Kept for the session.
 uint32_t& campaignFlags();
+// The flags a mission starts with (the soldier's); updated when side 1 wins.
+uint32_t& savedCampaignFlags();
 
 } // namespace df
