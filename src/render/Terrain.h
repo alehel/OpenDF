@@ -42,6 +42,9 @@ public:
     GLuint colorTexture() const { return texColor_; }
     int mapSize() const { return size_; }
     WorldScale scale;
+    // F / 320: the original's ring distances scale with the focal length of
+    // its display mode (F = width / 2 at 90°).
+    float ringScale = 1.f;
 
 private:
     struct Mesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
@@ -60,6 +63,7 @@ private:
     GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0;
     Mesh lods_[4];
     Rgb horizon_{170, 200, 230};
+    Rgb skyColors_[17];
     bool hasWater_ = false;
 };
 

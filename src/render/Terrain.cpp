@@ -13,16 +13,34 @@ namespace {
 constexpr int kChunkCells = 64;
 constexpr float kSkirtDepth = 8.f;
 
+// The original's colour pipeline (DF.EXE, see docs/FORMATS.md "Terrain
+// rendering"): palette colours are mixed in a "linear" space (decode ^1.25,
+// encode ^0.8), then saturation (Y = (R+2G+B)/4) and the per-channel
+// gamma/filter tables (uploaded as a 256-entry lookup texture) are applied.
+const char* kPost = R"(
+uniform sampler2D uLut;
+uniform float uSat;
+vec3 dec(vec3 c) { return pow(max(c, 0.0), vec3(1.25)); }
+vec3 enc(vec3 c) { return pow(max(c, 0.0), vec3(0.8)); }
+vec3 post(vec3 c) {
+    float y = (c.r + 2.0 * c.g + c.b) * 0.25;
+    c = clamp(y + (c - y) * uSat, 0.0, 1.0);
+    float k = 255.0 / 256.0, o = 0.5 / 256.0;
+    return vec3(texture(uLut, vec2(c.r * k + o, 0.5)).r, texture(uLut, vec2(c.g * k + o, 0.5)).g,
+                texture(uLut, vec2(c.b * k + o, 0.5)).b);
+}
+)";
+
 const char* kTerrainVS = R"(#version 330 core
 layout(location = 0) in vec3 aPos;          // chunk-local cell x, cell y, skirt flag
 uniform sampler2D uHeight;
 uniform vec2 uOrigin;
-uniform float uCell, uHScale, uMapSize, uSkirt;
+uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale;
 uniform mat4 uViewProj;
 out vec2 vCell;
 out vec3 vWorld;
 void main() {
-    vec2 c = uOrigin + aPos.xy;
+    vec2 c = uOrigin + aPos.xy * uChunkScale;
     ivec2 ic = ivec2(mod(c, uMapSize));
     float h = texelFetch(uHeight, ic, 0).r * 255.0 * uHScale - aPos.z * uSkirt;
     vWorld = vec3(c.x * uCell, h, c.y * uCell);
@@ -31,43 +49,40 @@ void main() {
 }
 )";
 
-const char* kTerrainFS = R"(#version 330 core
+const char* kTerrainFSBody = R"(
 in vec2 vCell;
 in vec3 vWorld;
-uniform sampler2D uColor, uHeight, uDetailIdx;
+uniform sampler2D uColor, uDetailIdx;
 uniform sampler2DArray uDetailColor, uDetailShade;
-uniform float uMapSize, uCell, uHScale, uTiles;
-uniform vec3 uEye, uFog, uTint, uSun;
-uniform float uFogStart, uFogEnd, uSat, uGamma;
+uniform float uMapSize, uTiles, uRingScale;
+uniform vec3 uEye, uFog, uCloudCol;
 out vec4 oColor;
 void main() {
     vec2 uv = (vCell + 0.5) / uMapSize;
-    vec3 col = texture(uColor, uv).rgb;
-
-    float t = 1.0 / uMapSize;
-    float k = 255.0 * uHScale;
-    float hl = texture(uHeight, uv - vec2(t, 0.0)).r * k;
-    float hr = texture(uHeight, uv + vec2(t, 0.0)).r * k;
-    float hd = texture(uHeight, uv - vec2(0.0, t)).r * k;
-    float hu = texture(uHeight, uv + vec2(0.0, t)).r * k;
-    vec3 n = normalize(vec3(hl - hr, 2.0 * uCell, hd - hu));
-
-    float dist = length(vWorld - uEye);
-    float fade = 1.0 - smoothstep(30.0, 220.0, dist);
-    if (fade > 0.0) {
+    float dist = length(vWorld.xz - uEye.xz);
+    float near = 100.0 * uRingScale;
+    if (dist < near) {
+        // Near rings (0x438fac): bilinear colour map; detail shade darkens
+        // toward black below 128 and brightens toward sky colour 16 above;
+        // a detail colour is averaged 50/50. No sun lighting in the original.
+        vec3 col = post(texture(uColor, uv, -16.0).rgb);
         ivec2 cell = ivec2(mod(floor(vCell), uMapSize));
         float tile = min(texelFetch(uDetailIdx, cell, 0).r * 255.0, uTiles - 1.0);
         vec3 duv = vec3(fract(vCell), tile);
+        float sh = texture(uDetailShade, duv).r * 255.0;
+        if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
+        else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
         vec4 dc = texture(uDetailColor, duv);
-        float shade = texture(uDetailShade, duv).r * 255.0 / 120.0;
-        vec3 detailed = mix(col, dc.rgb, dc.a * 0.5) * mix(1.0, clamp(shade, 0.45, 1.3), 0.75);
-        col = mix(col, detailed, fade);
+        if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
+        oColor = vec4(col, 1.0);
+        return;
     }
-
-    col *= (0.82 + 0.3 * max(dot(n, uSun), 0.0)) * uTint;
-    float l = dot(col, vec3(0.299, 0.587, 0.114));
-    col = pow(max(mix(vec3(l), col, uSat), 0.0), vec3(uGamma));
-    oColor = vec4(mix(col, uFog, smoothstep(uFogStart, uFogEnd, dist)), 1.0);
+    // Far rings (0x43b3f0): ring k (100·2^k .. 100·2^(k+1) m) samples colour
+    // mip k with fog level k: f = max(0, 20k - 15)/256 toward sky colour 0.
+    float k = clamp(floor(log2(dist / near)), 0.0, 6.0);
+    vec3 base = textureLod(uColor, uv, k).rgb;
+    float f = max(0.0, 20.0 * k - 15.0) / 256.0;
+    oColor = vec4(post(enc(mix(dec(base), dec(uFog), f))), 1.0);
 }
 )";
 
@@ -80,27 +95,37 @@ void main() {
 }
 )";
 
-const char* kSkyFS = R"(#version 330 core
+const char* kSkyFSBody = R"(
 in vec2 vNdc;
 uniform mat4 uInvRot;
 uniform vec2 uTan;
-uniform vec3 uEye, uFog;
-uniform float uCloudH, uCloudScale;
-uniform sampler2D uSkyPal, uClouds;
+uniform vec3 uEye;
+uniform float uCloudH, uHorizon, uPitchTan, uTime;
+uniform vec3 uPal[17];
+uniform sampler2D uClouds;
 out vec4 oColor;
 void main() {
-    vec3 dir = normalize((uInvRot * vec4(vNdc.x * uTan.x, vNdc.y * uTan.y, -1.0, 0.0)).xyz);
-    float e = clamp(dir.y, 0.0, 1.0);
-    vec3 sky = texture(uSkyPal, vec2(pow(e, 0.55), 0.5)).rgb;
-    if (dir.y > 0.0 && uEye.y < uCloudH) {
+    vec3 v = vec3(vNdc.x * uTan.x, vNdc.y * uTan.y, -1.0);
+    vec3 dir = normalize((uInvRot * vec4(v, 0.0)).xyz);
+    // Gradient (0x43b930): index L = 2·horizon per 640-scale row above the
+    // horizon row (centre + tan(pitch)·F + 5); colours 0..15 interpolated
+    // in linear space, 16 sub-steps each.
+    float rows = 320.0 * (v.y / -v.z + uPitchTan) + 5.0;
+    float L = clamp(rows * 2.0 * uHorizon, 0.0, 255.0);
+    int kk = int(L) >> 4;
+    float j = mod(floor(L), 16.0) / 16.0;
+    vec3 sky = kk == 0 ? dec(uPal[0]) : mix(dec(uPal[kk - 1]), dec(uPal[min(kk, 15)]), j);
+    // Clouds (0x43b5f4): the sky map projected on a plane sky_height m up,
+    // 8 m per texel, drifting with time; pixels over 128 blend toward sky
+    // colour 16 in 64 steps.
+    if (dir.y > 0.001 && uEye.y < uCloudH) {
         float t = (uCloudH - uEye.y) / dir.y;
-        vec2 p = (uEye.xz + dir.xz * t) / uCloudScale;
-        float c = clamp((texture(uClouds, p).r * 255.0 - 127.0) / 100.0, 0.0, 1.0);
-        c *= smoothstep(0.0, 0.2, dir.y);
-        sky = mix(sky, vec3(0.93, 0.94, 0.96), c * 0.85);
+        vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
+        float px = texture(uClouds, p / 512.0).r * 255.0;
+        float c = px < 128.0 ? 0.0 : min(62.0, floor((px - 128.0) / 2.0)) / 64.0;
+        sky = mix(sky, dec(uPal[16]), c);
     }
-    sky = mix(uFog, sky, smoothstep(-0.02, 0.08, dir.y));
-    oColor = vec4(sky, 1.0);
+    oColor = vec4(post(enc(sky)), 1.0);
 }
 )";
 
@@ -258,20 +283,25 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     texDetailColor_ = makeTexArray(tile, tile, tiles, GL_RGBA8, GL_RGBA, dcRgba.data());
     texDetailShade_ = makeTexArray(tile, tile, tiles, GL_RG8, GL_RG, dsRg.data());
 
-    // Sky gradient: palette entries 0..15 of the sky_palette PCX run from the
-    // horizon (0) to the zenith (15); the remainder is a stock VGA palette.
+    // Sky palette: entries 0..15 the gradient from the horizon up (entry 0 is
+    // also the fog colour), entry 16 the cloud/highlight colour (DF.EXE 0x433880).
     IndexedImage skyPal;
-    std::vector<uint8_t> grad;
-    if (loadImage(vfs, desc_.skyPalette, skyPal) && skyPal.hasPalette) {
-        for (int i = 0; i < 16; ++i) {
-            grad.push_back(skyPal.palette[i].r);
-            grad.push_back(skyPal.palette[i].g);
-            grad.push_back(skyPal.palette[i].b);
-        }
+    for (int i = 0; i < 17; ++i) skyColors_[i] = {170, 200, 230};
+    if (loadImage(vfs, desc_.skyPalette, skyPal) && skyPal.hasPalette)
+        for (int i = 0; i < 17; ++i) skyColors_[i] = skyPal.palette[i];
+    horizon_ = skyColors_[0];
+
+    // Gamma/filter tables (DF.EXE 0x4356c8): curve C[i] = round(sqrt(255 i) - i);
+    // g = gamma - 128; v = i + C·2g/256 (or minus for g < 0); out = min(255,
+    // 2·(v·filter/256)) per channel.
+    std::vector<uint8_t> lut(256 * 3);
+    const int g = desc_.gamma - 128;
+    for (int i = 0; i < 256; ++i) {
+        const int c = int(std::lround(std::sqrt(255.0 * i) - i));
+        int v = g >= 0 ? i + ((c * 2 * g) >> 8) : std::max(0, i - ((c * std::min(255, -2 * g)) >> 8));
+        for (int ch = 0; ch < 3; ++ch) lut[size_t(i) * 3 + ch] = uint8_t(std::min(255, 2 * ((v * desc_.filter[ch]) >> 8)));
     }
-    if (grad.size() < 6) grad = {170, 200, 230, 70, 110, 190};
-    horizon_ = {grad[0], grad[1], grad[2]};
-    texSkyPal_ = makeTex2D(int(grad.size() / 3), 1, GL_RGB8, GL_RGB, grad.data(), true, false);
+    texSkyPal_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, lut.data(), false, false);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 
     IndexedImage clouds;
@@ -289,8 +319,10 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         hasWater_ = true;
     }
 
-    progTerrain_ = compileProgram(kTerrainVS, kTerrainFS);
-    progSky_ = compileProgram(kSkyVS, kSkyFS);
+    const std::string terrainFS = std::string("#version 330 core\n") + kPost + kTerrainFSBody;
+    const std::string skyFS = std::string("#version 330 core\n") + kPost + kSkyFSBody;
+    progTerrain_ = compileProgram(kTerrainVS, terrainFS.c_str());
+    progSky_ = compileProgram(kSkyVS, skyFS.c_str());
     progWater_ = compileProgram(kWaterVS, kWaterFS);
     if (!progTerrain_ || !progSky_ || !progWater_) return fail("shader compilation failed (see stderr)");
 
@@ -300,10 +332,13 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     setInt(progTerrain_, "uDetailIdx", 2);
     setInt(progTerrain_, "uDetailColor", 3);
     setInt(progTerrain_, "uDetailShade", 4);
+    setInt(progTerrain_, "uLut", 5);
     setF(progTerrain_, "uTiles", float(tiles));
+    setF(progTerrain_, "uSat", desc_.saturation / 128.f);
     glUseProgram(progSky_);
-    setInt(progSky_, "uSkyPal", 0);
+    setInt(progSky_, "uLut", 0);
     setInt(progSky_, "uClouds", 1);
+    setF(progSky_, "uSat", desc_.saturation / 128.f);
     glUseProgram(progWater_);
     setInt(progWater_, "uWater", 0);
     glUseProgram(0);
@@ -392,8 +427,9 @@ float Terrain::heightAt(float x, float z) const {
 Vec3 Terrain::fogColor() const { return {horizon_.r / 255.f, horizon_.g / 255.f, horizon_.b / 255.f}; }
 
 Vec3 Terrain::sunDirection() const {
-    const float sun = float(std::clamp(desc_.sunSlope, 5, 90)) * 3.14159265f / 180.f;
-    return normalize(Vec3{std::cos(sun) * 0.6f, std::sin(sun), std::cos(sun) * 0.8f});
+    // The original has no sun lighting (sun_slope is never read); models
+    // still use this direction until their lighting is traced.
+    return normalize(Vec3{0.3f, 0.9f, 0.4f});
 }
 
 void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDistance) {
@@ -401,20 +437,28 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     const Vec3 fog = fogColor();
     const float fogStart = viewDistance * 0.35f, fogEnd = viewDistance * 0.98f;
     const float cell = scale.cellSize;
+    auto rgb = [](Rgb c) { return Vec3{c.r / 255.f, c.g / 255.f, c.b / 255.f}; };
 
     // Sky (behind everything).
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glUseProgram(progSky_);
     setM4(progSky_, "uInvRot", inverseRotationOnly(view));
-    {
-        // Recover tan(fov/2) and aspect from the projection matrix.
-        glUniform2f(glGetUniformLocation(progSky_, "uTan"), 1.f / proj.m[0], 1.f / proj.m[5]);
-    }
+    glUniform2f(glGetUniformLocation(progSky_, "uTan"), 1.f / proj.m[0], 1.f / proj.m[5]);
     setV3(progSky_, "uEye", eye);
-    setV3(progSky_, "uFog", fog);
-    setF(progSky_, "uCloudH", std::max(desc_.skyHeight * scale.heightScale, 150.f));
-    setF(progSky_, "uCloudScale", 2048.f);
+    setF(progSky_, "uCloudH", desc_.skyHeight);   // metres (DF.EXE 0x43b5f4)
+    setF(progSky_, "uHorizon", desc_.horizon);
+    {
+        const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
+        const float pitch = std::asin(std::clamp(fwd.y, -1.f, 1.f));
+        setF(progSky_, "uPitchTan", std::tan(pitch));
+    }
+    setF(progSky_, "uTime", float(SDL_GetTicks()) * 60.f / 1000.f);
+    for (int i = 0; i < 17; ++i) {
+        char name[16];
+        std::snprintf(name, sizeof name, "uPal[%d]", i);
+        setV3(progSky_, name, rgb(skyColors_[i]));
+    }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texSkyPal_);
     glActiveTexture(GL_TEXTURE0 + 1);
@@ -424,44 +468,63 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
 
-    // Terrain chunks around the camera; the map repeats endlessly in x and z.
+    // Terrain around the camera; the map repeats endlessly. DF.EXE draws
+    // terrain out to 40·F m (12.8 km at 640 wide, ring table 0x438404).
     glUseProgram(progTerrain_);
     setM4(progTerrain_, "uViewProj", viewProj);
     setF(progTerrain_, "uCell", cell);
     setF(progTerrain_, "uHScale", scale.heightScale);
     setF(progTerrain_, "uMapSize", float(size_));
     setF(progTerrain_, "uSkirt", kSkirtDepth);
+    setF(progTerrain_, "uRingScale", ringScale);
     setV3(progTerrain_, "uEye", eye);
     setV3(progTerrain_, "uFog", fog);
-    setV3(progTerrain_, "uTint", {desc_.filter[0] / 128.f, desc_.filter[1] / 128.f, desc_.filter[2] / 128.f});
-    setV3(progTerrain_, "uSun", sunDirection());
-    setF(progTerrain_, "uFogStart", fogStart);
-    setF(progTerrain_, "uFogEnd", fogEnd);
-    setF(progTerrain_, "uSat", desc_.saturation / 128.f);
-    setF(progTerrain_, "uGamma", 128.f / std::max(desc_.gamma, 1));
-    GLuint units[5] = {texHeight_, texColor_, texDetailIdx_, texDetailColor_, texDetailShade_};
-    for (int i = 0; i < 5; ++i) {
+    setV3(progTerrain_, "uCloudCol", rgb(skyColors_[16]));
+    GLuint units[6] = {texHeight_, texColor_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_};
+    for (int i = 0; i < 6; ++i) {
         glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(i >= 3 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D, units[i]);
+        glBindTexture(i == 3 || i == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D, units[i]);
     }
 
+    const float terrainDistance = 40.f * 320.f * ringScale;
     const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
-    const float chunkWorld = kChunkCells * cell;
-    const float chunkRadius = chunkWorld * 0.75f + 255.f * scale.heightScale;
     const GLint locOrigin = glGetUniformLocation(progTerrain_, "uOrigin");
-    const int cx0 = int(std::floor((eye.x - viewDistance) / chunkWorld));
-    const int cx1 = int(std::floor((eye.x + viewDistance) / chunkWorld));
-    const int cz0 = int(std::floor((eye.z - viewDistance) / chunkWorld));
-    const int cz1 = int(std::floor((eye.z + viewDistance) / chunkWorld));
-    for (int cz = cz0; cz <= cz1; ++cz)
-        for (int cx = cx0; cx <= cx1; ++cx) {
-            Vec3 center{(cx + 0.5f) * chunkWorld, eye.y, (cz + 0.5f) * chunkWorld};
-            Vec3 d = center - eye;
-            float horiz = std::sqrt(d.x * d.x + d.z * d.z);
-            if (horiz > viewDistance + chunkRadius) continue;
-            if (dot(d, fwd) < -chunkRadius) continue;
-            int lod = horiz < 160 ? 0 : horiz < 400 ? 1 : horiz < 800 ? 2 : 3;
-            glUniform2f(locOrigin, float(cx * kChunkCells), float(cz * kChunkCells));
+    const GLint locScale = glGetUniformLocation(progTerrain_, "uChunkScale");
+    const float chunkWorld = kChunkCells * cell, blockCells = kChunkCells * 8.f, blockWorld = blockCells * cell;
+    const int bx = int(std::floor(eye.x / blockWorld)), bz = int(std::floor(eye.z / blockWorld));
+    auto visible = [&](float cx, float cz, float size) {
+        const float radius = size * 0.75f + 255.f * scale.heightScale;
+        const Vec3 d{cx - eye.x, 0, cz - eye.z};
+        const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
+        if (horiz > terrainDistance + radius) return -1.f;
+        if (d.x * fwd.x + d.z * fwd.z < -radius) return -1.f;
+        return horiz;
+    };
+    // Near: 64-cell chunks within two 512-cell blocks of the camera's block.
+    glUniform1f(locScale, 1.f);
+    for (int zb = bz - 2; zb <= bz + 2; ++zb)
+        for (int xb = bx - 2; xb <= bx + 2; ++xb)
+            for (int cz = zb * 8; cz < zb * 8 + 8; ++cz)
+                for (int cx = xb * 8; cx < xb * 8 + 8; ++cx) {
+                    const float horiz = visible((cx + 0.5f) * chunkWorld, (cz + 0.5f) * chunkWorld, chunkWorld);
+                    if (horiz < 0) continue;
+                    const int lod = horiz < 160 ? 0 : horiz < 400 ? 1 : horiz < 800 ? 2 : 3;
+                    glUniform2f(locOrigin, float(cx * kChunkCells), float(cz * kChunkCells));
+                    glBindVertexArray(lods_[lod].vao);
+                    glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
+                }
+    // Far: whole 512-cell blocks as one coarse chunk each.
+    glUniform1f(locScale, 8.f);
+    const int reach = int(std::ceil(terrainDistance / blockWorld)) + 1;
+    for (int zb = bz - reach; zb <= bz + reach; ++zb)
+        for (int xb = bx - reach; xb <= bx + reach; ++xb) {
+            if (std::abs(zb - bz) <= 2 && std::abs(xb - bx) <= 2) continue;
+            const float horiz = visible((xb + 0.5f) * blockWorld, (zb + 0.5f) * blockWorld, blockWorld);
+            if (horiz < 0) continue;
+            // Sample spacing like the original's far rings: 16 m to 3.2 km,
+            // 32 m to 6.4 km, 64 m beyond (scaled).
+            const int lod = horiz < 3200 * ringScale ? 1 : horiz < 6400 * ringScale ? 2 : 3;
+            glUniform2f(locOrigin, float(xb) * blockCells, float(zb) * blockCells);
             glBindVertexArray(lods_[lod].vao);
             glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
         }

@@ -18,7 +18,7 @@ struct TerrainDesc {
     std::string detailColor, detailElev, detailShade;
     std::string skyMap, skyPalette;
     std::string waterMap, waterPalette;
-    float skyHeight = 1000.f;
+    float skyHeight = 1236.f;   // DF.EXE default (0x42fbe8); metres
     float waterHeight = 0.f;
     float waterOpacity = 0.f;
     float horizon = 1.f;

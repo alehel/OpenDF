@@ -54,8 +54,9 @@ when DF.EXE is missing or a different version.
 | Mission y = north | Original data | building pads, bridges |
 | No north/south mirroring | Original | grid naming code (0x43dce0) and the y = north convention of BMS/terrain sampling |
 | Height per elevation step: 0.25 m | Original | DF.EXE: `elevation_byte << 14` in 16.16 metres (0x432F98); TRN `water_height` uses the same units (`<< 14`) |
-| TRN `sky_height`, `sun_slope` | Units unknown | stored unscaled by the TRN parser (0x42FD39..) |
-| Terrain lighting, detail textures, sky, clouds, haze, water | Approximation | |
+| TRN keys | Original | sky_height in metres; sun_slope, camouflage never read; `type` lines only choose impact/footstep effects (0x4305b0) |
+| Terrain colour, detail, fog, sky, clouds, view distance | Original | see docs/AUDIT.md V4 |
+| Water | Approximation | DF.EXE's water (palette gradient, opacity blend table, turbidity scroll) not reproduced yet |
 | Model material flags | Inferred | |
 | LOD distances, model lighting | Approximation | |
 

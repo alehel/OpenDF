@@ -217,7 +217,9 @@ private:
     Arsenal arsenal_;
     std::deque<Message> messages_;
     float missionTime_ = 0;
-    float viewDistance_ = 1200;
+    // Objects: DF.EXE's depth buffer saturates at 1024 m (inferred cull distance).
+    float viewDistance_ = 1024;
+    float scopeFocal_ = 320;
     float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
     bool captured_ = true;
@@ -532,8 +534,15 @@ float Game::rangeToAim() const {
 
 void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     const Vec3 eye = player_.eye();
+    // Terrain rings scale with the original's focal length: F = 320 per 640
+    // pixels of its display mode, or the scope view's own focal length.
+    terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.draw(view, proj, eye, viewDistance_);
-    SceneLighting light{eye, terrain_.fogColor(), terrain_.sunDirection(), viewDistance_ * 0.35f, viewDistance_ * 0.98f};
+    // Model fog: the terrain's fog starts at the 200 m ring (scaled); models
+    // are drawn to 1024 m, where the terrain has 18 % fog. Model fog itself is
+    // not traced: approximation.
+    const float rs = terrain_.ringScale;
+    SceneLighting light{eye, terrain_.fogColor(), terrain_.sunDirection(), 200.f * rs, 5700.f * rs};
     models_.begin(proj * view, light);
     const Vec3 fwd = aimDirection();
     const float zoom = zoomView ? arsenal_.zoom() : 1.f;
@@ -615,6 +624,7 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     const int fovParam = 28 / std::max(1, int(arsenal_.zoom()));
     const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
     const float focal = std::floor(100.f / std::tan(half) + 0.5f);
+    scopeFocal_ = focal * 640.f / 200.f;   // per 640 pixels of view width
     const float insetFov = 2 * std::atan(100.f / focal);
     glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
     glClear(GL_DEPTH_BUFFER_BIT);
