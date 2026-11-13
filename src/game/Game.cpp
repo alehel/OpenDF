@@ -189,6 +189,10 @@ private:
     MissionScript script_;
     DialogIndex dialogs_;                 // DFDLGnn.DBF
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
+    // Ambience (ai_function timers, 0x45a5a8 / 0x45a830 / sndN): objects
+    // that repeat their interrupt_sound_id.
+    struct Ambient { int object; int wait; };
+    std::vector<Ambient> ambients_;
     struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; };
     std::vector<ActiveDialog> activeDialogs_;
     void tickDialogs();
@@ -337,6 +341,14 @@ bool Game::loadMission(int index) {
         dialogText_.clear();
         activeDialogs_.clear();
         sound_.stopAll();
+        ambients_.clear();
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const auto& o = world_.objects[i];
+            if (!o.item || o.item->interruptSound <= 0) continue;
+            const std::string& f = o.item->aiFunction;
+            if (f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2")
+                ambients_.push_back({int(i), 64 * std::uniform_int_distribution<int>(1, 8)(effectRng_)});
+        }
         if (!set.empty()) {
             if (vfs_.read(set + ".DBF", raw)) dialogs_.parse(raw);
             if (vfs_.read(set + ".BIN", raw)) parseRtxt(raw, dialogText_);
@@ -1533,6 +1545,14 @@ int Game::run() {
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
             for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
+            // Rockets carry ITEMS.DEF `ambient rocket1` as a loop (0x44d6f9).
+            {
+                static const int rocket = sound_.idOf("ROCKET1");
+                for (const auto& p : arsenal_.projectiles())
+                    if (p.flags & 0x40) sound_.setLoop(p.id, rocket, p.pos);
+                sound_.sweepLoops();
+                sound_.updateLoops();
+            }
             for (const auto& e : arsenal_.takeSounds()) {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
@@ -1553,6 +1573,23 @@ int Game::run() {
                 ++ticks_;
                 tickEffects();
                 tickDialogs();
+                // Ambience: dec0 (towers, bridges) and trees/palms every
+                // (5..8) x 64 ticks at 4 m above the object; sound objects
+                // snd0 (20..25), snd1 (8..11), snd2 (3..4) x 64 ticks.
+                // (APPROXIMATION: the random draw within each range.)
+                for (auto& a : ambients_) {
+                    if (--a.wait > 0) continue;
+                    const auto& o = world_.objects[size_t(a.object)];
+                    const std::string& f = o.item->aiFunction;
+                    int lo = 5, hi = 8;
+                    Vec3 at = o.pos;
+                    if (f == "snd0") { lo = 20; hi = 25; }
+                    else if (f == "snd1") { lo = 8; hi = 11; }
+                    else if (f == "snd2") { lo = 3; hi = 4; }
+                    else at.y += 4.f;
+                    if (o.alive()) playSound(o.item->interruptSound, at);
+                    a.wait = 64 * std::uniform_int_distribution<int>(lo, hi)(effectRng_);
+                }
                 // 0x449830: the damage flash fades 2 per tick.
                 damageFlash_ = damageFlash_ > 1 ? damageFlash_ - 2 : 0;
                 // 0x446148, every 64 ticks: a dead player ends the mission

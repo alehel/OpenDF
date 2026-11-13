@@ -66,6 +66,7 @@ struct Projectile {
     int age = 0, lifetime = 0;  // ticks
     int power = 1, falloff = 30;
     int flags = 0;              // gun +0x30
+    int id = 0;                 // unique, for sounds that follow it
     float tickClock = 0;
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }
@@ -135,7 +136,7 @@ public:
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     // Rounds not fired by the player's weapon (shrapnel); they hit and do
     // damage like any other.
-    void addProjectile(const Projectile& p) { bullets_.push_back(p); }
+    void addProjectile(Projectile p) { p.id = ++projectileIds_; bullets_.push_back(p); }
     // The first-person model's points (LOD 0 vertices in file order) by
     // graphic name, for the muzzle (player table +0x90); null if unknown.
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
@@ -174,6 +175,7 @@ private:
     std::vector<Vec3> stabs_;
     std::vector<SoundEvent> sounds_;
     bool followUp_ = false;
+    int projectileIds_ = 0;
     Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst
     Vec3 soundPos_{0, 0, 0};   // the player's position for weapon handling sounds
     void sound(int field, int gun = -1);

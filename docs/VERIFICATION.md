@@ -31,7 +31,7 @@ when DF.EXE is missing or a different version.
 | Ammunition readout | Original | 0x483447 by fire type: guns spares (with glyph) / magazine / chamber bar; launchers and grenades: rounds left / chamber bar at 140; icon frame per mode (0x484ae8) |
 | M203 and LAW | Original | fire type 2 (0x44a120): from the model, no spread, kick 0x4000 back (the random drop's range is inferred); M203 rounds arm after 8 ticks (before: a bullet-like hit, effect 5 on objects), blast type 1; the LAW no gravity, arms at once, blast type 3 out of the water; no first-person model for the LAW (item 0). Rounds leave from the first-person model's hardpoint +0x90 (0x44b4a0) |
 | Spread, damage, recoil | Original | see docs/AUDIT.md G3, G4, X2, V2b (head-shot ×4 still open) |
-| Sounds | Original (not played yet) | gun table `+0x24..+0x30` sound ids |
+| Sounds | Original | gun table `+0x20..+0x2C` sound ids; see AUDIT S1-S3 |
 | Knife | Original | slot 1, fire type 6: see AUDIT X15. A mission starts on slot 3 (0x449791), not the knife |
 
 ## Player and camera

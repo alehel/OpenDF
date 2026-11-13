@@ -380,3 +380,23 @@ load-time scale ×0x1d2b0/65536 (0x469270), posing 0x4701f4 / 0x46df64.
   parent matrix), rotations are absolute per part; M = T·Rz(yaw)·R(pitch)·Rx(roll).
 - Ground contact: the origin sits above the lowest touching contact point.
 - Hit spheres: part matrix × raw centre (no axis remap, as DF.EXE does).
+
+## PWF sound banks (SNIPER.PWF, DFDLGnn.PWF)
+
+Header: u32 header size (0x1C), "PWF2" (or "PWF1"), u32 sample count, …,
++0x10 offset of the definitions block (PWF2 only). Sample entries (52 bytes
+from the header size): name[24], u32 offset, u32 size. A sample is either a
+RIFF WAV (PWF1) or DF.EXE's converted form "SAMP" (0x48cfb0): u32 byte count
+at +4, rate byte at +0xB = rate·16/22050 (0x10 = 22050 Hz, 0x08 = 11025 Hz),
+sample shift +0xC (0), unsigned 8-bit mono PCM from +0x10 (the block keeps the
+original WAV's size).
+
+Definitions block: {u32 0x14, u32 count, u32 offset}; definition 0x50 bytes:
+name at +4, pitch base +0x1C and random range +0x20 (16.16), layer count +0x24,
+8 layer offsets +0x28, maximum distance +0x48 (m), flags +0x4C. Layer 0x30:
+u16 variants, u16 round-robin index, i32 range (m), u32 flags (0x1 positional
+pan, 0x10 variants in turn, 0x2/0x4 against the play mask 6), u32, 8 variant
+offsets at +0x10. Variant 28 bytes: u32 sample, pitch base and random range
+(16.16), gain, cap.
+
+LOOP.DEF: `"name" "wav" volume clip maxdist pitcha pitchb` (loose WAV files).

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <sstream>
 
 namespace df {
 
@@ -202,8 +204,109 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
             if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
     }
     for (int i = 0; i < 0x200; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
+    // LOOP.DEF: "name" "wav file" volume clip maxdist pitcha pitchb.
+    loopDefs_.clear();
+    if (vfs.read("LOOP.DEF", data)) {
+        std::string text(data.begin(), data.end()), line;
+        std::istringstream in(text);
+        while (std::getline(in, line)) {
+            std::vector<std::string> tok;
+            std::string cur;
+            bool quoted = false;
+            for (char c : line) {
+                if (c == '"') { quoted = !quoted; if (!quoted) { tok.push_back(cur); cur.clear(); } continue; }
+                if (!quoted && (c == ' ' || c == '\t' || c == ',' || c == '\r')) { if (!cur.empty()) tok.push_back(cur), cur.clear(); continue; }
+                cur += c;
+            }
+            if (!cur.empty()) tok.push_back(cur);
+            if (tok.size() < 5 || line.find('"') == std::string::npos) continue;
+            LoopDef l;
+            l.file = tok[1];
+            l.volume = std::atoi(tok[2].c_str());
+            l.clip = std::atoi(tok[3].c_str());
+            l.maxDistance = float(std::atof(tok[4].c_str()));
+            std::string key = tok[0];
+            for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+            loopDefs_[key] = l;
+        }
+    }
+    vfs_ = &vfs;
     audio_ = audio;
     return true;
+}
+
+int SoundSystem::direction(Vec3 at) const {
+    const float bearing = std::atan2(at.x - listener_.x, -(at.z - listener_.z));
+    float rel = bearing - listenerYaw_;
+    rel -= std::floor(rel / (2 * kPi)) * 2 * kPi;
+    return (255 - int(rel / (2 * kPi) * 256.f)) & 0xFF;
+}
+
+void SoundSystem::setLoop(int key, int id, Vec3 at) {
+    for (auto& e : emitters_)
+        if (e.key == key) { e.at = at; e.seen = true; return; }
+    emitters_.push_back({key, id, at, true, 0});
+}
+
+void SoundSystem::sweepLoops() {
+    for (auto& e : emitters_)
+        if (!e.seen && e.voice && audio_) audio_->stop(e.voice);
+    emitters_.erase(std::remove_if(emitters_.begin(), emitters_.end(), [](const Emitter& e) { return !e.seen; }),
+                    emitters_.end());
+    for (auto& e : emitters_) e.seen = false;
+}
+
+int SoundSystem::idOf(const std::string& name) const {
+    auto up = [](std::string s) { for (auto& c : s) c = char(std::toupper(static_cast<unsigned char>(c))); return s; };
+    const std::string n = up(name);
+    for (int i = 1; i < 0x200; ++i)
+        if (!names_[size_t(i)].empty() && up(names_[size_t(i)]) == n) return i;
+    return 0;
+}
+
+void SoundSystem::clearLoop(int key) {
+    for (auto& e : emitters_)
+        if (e.key == key && e.voice && audio_) audio_->stop(e.voice);
+    emitters_.erase(std::remove_if(emitters_.begin(), emitters_.end(), [&](const Emitter& e) { return e.key == key; }),
+                    emitters_.end());
+}
+
+void SoundSystem::updateLoops() {
+    if (!audio_ || (loopFrame_++ & 7)) return;
+    struct Live { Emitter* e; int vol; };
+    std::vector<Live> live;
+    for (auto& e : emitters_) {
+        const std::string& name = (e.id > 0 && e.id < 0x200) ? names_[size_t(e.id)] : std::string();
+        std::string key = name;
+        for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+        auto it = loopDefs_.find(key);
+        int vol = 0;
+        if (it != loopDefs_.end()) {
+            const float d = approxLength(e.at - listener_);
+            if (d < it->second.maxDistance)
+                vol = std::min(it->second.volume * kCurve[std::clamp(int(d / it->second.maxDistance * 256.f), 0, 255)] >> 8,
+                               it->second.clip);
+        }
+        live.push_back({&e, vol});
+    }
+    std::stable_sort(live.begin(), live.end(), [](const Live& a, const Live& b) { return a.vol > b.vol; });
+    for (size_t i = 0; i < live.size(); ++i) {
+        Emitter& e = *live[i].e;
+        const int vol = live[i].vol;
+        if (i >= 6 || vol <= 0) {
+            if (e.voice) audio_->stop(e.voice), e.voice = 0;
+            continue;
+        }
+        const int p = direction(e.at);
+        const float right = float(kPan[p][0]) * vol / (127.f * 255.f), left = float(kPan[p][1]) * vol / (127.f * 255.f);
+        if (e.voice && audio_->playing(e.voice)) audio_->setGains(e.voice, left, right);
+        else {
+            std::string key = names_[size_t(e.id)];
+            for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+            const SoundClip* clip = vfs_ ? audio_->clip(*vfs_, loopDefs_[key].file) : nullptr;
+            e.voice = audio_->play(clip, left, right, 1.f, vol, true, 1);
+        }
+    }
 }
 
 void SoundSystem::setListener(Vec3 pos, float yaw, const Terrain* terrain) {
@@ -273,11 +376,7 @@ void SoundSystem::play(int id, Vec3 at, float pitch) {
     // Direction byte: 0xFF - ((listener yaw - bearing) >> 24) in DF.EXE's
     // anticlockwise angles, i.e. the bearing relative to the heading,
     // anticlockwise, in 256ths of a turn.
-    const float bearing = std::atan2(at.x - listener_.x, -(at.z - listener_.z));   // clockwise from north
-    float rel = bearing - listenerYaw_;                                            // clockwise from the heading
-    rel -= std::floor(rel / (2 * kPi)) * 2 * kPi;
-    const int dir = (255 - int(rel / (2 * kPi) * 256.f)) & 0xFF;
-    start(def, d, dir, true, pitch);
+    start(def, d, direction(at), true, pitch);
 }
 
 void SoundSystem::play2D(int id) {
@@ -312,6 +411,7 @@ int SoundSystem::dialogLineTicks(const std::string& clip) {
 }
 
 void SoundSystem::stopAll() {
+    emitters_.clear();
     if (audio_) audio_->stopAll();
 }
 
