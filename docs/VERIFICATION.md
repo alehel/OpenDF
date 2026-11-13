@@ -67,7 +67,8 @@ when DF.EXE is missing or a different version.
 | Command map zoom | Footage | 0.75 px per metre at 640×480 |
 | Waypoint route, names, box, compass dot, map route | Original + footage | route = first BMS path with flag 2 (DF.EXE 0x447856); names = campaign text "Waypoint Names"/`WPN%03i` with the numbers at BMS header +0xAC; arrival radius = waypoint record +0x1C; advance rule 0x449a39; box format and distance 0x4838ac. Insurrection gives IP, CP ALPHA, CP BRAVO, OBJ BREEZE, CP CHARLIE, EP; route shape matches the footage's command map. `.JIM` files are not used by DF.EXE |
 | Distance at the start of Insurrection | **Open** | OpenDF shows "WP1: IP (29m)", footage "22m". DF.EXE picks the first player-start marker in single player (0x442c47), which is what OpenDF does; another start marker (id 381) would give 21 m |
-| Map route markers | Footage | circles at first/last point, diamonds between; footage shows no marker on the current target, not yet copied |
+| Map route markers | Original + footage | circles at first/last point, diamonds between; the current waypoint's marker blinks, shown while tick bit 4 is set (16 ticks on, 16 off; DF.EXE 0x43d975, counter 0xc70acc incremented per tick); footage ≈ 0.55 s cycle |
+| Map player marker | Footage | blue circle with heading line, not blinking |
 | "Next waypoint" key | Approximation | the original's default key is not identified yet; OpenDF uses Y |
 
 ## Mission events

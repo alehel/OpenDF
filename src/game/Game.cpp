@@ -175,6 +175,7 @@ private:
     DialogIndex dialogs_;                 // DFDLGnn.DBF
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
     float scriptClock_ = 0;
+    uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
     int missionResult_ = -1;              // winning side once the mission has ended
     int missionNumber_ = 0;               // m of CccMmm
     static constexpr int kPlayerTeam = 1, kPlayerSide = 1;
@@ -729,7 +730,9 @@ void Game::drawCommandMap(const Screen& s) {
     }
 
     // The route: a green polyline; circles at the first and last points,
-    // diamonds between (as in footage of the original).
+    // diamonds between (as in footage of the original). The current
+    // waypoint's marker blinks: shown while tick bit 4 is set, i.e. 16 ticks
+    // on, 16 off (DF.EXE 0x43d975; 0.53 s, as in footage).
     for (size_t i = 0; i < route_.size(); ++i) {
         auto at = [&](size_t k) {
             return std::pair<float, float>{x0 + w / 2 + float(route_[k].x - mx) * pxPerM,
@@ -741,6 +744,7 @@ void Game::drawCommandMap(const Screen& s) {
             auto [bx, by] = at(i + 1);
             hud_.line(ax, ay, bx, by, lw, grid);
         }
+        if (int(i) == routeIndex_ && !(ticks_ & 16)) continue;
         if (i == 0 || i + 1 == route_.size()) hud_.ring(ax, ay, e, lw, kHudGreen);
         else {
             hud_.line(ax - e, ay, ax, ay - e, lw, kHudGreen);
@@ -750,7 +754,7 @@ void Game::drawCommandMap(const Screen& s) {
         }
     }
 
-    // Known casualties in red; you as a green circle with a heading line.
+    // Known casualties in red; you as a blue circle with a heading line.
     for (const auto& o : world_.objects) {
         if (!o.dead) continue;
         Vec3 at = world_.nearest(o.pos, c);
@@ -760,8 +764,8 @@ void Game::drawCommandMap(const Screen& s) {
         hud_.line(sx - e, sy + e, sx + e, sy - e, std::max(1.f, s.u), kHudRed);
     }
     const float px = x0 + w / 2, py = y0 + h / 2;
-    hud_.ring(px, py, s.y(4), std::max(1.f, s.u), kHudGreen);
-    hud_.line(px, py, px + std::sin(player_.yaw) * s.y(12), py - std::cos(player_.yaw) * s.y(12), std::max(1.f, s.u), kHudGreen);
+    hud_.ring(px, py, s.y(4), std::max(1.f, s.u), kHudBlue);
+    hud_.line(px, py, px + std::sin(player_.yaw) * s.y(12), py - std::cos(player_.yaw) * s.y(12), std::max(1.f, s.u), kHudBlue);
 
     // Compass rose, lower right.
     const float rx = x0 + w - s.y(50), ry = y0 + h - s.y(50), rr = s.y(30);
@@ -988,8 +992,10 @@ int Game::run() {
             player_.update(dt, in, world_);
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
-            for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f)
+            for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
+                ++ticks_;
                 if (missionResult_ < 0) script_.tick(*this);
+            }
             std::vector<std::string> msgs;
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
             prevTrigger = trigger;
