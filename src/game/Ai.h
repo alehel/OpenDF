@@ -55,6 +55,9 @@ public:
     // The player's route (plyr 0x45a27c, every 64 ticks): points within
     // their radius count as reached for team = the player's side.
     void playerRoute(Vec3 origin, int side);
+    // For vehicles: the team's speed (m/s) and marking path points reached.
+    float teamSpeedMs(int team) const { return team >= 0 && team < 64 ? teamSpeed_[size_t(team)] * 1000.f / 3600.f : 0.f; }
+    void markReached(int team, int path, int point) { reached_[team * 128 + path] |= 1u << (point & 31); }
 
 private:
     struct Person {

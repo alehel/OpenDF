@@ -45,6 +45,7 @@ public:
     int play(const SoundClip* clip, float left, float right, float pitch = 1, int volume = 255, bool loop = false,
              int group = 0);
     void setGains(int voice, float left, float right);
+    void setPitch(int voice, float pitch);
     void stop(int voice);
     bool playing(int voice) const;
     void stopAll();

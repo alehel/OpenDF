@@ -264,10 +264,11 @@ int SoundSystem::direction(Vec3 at) const {
     return (255 - int(rel / (2 * kPi) * 256.f)) & 0xFF;
 }
 
-void SoundSystem::setLoop(int key, int id, Vec3 at) {
+void SoundSystem::setLoop(int key, int id, Vec3 at, float pitch) {
+    // The loop's pitch follows the thing (obj+0x20, 0x473bcd).
     for (auto& e : emitters_)
-        if (e.key == key) { e.at = at; e.seen = true; return; }
-    emitters_.push_back({key, id, at, true, 0});
+        if (e.key == key) { e.at = at; e.seen = true; e.pitch = pitch; return; }
+    emitters_.push_back({key, id, at, true, 0, pitch});
 }
 
 void SoundSystem::sweepLoops() {
@@ -321,12 +322,15 @@ void SoundSystem::updateLoops() {
         }
         const int p = direction(e.at);
         const float right = float(kPan[p][0]) * vol / (127.f * 255.f), left = float(kPan[p][1]) * vol / (127.f * 255.f);
-        if (e.voice && audio_->playing(e.voice)) audio_->setGains(e.voice, left, right);
+        if (e.voice && audio_->playing(e.voice)) {
+            audio_->setGains(e.voice, left, right);
+            audio_->setPitch(e.voice, e.pitch);
+        }
         else {
             std::string key = names_[size_t(e.id)];
             for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
             const SoundClip* clip = vfs_ ? audio_->clip(*vfs_, loopDefs_[key].file) : nullptr;
-            e.voice = audio_->play(clip, left, right, 1.f, vol, true, 1);
+            e.voice = audio_->play(clip, left, right, e.pitch, vol, true, 1);
         }
     }
 }

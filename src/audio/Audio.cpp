@@ -108,6 +108,12 @@ void Audio::setGains(int voice, float left, float right) {
         if (v.id == voice) { v.left = left; v.right = right; }
 }
 
+void Audio::setPitch(int voice, float pitch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& v : voices_)
+        if (v.id == voice) v.step = uint64_t(double(v.clip->rate) * pitch / kRate * 4294967296.0);
+}
+
 void Audio::stop(int voice) {
     std::lock_guard<std::mutex> lock(mutex_);
     voices_.erase(std::remove_if(voices_.begin(), voices_.end(), [&](const Voice& v) { return v.id == voice; }), voices_.end());

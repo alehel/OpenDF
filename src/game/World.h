@@ -55,6 +55,7 @@ struct WorldObject {
     int killer = -1;                   // who killed it (obj+0xf8; -3 the player)
     int weaponMode = 0;                // people: the weapon held (obj+0x94, player-table mode)
     float aimPitch = 0;                // people: aim pitch (obj+0x34), radians, up positive
+    float pitch = 0, roll = 0;         // vehicles: body pitch (nose up +) and roll (right side down +), radians
     bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;

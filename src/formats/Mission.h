@@ -22,7 +22,10 @@ struct ItemDef {
     int hp = 0, damageClass = 0;
     std::string aiFunction;   // `ai_function` (brrl: explosive barrel, sgen: smoke generator, ...)
     int interruptSound = 0;
-    int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)   // `interrupt_sound_id`: sound id the object repeats (ambience)
+    int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)
+    // Vehicles (parser 0x448cec): `acceleration` (m/s^2 at 64 ticks/s,
+    // item +0xdc), `turn_rate` (degrees/s, +0xe0), `axle_dist` (m, +0xe4).
+    float acceleration = 0, turnRate = 0, axleDist = 0;   // `interrupt_sound_id`: sound id the object repeats (ambience)
 };
 
 class ItemDefs {

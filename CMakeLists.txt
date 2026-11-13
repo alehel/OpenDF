@@ -43,6 +43,7 @@ add_executable(opendf
   src/game/Moves.cpp
   src/game/Script.cpp
   src/game/Sound.cpp
+  src/game/Vehicles.cpp
   src/game/Weapons.cpp
   src/game/World.cpp
   src/render/Gl.cpp

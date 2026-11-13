@@ -58,7 +58,7 @@ public:
     // Looping sounds (LOOP.DEF, 0x473960 / 0x473a8c): an emitter per thing
     // (`key`), refreshed every 8 frames: volume = min(volume x curve(d /
     // maxdist) >> 8, clip), no occlusion; the 6 loudest play.
-    void setLoop(int key, int id, Vec3 at);
+    void setLoop(int key, int id, Vec3 at, float pitch = 1);
     void clearLoop(int key);
     void updateLoops();
     // Ends the loops not set since the previous sweep.
@@ -68,7 +68,7 @@ public:
 
 private:
     struct LoopDef { std::string file; int volume = 255, clip = 255; float maxDistance = 100; };
-    struct Emitter { int key, id; Vec3 at; bool seen; int voice; };
+    struct Emitter { int key, id; Vec3 at; bool seen; int voice; float pitch; };
     std::map<std::string, LoopDef> loopDefs_;
     std::vector<Emitter> emitters_;
     Vfs* vfs_ = nullptr;

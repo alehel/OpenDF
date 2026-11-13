@@ -58,6 +58,16 @@ bool segmentBox(Vec3 p0, Vec3 p1, const CollisionBox& b, float& tHit) {
 
 Mat4 WorldObject::matrix(Vec3 at) const {
     Mat4 m = translate(at) * rotateY(kPi * 0.5f - heading);
+    // Vehicles: pitch about the sideways axis (model +Z), roll about the
+    // length (model +X).
+    if (pitch != 0) {
+        Mat4 r;
+        const float c = std::cos(pitch), s = std::sin(pitch);
+        r.at(0, 0) = c; r.at(0, 1) = -s;
+        r.at(1, 0) = s; r.at(1, 1) = c;
+        m = m * r;
+    }
+    if (roll != 0) m = m * rotateX(roll);
     if (fall > 0) {
         // Topple backwards about the model's sideways axis, lifted a little
         // so the body lies on the ground rather than in it.

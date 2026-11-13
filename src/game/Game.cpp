@@ -13,6 +13,7 @@
 #include "Script.h"
 #include "Sound.h"
 #include "Ai.h"
+#include "Vehicles.h"
 #include "Moves.h"
 #include "Weapons.h"
 #include "World.h"
@@ -221,12 +222,13 @@ private:
     Audio audio_;
     SoundSystem sound_;
     AiSystem ai_;
+    VehicleSystem vehicles_;
     // ScriptHost: the AI's conditions and actions.
     bool teamSpotted(int team, int targetTeam) const override { return ai_.spotted(team, targetTeam); }
     bool teamEngaging(int team) const override { return ai_.engaging(team); }
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
-    void followPath(int team, int path) override { ai_.followPath(world_, team, path); }
+    void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
     void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
     void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
     void playSound(int id, Vec3 at) { sound_.play(id, at); }
@@ -249,7 +251,8 @@ private:
                                         float aimPitch = 0);
     Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
-    void explode(Vec3 at, int surface, bool heavy = false);   // surface: 0 terrain, 1 object, 2 water
+    void explode(Vec3 at, int surface, bool heavy = false);
+    void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
     void spawnPuff(Vec3 at);
     void tickEffects();
     std::mt19937 effectRng_{1998};
@@ -325,6 +328,8 @@ bool Game::loadMission(int index) {
     models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
     ai_.init(world_, mission_);
+    vehicles_.init(world_, mission_);
+    vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
 
     player_ = Player{};
     player_.moves = &playerMoves_;
@@ -731,33 +736,37 @@ void Game::tickEffects() {
                      smokeGens_.end());
     for (auto& o : world_.objects)
         if (o.detonate > 0 && --o.detonate == 0) {
-            // 0x46cb64: the barrel's blast and smoke generator, then its
-            // shrapnel (0x44d730), two groups of 5: yaw heading + a random
-            // turn, pitch rand<<15 (0..180°) for the first group and rand<<16
-            // (a full turn) for the second; speed ((rand·2) | 0x100)·20 >> 6
-            // (16.16 m per tick, up to 18.75 m/s); flags 0x20, 400 ticks,
-            // power 1, falloff 64. (rand = 0..0x7fff doubled, 0x435db4.)
             o.detonate = -1;
-            explode(o.pos, 0);
-            std::uniform_int_distribution<int> r(0, 0x7fff);
-            for (int group = 0; group < 2; ++group)
-                for (int k = 0; k < 5; ++k) {
-                    const uint32_t yawBits = uint32_t(std::lround(o.heading / (2 * kPi) * 4294967296.0)) +
-                                             (uint32_t(r(effectRng_) * 2) << 16);
-                    const uint32_t pitchBits = uint32_t(r(effectRng_) * 2) << (group ? 16 : 15);
-                    const float yaw = float(yawBits) / 4294967296.f * 2 * kPi;
-                    const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
-                    const float speed = float(((r(effectRng_) * 2) | 0x100) * 20 >> 6) / 65536.f * 60.f;   // m/s
-                    Projectile p;
-                    p.pos = o.pos;
-                    p.from = o.pos;
-                    p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
-                    p.lifetime = 0x190;
-                    p.power = 1;
-                    p.falloff = 0x40;
-                    p.flags = 0x20;
-                    arsenal_.addProjectile(p);
-                }
+            detonate(o.pos, 10, o.heading);
+        }
+}
+
+// 0x46cb64: a blast (effect 3, blast type 1, sound 0x32) and smoke
+// generator, then n shrapnel rounds (0x44d730) in two groups: yaw heading +
+// a random turn, pitch rand<<15 (0..180 degrees) for the first half and
+// rand<<16 (a full turn) for the second; speed ((rand*2) | 0x100) * 20 >> 6
+// (16.16 m per tick, up to 18.75 m/s); flags 0x20, 400 ticks, power 1,
+// falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
+void Game::detonate(Vec3 at, int shrapnel, float heading) {
+    explode(at, 0);
+    std::uniform_int_distribution<int> r(0, 0x7fff);
+    for (int group = 0; group < 2; ++group)
+        for (int k = 0; k < shrapnel / 2; ++k) {
+            const uint32_t yawBits = uint32_t(std::lround(heading / (2 * kPi) * 4294967296.0)) + (uint32_t(r(effectRng_) * 2) << 16);
+            const uint32_t pitchBits = uint32_t(r(effectRng_) * 2) << (group ? 16 : 15);
+            const float yaw = float(yawBits) / 4294967296.f * 2 * kPi;
+            const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
+            const float speed = float(((r(effectRng_) * 2) | 0x100) * 20 >> 6) / 65536.f * 60.f;   // m/s
+            Projectile p;
+            p.pos = at;
+            p.from = at;
+            p.shooter = -1;
+            p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
+            p.lifetime = 0x190;
+            p.power = 1;
+            p.falloff = 0x40;
+            p.flags = 0x20;
+            arsenal_.addProjectile(p);
         }
 }
 
@@ -1816,6 +1825,7 @@ int Game::run() {
                 static const int rocket = sound_.idOf("ROCKET1");
                 for (const auto& p : arsenal_.projectiles())
                     if (p.flags & 0x40) sound_.setLoop(p.id, rocket, p.pos);
+                vehicles_.sounds(world_, ai_, sound_);
                 sound_.sweepLoops();
                 sound_.updateLoops();
             }
@@ -1856,6 +1866,7 @@ int Game::run() {
                     pv.side = kPlayerSide;
                     pv.team = kPlayerTeam;
                     ai_.tick(world_, arsenal_, sound_, pv);
+                    vehicles_.tick(world_, ai_, arsenal_, sound_, {pv.alive, pv.origin, pv.side});
                 }
                 // plyr (0x45a27c): every 64 ticks the route's points count as
                 // reached for the player's side.
