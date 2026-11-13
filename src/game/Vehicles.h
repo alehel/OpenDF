@@ -29,6 +29,12 @@ public:
     std::function<void(Vec3 at, int shrapnel, float heading)> detonate;
     // Engine / rotor loops, every frame.
     void sounds(const World& world, const AiSystem& ai, SoundSystem& sound) const;
+    // Moving vehicles and their speeds (m/s), e.g. for claymore sensors.
+    std::vector<std::pair<int, float>> moving() const {
+        std::vector<std::pair<int, float>> out;
+        for (const auto& v : vehicles_) if (!v.dead && !v.helo) out.push_back({v.object, std::abs(v.speed)});
+        return out;
+    }
     // Script "follow path" for vehicles (0x46bbe8).
     void followPath(World& world, int team, int path);
 

@@ -895,6 +895,11 @@ void Game::tickCharges() {
             const AnimMove* mv = n ? q.moves->find(n) : nullptr;
             hit = sees(q.pos, mv ? mv->velocity : 0.f, 1.1f);
         }
+        // Vehicles moving at 0.2 m/s or more (target z + 1 m).
+        for (const auto& [obj, speed] : vehicles_.moving()) {
+            if (hit) break;
+            hit = sees(world_.objects[size_t(obj)].pos + Vec3{0, 1, 0}, speed, 0.2f);
+        }
         if (hit) c.fuse = 32;
     }
     if (laserWindow_ > 0) --laserWindow_;
