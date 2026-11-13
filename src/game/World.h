@@ -95,7 +95,7 @@ public:
     // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
     // whatever the armour; no line of sight; among objects only the piranha
     // (item 4048) is hurt.
-    std::vector<std::string> stab(Vec3 at);
+    std::vector<std::string> stab(Vec3 at, Vec3 attacker);
 
     // Applies damage from a bullet. Returns a short message when something
     // is destroyed or killed, empty otherwise.

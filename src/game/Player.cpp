@@ -105,6 +105,11 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         } else {
             speed_ = fallback;
         }
+        move_ = move;
+    } else {
+        // Standing still: the stance's pose (_S_ while the refire time runs).
+        const char* base = stance == Stance::Prone ? "Prone" : stance == Stance::Crouch ? "Crouched" : "Standing";
+        move_ = std::string(base) + (in.shooting && stance == Stance::Stand ? "_S" : "") + (oneHanded ? "_1HW" : "_2HW");
     }
 
     // Terrain gradient (DF.EXE 0x4332ac) for sliding and uphill walking.
@@ -199,6 +204,7 @@ float Player::landOrigin() const {
 void Player::updateInWater(float dt, const PlayerInput& in, const World& world, float water) {
     swimMove_ = in.forward > 0;
     moving_ = swimMove_;
+    move_ = swimMove_ ? "Swimming" : "Floating";
     const float poseOrigin = swimMove_ ? swimOrigin : floatOrigin;
     eyeOffset_ = kWaterEye + (eyeOffset_ - kWaterEye) * std::pow(0.9f, dt * 60.f);
     vy_ *= std::pow(kWaterDrag, dt * 60.f);

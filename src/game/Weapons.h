@@ -67,6 +67,7 @@ struct Projectile {
     int power = 1, falloff = 30;
     int flags = 0;              // gun +0x30
     int id = 0;                 // unique, for sounds that follow it
+    Vec3 from{0, 0, 0};         // where it was fired from (the attacker, for death moves)
     float tickClock = 0;
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }

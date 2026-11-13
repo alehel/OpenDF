@@ -435,6 +435,7 @@ void Arsenal::fire(Player& player) {
     p.falloff = g.falloff;
     p.flags = g.flags;
     p.id = ++projectileIds_;
+    p.from = player.origin();
     bullets_.push_back(p);
     // The shot (gun +0x20, 0x44d5fe) at the muzzle. A burst sounds once:
     // the first round carries the burst gun's sound, the others none.
@@ -566,7 +567,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
                 if (hit.object >= 0)
-                    world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power);
+                    world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
+                                 world.deathMove(hit.object, 1, std::max(0, hit.part), b.from));
                 b.age = b.lifetime;
                 break;
             }

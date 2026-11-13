@@ -223,6 +223,10 @@ private:
     int playerHp_ = 4;                    // character word +0x74
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
     void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0});
+    // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
+    // 0x12-0x16 (0x473f70, slots 7-11) of a body at `origin`.
+    void animEvent(int event, Vec3 origin, int phraseSet);
+    std::string playerMove_;
     Chr playerChr_;
     Animator playerBody_;
     // The camera: the player's eye, or once dead the orbit around the body
@@ -321,6 +325,7 @@ bool Game::loadMission(int index) {
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
         playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
         playerBody_ = Animator{};
+        playerMove_.clear();
         damageFlash_ = 0;
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
@@ -571,6 +576,29 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
     return out;
 }
 
+void Game::animEvent(int event, Vec3 origin, int phraseSet) {
+    event &= 0xFF;
+    if (event >= 0x12 && event <= 0x16) {
+        sound_.voice(phraseSet, 7 + event - 0x12, origin);
+        return;
+    }
+    if (event < 0x40 || event > 0x43) return;
+    // 0x46a680: the sound set by the event's low bit; in water (level above
+    // origin - 0.8 m) a splash (effect 2) and 0x88 / 0x89 on the surface;
+    // else by the ground's surface type.
+    const bool set1 = !(event & 1);
+    const float water = terrain_.waterLevel();
+    if (water != 0 && origin.y - 0.8f < water) {
+        const Vec3 at{origin.x, water, origin.z};
+        spawnEffect(2, at);
+        playSound(set1 ? SoundSystem::FsWaterR : SoundSystem::FsWaterL, at);
+        return;
+    }
+    const int surface = terrain_.surfaceAt(origin.x, origin.z);
+    static const int ids1[7] = {0x82, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82}, ids0[7] = {0x83, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83};
+    playSound((set1 ? ids1 : ids0)[std::clamp(surface, 0, 6)], origin);
+}
+
 // Damage to the player (0x44fe9e blast, 0x44f2b2 bullets): hit points, and
 // the red flash +0x78 up to 0xFF (0x44b6d0).
 void Game::hurtPlayer(int amount, int deathType, Vec3 from) {
@@ -680,6 +708,7 @@ void Game::tickEffects() {
                     const float speed = float(((r(effectRng_) * 2) | 0x100) * 20 >> 6) / 65536.f * 60.f;   // m/s
                     Projectile p;
                     p.pos = o.pos;
+                    p.from = o.pos;
                     p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
                     p.lifetime = 0x190;
                     p.power = 1;
@@ -1636,13 +1665,27 @@ int Game::run() {
                     if (o.item && o.item->id - 100000 == d.first) playSound(d.second, o.pos);
             }
             for (const auto& at : arsenal_.takeStabs())
-                for (auto& m : world_.stab(at)) messages_.push_back({m, 0});
+                for (auto& m : world_.stab(at, player_.origin())) messages_.push_back({m, 0});
             for (const auto& sp : player_.takeSpawns()) spawnEffect(sp.slot, sp.pos);
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
                 tickEffects();
                 tickDialogs();
-                if (playerDead() && (ticks_ & 1)) playerBody_.tick(playerChr_);
+                // The player's body animates like any soldier's (30 Hz): the
+                // current move's animation, whose events make footsteps.
+                if (ticks_ & 1) {
+                    if (!playerDead() && player_.move() != playerMove_) {
+                        playerMove_ = player_.move();
+                        if (const AnimMove* mv = playerMoves_.find(playerMove_)) playerBody_.start(playerChr_, mv->animation);
+                    }
+                    const int ev = playerBody_.tick(playerChr_);
+                    const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
+                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0);
+                }
+                for (const auto& e : world_.takeAnimEvents()) {
+                    const auto& o = world_.objects[size_t(e.object)];
+                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0);
+                }
                 // Ambience: dec0 (towers, bridges) and trees/palms every
                 // (5..8) x 64 ticks at 4 m above the object; sound objects
                 // snd0 (20..25), snd1 (8..11), snd2 (3..4) x 64 ticks.

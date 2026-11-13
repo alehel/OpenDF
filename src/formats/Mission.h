@@ -21,7 +21,8 @@ struct ItemDef {
     // from which items use which value.
     int hp = 0, damageClass = 0;
     std::string aiFunction;   // `ai_function` (brrl: explosive barrel, sgen: smoke generator, ...)
-    int interruptSound = 0;   // `interrupt_sound_id`: sound id the object repeats (ambience)
+    int interruptSound = 0;
+    int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)   // `interrupt_sound_id`: sound id the object repeats (ambience)
 };
 
 class ItemDefs {

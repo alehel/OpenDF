@@ -51,6 +51,9 @@ public:
     // Length of a dialog line in 60 Hz ticks (0 if missing).
     int dialogLineTicks(const std::string& clip);
     void stopAll();
+    // Voice line (0x473f70): sound of `slot` (1-11) in voice set `set`
+    // (table 0x4F019C, 12 per set), at 1 m above `at`.
+    void voice(int set, int slot, Vec3 at);
 
     // Looping sounds (LOOP.DEF, 0x473960 / 0x473a8c): an emitter per thing
     // (`key`), refreshed every 8 frames: volume = min(volume x curve(d /
@@ -84,6 +87,7 @@ private:
     float listenerYaw_ = 0;
     const Terrain* terrain_ = nullptr;
     uint32_t seed_ = 0x2B0749C1;
+    std::vector<int> phrases_;   // 0x4F019C
 };
 
 } // namespace df

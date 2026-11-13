@@ -204,6 +204,28 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
             if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
     }
     for (int i = 0; i < 0x200; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
+    // Voice sets (0x4F019C: 16 sets of 12 sound ids).
+    phrases_.assign(16 * 12, 0);
+    bool phrasesOk = false;
+    if (exe && exe->loaded()) {
+        phrasesOk = true;
+        for (uint32_t i = 0; i < 16 * 12; ++i) {
+            int32_t v = 0;
+            if (!exe->i32(0x4F019C + 4 * i, v)) { phrasesOk = false; break; }
+            phrases_[i] = v;
+        }
+        phrasesOk = phrasesOk && phrases_[12 + 1] == 150;
+    }
+    if (!phrasesOk) {
+        // Built-in copy: sets 1-12 slots 1-11 = 150 + 11 (set - 1) + slot - 1
+        // (set 11 slot 8 is 237 in DF.EXE); sets 13-15 slots 7-11 only.
+        phrases_.assign(16 * 12, 0);
+        for (int st = 1; st <= 12; ++st)
+            for (int k = 1; k <= 11; ++k) phrases_[size_t(st * 12 + k)] = 150 + 11 * (st - 1) + k - 1;
+        phrases_[11 * 12 + 8] = 237;
+        for (int st = 13; st <= 15; ++st)
+            for (int k = 7; k <= 11; ++k) phrases_[size_t(st * 12 + k)] = 401 + (st - 13) * 10 + k - 7;
+    }
     // LOOP.DEF: "name" "wav file" volume clip maxdist pitcha pitchb.
     loopDefs_.clear();
     if (vfs.read("LOOP.DEF", data)) {
@@ -408,6 +430,12 @@ int SoundSystem::dialogLineTicks(const std::string& clip) {
     const int i = dialogs_.sampleIndex(clip);
     const SoundClip* c = i >= 0 ? dialogs_.clip(i) : nullptr;
     return c && c->rate > 0 ? int(c->samples.size() * 60 / size_t(c->rate)) : 0;
+}
+
+void SoundSystem::voice(int set, int slot, Vec3 at) {
+    if (set < 0 || set >= 16 || slot < 0 || slot >= 12) return;
+    const int id = phrases_.empty() ? 0 : phrases_[size_t(set * 12 + slot)];
+    if (id > 0) play(id, at + Vec3{0, 1.f, 0});
 }
 
 void SoundSystem::stopAll() {

@@ -10,6 +10,7 @@
 #include "../formats/Anm.h"
 #include "World.h"
 
+#include <string>
 #include <vector>
 
 namespace df {
@@ -59,11 +60,14 @@ public:
     // Body origin (the pelvis; DF.EXE's object z): what blasts measure to.
     Vec3 origin() const { return inWater_ ? Vec3{feet.x, originY_, feet.z} : Vec3{feet.x, feet.y + landOrigin(), feet.z}; }
     bool moving() const { return moving_; }
+    // The move being played (an .ANM name), for the body's animation.
+    const std::string& move() const { return move_; }
     float speed() const { return speed_; }
 
 private:
     void updateInWater(float dt, const PlayerInput& in, const World& world, float water);
 
+    std::string move_ = "Standing_2HW";
     float eyeHeight_ = 1.7558f;
     // In water (DF.EXE obj+0x6e bit 2) the body origin is tracked directly
     // and the eye sits eyeOffset_ above it.

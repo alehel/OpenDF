@@ -391,7 +391,9 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
                 d *= 2;
             }
             const int amount = d < 4 ? 4 : d < 8 ? 2 : 1;
-            std::string m = damage(int(i), amount);
+            // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8).
+            const int type = (d >= 4 && d < 8 && (std::rand() & 3) == 0) ? 3 : 2;
+            std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at));
             if (!m.empty()) out.push_back(m);
             continue;
         }
@@ -430,7 +432,7 @@ void World::update(float dt) {
     }
 }
 
-std::vector<std::string> World::stab(Vec3 at) {
+std::vector<std::string> World::stab(Vec3 at, Vec3 attacker) {
     std::vector<std::string> out;
     for (size_t i = 0; i < objects.size(); ++i) {
         WorldObject& o = objects[i];
@@ -438,7 +440,8 @@ std::vector<std::string> World::stab(Vec3 at) {
         const Vec3 v = nearest(o.pos, at) - at;
         const float d = std::sqrt(dot(v, v));
         if (o.person ? d > 2.f : (!o.item || o.item->id != 104048 || d > 1.f)) continue;
-        std::string m = damage(int(i), 8);
+        // Death move 0x46c920(obj, 2, dir, 1): type 1, part 2 -> 0xC6 + dir.
+        std::string m = damage(int(i), 8, 99, o.person ? deathMove(int(i), 1, 2, attacker) : -1);
         if (std::getenv("OPENDF_DEBUGHITS")) std::fprintf(stderr, "stab hits %s at %.2f m\n", o.item ? o.item->name.c_str() : "?", d);
         if (!m.empty()) out.push_back(m);
     }
