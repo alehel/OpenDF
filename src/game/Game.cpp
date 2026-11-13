@@ -285,6 +285,10 @@ bool Game::loadMission(int index) {
         if (const int r = loadoutRow(o_.primary); r >= 0) lo.primary = r;
         if (const int r = loadoutRow(o_.secondary); r >= 0) lo.kit = r;
         arsenal_.init(gameText_, &exe_, &items_, lo);
+        arsenal_.modelPoints = [this](const std::string& name) -> const std::vector<std::array<float, 3>>* {
+            const GpuModel* m = name.empty() ? nullptr : models_.get(vfs_, name);
+            return m ? &m->points : nullptr;
+        };
     }
     // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
     {
@@ -531,10 +535,32 @@ void Game::tickEffects() {
                      smokeGens_.end());
     for (auto& o : world_.objects)
         if (o.detonate > 0 && --o.detonate == 0) {
-            // 0x46cb64: the barrel's blast; its shrapnel (10 pieces) and smoke
-            // generator. Shrapnel: not yet.
+            // 0x46cb64: the barrel's blast and smoke generator, then its
+            // shrapnel (0x44d730), two groups of 5: yaw heading + a random
+            // turn, pitch rand<<15 (0..180°) for the first group and rand<<16
+            // (a full turn) for the second; speed ((rand·2) | 0x100)·20 >> 6
+            // (16.16 m per tick, up to 18.75 m/s); flags 0x20, 400 ticks,
+            // power 1, falloff 64. (rand = 0..0x7fff doubled, 0x435db4.)
             o.detonate = -1;
             explode(o.pos, 0);
+            std::uniform_int_distribution<int> r(0, 0x7fff);
+            for (int group = 0; group < 2; ++group)
+                for (int k = 0; k < 5; ++k) {
+                    const uint32_t yawBits = uint32_t(std::lround(o.heading / (2 * kPi) * 4294967296.0)) +
+                                             (uint32_t(r(effectRng_) * 2) << 16);
+                    const uint32_t pitchBits = uint32_t(r(effectRng_) * 2) << (group ? 16 : 15);
+                    const float yaw = float(yawBits) / 4294967296.f * 2 * kPi;
+                    const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
+                    const float speed = float(((r(effectRng_) * 2) | 0x100) * 20 >> 6) / 65536.f * 60.f;   // m/s
+                    Projectile p;
+                    p.pos = o.pos;
+                    p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
+                    p.lifetime = 0x190;
+                    p.power = 1;
+                    p.falloff = 0x40;
+                    p.flags = 0x20;
+                    arsenal_.addProjectile(p);
+                }
         }
 }
 

@@ -354,10 +354,11 @@ void Arsenal::fire(Player& player) {
     }
     Vec3 dir{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
 
-    // Origin (0x449abc / 0x44b420): zoomed guns fire from the eye along the
-    // view (with the zoom's aim offset); otherwise from the first-person
-    // model (APPROXIMATION: its origin at the table offset, not the muzzle
-    // vertex +0x90). Launchers always fire from the model (0x44a120).
+    // Origin (0x449abc / 0x44b420 / 0x44b4a0): zoomed guns fire from the
+    // eye along the view (with the zoom's aim offset); otherwise from the
+    // first-person model's muzzle point (vertex +0x90 of the model, placed
+    // at the table offset plus the kick, aligned with the view). Launchers
+    // always fire from the model (0x44a120).
     Vec3 origin;
     if (zoomLevel_ && md.type == 1) {
         const float sy = yaw + scopeYaw_, sp = pitch + scopePitch_;
@@ -368,8 +369,18 @@ void Arsenal::fire(Player& player) {
         const Vec3 right{std::cos(player.yaw), 0, std::sin(player.yaw)};
         const Vec3 up = normalize(Vec3{right.y * fwd.z - right.z * fwd.y, right.z * fwd.x - right.x * fwd.z,
                                        right.x * fwd.y - right.y * fwd.x});
-        const float f = md.offset[0] / 256.f + kick_[0], l = md.offset[1] / 256.f + kick_[1],
-                    u = md.offset[2] / 256.f + kick_[2];
+        float f = md.offset[0] / 256.f + kick_[0], l = md.offset[1] / 256.f + kick_[1], u = md.offset[2] / 256.f + kick_[2];
+        // Model axes: x along the barrel, y up, z right.
+        if (const auto* pts = modelPoints ? modelPoints(md.viewModel) : nullptr;
+            pts && md.muzzleVertex >= 0 && md.muzzleVertex < int(pts->size())) {
+            const auto& q = (*pts)[size_t(md.muzzleVertex)];
+            f += q[0];
+            l -= q[2];
+            u += q[1];
+            if (std::getenv("OPENDF_DEBUGHITS"))
+                std::fprintf(stderr, "muzzle %s vertex %d: forward %.3f left %.3f up %.3f\n", md.viewModel.c_str(), md.muzzleVertex,
+                             f, l, u);
+        }
         origin = player.eye() + fwd * f - right * l + up * u;
     }
     // Speed: velocity · 65536 / 62 per tick (0x44d450).

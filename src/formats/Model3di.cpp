@@ -146,7 +146,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t nOff = q; q += size_t(nn) * 8;
         const size_t fOff = q; q += size_t(nf) * 72;
         const size_t mOff = q; q += size_t(nm) * layout.mesh;
-        q += size_t(nh) * 12;                  // hardpoints (unused for now)
+        const size_t hOff = q; q += size_t(nh) * 12;   // hardpoints
         const size_t volOff = q; q += size_t(nvol) * 72;
         const size_t matOff = q; q += size_t(nmat) * 76;
         if (!r.ok(p + layout.lodHeader, q - (p + layout.lodHeader))) return fail("truncated LOD data");
@@ -187,6 +187,11 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
 
         ModelLod lod;
         lod.materialTextures = matTextures;
+        // Hardpoints: i32 x, y, z in 16.16 metres, file axes as the vertices.
+        for (uint32_t i = 0; i < nh; ++i) {
+            const size_t o = hOff + size_t(i) * 12;
+            lod.points.push_back({r.i32(o) / 65536.f, r.i32(o + 8) / 65536.f, -r.i32(o + 4) / 65536.f});
+        }
         lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre

@@ -248,6 +248,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     }
     g->radius = std::max(std::sqrt(r2), 0.1f);
     g->collision = src.lods[0].collision;
+    g->points = src.lods[0].points;
     {
         size_t most = 0;
         for (const auto& b : src.lods[0].batches)

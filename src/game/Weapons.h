@@ -13,6 +13,7 @@
 #include "World.h"
 
 #include <array>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -126,6 +127,12 @@ public:
     float scopePitch() const { return scopePitch_; }
     float flash() const { return flashTimer_; }
     const std::vector<Projectile>& projectiles() const { return bullets_; }
+    // Rounds not fired by the player's weapon (shrapnel); they hit and do
+    // damage like any other.
+    void addProjectile(const Projectile& p) { bullets_.push_back(p); }
+    // The first-person model's points (LOD 0 vertices in file order) by
+    // graphic name, for the muzzle (player table +0x90); null if unknown.
+    std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
 
 private:

@@ -59,6 +59,10 @@ struct ModelLod {
     int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
+    // Hardpoints (LOD header +0xA0, 12 bytes: i32 x, y, z in 16.16 m),
+    // OpenDF axes, metres: DF.EXE's model +0xa4 point list (the
+    // first-person muzzle is point +0x90 of the player table, 0x44b4a0).
+    std::vector<std::array<float, 3>> points;
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
 };

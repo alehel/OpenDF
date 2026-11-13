@@ -128,7 +128,7 @@ LOD × count, each: header (v5: 184 bytes, v2-v4: 176) then data
     mesh   112 bytes (v5; v3-4 104, v2 88)  u32 vertices @0x04, faces @0x0C, normals @0x14
                        faces are consumed mesh by mesh in order; add the running
                        vertex/normal totals of earlier meshes to the indices
-    hardpoint 12 bytes i32 x, y, z (/256)
+    hardpoint 12 bytes i32 x, y, z (16.16 m; first-person muzzles: DF.EXE 0x44b4a0)
     volume  72 bytes   collision volume (v5), all values 16.16 metres in file axes:
                        u32 type (1 box, 3 cylinder); 0; centre x, y, z @0x08;
                        radii @0x14; half-extents x, y, z @0x20; 0;

@@ -29,7 +29,7 @@ when DF.EXE is missing or a different version.
 | Reload time and rules | Original | 0x44a004: 0x78 = 120 ticks, the rounds left are discarded; 0x449f58: the empty magazine starts the reload. Launchers and grenades: the next round after the cooldown (0x44a318). Chambering after a reload into an empty chamber: inferred |
 | Weapon text red | Original | 0x44b0a0 / 0x44b164: while reloading or with no ammunition at all |
 | Ammunition readout | Original | 0x483447 by fire type: guns spares (with glyph) / magazine / chamber bar; launchers and grenades: rounds left / chamber bar at 140; icon frame per mode (0x484ae8) |
-| M203 and LAW | Original | fire type 2 (0x44a120): from the model, no spread, kick 0x4000 back (the random drop's range is inferred); M203 rounds arm after 8 ticks (before: a bullet-like hit, effect 5 on objects), blast type 1; the LAW no gravity, arms at once, blast type 3 out of the water; no first-person model for the LAW (item 0). Rounds leave from the model's table offset, not muzzle vertex +0x90 (APPROXIMATION) |
+| M203 and LAW | Original | fire type 2 (0x44a120): from the model, no spread, kick 0x4000 back (the random drop's range is inferred); M203 rounds arm after 8 ticks (before: a bullet-like hit, effect 5 on objects), blast type 1; the LAW no gravity, arms at once, blast type 3 out of the water; no first-person model for the LAW (item 0). Rounds leave from the first-person model's hardpoint +0x90 (0x44b4a0) |
 | Spread, damage, recoil | Original | see docs/AUDIT.md G3, G4, X2, V2b (head-shot ×4 still open) |
 | Sounds | Original (not played yet) | gun table `+0x24..+0x30` sound ids |
 | Starting with the knife in hand | Not implemented | knife missing |
