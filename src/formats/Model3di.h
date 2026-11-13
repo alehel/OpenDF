@@ -63,6 +63,10 @@ struct ModelLod {
     // OpenDF axes, metres: DF.EXE's model +0xa4 point list (the
     // first-person muzzle is point +0x90 of the player table, 0x44b4a0).
     std::vector<std::array<float, 3>> points;
+    // Per mesh: parent mesh (+0x24) and pivot (+0x34, 16.16, absolute,
+    // OpenDF axes). People have one mesh per .CHR part, posed about these.
+    std::vector<int> meshParent;
+    std::vector<std::array<float, 3>> meshPivot;
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
 };

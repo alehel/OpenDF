@@ -19,6 +19,8 @@ public:
     // Reads a 32-bit value at a virtual address; false if it is not mapped.
     bool u32(uint32_t va, uint32_t& out) const;
     bool i32(uint32_t va, int32_t& out) const;
+    // A zero-terminated string of at most `max` bytes at a virtual address.
+    std::string str(uint32_t va, size_t max) const;
 
 private:
     struct Section { uint32_t va, size, fileOffset, fileSize; };

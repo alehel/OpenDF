@@ -12,6 +12,7 @@
 #include "Player.h"
 #include "Script.h"
 #include "Sound.h"
+#include "Moves.h"
 #include "Weapons.h"
 #include "World.h"
 
@@ -221,10 +222,13 @@ private:
     std::vector<SmokeGen> smokeGens_;
     int playerHp_ = 4;                    // character word +0x74
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
-    void hurtPlayer(int amount);
+    void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0});
+    Chr playerChr_;
+    Animator playerBody_;
     // The camera: the player's eye, or once dead the orbit around the body
     // (0x404104 / 0x481224).
     Vec3 viewEye() const;
+    static std::vector<Mat4> personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns);
     Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
     void explode(Vec3 at, int surface, bool heavy = false);   // surface: 0 terrain, 1 object, 2 water
@@ -316,6 +320,8 @@ bool Game::loadMission(int index) {
     {
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
         playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
+        playerBody_ = Animator{};
+        damageFlash_ = 0;
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
@@ -519,17 +525,76 @@ void Game::explode(Vec3 at, int surface, bool heavy) {
         RayHit h;
         const Vec3 target = at + Vec3{0, 0.5f, 0};
         const bool blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
-        if (d <= 11.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1);
+        // Blast deaths (0x44fda8): type 2 under 4 m; 4-8 m type 3 one time in
+        // four, else 2; farther type 2.
+        const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
+        if (d <= 11.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
     }
     if (surface == 0) smokeGens_.push_back({at, 0, 0});
 }
 
+// A person's pose (0x44ca34): per 3DI mesh (= .CHR part), the part's
+// rotation from the animation about the mesh pivot; each pivot carried by
+// its parent mesh's matrix. Model axes: OpenDF's (x forward, y up, z right);
+// the .CHR rotations are in (x forward, y left, z up).
+std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns) {
+    const auto& l = m.lods[size_t(std::clamp(lod, 0, int(m.lods.size()) - 1))];
+    const size_t n = l.meshPivot.size();
+    std::vector<Mat4> out(n);
+    std::vector<Vec3> origin(n);
+    std::vector<Mat4> rot(n);
+    for (size_t k = 0; k < n; ++k) {
+        Mat4 r;
+        if (k < turns.size()) {
+            const ChrMatrix c = Chr::partRotation(turns[k]);
+            // C R C^-1 with C: (x, y, z) -> (x, z, -y).
+            const int map[3] = {0, 2, 1};
+            const float sign[3] = {1, 1, -1};
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) r.at(i, j) = sign[i] * sign[j] * c.m[map[i]][map[j]];
+        }
+        rot[k] = r;
+        const auto& pv = l.meshPivot[k];
+        const Vec3 pivot{pv[0], pv[1], pv[2]};
+        const int parent = k < l.meshParent.size() ? l.meshParent[k] : -1;
+        if (k == 0 || parent < 0 || size_t(parent) >= k) origin[k] = pivot;
+        else {
+            const auto& pp = l.meshPivot[size_t(parent)];
+            const Vec3 rel = pivot - Vec3{pp[0], pp[1], pp[2]};
+            Mat4& pr = rot[size_t(parent)];
+            origin[k] = origin[size_t(parent)] + Vec3{pr.at(0, 0) * rel.x + pr.at(0, 1) * rel.y + pr.at(0, 2) * rel.z,
+                                                     pr.at(1, 0) * rel.x + pr.at(1, 1) * rel.y + pr.at(1, 2) * rel.z,
+                                                     pr.at(2, 0) * rel.x + pr.at(2, 1) * rel.y + pr.at(2, 2) * rel.z};
+        }
+        out[k] = translate(origin[k]) * r * translate(pivot * -1.f);
+    }
+    return out;
+}
+
 // Damage to the player (0x44fe9e blast, 0x44f2b2 bullets): hit points, and
 // the red flash +0x78 up to 0xFF (0x44b6d0).
-void Game::hurtPlayer(int amount) {
+void Game::hurtPlayer(int amount, int deathType, Vec3 from) {
     if (playerDead()) return;
     playerHp_ -= amount;
     damageFlash_ = std::min(0xFF, damageFlash_ + 0x78);
+    if (!playerDead() || playerChr_.partCount() == 0) return;
+    // 0x45a234: the death move (0x46c920), as for any character.
+    const float water = terrain_.waterLevel();
+    int move;
+    if (water != 0 && water >= player_.origin().y) move = 0xFE;
+    else {
+        const Vec3 v = world_.nearest(from, player_.feet) - player_.feet;
+        float rel = std::atan2(v.x, -v.z) - player_.yaw;
+        rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
+        const int dir = std::abs(rel) <= kPi / 4 ? 0 : std::abs(rel) >= 3 * kPi / 4 ? 2 : rel < 0 ? 1 : 3;
+        move = deathType == 1 ? 0xBE + dir : deathType == 2 ? 0xFA + dir : 0xFF;
+    }
+    const char* name = moveName(move);
+    const AnimMove* mv = name ? playerMoves_.find(name) : nullptr;
+    if (!mv) mv = playerMoves_.find("Death_B_P01DF");
+    // Start from the standing pose.
+    if (const AnimMove* st = playerMoves_.find("Standing_2HW")) playerBody_.start(playerChr_, st->animation);
+    if (mv) playerBody_.start(playerChr_, mv->animation);
 }
 
 // Dead (0x404104 -> 0x481224): third-person orbit around the body, yaw
@@ -849,22 +914,26 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         if (lod < 0) continue;
         visible.push_back({&o, at, lod});
     }
-    for (auto& v : visible) models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
-    for (auto& v : visible) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
+    for (auto& v : visible) {
+        if (v.o->chr && !v.o->anim.angles().empty()) {
+            models_.drawPosed(*v.o->model, v.lod, v.o->matrix(v.at), personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles()));
+            continue;
+        }
+        models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
+    }
+    for (auto& v : visible)
+        if (!(v.o->chr && !v.o->anim.angles().empty())) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
     // The dead player's body, seen from the orbit camera: the soldier's
-    // model laid down like the other dead (APPROXIMATION: DF.EXE plays the
-    // .CHR death animation chosen by 0x46c920).
-    if (playerDead())
+    // model posed by the death animation DF.EXE chose (0x46c920).
+    if (playerDead() && !playerBody_.angles().empty())
         if (const ItemDef* it = items_.byId(kItemPlayerSoldier); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
                 body.model = bm;
-                body.hip = -bm->lods[0].min[1];
-                body.pos = player_.feet + Vec3{0, body.hip, 0};
+                const ChrFrame* f = playerBody_.currentFrame(playerChr_);
+                body.pos = player_.feet + Vec3{0, f ? Chr::originHeight(*f) : 0.f, 0};
                 body.heading = player_.yaw;
-                body.fall = 1;
-                models_.draw(*bm, 0, body.matrix(world_.nearest(body.pos, eye)));
-                models_.drawTranslucent(*bm, 0, body.matrix(world_.nearest(body.pos, eye)));
+                models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()));
             }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.
     const float camYaw = std::atan2(fwd.x, -fwd.z);
@@ -1383,7 +1452,7 @@ int Game::run() {
             std::fprintf(stderr, "cannot read %s; using built-in movement speeds\n", anm.c_str());
         // Eye heights: the pose's origin height (.CHR contact points) plus the
         // eye offset, 0.7 m, or 0.4 m prone (DF.EXE 0x449913).
-        Chr chr;
+        Chr& chr = playerChr_;
         const std::string chrName = toUpper(soldier && !soldier->chrFile.empty() ? soldier->chrFile : "player01") + ".CHR";
         if (vfs_.read(chrName, raw) && chr.parse(raw)) {
             const char* stances[3] = {"Standing", "Crouched", "Prone"};
@@ -1573,6 +1642,7 @@ int Game::run() {
                 ++ticks_;
                 tickEffects();
                 tickDialogs();
+                if (playerDead() && (ticks_ & 1)) playerBody_.tick(playerChr_);
                 // Ambience: dec0 (towers, bridges) and trees/palms every
                 // (5..8) x 64 ticks at 4 m above the object; sound objects
                 // snd0 (20..25), snd1 (8..11), snd2 (3..4) x 64 ticks.

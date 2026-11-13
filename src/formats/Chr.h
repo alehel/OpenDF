@@ -20,9 +20,18 @@ struct ChrPart {
     float radius = 0;                // metres
 };
 
+struct ChrTransition {
+    uint8_t cond[2] = {0, 0};        // bytes 2, 3: conditions (0 = always)
+    int anim = 0, frame = 0;         // byte 4 target animation, byte 5 target frame + 1
+};
+
 struct ChrFrame {
     uint32_t flags = 0;              // bit (16+k): contact point k not touching
     int ticks = 1;
+    uint8_t event = 0, event2 = 0;   // +0xA, +0xB: 0x40-0x43 footsteps, 0x12-0x16 voices (0x4360b0)
+    std::array<float, 3> root{};     // +0xC root offset (CHR axes, metres)
+    int anchor = 0;                  // +0x18 anchor contact point
+    std::vector<ChrTransition> transitions;   // checked when the last frame ends (0x468520)
     std::vector<std::array<float, 3>> contacts;   // CHR axes, metres
     std::vector<std::array<uint8_t, 3>> angles;   // per part: yaw, pitch, roll bytes (256 per turn)
 };
@@ -42,6 +51,14 @@ public:
     // origin (the pelvis joint). Positions chain through the parents, the
     // rotations do not (each part's angles are absolute).
     std::vector<ChrMatrix> pose(const ChrFrame& f) const;
+    // Rotation per part from angles in turns (yaw, pitch, roll as stored:
+    // yaw = -a0, pitch = a1, roll = -a2 applied here), model axes; no
+    // translation (the 3DI mesh pivots place the parts, 0x44ca34).
+    static ChrMatrix partRotation(const std::array<float, 3>& turns);
+    // Pose and hit spheres from interpolated angles (turns, raw a0..a2).
+    std::vector<ChrMatrix> pose(const std::vector<std::array<float, 3>>& turns) const;
+    std::vector<std::array<float, 4>> spheres(const std::vector<std::array<float, 3>>& turns) const;
+    int partCount() const { return int(parts_.size()); }
     // Height of the origin above the lowest touching contact point
     // (0x4364c8: ground contact uses the animation's contact points).
     static float originHeight(const ChrFrame& f);

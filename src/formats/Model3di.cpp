@@ -1,5 +1,8 @@
 #include "Model3di.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -203,6 +206,29 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             float zmin = r.i32(o + 16) / 65536.f, zmax = r.i32(o + 20) / 65536.f;
             if (xmax < xmin || ymax < ymin || zmax < zmin) continue;
             lod.collision.push_back({{xmin, zmin, -ymax}, {xmax, zmax, -ymin}});
+        }
+        if (std::getenv("OPENDF_DEBUGMESH") && li == 0 && m.name == std::getenv("OPENDF_DEBUGMESH"))
+            for (uint32_t mi = 0, vb = 0; mi < nm; ++mi) {
+                const size_t mo = mOff + size_t(mi) * layout.mesh;
+                const uint32_t mv = r.u32(mo + 0x04);
+                float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
+                for (uint32_t k = 0; k < mv; ++k) {
+                    const auto v = vertex(vb + k);
+                    for (int c = 0; c < 3; ++c) lo[c] = std::min(lo[c], v[c]), hi[c] = std::max(hi[c], v[c]);
+                }
+                std::fprintf(stderr, "mesh %u verts %u +0x24 %d pivot (%.3f %.3f %.3f) bbox (%.2f..%.2f, %.2f..%.2f, %.2f..%.2f) words:", mi, mv,
+                             r.i32(mo + 0x24), r.i32(mo + 0x34) / 65536.f, r.i32(mo + 0x38) / 65536.f, r.i32(mo + 0x3c) / 65536.f,
+                             lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                for (size_t w = 0; w < layout.mesh; w += 4) std::fprintf(stderr, " %x", r.u32(mo + w));
+                std::fprintf(stderr, "\n");
+                vb += mv;
+            }
+        for (uint32_t mi = 0; mi < nm; ++mi) {
+            const size_t mo = mOff + size_t(mi) * layout.mesh;
+            lod.meshParent.push_back(layout.mesh >= 0x40 ? r.i32(mo + 0x24) : -1);
+            lod.meshPivot.push_back(layout.mesh >= 0x40 ? std::array<float, 3>{r.i32(mo + 0x34) / 65536.f, r.i32(mo + 0x3c) / 65536.f,
+                                                                               -r.i32(mo + 0x38) / 65536.f}
+                                                        : std::array<float, 3>{0, 0, 0});
         }
         std::map<int, size_t> batchIndex;   // material and mesh -> batch
         bool first = true;

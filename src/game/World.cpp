@@ -1,4 +1,5 @@
 #include "World.h"
+#include "Moves.h"
 #include <map>
 #include "../formats/Anm.h"
 #include "../formats/Chr.h"
@@ -91,23 +92,21 @@ void World::refreshBoxes(WorldObject& o) const {
 
 void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const Mission& mission) {
     objects.clear();
-    // Skeletons and move tables for people's hit spheres.
-    std::map<std::string, Chr> chrs;
-    std::map<std::string, AnimDefs> anms;
-    auto spheresFor = [&](const ItemDef& item) -> std::vector<std::array<float, 4>> {
-        if (item.chrFile.empty() || item.animDef.empty()) return {};
+    // Skeletons and move tables of people (ITEMS.DEF chr_file, anim_def).
+    auto load = [&](const ItemDef& item, WorldObject& o) {
+        if (item.chrFile.empty() || item.animDef.empty()) return;
         const std::string c = toUpper(item.chrFile) + ".CHR", a = toUpper(item.animDef) + ".ANM";
-        if (!chrs.count(c)) {
+        if (!chrs_.count(c)) {
             std::vector<uint8_t> raw;
-            if (!vfs.read(c, raw) || !chrs[c].parse(raw)) chrs[c] = Chr{};
+            if (!vfs.read(c, raw) || !chrs_[c].parse(raw)) chrs_[c] = Chr{};
         }
-        if (!anms.count(a)) {
+        if (!anms_.count(a)) {
             std::vector<uint8_t> raw;
-            if (vfs.read(a, raw)) anms[a].parse(std::string(raw.begin(), raw.end()));
+            if (vfs.read(a, raw)) anms_[a].parse(std::string(raw.begin(), raw.end()));
         }
-        const AnimMove* mv = anms[a].find("Standing_2HW");
-        const ChrAnimation* an = mv ? chrs[c].animation(mv->animation) : nullptr;
-        return an ? chrs[c].spheres(an->frames[0]) : std::vector<std::array<float, 4>>{};
+        if (chrs_[c].partCount() == 0 || anms_[a].empty()) return;
+        o.chr = &chrs_[c];
+        o.moves = &anms_[a];
     };
     const float ext = extent();
     for (const auto& mo : mission.objects) {
@@ -123,22 +122,63 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.heading = mo.heading * kPi / 180.f;
         o.lift = mo.z;
         o.person = item->type == "person";
+        o.base = o.pos.y;
         if (o.person) {
             // Character models have their origin at the hips; stand them on their feet.
             o.hip = -o.model->lods[0].min[1];
             o.pos.y += o.hip;
+            load(*item, o);
         }
         o.hp = item->hp;
         o.missionGroup = mo.group;
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
         o.mapMarker = (mo.raw[19] & 0xFFFF) != 0;
-        if (o.person) o.spheres = spheresFor(*item);
+
         o.missionX = mo.x;
         o.missionY = mo.y;
         refreshBoxes(o);
         objects.push_back(std::move(o));
     }
+    // People stand (Standing_2HW, held on its frame 1).
+    for (auto& o : objects)
+        if (o.chr && o.moves) {
+            startMove(o, 2);
+            poseUpdate(o);
+        }
+}
+
+bool World::startMove(WorldObject& o, int number) {
+    if (!o.chr || !o.moves) return false;
+    const char* name = moveName(number);
+    const AnimMove* mv = name ? o.moves->find(name) : nullptr;
+    if (!mv || !o.chr->animation(mv->animation)) return false;
+    o.anim.start(*o.chr, mv->animation);
+    return true;
+}
+
+void World::poseUpdate(WorldObject& o) {
+    // Hit spheres from the current pose (0x4701f4); the origin sits the
+    // pose's contact-point height above the ground (0x4364c8).
+    if (!o.chr) return;
+    o.spheres = o.chr->spheres(o.anim.angles());
+    if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) {
+        o.hip = Chr::originHeight(*f);
+        o.pos.y = o.base + o.hip;
+    }
+}
+
+int World::deathMove(int index, int type, int part, Vec3 from) const {
+    const WorldObject& o = objects[size_t(index)];
+    const float water = terrain->waterLevel();
+    if (water != 0 && water >= o.pos.y) return 0xFE;
+    const Vec3 v = nearest(from, o.pos) - o.pos;
+    float rel = std::atan2(v.x, -v.z) - o.heading;           // clockwise from the victim's facing
+    rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;     // -pi..pi
+    const int dir = std::abs(rel) <= kPi / 4 ? 0 : std::abs(rel) >= 3 * kPi / 4 ? 2 : rel < 0 ? 1 : 3;
+    if (type == 1) return 0xBE + std::clamp(part, 0, 14) * 4 + dir;
+    if (type == 2) return 0xFA + dir;
+    return 0xFF;
 }
 
 Vec3 World::nearest(Vec3 p, Vec3 ref) const {
@@ -295,7 +335,7 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects) const {
     return found;
 }
 
-std::string World::damage(int index, int amount, int power) {
+std::string World::damage(int index, int amount, int power, int deathMove) {
     if (index < 0 || index >= int(objects.size())) return {};
     WorldObject& o = objects[index];
     if (o.removed || o.dead) return {};
@@ -306,7 +346,8 @@ std::string World::damage(int index, int amount, int power) {
         o.hp -= amount;
         if (o.hp > 0) return {};
         o.dead = true;
-        o.fall = 0.001f;
+        // The death animation (0x46c920 / 0x469764); without one, topple.
+        if (!(deathMove >= 0 && startMove(o, deathMove)) && !startMove(o, 0xBE)) o.fall = 0.001f;
         refreshBoxes(o);
         return o.item->name + " down";
     }
@@ -376,7 +417,17 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
 
 void World::update(float dt) {
     for (auto& o : objects)
-        if (o.dead && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
+        if (o.dead && o.fall > 0 && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
+    // People's animations: 30 ticks a second (the odd 60 Hz ticks).
+    for (animClock_ += dt; animClock_ >= 1.f / 60.f; animClock_ -= 1.f / 60.f) {
+        if (!(++animTicks_ & 1)) continue;
+        for (size_t i = 0; i < objects.size(); ++i) {
+            WorldObject& o = objects[i];
+            if (!o.chr || o.removed) continue;
+            if (const int ev = o.anim.tick(*o.chr)) animEvents_.push_back({int(i), ev});
+            poseUpdate(o);
+        }
+    }
 }
 
 std::vector<std::string> World::stab(Vec3 at) {

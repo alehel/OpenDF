@@ -224,6 +224,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         gl.triangles = l.triangleCount;
         gl.frames = l.frames;
         gl.materialTextures = l.materialTextures;
+        gl.meshParent = l.meshParent;
+        gl.meshPivot = l.meshPivot;
         gl.ticksPerFrame = l.ticksPerFrame;
         glGenVertexArrays(1, &gl.vao);
         glBindVertexArray(gl.vao);
@@ -281,13 +283,17 @@ void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
 }
 
 void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, bool flash,
-                                int frame) {
+                                int frame, const std::vector<Mat4>* meshes) {
     if (m.lods.empty() || lod < 0) return;
     const auto& l = m.lods[std::clamp(lod, 0, int(m.lods.size()) - 1)];
     glUniformMatrix4fv(locModel_, 1, GL_FALSE, model.m);
     glBindVertexArray(l.vao);
     for (const auto& b : l.batches) {
         if ((b.blend != 0) != translucent) continue;
+        if (meshes) {
+            const Mat4 mm = b.mesh >= 0 && b.mesh < int(meshes->size()) ? model * (*meshes)[size_t(b.mesh)] : model;
+            glUniformMatrix4fv(locModel_, 1, GL_FALSE, mm.m);
+        }
         // First-person weapons: the fullbright muzzle-flash parts only while firing.
         if (weapon && b.fullbright >= 0 && !flash) continue;
         if (b.doubleSided) glDisable(GL_CULL_FACE);
@@ -323,6 +329,16 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
 
 void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model, bool weapon, bool flash, int frame) {
     drawBatches(m, lod, model, false, weapon, flash, frame);
+}
+
+void ModelRenderer::drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes) {
+    drawBatches(m, lod, model, false, false, false, 0, &meshes);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    drawBatches(m, lod, model, true, false, false, 0, &meshes);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
 }
 
 void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon, bool flash, int frame) {

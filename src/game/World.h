@@ -6,8 +6,12 @@
 #include "../formats/Mission.h"
 #include "../render/Models.h"
 #include "../render/Terrain.h"
+#include "../formats/Anm.h"
+#include "../formats/Chr.h"
+#include "Animator.h"
 
 #include <array>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -40,6 +44,13 @@ struct WorldObject {
     // to the body origin, and radius; metres.
     std::vector<std::array<float, 4>> spheres;
     std::vector<CollisionBox> boxes;   // model-space solid boxes
+    // People: skeleton, move table and the animation playing (0x44ca34
+    // poses the item's 3DI meshes, one per .CHR part).
+    const Chr* chr = nullptr;
+    const AnimDefs* moves = nullptr;
+    Animator anim;
+    float base = 0;                    // ground + lift: the origin sits its pose's height above this
+    bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;
 };
@@ -90,7 +101,17 @@ public:
     // is destroyed or killed, empty otherwise.
     // DF.EXE 0x44f184: no effect unless `power` reaches the target's armour
     // class (ITEMS.DEF `hp A B`, B); people die when their hit points reach 0.
-    std::string damage(int index, int amount, int power = 99);
+    std::string damage(int index, int amount, int power = 99, int deathMove = -1);
+    // DF.EXE's death move (0x46c920): 0xFE in water; type 1 (bullets, knife)
+    // 0xBE + part x 4 + direction; type 2 (blasts) 0xFA + direction; type
+    // 3 0xFF. Direction: where the attacker is, 0 front, 1 left, 2 back,
+    // 3 right of the victim.
+    int deathMove(int index, int type, int part, Vec3 from) const;
+    // Starts a person's move by DF.EXE number; false if their .ANM lacks it.
+    bool startMove(WorldObject& o, int number);
+    // Events of people's animations since the last call (footsteps).
+    struct AnimEvent { int object; int event; };
+    std::vector<AnimEvent> takeAnimEvents() { std::vector<AnimEvent> out; out.swap(animEvents_); return out; }
 
     void update(float dt);
     // Objects destroyed (not people) since the last call, for their sounds.
@@ -99,6 +120,12 @@ public:
 private:
     void refreshBoxes(WorldObject& o) const;
     std::vector<int> destroyed_;
+    std::vector<AnimEvent> animEvents_;
+    std::map<std::string, Chr> chrs_;
+    std::map<std::string, AnimDefs> anms_;
+    float animClock_ = 0;
+    int animTicks_ = 0;
+    void poseUpdate(WorldObject& o);
 };
 
 } // namespace df
