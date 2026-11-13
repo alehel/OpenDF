@@ -61,7 +61,7 @@ private:
     GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0;
     GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0;
     GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0;
-    Mesh lods_[4];
+    Mesh lods_[5];
     Rgb horizon_{170, 200, 230};
     Rgb skyColors_[17];
     bool hasWater_ = false;

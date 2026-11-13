@@ -33,16 +33,31 @@ vec3 post(vec3 c) {
 
 const char* kTerrainVS = R"(#version 330 core
 layout(location = 0) in vec3 aPos;          // chunk-local cell x, cell y, skirt flag
-uniform sampler2D uHeight;
+uniform sampler2D uHeight, uDetailIdx;
+uniform sampler2DArray uDetailShade;        // r: shade, g: detail elevation
 uniform vec2 uOrigin;
-uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale;
+uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale, uTiles, uRingScale, uBumps;
+uniform vec3 uEye;
 uniform mat4 uViewProj;
 out vec2 vCell;
 out vec3 vWorld;
+float elev(vec2 c) {
+    vec2 m = mod(c, uMapSize);
+    return texelFetch(uHeight, ivec2(m), 0).r * 255.0 * uHScale;
+}
 void main() {
     vec2 c = uOrigin + aPos.xy * uChunkScale;
-    ivec2 ic = ivec2(mod(c, uMapSize));
-    float h = texelFetch(uHeight, ic, 0).r * 255.0 * uHScale - aPos.z * uSkirt;
+    // Bilinear between the corner elevations (fine meshes sit between cells).
+    vec2 f = fract(c), b = floor(c);
+    float h = mix(mix(elev(b), elev(b + vec2(1, 0)), f.x), mix(elev(b + vec2(0, 1)), elev(b + vec2(1, 1)), f.x), f.y);
+    // Near rings: detail elevation e >= 128 raises the ground by (e - 128)/128 m
+    // (DF.EXE 0x438fac).
+    if (uBumps > 0.5 && length(c * uCell - uEye.xz) < 100.0 * uRingScale) {
+        float tile = min(texelFetch(uDetailIdx, ivec2(mod(b, uMapSize)), 0).r * 255.0, uTiles - 1.0);
+        float e = texture(uDetailShade, vec3(f, tile)).g * 255.0;
+        if (e >= 128.0) h += (e - 128.0) / 128.0;
+    }
+    h -= aPos.z * uSkirt;
     vWorld = vec3(c.x * uCell, h, c.y * uCell);
     vCell = c;
     gl_Position = uViewProj * vec4(vWorld, 1.0);
@@ -393,8 +408,8 @@ Terrain::Mesh Terrain::makeGrid(int res) {
 }
 
 void Terrain::buildMeshes() {
-    const int res[4] = {64, 32, 16, 8};
-    for (int i = 0; i < 4; ++i) lods_[i] = makeGrid(res[i]);
+    const int res[5] = {64, 32, 16, 8, 256};   // 4: 1/4 m, for the detail bumps around the camera
+    for (int i = 0; i < 5; ++i) lods_[i] = makeGrid(res[i]);
 
     glGenVertexArrays(1, &skyVao_);
     const float quad[] = {-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1};
@@ -490,6 +505,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
     const GLint locOrigin = glGetUniformLocation(progTerrain_, "uOrigin");
     const GLint locScale = glGetUniformLocation(progTerrain_, "uChunkScale");
+    const GLint locBumps = glGetUniformLocation(progTerrain_, "uBumps");
     const float chunkWorld = kChunkCells * cell, blockCells = kChunkCells * 8.f, blockWorld = blockCells * cell;
     const int bx = int(std::floor(eye.x / blockWorld)), bz = int(std::floor(eye.z / blockWorld));
     auto visible = [&](float cx, float cz, float size) {
@@ -508,13 +524,16 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
                 for (int cx = xb * 8; cx < xb * 8 + 8; ++cx) {
                     const float horiz = visible((cx + 0.5f) * chunkWorld, (cz + 0.5f) * chunkWorld, chunkWorld);
                     if (horiz < 0) continue;
-                    const int lod = horiz < 160 ? 0 : horiz < 400 ? 1 : horiz < 800 ? 2 : 3;
+                    const bool fine = horiz < 100.f * ringScale + chunkWorld;
+                    const int lod = fine ? 4 : horiz < 160 ? 0 : horiz < 400 ? 1 : horiz < 800 ? 2 : 3;
+                    glUniform1f(locBumps, 1.f);
                     glUniform2f(locOrigin, float(cx * kChunkCells), float(cz * kChunkCells));
                     glBindVertexArray(lods_[lod].vao);
                     glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
                 }
     // Far: whole 512-cell blocks as one coarse chunk each.
     glUniform1f(locScale, 8.f);
+    glUniform1f(locBumps, 0.f);
     const int reach = int(std::ceil(terrainDistance / blockWorld)) + 1;
     for (int zb = bz - reach; zb <= bz + reach; ++zb)
         for (int xb = bx - reach; xb <= bx + reach; ++xb) {
