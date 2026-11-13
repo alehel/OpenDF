@@ -2158,6 +2158,8 @@ int Game::run() {
         if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");
         std::string sndErr;
         if (!sound_.init(vfs_, &exe_, &audio_, &sndErr)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
+        sound_.setDialogVolume(o_.dialogVolume);
+        crosshair_ = o_.crosshairs;
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
@@ -2246,11 +2248,13 @@ int Game::run() {
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
-                    // DF.EXE 0x42eba0: 0x200000 binary angle per count at the
-                    // nominal mouse scale (0.1758°), a quarter while zoomed.
-                    const float sens = 0.17578125f * kPi / 180.f * (arsenal_.zoomed() ? 0.25f : 1.f);
+                    // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
+                    // (0x200000, 0.1758°, at the default 128), a quarter while
+                    // zoomed; flipmouse flips the vertical axis (0x42ebd6).
+                    const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * (arsenal_.zoomed() ? 0.25f : 1.f);
+                    const float dy = o_.flipMouse ? -float(e.motion.yrel) : float(e.motion.yrel);
                     player_.yaw += e.motion.xrel * sens;
-                    player_.pitch = std::clamp(player_.pitch - e.motion.yrel * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                    player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
                 } else if (e.type == SDL_KEYDOWN && !e.key.repeat) handleKey(e.key);
             }
             if (zoomClick) arsenal_.toggleZoom();

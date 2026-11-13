@@ -3,6 +3,7 @@
 #include "../audio/Audio.h"
 #include "../audio/Music.h"
 #include "../core/ExeImage.h"
+#include "../game/Config.h"
 #include "../formats/Pcx.h"
 #include "../formats/Rtxt.h"
 #include "../render/Gl.h"
@@ -159,6 +160,10 @@ private:
     Hud& hud() { return *hudPtr_; }
     Audio audio_;
     Music music_;
+    DfConfig cfg_;              // df.cfg (written at exit, 0x40dc88 from 0x4016c7)
+    std::string dragging_;      // the slider being dragged (0x4c1b64)
+    void refreshSettings();
+    void syncSliders();
     bool musicLoaded_ = false;
     void musicVar(int n, int v) { music_.setVar(n, v); }
     float scale_ = 1, offX_ = 0, offY_ = 0;
@@ -411,6 +416,8 @@ int Frontend::drawWrapped(const std::string& fontName, float x, float y, float w
 }
 
 void Frontend::sound(const char* wav, int volume) {
+    // Menu sounds play at fx_volume (0x404d04, 0x407124).
+    volume = volume * std::clamp(cfg_.get("fx_volume"), 0, 255) / 255;
     if (const SoundClip* c = audio_.clip(vfs_, wav)) {
         const float g = float(volume) / 255.f * 0.5f;
         audio_.play(c, g, g);
@@ -452,7 +459,15 @@ void Frontend::enter(Screen s) {
         if (MnuButton* b = mnu_.button("but_mainmp")) b->drawstate = 4;   // multiplayer: not in OpenDF
         if (MnuButton* b = mnu_.button("but_mainup")) b->drawstate = 4;   // online update: not in OpenDF
         break;
-    case Options1: musicVar(1, 3); setMenu("OptionsMenu"); break;   // 0x40af83
+    case Options1: {
+        // 0x40aed0: the sliders take their df.cfg values, then the value boxes.
+        musicVar(1, 3);   // 0x40af83
+        setMenu("OptionsMenu");
+        for (auto [n, k] : {std::pair{"but_op_mvsl", "cd_volume"}, {"but_op_sfsl", "fx_volume"}, {"but_op_dvsl", "dialog_volume"}, {"but_op_mssl", "mousescale"}})
+            if (MnuButton* x = mnu_.button(n)) x->sliderPos = cfg_.get(k);
+        refreshSettings();
+        break;
+    }
     case Options3: musicVar(1, 11); setMenu("Options3Menu"); refreshOptions(); break;   // 0x41c47c
     case Campaign:
         musicVar(1, 1);   // 0x4114b8
@@ -531,6 +546,7 @@ MnuButton* Frontend::hit(int x, int y) {
             const HudImage im = image(b->image);
             if (b->type == 1) { w = im.width; h = im.height / 4; }
             else if (b->type == 6) { w = im.width; h = im.height; }
+            else if (b->type == 2) h = im.height;   // 0x405774: H slider = knob height
         } else if (b->type == 1 && !b->text.empty() && !w) {
             w = int(textWidth(font(b->font), b->text));
             h = font(b->font).height;
@@ -553,6 +569,11 @@ void Frontend::drawButton(MnuButton& b) {
             const int cell = std::clamp(b.drawstate - 1, 0, 3);
             blit(im, float(b.x), float(b.y), 0, ch * float(cell), float(im.width), ch, true);
         }
+    } else if (!b.image.empty() && b.type == 2 && !(b.attrib & 2) && b.drawstate != 4) {
+        // Knob at x + pos * width / size (0x40886c).
+        const HudImage im = image(b.image);
+        const float kx = float(b.x) + (b.sliderSize > 0 ? float(b.sliderPos) * float(b.width) / float(b.sliderSize) : 0.f);
+        blit(im, kx, float(b.y), 0, 0, float(im.width), float(im.height), false);
     } else if (!b.image.empty() && b.type == 6 && !(b.attrib & 0x20)) {
         const HudImage im = image(b.image);
         blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), false);
@@ -656,6 +677,35 @@ void Frontend::refreshOptions() {
     put("but_opt3_bxw", t(options_ & 0x2000 ? "OPT3OFF" : "OPT3ON"));
     put("but_opt3_pww", t(options_ & 0x800 ? "OPT3ON" : "OPT3OFF"));
     put("but_opt3_gpsw", t(gpsIcons_ == 0 ? "OPT3GPSSHOWFRIENDLY" : gpsIcons_ == 1 ? "OPT3GPSDEFAULT" : "OPT3GPSSHOWALL"));
+}
+
+void Frontend::refreshSettings() {
+    // 0x40b1cc: the value boxes of the General Settings page.
+    auto t = [&](const char* k) { const std::string* x = menuText_.find("GroupMainMenu", k); return x ? *x : std::string(k); };
+    auto put = [&](const char* b, const std::string& v) {
+        if (MnuButton* x = mnu_.button(b)) { x->text = v; x->attrib |= 0xC0; }
+    };
+    put("but_op_fmw", t(cfg_.get("flipmouse") ? "OMYES" : "OMNO"));
+    put("but_op_chw", t(cfg_.get("crosshairs") ? "OMYES" : "OMNO"));
+    const int r = cfg_.get("renderer");
+    if (r >= 0 && r <= 2) put("but_op_cow", t(r == 0 ? "OM256" : r == 1 ? "OM16MILLION" : "OM65THOUSAND"));
+    static const char* kRes[] = {"OM320BY240", "OM400BY300", "OM512BY382", "OM640BY480", "OM800BY600", "OM1024BY768"};
+    const int g = cfg_.get("game_res");
+    if (g >= 0 && g <= 5) put("but_op_rew", t(kRes[g]));
+    put("but_op_wiw", t(cfg_.get("windowed") ? "OMYES" : "OMNO"));
+    put("but_op_tuw", t(cfg_.get("turbo") ? "OMON" : "OMOFF"));
+    put("but_op_mew", t(cfg_.get("cd_play") ? "OMYES" : "OMNO"));
+}
+
+void Frontend::syncSliders() {
+    // The sliders' owner draw (event 3, every frame) copies their positions
+    // into df.cfg (0x40b6c4, 0x40ba20, 0x40bb6a).
+    for (auto [n, k] : {std::pair{"but_op_mvsl", "cd_volume"}, {"but_op_sfsl", "fx_volume"}, {"but_op_dvsl", "dialog_volume"}, {"but_op_mssl", "mousescale"}})
+        if (MnuButton* x = mnu_.button(n)) {
+            x->sliderPos = std::clamp(x->sliderPos, 0, 255);
+            cfg_.set(k, x->sliderPos);
+        }
+    music_.setVolume(cfg_.get("cd_volume"));
 }
 
 void Frontend::refreshCampaign() {
@@ -826,6 +876,55 @@ void Frontend::event(MnuButton& b, int ev) {
         });
     // Debriefing.
     if (cb == "MNU_DEBF_ACCEPT") return standard(b, ev, to(Campaign));
+    // General Settings (0x40b518..0x40bb80).
+    if (cb == "MNU_OPT1_FLIPMOUSE" || cb == "MNU_OPT1_CROSSHAIRS" || cb == "MNU_OPT1_WINDOWED" || cb == "MNU_OPT1_TURBO" ||
+        cb == "MNU_OPT1_MUSICENABLED" || cb == "MNU_OPT1_RESOLUTION" || cb == "MNU_OPT1_RENDERER") {
+        // Toggles and lists change on press (drawstate 3), then the boxes refresh.
+        if (ev == 1) {
+            b.drawstate = 3;
+            const bool left = upperCase(b.name).back() == 'L';
+            auto flip = [&](const char* k) { cfg_.set(k, cfg_.get(k) ^ 1); };
+            if (cb == "MNU_OPT1_FLIPMOUSE") flip("flipmouse");
+            else if (cb == "MNU_OPT1_CROSSHAIRS") flip("crosshairs");
+            else if (cb == "MNU_OPT1_WINDOWED") flip("windowed");
+            else if (cb == "MNU_OPT1_TURBO") flip("turbo");
+            else if (cb == "MNU_OPT1_MUSICENABLED") flip("cd_play");
+            else if (cb == "MNU_OPT1_RESOLUTION") {
+                // 0x40b733: +-1, below 0 -> max_res, above max_res -> 0.
+                int r = cfg_.get("game_res") + (left ? -1 : 1);
+                if (r < 0) r = cfg_.get("max_res");
+                if (r > cfg_.get("max_res")) r = 0;
+                cfg_.set("game_res", r);
+            } else {
+                // 0x40b7b4: steps through the renderers DF.EXE found
+                // (0x4f5140); OpenDF offers all three.
+                cfg_.set("renderer", (cfg_.get("renderer") + (left ? 2 : 1)) % 3);
+            }
+            refreshSettings();
+        } else if (ev == 2 || ev == 7) b.drawstate = 1;
+        else if (ev == 6) b.drawstate = 2;
+        return;
+    }
+    if (cb == "MNU_OPT1_MOUSESENSITIVITY" || cb == "MNU_OPT1_SFXVOLUME" || cb == "MNU_OPT1_MUSICVOLUME" || cb == "MNU_OPT1_DIALOGVOLUME") {
+        // Arrows: click9 at fx/2, pushed, value -+10 clamped to 0..255, the
+        // slider follows (0x40b5a8, 0x40ba68).
+        if (ev == 1) {
+            sound("CLICK9.WAV", 128);
+            b.drawstate = 3;
+            const char* key = cb == "MNU_OPT1_MOUSESENSITIVITY" ? "mousescale" : cb == "MNU_OPT1_SFXVOLUME" ? "fx_volume"
+                            : cb == "MNU_OPT1_MUSICVOLUME" ? "cd_volume" : "dialog_volume";
+            const char* slider = cb == "MNU_OPT1_MOUSESENSITIVITY" ? "but_op_mssl" : cb == "MNU_OPT1_SFXVOLUME" ? "but_op_sfsl"
+                               : cb == "MNU_OPT1_MUSICVOLUME" ? "but_op_mvsl" : "but_op_dvsl";
+            const bool left = upperCase(b.name).back() == 'L';
+            const int v = std::clamp(cfg_.get(key) + (left ? -10 : 10), 0, 255);
+            cfg_.set(key, v);
+            if (MnuButton* x = mnu_.button(slider)) x->sliderPos = v;
+            if (cb == "MNU_OPT1_MUSICVOLUME") music_.setVolume(v);
+        } else if (ev == 2 || ev == 7) b.drawstate = 1;
+        else if (ev == 6) b.drawstate = 2;
+        return;
+    }
+    if (cb == "MNU_OPT1_KBDREMAP" || cb == "MNU_OPT1_MSGMAC") return standard(b, ev, [] {});   // pages not in OpenDF yet
     // Settings tabs: General <-> Difficulty (the keyboard and macro pages are not in OpenDF yet).
     if (cb == "MNU_OPT1_DIFFICULTY") return standard(b, ev, to(Options3));
     if (cb == "MNU_OPT3_OPTIONS") return standard(b, ev, to(Options1));
@@ -1008,6 +1107,11 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
 int Frontend::run() {
     if (!loadData()) { std::fprintf(stderr, "cannot read DF.MNU\n"); return 1; }
     loadProfiles();
+    // df.cfg: read at start (0x454e10), written at exit (0x40dc88).
+    cfg_.load(o_.gameDir / "df.cfg");
+    options_ = uint32_t(cfg_.get("attributes"));
+    gpsIcons_ = std::clamp(cfg_.get("gpsicon"), 0, 2);
+    music_.setVolume(std::clamp(cfg_.get("cd_volume"), 0, 255));
     audio_.openDevice();
     // DF.EXE opens DFMUSIC.SBF from its own folder (0x4b81b0).
     if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
@@ -1048,7 +1152,26 @@ int Frontend::run() {
                     if (e.type == SDL_MOUSEBUTTONDOWN) { sound("BUMP1.WAV"); next_ = Soldier; }
                     continue;
                 }
+                // Slider drag (0x40728c): pos = (mx - x - knobW/2) / width * size,
+                // clamped; the mouse stays captured until the button is up.
+                auto dragTo = [&](MnuButton& sl) {
+                    const HudImage im = image(sl.image);
+                    const float f = sl.width > 0 ? float(mouseX_ - sl.x - im.width / 2) / float(sl.width) : 0.f;
+                    sl.sliderPos = std::clamp(int(f * float(sl.sliderSize)), 0, sl.sliderSize);
+                    event(sl, 1);
+                };
+                if (MnuButton* sl = mnu_.button(dragging_)) {
+                    if (e.type == SDL_MOUSEMOTION) dragTo(*sl);
+                    else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) { event(*sl, 2); dragging_.clear(); }
+                    continue;
+                }
                 MnuButton* b = hit(mouseX_, mouseY_);
+                if (b && b->type == 2 && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && !(b->attrib & 2) && b->drawstate != 4) {
+                    sound("CLICK9.WAV");
+                    dragging_ = b->name;
+                    dragTo(*b);
+                    continue;
+                }
                 const std::string name = b ? b->name : std::string();
                 if (name != hover_) {
                     // Hover out (7), and a release if it was pressed (0x407050).
@@ -1086,6 +1209,7 @@ int Frontend::run() {
             ++screenTicks_;
             if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
         }
+        if (screen_ == Options1) syncSliders();
         music_.update();   // once per menu frame (0x406bf8 -> 0x4b8490)
         if (next_ != screen_) {
             if (next_ == Mission) {
@@ -1103,6 +1227,10 @@ int Frontend::run() {
                 g.soldierName = prof().name();
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
+                g.crosshairs = cfg_.get("crosshairs") != 0;
+                g.flipMouse = cfg_.get("flipmouse") != 0;
+                g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
+                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
                 uint32_t flags = uint32_t(prof().get(0x70 + camp_ * 0x44));
                 outcome_ = MissionOutcome{};
                 runGame(vfs_, g, &outcome_, &flags);
@@ -1183,6 +1311,10 @@ int Frontend::run() {
         SDL_GL_SwapWindow(win_);
     }
     for (int i = 0; i < 9; ++i) saveProfile(i);
+    cfg_.set("attributes", int(options_));
+    cfg_.set("gpsicon", gpsIcons_);
+    if (o_.screenshot.empty()) cfg_.save(o_.gameDir / "df.cfg");
+    music_.stop();
     closeWindow();
     return quitCode_;
 }

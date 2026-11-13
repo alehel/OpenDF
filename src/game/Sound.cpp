@@ -421,11 +421,12 @@ bool SoundSystem::loadDialogBank(Vfs& vfs, const std::string& name) {
 }
 
 bool SoundSystem::playDialogLine(const std::string& clip) {
-    // 0x472f44: centred, pitch 1, volume dialog_volume (default 200) x 255 >> 8.
-    if (!audio_) return false;
+    // 0x472f44: centred, pitch 1, volume dialog_volume (default 200) x 255 >> 8;
+    // nothing at all when it is 0.
+    if (!audio_ || dialogVolume_ <= 0) return false;
     const int i = dialogs_.sampleIndex(clip);
     if (i < 0) return false;
-    const int vol = 200 * 255 >> 8;
+    const int vol = dialogVolume_ * 255 >> 8;
     const float g = 64.f * vol / (127.f * 255.f), g2 = 63.f * vol / (127.f * 255.f);
     return audio_->play(dialogs_.clip(i), g, g2, 1.f, vol) != 0;
 }

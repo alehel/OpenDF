@@ -43,6 +43,11 @@ struct GameOptions {
     // df.cfg "attributes" (Difficulty settings): 0x80 enemy AI hard, 0x100
     // player health easy, 0x200 no squad members, 0x800 power ups on.
     uint32_t attributes = 0;
+    // df.cfg CONTROLS / MUSIC: crosshairs (0x40200d), flipmouse and
+    // mousescale (0x42eba1: turn per count = mousescale << 14 binary angle),
+    // dialog_volume (0x472f44).
+    bool crosshairs = true, flipMouse = false;
+    int mouseScale = 128, dialogVolume = 200;
     bool watch = false;
     std::string record;
 };

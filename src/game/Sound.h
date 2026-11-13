@@ -48,9 +48,14 @@ public:
     // dialog_volume 200/255); false if the clip is missing.
     bool loadDialogBank(Vfs& vfs, const std::string& name);
     bool playDialogLine(const std::string& clip);
+    // df.cfg dialog_volume (0..255, default 200; 0x66fa5c); 0 plays no speech.
+    void setDialogVolume(int v) { dialogVolume_ = v; }
     // Length of a dialog line in 60 Hz ticks (0 if missing).
     int dialogLineTicks(const std::string& clip);
     void stopAll();
+private:
+    int dialogVolume_ = 200;
+public:
     // Voice line (0x473f70): sound of `slot` (1-11) in voice set `set`
     // (table 0x4F019C, 12 per set), at 1 m above `at`.
     void voice(int set, int slot, Vec3 at);

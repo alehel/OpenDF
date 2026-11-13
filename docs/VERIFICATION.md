@@ -40,7 +40,7 @@ when DF.EXE is missing or a different version.
 |---|---|---|
 | Field of view | Original | 0x440ff0: FOV 90 (0x404489) across the view width, focal = W/2 for both axes → 58.72° vertical on 640×360. Wider screens keep the vertical angle (OpenDF's widescreen choice) |
 | Scope view | Original | 0x450600: FOV parameter 28 / magnification, half-angle (fov+1)>>1 whole degrees, inset radius 100; M4 ×4 ≈ 8°, M40 ×8 ≈ 4° across the inset. Allowed when the weapon's table +0xA4 bit 0 is set |
-| Binocular view (22° main view) | Not implemented | 0x44b870 / 0x404489 path; also adds view sway |
+| Binocular view (22° main view) | Original | see AUDIT X17 (0x44b870, 0x40423d) |
 | Movement speeds | Original | the soldier's `.ANM` move table (`PLAYANIM.ANM`, via `anim_def` in ITEMS.DEF), read at run time: velocity in m/s per move, eight directions, one- or two-handed weapon. Running forward with a rifle 5.0 m/s (footage: ~5 m/s), pistol 6.0; walking (Shift) 1.5/1.0; crawling 1.0 forward and back, 0.5 sideways |
 | Crouched movement | Original | DF.EXE moves a crouched soldier with the standing walk/run and keeps the crouch flag, so he crouches again when he stops (0x437902) |
 | Walking moves 5 and 7 | Original | slot index decides (5 back-right, 7 forward-right); the ANM's walking comments are swapped (0x437583) |
@@ -75,7 +75,7 @@ when DF.EXE is missing or a different version.
 | Radio messages ("Charlie 2 is down.", opening orders) | Original | mission events fire dialogs `dlg%03i`; clips and subtitles from `DFDLGnn.DBF` + `DFDLGnn.BIN`. Insurrection's opening "Proceed southwest and neutralize all hostiles." appears as in footage. Shown as text at once; the original plays the clips (audio) in sequence, subtitles with their clip |
 | Triggered text | Original | campaign "Triggered Text" `ID%03i` (no shipped campaign uses it) |
 | Mission end panel | Original | texts and success rule from DF.EXE (0x483094); events decide the winner |
-| Goals screen (G) | Original text, own layout | "Win Conditions:" `M%02iSUBGOAL%02i`, "Lose Conditions:" `M%02iSUBFAIL%02i` from the campaign "Goals" section, met goals highlighted; the original's screen layout not yet compared |
+| Goals screen (G) | Original | "Win Conditions:" `M%02iSUBGOAL%02i`, "Lose Conditions:" `M%02iSUBFAIL%02i` from the campaign "Goals" section, met goals highlighted; layout from DF.EXE 0x485004 (right-aligned at 625 from 72.5, 25-unit lines, shadowed) |
 | Grid square names and map grid | Original + footage | DF.EXE 0x43DCE0: column = ⌊(x + 1000) / 100⌋ as A..Z, AA.., row = ⌊(1000 − y) / 100⌋ + 1, in mission coordinates (not the 1024 m terrain tile). Start of Insurrection is I12, as in footage; the command map's grid lines up with the terrain as in footage |
 | Command map scale and zoom | Original | 0x43cfc8 / 0x42ddbf: default scale 1 = 0.625 px/m at 640, ×0.9 / ×1.1 per key |
 | Waypoint route, names, box, compass dot, map route | Original + footage | route = first BMS path with flag 2 (DF.EXE 0x447856); names = campaign text "Waypoint Names"/`WPN%03i` with the numbers at BMS header +0xAC; arrival radius = waypoint record +0x1C; advance rule 0x449a39; box format and distance 0x4838ac. Insurrection gives IP, CP ALPHA, CP BRAVO, OBJ BREEZE, CP CHARLIE, EP; route shape matches the footage's command map. `.JIM` files are not used by DF.EXE |
@@ -90,7 +90,7 @@ when DF.EXE is missing or a different version.
 |---|---|---|
 | Event engine: schedule (every 128 ticks, one eighth per 16 ticks), condition chaining, NOT, delays with re-check, repeats | Original | DF.EXE 0x445914, 0x45c534, 0x45c48c |
 | Conditions: team all dead / alive / losses / at least n alive / none lost, team inside area, event fired, campaign flags, load toggle, squad option | Original | 0x45c17c; areas from Area Trigger markers by tag (0x45c9a0) |
-| Conditions needing AI: team spotted / engaging / alerted / reached waypoint | Original | see AUDIT A4/A5; carrying: not yet (pickups) |
+| Conditions needing AI: team spotted / engaging / alerted / reached waypoint | Original | see AUDIT A4/A5; carrying: AUDIT X19 |
 | Actions: kill team, remove team, campaign flag, text, radio, end mission (win/lose/none), goals met, lose conditions | Original | 0x45c368 |
 | Actions needing AI: follow path, AI properties, team speed | Original | see AUDIT A5 |
 | Team membership and counts | Original | team = record byte +0x48, side = +0x43; counts over players, people and moving objects (0x4409f4) |
@@ -103,7 +103,9 @@ when DF.EXE is missing or a different version.
 | Menu layout, fonts, buttons, screen flow | Original | DF.MNU, DFMENU.BIN; see AUDIT F1-F3 |
 | Menu music: stems, script, variables, stem timing | Original | DFMUSIC.SBF, DFMUSIC.BIN, DF.EXE VM 0x4ab5ce; see AUDIT F4 |
 | Menu music loudness against sound effects | APPROXIMATION | the block gain (V>>1)>>shift is DF.EXE's; it is applied as a float, (pcm − 128)/128 · 2^−shift · V/255, in OpenDF's mixer, whose overall scale against DF.EXE's mixer was not measured |
-| Music volume control and df.cfg | Not yet | cd_volume is fixed at its default 255 until the Settings volume control and df.cfg are read |
+| Settings and df.cfg | Original | see AUDIT F5, F6 |
+| Renderer choices on the Colors row | APPROXIMATION | DF.EXE steps through the renderers it detected (0x4f5140); OpenDF offers all three |
+| Flip Mouse direction | INFERRED | DF.EXE negates the vertical mouse count when flipmouse is 0 (0x42ebd6); which way that turned the view in DF is not traced, so OpenDF keeps its own default and flips it when the option is set |
 
 ## Not yet implemented, so not checkable
 
