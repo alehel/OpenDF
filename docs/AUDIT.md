@@ -47,7 +47,7 @@ approximation), **todo** = not checked yet.
 | M2 | Route and markers | fixed | route bright green; markers from record +0x4C (type: 1 circle, 3 diamond, ...) in side colour, radius 6.25 (0x43e434) |
 | M3 | Player marker (blue, steady) | fixed | footage |
 | M4 | Current waypoint blink | fixed | DF.EXE 0x43d975 |
-| M5 | Soldier marks | **open** | code: GPS option default 1 draws soldiers whose record +0x4C is set (all 62 in Insurrection); footage shows only dead ones (X) and one live one, so something changes the flag at run time; being traced |
+| M5 | Soldier marks | fixed | GPS option (default 1, "gpsicon") draws soldiers whose record +0x4C is set as soldier markers in side colour (red enemies, blue friendlies), an X once dead, culled to the map window (0x43d445, 0x43e434). The flag never changes at run time; footage at 173 s shows live and dead enemies this way. OpenDF shows more at once only because soldiers do not move or die yet (no AI) |
 | M6 | Compass rose | fixed | (560,315), arms 40, star with inner points 5; N white, E S W green, outlined (0x43dec0); was invented |
 | M7 | Map scale and zoom | fixed | default scale 1 = 0.625 px/m at 640 (was 0.75), zoom ×0.9 / ×1.1 within 0.25..3.6 (0x42ddbf) |
 
