@@ -41,7 +41,19 @@ const Default kDefaults[] = {
     {"Drop", 0x44}, {"briefing", 0x4f}, {"help", 0x70},
 };
 
-SDL_Scancode fromVirtualKey(uint32_t vk) {
+// Left/right variants of the modifier keys count as the same key.
+SDL_Scancode partner(SDL_Scancode k) {
+    switch (k) {
+    case SDL_SCANCODE_LSHIFT: return SDL_SCANCODE_RSHIFT;
+    case SDL_SCANCODE_LCTRL: return SDL_SCANCODE_RCTRL;
+    case SDL_SCANCODE_LALT: return SDL_SCANCODE_RALT;
+    default: return SDL_SCANCODE_UNKNOWN;
+    }
+}
+
+} // namespace
+
+SDL_Scancode Controls::fromVirtualKey(uint32_t vk) {
     if (vk >= 'A' && vk <= 'Z') return SDL_Scancode(SDL_SCANCODE_A + int(vk - 'A'));
     if (vk >= '1' && vk <= '9') return SDL_Scancode(SDL_SCANCODE_1 + int(vk - '1'));
     if (vk == '0') return SDL_SCANCODE_0;
@@ -70,21 +82,32 @@ SDL_Scancode fromVirtualKey(uint32_t vk) {
     case 0x2e: return SDL_SCANCODE_DELETE;
     case 0xbb: return SDL_SCANCODE_EQUALS;
     case 0xbd: return SDL_SCANCODE_MINUS;
+    case 0x6a: return SDL_SCANCODE_KP_MULTIPLY;
+    case 0x6b: return SDL_SCANCODE_KP_PLUS;
+    case 0x6d: return SDL_SCANCODE_KP_MINUS;
+    case 0x6e: return SDL_SCANCODE_KP_PERIOD;
+    case 0x6f: return SDL_SCANCODE_KP_DIVIDE;
+    case 0xba: return SDL_SCANCODE_SEMICOLON;
+    case 0xbc: return SDL_SCANCODE_COMMA;
+    case 0xbe: return SDL_SCANCODE_PERIOD;
+    case 0xdb: return SDL_SCANCODE_LEFTBRACKET;
+    case 0xdd: return SDL_SCANCODE_RIGHTBRACKET;
     default: return SDL_SCANCODE_UNKNOWN;
     }
 }
 
-// Left/right variants of the modifier keys count as the same key.
-SDL_Scancode partner(SDL_Scancode k) {
-    switch (k) {
-    case SDL_SCANCODE_LSHIFT: return SDL_SCANCODE_RSHIFT;
-    case SDL_SCANCODE_LCTRL: return SDL_SCANCODE_RCTRL;
-    case SDL_SCANCODE_LALT: return SDL_SCANCODE_RALT;
-    default: return SDL_SCANCODE_UNKNOWN;
+uint32_t Controls::toVirtualKey(SDL_Scancode sc) {
+    switch (sc) {
+    case SDL_SCANCODE_RSHIFT: return 0x10;
+    case SDL_SCANCODE_RCTRL: return 0x11;
+    case SDL_SCANCODE_RALT: return 0x12;
+    case SDL_SCANCODE_KP_ENTER: return 0x0d;
+    default: break;
     }
+    for (uint32_t vk = 1; vk < 256; ++vk)
+        if (fromVirtualKey(vk) == sc) return vk;
+    return 0;
 }
-
-} // namespace
 
 bool Controls::init(const ExeImage* exe) {
     auto apply = [&](const char* name, uint32_t key) {
@@ -132,12 +155,18 @@ bool Controls::down(Action a, const Uint8* keys, Uint32 mouseButtons) const {
     if (b.key != SDL_SCANCODE_UNKNOWN && (keys[b.key] || (partner(b.key) && keys[partner(b.key)]))) return true;
     if ((b.mouse & 1) && (mouseButtons & SDL_BUTTON_LMASK)) return true;
     if ((b.mouse & 2) && (mouseButtons & SDL_BUTTON_RMASK)) return true;
+    if ((b.mouse & 0x10) && (mouseButtons & SDL_BUTTON_MMASK)) return true;   // "Mouse 3"
     return false;
 }
 
 std::string Controls::describe(Action a) const {
     const SDL_Scancode k = bind_[int(a)].key;
     return k == SDL_SCANCODE_UNKNOWN ? "-" : SDL_GetScancodeName(k);
+}
+
+void Controls::set(const std::string& name, uint32_t key) {
+    for (const auto& n : kNames)
+        if (name == n.name) bind_[int(n.action)] = {fromVirtualKey(key & 0xFFFF), int(key >> 16)};
 }
 
 } // namespace df

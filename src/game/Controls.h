@@ -34,6 +34,12 @@ public:
     // Whether an action's key or mouse button is held.
     bool down(Action a, const Uint8* keys, Uint32 mouseButtons) const;
     std::string describe(Action a) const;
+    // Overwrites one game-table entry by DF.EXE name (key = VK | mouse mask
+    // << 16; 0 unbinds), as 0x41cbfc does with the profile's bindings.
+    void set(const std::string& name, uint32_t key);
+    // Windows virtual-key codes <-> SDL scancodes (the keys DF.EXE knows).
+    static SDL_Scancode fromVirtualKey(uint32_t vk);
+    static uint32_t toVirtualKey(SDL_Scancode sc);
 
 private:
     struct Binding { SDL_Scancode key = SDL_SCANCODE_UNKNOWN; int mouse = 0; };

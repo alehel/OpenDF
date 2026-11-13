@@ -2156,6 +2156,7 @@ int Game::run() {
         if (exePath.empty()) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
         else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
         if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");
+        for (const auto& [name, key] : o_.bindings) controls_.set(name, key);
         std::string sndErr;
         if (!sound_.init(vfs_, &exe_, &audio_, &sndErr)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
         sound_.setDialogVolume(o_.dialogVolume);

@@ -4,6 +4,7 @@
 #include "../audio/Music.h"
 #include "../core/ExeImage.h"
 #include "../game/Config.h"
+#include "../game/Controls.h"
 #include "../formats/Pcx.h"
 #include "../formats/Rtxt.h"
 #include "../render/Gl.h"
@@ -37,6 +38,28 @@ Color argb(uint32_t c) {
 // flags +0x70 + c*0x44, selected mission +0x470 + 4c, face +0x640, campaign
 // kills +0x664, sidearm/primary/secondary item +0x680/+0x684/+0x688, list
 // indices +0x694/+0x698/+0x69C.
+// The 44 profile key bindings (profile +0x6a0, 12 bytes {vk, mouse, 0}):
+// defaults 0x4dd190, row labels 0x4dd3a0, game-table names (0x41cca0;
+// row 8 feeds attack_1 and attack_2).
+struct KeyRow { const char* label; const char* game; uint32_t vk; uint32_t mouse; };
+const KeyRow kKeyRows[44] = {
+    {"KBDMOVELEFT", "slide_left", 0x25, 0}, {"KBDMOVERIGHT", "slide_right", 0x27, 0}, {"KBDMOVEUP", "move_forward", 0x26, 0},
+    {"KBDMOVEDOWN", "move_back", 0x28, 0}, {"KBDGOPRONE", "Prone", 0x22, 3}, {"KBDCROUCH", "Crouch", 0x23, 0},
+    {"KBDSTAND", "Stand", 0x2E, 0}, {"KBDJUMP", "move_jump", 0x20, 0}, {"KBDFIRE", "attack_1", 0x11, 1},
+    {"KBDSCOPE", "scope", 0x53, 2}, {"KBDWALK", "NoRun", 0x10, 0}, {"KBDCYCLEWEAPON", "cycle", 0x08, 0},
+    {"KBD20", "Binoculars", 0x42, 0}, {"KBD21", "weapon1", 0x31, 0}, {"KBD22", "weapon2", 0x32, 0},
+    {"KBD23", "weapon3", 0x33, 0}, {"KBD24", "weapon4", 0x34, 0}, {"KBD25", "weapon5", 0x35, 0},
+    {"KBD26", "weapon6", 0x36, 0}, {"KBD27", "weapon7", 0x37, 0}, {"KBD28", "weapon8", 0x38, 0},
+    {"KBD29", "weapon9", 0x39, 0}, {"KBDLASER", "weapon0", 0x30, 0}, {"KBD210", "zoomin", 0xBB, 0},
+    {"KBD211", "zoomout", 0xBD, 0}, {"KBDTALK", "talk", 0x54, 0}, {"KBDTEAMTALK", "stalk", 0x59, 0},
+    {"KBDWAYPOINTS", "NextWaypoint", 0x57, 0}, {"KBDAUDIOCOMMAND", "audiocommand", 0x41, 0},
+    {"KBDVIDEORESOLUTION", "resolution", 0x56, 0}, {"KBDDROPITEMS", "Drop", 0x44, 0}, {"KBDCHANGEMAGAZINE", "magazine", 0x4D, 0},
+    {"KBDLOOKUP", "look_up", 0x68, 0}, {"KBDLOOKDOWN", "look_down", 0x62, 0}, {"KBDLOOKRIGHT", "turn_right", 0x66, 0},
+    {"KBDLOOKLEFT", "turn_left", 0x64, 0}, {"KBDCYCLEFOB", "tab", 0x09, 0}, {"KBDORDERS", "briefing", 0x4F, 0},
+    {"KBDRECENTMSGS", "OldMessages", 0x52, 0}, {"KBDTEAMTAGS", "ShowFriendly", 0x46, 0}, {"KBDGOALS", "MissionGoals", 0x47, 0},
+    {"KBDCOMMANDMAP", "BigMap", 0x43, 0}, {"KBDTURBO", "Turbo", 0x48, 0}, {"KBDEFLAGS", "NextFlag", 0x51, 0},
+};
+
 struct Profile {
     std::array<uint8_t, kProfileSize> d{};
     int32_t get(int off) const { int32_t v; std::memcpy(&v, &d[size_t(off)], 4); return v; }
@@ -114,7 +137,7 @@ public:
     int run();
 
 private:
-    enum Screen { Start, Soldier, Main, Options1, Options3, Macros, Credits, Campaign, Briefing, Loadout, Mission, Debrief, End, Quit };
+    enum Screen { Start, Soldier, Main, Options1, Options3, Macros, Keyboard, Credits, Campaign, Briefing, Loadout, Mission, Debrief, End, Quit };
 
     bool openWindow();
     void closeWindow();
@@ -169,6 +192,15 @@ private:
     std::string dragging_;      // the slider being dragged (0x4c1b64)
     void refreshSettings();
     void refreshMacros();
+    // Keyboard Remap (0x422c10 init, 0x422d3c update, 0x423048 draw).
+    std::array<std::array<uint32_t, 2>, 44> kbWork_{}, kbRevert_{};
+    int kbScroll_ = 0, kbSel_ = -1, kbMode_ = 0, kbCapture_ = 0, kbTimer_ = -1, kbLastSlider_ = -1;
+    std::string kbMsg_;
+    size_t kbShown_ = 0;
+    void refreshKeys();
+    void kbMessage(const char* key, int ticks);
+    void kbCaptured(int type, uint32_t code);
+    std::string keyName(uint32_t vk);
     // Credits (0x419c70 init, 0x419d94 update, 0x41a3a8 draw): credits.scr
     // commands run against credits.bin; text objects in 100 slots by ID.
     struct CreditCmd { int type = 0; int id = 0, flags = 0, life = 0, x = 0, y = 0, arg = 0; std::string font, color, text; };
@@ -298,6 +330,14 @@ void Frontend::loadProfiles() {
             Profile fresh;
             profileDefaults(fresh);
             std::memcpy(&p.d[0x4b0], &fresh.d[0x4b0], 400);
+        }
+        // Likewise key bindings (all 44 empty: never written by DF.EXE).
+        bool noKeys = true;
+        for (int m = 0; m < 44; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
+        if (noKeys) {
+            Profile fresh;
+            profileDefaults(fresh);
+            std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], 44 * 12);
         }
         any = any || p.valid();
         std::memset(&p.d[0x14], 0, 16);
@@ -482,6 +522,13 @@ void Frontend::setMenu(const std::string& name) {
 
 void Frontend::enter(Screen s) {
     if (screen_ == Macros && s != Macros) saveProfile(cur_);   // Macros exit hook 0x420ed4
+    if (screen_ == Keyboard && s != Keyboard) {
+        // 0x423118: any exit stores the working copy and saves the profile.
+        for (int i = 0; i < 44; ++i) { prof().set(0x6a0 + 12 * i, int32_t(kbWork_[size_t(i)][0])); prof().set(0x6a4 + 12 * i, int32_t(kbWork_[size_t(i)][1])); }
+        kbCapture_ = 0;
+        kbSel_ = -1;
+        saveProfile(cur_);
+    }
     prevScreen_ = screen_;
     screen_ = s;
     screenTicks_ = 0;
@@ -518,6 +565,23 @@ void Frontend::enter(Screen s) {
         loadCredits();
         musicVar(1, 5);   // 0x419d5c
         break;
+    case Keyboard: {
+        // 0x422c10: working copy and revert snapshot from the profile; mode
+        // ASSIGN KEY (DELETE KEY enabled); "Please select a key ..." (no music var).
+        setMenu("KBDMenu");
+        for (int i = 0; i < 44; ++i) kbWork_[size_t(i)] = {uint32_t(prof().get(0x6a0 + 12 * i)), uint32_t(prof().get(0x6a4 + 12 * i))};
+        kbRevert_ = kbWork_;
+        kbSel_ = -1;
+        kbCapture_ = 0;
+        kbMode_ = 0;
+        kbLastSlider_ = -1;
+        if (MnuButton* x = mnu_.button("but_kbd_ak")) x->drawstate = 3;
+        if (MnuButton* x = mnu_.button("but_kbd_am")) x->drawstate = 1;
+        if (MnuButton* x = mnu_.button("but_kbd_dk")) x->drawstate = 1;
+        kbMessage("KBDCLICKKEY", -1);
+        refreshKeys();
+        break;
+    }
     case Macros:
         setMenu("MsgMacMenu");
         refreshMacros();
@@ -761,6 +825,10 @@ void Frontend::profileDefaults(Profile& p) {
     // 0x40ee14 loadout etc., then the message macros DEFAULTMACRO1..10 from
     // DFMENU.BIN "Macros" into +0x4b0, 40 bytes each (0x40f6ac).
     p.defaults();
+    for (int i = 0; i < 44; ++i) {   // key bindings from 0x4dd190
+        p.set(0x6a0 + 12 * i, int32_t(kKeyRows[i].vk));
+        p.set(0x6a4 + 12 * i, int32_t(kKeyRows[i].mouse));
+    }
     for (int i = 0; i < 10; ++i) {
         char k[32];
         std::snprintf(k, sizeof k, "DEFAULTMACRO%d", i + 1);
@@ -1061,6 +1129,91 @@ void Frontend::tickCredits() {
     }
     for (CreditText& t : creditSlots_)
         if (t.active && --t.life == 0) t.active = false;
+}
+
+std::string Frontend::keyName(uint32_t vk) {
+    // 0x421ff0.
+    auto t = [&](const char* k) { const std::string* x = menuText_.find("GroupMainMenu", k); return x ? *x : std::string(k); };
+    if (vk == 0) return "";
+    if ((vk >= 0x30 && vk <= 0x39) || (vk >= 0x41 && vk <= 0x5A)) return std::string(1, char(vk));
+    if (vk >= 0x60 && vk <= 0x69) return t("KBDKEYPAD") + " " + char('0' + (vk - 0x60));
+    static const std::pair<uint32_t, const char*> named[] = {
+        {0x25, "KBDLEFT"}, {0x27, "KBDRIGHT"}, {0x26, "KBDUP"}, {0x28, "KBDDOWN"}, {0x11, "KBDCTRL"}, {0x10, "KBDSHIFT"},
+        {0x0D, "KBDENTER"}, {0x2E, "KBDDELETE"}, {0x2D, "KBDINSERT"}, {0x24, "KBDHOME"}, {0x23, "KBDEND"},
+        {0x6B, "KBDKEYPADPLUS"}, {0x6C, "KBDSEPARATOR"}, {0x6D, "KBDKEYPADMINUS"}, {0x20, "KBDSPACEBAR"}, {0x08, "KBDBACK"},
+        {0x09, "KBDTAB"}, {0x21, "KBDPAGEUP"}, {0x22, "KBDPAGEDOWN"}, {0xBC, "KBDCOMMA"}, {0xBE, "KBDPERIOD"},
+        {0xBA, "KBDSEMICOLON"}, {0xDB, "KBDLEFTBRACKET"}, {0xDD, "KBDRIGHTBRACKET"}};
+    for (const auto& [v, k] : named)
+        if (v == vk) return t(k);
+    switch (vk) {
+    case 0x6A: return "*";
+    case 0xBB: return "+";
+    case 0xBD: return "-";
+    case 0x6E: return ".";
+    case 0x6F: return "/";
+    default: return "Unknown " + std::to_string(vk);
+    }
+}
+
+void Frontend::refreshKeys() {
+    // 0x4227bc: rows scroll .. scroll+10: label, then "key or Mouse n".
+    auto t = [&](const char* k) { const std::string* x = menuText_.find("GroupMainMenu", k); return x ? *x : std::string(k); };
+    for (int r = 0; r < 11; ++r) {
+        const int i = std::clamp(kbScroll_ + r, 0, 43);
+        char n[32];
+        std::snprintf(n, sizeof n, "but_kbd_%d", r + 1);
+        if (MnuButton* b = mnu_.button(n)) { b->text = t(kKeyRows[i].label); b->attrib |= 0x40; }
+        std::snprintf(n, sizeof n, "but_kbd_%dw", r + 1);
+        std::string v = keyName(kbWork_[size_t(i)][0]);
+        const uint32_t m = kbWork_[size_t(i)][1];
+        if (m >= 1 && m <= 3) {
+            if (!v.empty()) v += " " + t("KBDOR") + " ";
+            v += t(m == 1 ? "KBDMOUSELEFT" : m == 2 ? "KBDMOUSERIGHT" : "KBDMOUSEMIDDLE");
+        }
+        if (MnuButton* b = mnu_.button(n)) { b->text = v; b->attrib |= 0x40; }
+    }
+}
+
+void Frontend::kbMessage(const char* key, int ticks) {
+    // 0x422bb8: teletyped into (467,282) 116x98; ticks -1 = stays.
+    const std::string* x = menuText_.find("GroupMainMenu", key);
+    kbMsg_ = x ? *x : key;
+    kbShown_ = 0;
+    kbTimer_ = ticks;
+}
+
+void Frontend::kbCaptured(int type, uint32_t code) {
+    // 0x422d3c: a key (type 1) or mouse button (type 2) while waiting.
+    static const auto allowed = [](uint32_t vk) {   // 0x421ec8
+        return (vk >= 0x30 && vk <= 0x39) || (vk >= 0x41 && vk <= 0x5A) || (vk >= 0x25 && vk <= 0x28) || (vk >= 0x60 && vk <= 0x6F) ||
+               vk == 0x11 || vk == 0x10 || vk == 0x0D || vk == 0x2D || vk == 0x2E || vk == 0x24 || vk == 0x23 || vk == 0x20 ||
+               vk == 0x08 || vk == 0x09 || vk == 0x21 || vk == 0x22 || vk == 0xBB || vk == 0xBD || vk == 0xBC || vk == 0xBE ||
+               vk == 0xBA || vk == 0xDB || vk == 0xDD;
+    };
+    const int i = std::clamp(kbScroll_ + kbSel_, 0, 43);
+    if (kbCapture_ == 1 && type == 1) {
+        if (allowed(code)) {
+            for (int j = 0; j < 44; ++j)   // unbound elsewhere (0x422764)
+                if (j != i && kbWork_[size_t(j)][0] == code) kbWork_[size_t(j)][0] = 0;
+            kbWork_[size_t(i)][0] = code;
+            kbMessage("KBDACCEPTEDKEY", 120);
+        } else {
+            kbMessage("KBDRESERVEDKEY", 180);
+        }
+    } else if (kbCapture_ == 2 && type == 2) {
+        for (int j = 0; j < 44; ++j)
+            if (j != i && kbWork_[size_t(j)][1] == code) kbWork_[size_t(j)][1] = 0;
+        kbWork_[size_t(i)][1] = code;
+        kbMessage("KBDACCEPTEDKEY", 120);
+    }   // the other kind cancels silently
+    char n[32];
+    std::snprintf(n, sizeof n, "but_kbd_%dw", kbSel_ + 1);
+    if (MnuButton* b = mnu_.button(n)) b->drawstate = 1;
+    std::snprintf(n, sizeof n, "but_kbd_%dd", kbSel_ + 1);
+    if (MnuButton* b = mnu_.button(n)) b->drawstate = 1;
+    kbCapture_ = 0;
+    kbSel_ = -1;
+    refreshKeys();
 }
 
 void Frontend::refreshMacros() {
@@ -1367,7 +1520,76 @@ void Frontend::event(MnuButton& b, int ev) {
         return;
     }
     if (cb == "MNU_OPT1_MSGMAC" || cb == "MNU_OPT3_MSGMAC") return standard(b, ev, to(Macros));
-    if (cb == "MNU_OPT1_KBDREMAP") return standard(b, ev, [] {});   // the keyboard page is not in OpenDF yet
+    if (cb == "MNU_OPT1_KBDREMAP") return standard(b, ev, to(Keyboard));
+    // Keyboard Remap.
+    if (cb == "MNU_KBD_ASSIGNKEY" || cb == "MNU_KBD_ASSIGNMOUSE" || cb == "MNU_KBD_DELETEKEY") {
+        // Radio buttons (0x4237b0, 0x423700, 0x42385c).
+        if (ev == 1) {
+            for (const char* n : {"but_kbd_ak", "but_kbd_am", "but_kbd_dk"})
+                if (MnuButton* x = mnu_.button(n)) x->drawstate = 1;
+            b.drawstate = 3;
+            kbMode_ = cb == "MNU_KBD_ASSIGNKEY" ? 0 : cb == "MNU_KBD_ASSIGNMOUSE" ? 1 : 2;
+            kbMessage(kbMode_ == 0 ? "KBDKEYMOD" : kbMode_ == 1 ? "KBDMOUSEMOD" : "KBDDELETEMOD", -1);
+        } else if (ev == 6) { if (b.drawstate == 1) b.drawstate = 2; }
+        else if (ev == 7) { if (b.drawstate == 2) b.drawstate = 1; }
+        return;
+    }
+    if (cb == "MNU_KBD_GETKEY") {
+        // 0x4231b8: row u = userid; press pushes box and dot; release waits
+        // for a key / mouse button or deletes.
+        char w[32], d[32];
+        std::snprintf(w, sizeof w, "but_kbd_%dw", b.userid + 1);
+        std::snprintf(d, sizeof d, "but_kbd_%dd", b.userid + 1);
+        MnuButton* bw = mnu_.button(w);
+        MnuButton* bd = mnu_.button(d);
+        auto both = [&](int st) { if (bw) bw->drawstate = st; if (bd) bd->drawstate = st; };
+        if (ev == 1) both(3);
+        else if (ev == 6) { if (b.drawstate == 1) both(2); }
+        else if (ev == 7) { if (b.drawstate == 2) both(1); }
+        else if (ev == 2) {
+            if (kbMode_ == 0) { kbCapture_ = 1; kbMessage("KBDASSIGNKEYTXT", -1); }
+            else if (kbMode_ == 1) { kbCapture_ = 2; kbMessage("KBDASSIGNMOUSETXT", -1); }
+            else {
+                const int i = std::clamp(kbScroll_ + b.userid, 0, 43);
+                kbWork_[size_t(i)] = {0, 0};
+                refreshKeys();
+                b.drawstate = 1;
+                kbMessage("KBDDELETEKEYTXT", 120);
+            }
+            if (kbSel_ >= 0 && kbSel_ != b.userid) {
+                char pw[32], pd[32];
+                std::snprintf(pw, sizeof pw, "but_kbd_%dw", kbSel_ + 1);
+                std::snprintf(pd, sizeof pd, "but_kbd_%dd", kbSel_ + 1);
+                if (MnuButton* x = mnu_.button(pw)) x->drawstate = 1;
+                if (MnuButton* x = mnu_.button(pd)) x->drawstate = 1;
+            }
+            kbSel_ = b.userid;
+            if (kbMode_ == 2) both(1);
+        }
+        return;
+    }
+    if (cb == "MNU_KBD_SCROLLBAR") {
+        // 0x4235c0: arrows step on release (click9 at fx/2 on press); the
+        // slider sets the scroll in its owner draw.
+        if (b.type == 3) return;
+        if (ev == 1) { b.drawstate = 3; sound("CLICK9.WAV", 128); }
+        else if (ev == 2) {
+            b.drawstate = 1;
+            kbScroll_ = std::clamp(kbScroll_ + (upperCase(b.name) == "BUT_KBD_UP" ? -1 : 1), 0, 33);
+            if (MnuButton* sl = mnu_.button("but_kbd_sl")) sl->sliderPos = kbScroll_;
+            refreshKeys();
+        } else if (ev == 6) b.drawstate = 2;
+        else if (ev == 7) b.drawstate = 1;
+        return;
+    }
+    if (cb == "MNU_KBD_DEFAULT" || cb == "MNU_KBD_REVERT")
+        return standard(b, ev, [this, cb] {
+            // 0x423490 / 0x423528.
+            if (cb == "MNU_KBD_DEFAULT") for (int i = 0; i < 44; ++i) kbWork_[size_t(i)] = {kKeyRows[i].vk, kKeyRows[i].mouse};
+            else kbWork_ = kbRevert_;
+            refreshKeys();
+            kbMessage(cb == "MNU_KBD_DEFAULT" ? "KBDDEFAULTSETTINGSTXT" : "KBDREVERTSETTINGSTXT", 180);
+        });
     // Message Macros (0x420ee4..0x421234).
     if (cb == "MNU_MM_ACCEPT") return standard(b, ev, to(Main));
     if (cb == "MNU_MM_OPTIONS") return standard(b, ev, to(Options1));
@@ -1474,6 +1696,11 @@ void Frontend::ownerDraw(MnuButton& b) {
         return;
     }
     if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
+    if (cb == "MNU_KBD_SCROLLBAR" && b.type == 3) {
+        kbScroll_ = std::clamp(b.sliderPos, 0, 33);
+        if (kbScroll_ != kbLastSlider_) { kbLastSlider_ = kbScroll_; refreshKeys(); }
+        return;
+    }
     if (cb == "MNU_MIS_SCROLLMAP") {
         // The map sliders' owner draw (0x413a56): target = slider position.
         if (b.type == 2) mapTgt_[0] = std::clamp(b.sliderPos, 0, 768);
@@ -1609,7 +1836,7 @@ int Frontend::run() {
     {
         const std::string s = o_.startScreen;
         Screen first = s == "soldier" ? Soldier : s == "main" ? Main : s == "campaign" ? Campaign : s == "briefing" ? Briefing
-                     : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "macros" ? Macros : s == "credits" ? Credits : s == "debrief" ? Debrief : Start;
+                     : s == "loadout" ? Loadout : s == "difficulty" ? Options3 : s == "settings" ? Options1 : s == "macros" ? Macros : s == "keyboard" ? Keyboard : s == "credits" ? Credits : s == "debrief" ? Debrief : Start;
         if (first == Briefing || first == Loadout || first == Debrief) { enter(Campaign); }
         if (first != Start) { enter(first); next_ = first; music_.start(); musicVar(0, 0); musicVar(1, first == Soldier ? 4 : first == Main ? 0 : first == Campaign ? 1 : first == Briefing ? 6 : first == Loadout ? 7 : first == Options3 ? 11 : first == Options1 ? 3 : 0); }
     }
@@ -1621,6 +1848,13 @@ int Frontend::run() {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) { next_ = Quit; break; }
             if (e.type == SDL_TEXTINPUT && !editing_.empty()) textInput(e.text.text);
+            if (screen_ == Keyboard && kbCapture_ != 0) {
+                // Waiting for a key or mouse button: normal menu input is skipped.
+                if (e.type == SDL_KEYDOWN && !e.key.repeat) kbCaptured(1, Controls::toVirtualKey(e.key.keysym.scancode));
+                else if (e.type == SDL_MOUSEBUTTONDOWN)
+                    kbCaptured(2, e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 2 : 3);
+                continue;
+            }
             if (e.type == SDL_KEYDOWN) key(e.key);
             if (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
                 int mx = e.type == SDL_MOUSEMOTION ? e.motion.x : e.button.x, my = e.type == SDL_MOUSEMOTION ? e.motion.y : e.button.y;
@@ -1693,7 +1927,11 @@ int Frontend::run() {
             ++screenTicks_;
             if (screen_ == Start && screenTicks_ >= 600) next_ = Soldier;
             if (screen_ == Credits && next_ == Credits) tickCredits();
-            if (screen_ == Briefing && captionShown_ < caption_.size()) ++captionShown_;   // 1 character per tick (0x418408)
+            if (screen_ == Briefing && captionShown_ < caption_.size()) ++captionShown_;
+            if (screen_ == Keyboard) {
+                if (kbShown_ < kbMsg_.size()) ++kbShown_;
+                if (kbTimer_ > 0 && --kbTimer_ == 0) kbMessage(kbMode_ == 0 ? "KBDKEYMOD" : kbMode_ == 1 ? "KBDMOUSEMOD" : "KBDDELETEMOD", -1);
+            }   // 1 character per tick (0x418408)
         }
         if (screen_ == Options1) syncSliders();
         music_.update();   // once per menu frame (0x406bf8 -> 0x4b8490)
@@ -1717,6 +1955,15 @@ int Frontend::run() {
                 g.flipMouse = cfg_.get("flipmouse") != 0;
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
+                // 0x41cca0: the profile's 44 bindings over the game table;
+                // mouse 1/2/3 -> mask 1/2/0x10; Fire also sets attack_2.
+                g.bindings.clear();
+                for (int i = 0; i < 44; ++i) {
+                    const uint32_t vk = uint32_t(prof().get(0x6a0 + 12 * i)) & 0xFFFF, m = uint32_t(prof().get(0x6a4 + 12 * i));
+                    const uint32_t mask = m == 1 ? 1 : m == 2 ? 2 : m == 3 ? 0x10 : 0;
+                    g.bindings.push_back({kKeyRows[i].game, vk | mask << 16});
+                    if (i == 8) g.bindings.push_back({"attack_2", vk | mask << 16});
+                }
                 uint32_t flags = uint32_t(prof().get(0x70 + camp_ * 0x44));
                 outcome_ = MissionOutcome{};
                 runGame(vfs_, g, &outcome_, &flags);
@@ -1758,7 +2005,16 @@ int Frontend::run() {
             // 4 centred (1 left, 2 right).
             for (const CreditText& t : creditSlots_)
                 if (t.active) drawText(t.font, float(t.x), float(t.y), t.text, t.color, (t.flags & 4) ? 1 : (t.flags & 2) ? 2 : 0);
-        if (screen_ == Options1 || screen_ == Options3 || screen_ == Macros) {
+        if (screen_ == Keyboard) {
+            // 0x423048: frame (459,274)-(590,387) and the teletyped message.
+            const uint32_t g = 0xFF00FF00;
+            menuLine(459, 274, 590, 274, g);
+            menuLine(590, 274, 590, 387, g);
+            menuLine(590, 387, 459, 387, g);
+            menuLine(459, 387, 459, 274, g);
+            drawWrapped("LCD10", 467, 282, 116, 98, kbMsg_.substr(0, kbShown_), g);
+        }
+        if (screen_ == Options1 || screen_ == Options3 || screen_ == Macros || screen_ == Keyboard) {
             // The settings pages' separator under the tab strip: a green line
             // (37,108)-(600,108) after the buttons (0x40b00c, 0x41c4fc, 0x420eac).
             hud().line(offX_ + 37 * scale_, offY_ + 108.5f * scale_, offX_ + 600 * scale_, offY_ + 108.5f * scale_, scale_, {0, 1, 0, 1});

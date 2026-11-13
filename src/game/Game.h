@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace df {
 
@@ -48,6 +50,9 @@ struct GameOptions {
     // dialog_volume (0x472f44).
     bool crosshairs = true, flipMouse = false;
     int mouseScale = 128, dialogVolume = 200;
+    // The soldier's key bindings (profile +0x6a0), applied over the game
+    // table at mission start (0x41cca0): DF.EXE name, VK | mouse mask << 16.
+    std::vector<std::pair<std::string, uint32_t>> bindings;
     bool watch = false;
     std::string record;
 };
