@@ -22,9 +22,12 @@ struct GpuModel {
         GLuint vao = 0, vbo = 0; std::vector<Batch> batches; float min[3], max[3]; int triangles = 0;
         int frames = 1, ticksPerFrame = 1;
         std::vector<int> materialTextures;
+        std::vector<int> meshParent;                  // see ModelLod
+        std::vector<std::array<float, 3>> meshPivot;
     };
     std::string name;
     std::string kind;                  // "efct" = billboard effect
+    std::string lodCodes[4];           // per-LOD draw routine ("helo", "gnrc", ...)
     float lodThreshold[4] = {0, 0, 0, 0};
     float headerRadius = 1;            // 3DI header +0x60 (LOD selection)
     // Material +0x12 of the model's largest LOD-0 material: OpenDF hit-tests
@@ -63,6 +66,8 @@ public:
     // `weapon`: a first-person weapon, whose fullbright muzzle-flash parts are
     // drawn only while `flash` is set. `frame`: animated materials' frame.
     void draw(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, bool flash = false, int frame = 0);
+    // A posed person: each mesh drawn with model x meshes[mesh].
+    void drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes);
     void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, bool flash = false, int frame = 0);
     void end();
     // The mission's colour variant (cleared models reload with it).
@@ -74,7 +79,8 @@ public:
     static int chooseLod(const GpuModel& m, float depth, float focal, bool person);
 
 private:
-    void drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, bool flash, int frame);
+    void drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, bool flash, int frame,
+                     const std::vector<Mat4>* meshes = nullptr);
     void release();
     GLuint prog_ = 0, identityLut_ = 0;
     int variant_ = 0;

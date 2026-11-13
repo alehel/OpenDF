@@ -127,6 +127,28 @@ const int kBuiltinRows[kRowCount][3] = {
 };
 
 
+// Gun sound ids +0x20..+0x2C (built-in copy).
+const int kBuiltinGunSounds[kGunCount][4] = {
+    {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {98, 97, 96, 95}, {94, 0, 0, 0}, {0, 0, 0, 0},
+    {82, 84, 83, 85}, {81, 84, 83, 85}, {0, 0, 0, 0}, {0, 0, 0, 0}, {86, 89, 88, 87}, {0, 0, 0, 0}, {80, 113, 0, 114},
+    {99, 102, 101, 100}, {90, 93, 92, 91}, {0, 0, 0, 0}, {109, 112, 111, 110}, {0, 0, 0, 0}, {0, 0, 0, 0},
+    {0, 0, 0, 0}, {0, 0, 0, 0}, {103, 106, 105, 104}, {107, 0, 0, 0}, {0, 0, 0, 0}, {108, 0, 0, 0}, {0, 0, 0, 0},
+    {115, 117, 0, 116},
+};
+
+// The guns a burst mode fires (0x46aefc): the first round from the burst
+// gun (its sound is the whole burst), the other two from the next gun
+// (silent). Ammunition comes from the mode's own gun.
+int burstGun(int mode) {
+    switch (mode) {
+    case 6: case 8: return 8;
+    case 21: return 5;
+    case 35: return 23;
+    case 36: return 25;
+    default: return -1;
+    }
+}
+
 // WEAP%i.PCX frame per mode (0x484ae8, jump table 0x484a4c); -1 none.
 int iconFor(int mode) {
     switch (mode) {
@@ -151,6 +173,48 @@ bool isBurst(int mode) { return mode == 6 || mode == 8 || mode == 21 || mode == 
 
 } // namespace
 
+const ModeDef& modeInfo(int mode) {
+    static std::vector<ModeDef> modes = [] {
+        std::vector<ModeDef> out(kModeCount);
+        for (int m = 0; m < kModeCount; ++m) {
+            const int* v = kBuiltinModes[m];
+            ModeDef& d = out[size_t(m)];
+            d.type = v[0]; d.gun = v[1]; d.item = v[2];
+            d.offset[0] = v[3]; d.offset[1] = v[4]; d.offset[2] = v[5];
+            d.muzzleVertex = v[6]; d.cooldown = v[7]; d.scope = v[8]; d.flags = v[9];
+            d.burst = isBurst(m);
+        }
+        return out;
+    }();
+    return modes[size_t(std::clamp(mode, 0, kModeCount - 1))];
+}
+
+const GunDef& gunInfo(int gun) {
+    static std::vector<GunDef> guns = [] {
+        std::vector<GunDef> out(kGunCount);
+        for (int g = 0; g < kGunCount; ++g) {
+            const int* v = kBuiltinGuns[g];
+            out[size_t(g)] = {v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]};
+            out[size_t(g)].falloff = std::max(1, out[size_t(g)].falloff);
+            for (int k = 0; k < 4; ++k) out[size_t(g)].sounds[k] = kBuiltinGunSounds[g][k];
+        }
+        return out;
+    }();
+    return guns[size_t(std::clamp(gun, 0, kGunCount - 1))];
+}
+
+int modeThirdPersonItem(int mode) {
+    static const int items[kModeCount] = {0,    4004, 0,    0,    4031, 4006, 4056, 4056, 4002, 4002, 4056, 4002, 4023,
+                                          4023, 4023, 4027, 4002, 4002, 4002, 4002, 4029, 4029, 4029, 4002, 4002, 4002,
+                                          4002, 4074, 4041, 0,    4072, 4002, 4025, 4033, 4002, 4022, 4022, 0,    0};
+    return mode >= 0 && mode < kModeCount ? items[mode] : 0;
+}
+
+int aiWeaponMode(int index) {
+    static const int table[12] = {0, 8, 35, 36, 32, 23, 23, 20, 26, 5, 4, 0};   // 0x4eb168
+    return index >= 0 && index < 12 ? table[index] : 0;
+}
+
 int loadoutRow(const std::string& name) {
     static const std::pair<const char*, int> rows[] = {{".45", 6}, {"HS22", 5}, {"M4", 9}, {"M40", 23}, {"Barrett", 12},
                                                        {"MP5", 15}, {"SAW", 11}, {"Ammo", 1}, {"LAW", 20},
@@ -174,6 +238,7 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     for (int g = 0; g < kGunCount; ++g) {
         const int* v = kBuiltinGuns[g];
         guns_[size_t(g)] = {v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]};
+        for (int k = 0; k < 4; ++k) guns_[size_t(g)].sounds[k] = kBuiltinGunSounds[g][k];
     }
     for (int r = 0; r < kRowCount; ++r)
         for (int k = 0; k < 3; ++k) rows[r][k] = kBuiltinRows[r][k];
@@ -200,6 +265,7 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
                 const uint32_t b = kGunTable + uint32_t(g) * kGunRecord;
                 guns_[size_t(g)] = {rd(b + 4), rd(b + 8), rd(b + 0xC), rd(b + 0x10), rd(b + 0x14), rd(b + 0x18), rd(b + 0x1C),
                                     rd(b + 0x30)};
+                for (int k = 0; k < 4; ++k) guns_[size_t(g)].sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
             }
             for (int r = 0; r < kRowCount; ++r)
                 for (int k = 0; k < 3; ++k) {
@@ -233,20 +299,8 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     for (int& s : slots_)
         if (s < 0 || s >= kModeCount || !modes_[size_t(s)].works()) s = 0;
 
-    // Ammunition per gun (0x44b634): n - 1 spare, a full magazine, a round
-    // chambered; the Ammo kit (row 1) gives the primary's guns 2n - 1.
-    chambered_.assign(kGunCount, 0);
-    mag_.assign(kGunCount, 0);
-    spares_.assign(kGunCount, 0);
-    for (int i = 0; i < kSlots; ++i) {
-        if (!slots_[size_t(i)]) continue;
-        const int g = modes_[size_t(slots_[size_t(i)])].gun;
-        const GunDef& gd = guns_[size_t(g)];
-        const bool doubled = loadout.kit == 1 && i >= 3 && i <= 5;
-        spares_[size_t(g)] = doubled ? 2 * gd.n - 1 : gd.n - 1;
-        mag_[size_t(g)] = gd.magazine;
-        chambered_[size_t(g)] = 1;
-    }
+    kit_ = loadout.kit;
+    refill();
     // Mission start: slot 3, the primary's first mode (0x449791).
     current_ = 3;
     if (!slots_[3]) cycle();
@@ -257,6 +311,24 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
     impacts_.clear();
+}
+
+void Arsenal::refill() {
+    // Ammunition per gun (0x44b634): n - 1 spare, a full magazine, a round
+    // chambered; the Ammo kit (row 1) gives the primary's guns 2n - 1.
+    chambered_.assign(kGunCount, 0);
+    mag_.assign(kGunCount, 0);
+    spares_.assign(kGunCount, 0);
+    for (int i = 0; i < kSlots; ++i) {
+        if (!slots_[size_t(i)]) continue;
+        const int g = modes_[size_t(slots_[size_t(i)])].gun;
+        const GunDef& gd = guns_[size_t(g)];
+        const bool doubled = kit_ == 1 && i >= 3 && i <= 5;
+        spares_[size_t(g)] = doubled ? 2 * gd.n - 1 : gd.n - 1;
+        mag_[size_t(g)] = gd.magazine;
+        chambered_[size_t(g)] = 1;
+    }
+    reloadTicks_ = 0;
 }
 
 void Arsenal::select(int slot) {
@@ -290,10 +362,17 @@ void Arsenal::reload() {
     startReload();
 }
 
+void Arsenal::sound(int field, int gunIndex) {
+    const GunDef& g = guns_[size_t(gunIndex >= 0 ? gunIndex : mode().gun)];
+    if (g.sounds[field] > 0) sounds_.push_back({g.sounds[field], soundPos_});
+}
+
 void Arsenal::startReload() {
     // 0x44a004: needs a spare magazine and a magazine that is not full; the
     // rounds left in it are discarded; the new one is in after 0x78 ticks.
+    // The reload sound (+0x28) plays as it begins (0x44a084).
     if (reloadTicks_ > 0 || sparesRef() <= 0 || magRef() == gun().magazine) return;
+    sound(2);
     magRef() = 0;
     reloadTicks_ = kReloadTicks;
     zoomLevel_ = 0;
@@ -301,17 +380,10 @@ void Arsenal::startReload() {
 }
 
 void Arsenal::toggleZoom() {
-    // 0x44b420: only modes with flag 0x1 (and a magnification).
-    if (reloadTicks_ > 0 || !mode().zoomable()) return;
+    // 0x44b420: only modes with flag 0x1 (and a magnification), not with
+    // the binoculars up ([0x93367c]).
+    if (reloadTicks_ > 0 || !mode().zoomable() || binoculars_) return;
     zoomLevel_ = zoomLevel_ ? 0 : 1;
-    if (zoomLevel_) {
-        // 0x44b870: a fixed random aim offset for this zoom, sin/cos of a
-        // random angle times 8 table units (up to 2.8125°).
-        std::uniform_real_distribution<float> a(0.f, 2 * kPi);
-        const float r = a(rng_), m = 2.8125f * kPi / 180.f;
-        scopeYaw_ = std::sin(r) * m;
-        scopePitch_ = std::cos(r) * m;
-    }
 }
 
 void Arsenal::fire(Player& player) {
@@ -321,6 +393,33 @@ void Arsenal::fire(Player& player) {
     cooldown_ = md.cooldown;
     std::uniform_real_distribution<float> unit(0.f, 1.f);
     std::uniform_real_distribution<float> turn(0.f, 2 * kPi);
+    if (md.type == 7 || md.type == 9) {
+        // Claymore (0x44ad50) / satchel (0x44ae90): placed 1 m ahead at the
+        // player's heading (ground snapped by the game); the same kick as a
+        // grenade; the next one after the 90-tick cooldown (0x44a548).
+        const float r = turn(rng_);
+        kick_[0] -= 0x1000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
+        const int item = md.type == 9 ? 4020 : slots_[size_t(current_)] == 37 ? 4014 : 4040;
+        events_.push_back({WeaponEvent::Place, item,
+                           player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
+        return;
+    }
+    if (md.type == 8) {
+        // Radio detonator (0x42cef8): all the player's satchels and radio
+        // claymores; no ammunition.
+        chamberedRef() = 1;
+        events_.push_back({WeaponEvent::Detonate});
+        return;
+    }
+    if (md.type == 10) {
+        // Laser designator (0x44a6f8): "Fire Mission request, over." with
+        // 0x1AE now; the request itself when the cooldown ends (0x44a764).
+        chamberedRef() = 1;
+        events_.push_back({WeaponEvent::LaserPressed});
+        return;
+    }
     if (md.type == 6) {
         // Knife (0x44a598): the model pulls back 0x2000 and down 0x2000 with
         // a random 0x400 wobble (0x44a5f1); the strike point is 0x8000 along
@@ -373,8 +472,6 @@ void Arsenal::fire(Player& player) {
     // always fire from the model (0x44a120).
     Vec3 origin;
     if (zoomLevel_ && md.type == 1) {
-        const float sy = yaw + scopeYaw_, sp = pitch + scopePitch_;
-        dir = {std::cos(sp) * std::sin(sy), std::sin(sp), -std::cos(sp) * std::cos(sy)};
         origin = player.eye() + Vec3{0, -0x200 / 65536.f, 0};
     } else {
         const Vec3 fwd = player.forward();
@@ -403,12 +500,27 @@ void Arsenal::fire(Player& player) {
     p.power = g.power;
     p.falloff = g.falloff;
     p.flags = g.flags;
+    p.id = ++projectileIds_;
+    p.from = player.origin();
     bullets_.push_back(p);
+    // The shot (gun +0x20, 0x44d5fe) at the muzzle. A burst sounds once:
+    // the first round carries the burst gun's sound, the others none.
+    if (const int bg = burstGun(slots_[size_t(current_)]); bg >= 0) {
+        if (!followUp_) {
+            const int id = guns_[size_t(bg)].sounds[0];
+            if (id > 0) sounds_.push_back({id, origin, true});
+        }
+    } else if (g.sounds[0] > 0) {
+        sounds_.push_back({g.sounds[0], origin, true});
+    }
+    // A launcher loads its next round at once, with the load sound (0x44a290).
+    if (md.type == 2) sound(1);
 }
 
 void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
                      std::vector<std::string>& messages) {
     if (triggerPressed) pressed_ = true;
+    soundPos_ = player.origin();
     flashTimer_ = std::max(0.f, flashTimer_ - dt);
     for (float& k : kick_) {
         const float step = 0x80 / 65536.f * 60.f * dt;
@@ -426,6 +538,7 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
         --sparesRef();
         magRef() = gun().magazine;
         messages.push_back("Ammo reloaded");   // DF.EXE's own message
+        sounds_.push_back({-0x164, {0, 0, 0}});   // PU_AMMO, 2D (0x42b587); negative id = 2D
         // APPROXIMATION (inferred): an empty chamber is loaded from it.
         if (!chambered() && magRef() > 0) { chamberedRef() = 1; --magRef(); }
     }
@@ -434,14 +547,19 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
         if (md.type == 1) {
             // 0x449f58: the next round from the magazine; an empty magazine
             // starts the reload.
-            if (magRef() > 0) { chamberedRef() = 1; --magRef(); }
+            if (magRef() > 0) { chamberedRef() = 1; --magRef(); sound(1); }   // chamber sound +0x24 (0x449f48)
             if (magRef() == 0) startReload();
             // A burst goes on by itself (0x44988e); full auto refires while
-            // the trigger is held, but not zoomed (0x449fc3).
+            // the trigger is held, but not with the binoculars up ([0x93367c], 0x449ff1).
             if (chambered() && reloadTicks_ == 0) {
-                if (burstLeft_ > 0) { --burstLeft_; fire(player); shot = true; }
-                else if (md.automatic() && triggerDown && !zoomLevel_) { fire(player); shot = true; }
+                if (burstLeft_ > 0) { --burstLeft_; followUp_ = true; fire(player); followUp_ = false; shot = true; }
+                else if (md.automatic() && triggerDown && !binoculars_) { fire(player); shot = true; }
             }
+        } else if (md.type == 10) {
+            chamberedRef() = 1;
+            events_.push_back({WeaponEvent::LaserRequest});   // 0x44a764
+        } else if (md.type == 8) {
+            chamberedRef() = 1;
         } else if (md.type == 6) {
             chamberedRef() = 1;   // 0x44a6c4: the knife is ready again
         } else if (sparesRef() > 0 && !chambered()) {
@@ -454,12 +572,18 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     // during the cooldown is lost (0x44a920).
     if (pressed_) {
         pressed_ = false;
-        if (!shot && cooldown_ <= 0 && reloadTicks_ == 0) {
-            if (chambered()) {
+        // The binoculars block the trigger (0x44a947).
+        if (!shot && cooldown_ <= 0 && reloadTicks_ == 0 && !binoculars_) {
+            if (md.type == 8 || md.type == 10) {
+                fire(player);   // the detonator and the designator need no round
+            } else if (!chambered() && md.type != 1 && md.type != 6) {
+                sound(3);                       // launcher / grenade dry fire (0x44a221, 0x44a3e3)
+            } else if (chambered()) {
                 fire(player);
                 if (md.burst) burstLeft_ = 2;   // 0x46af90: three rounds in all
             } else if (md.type == 1) {
-                burstLeft_ = 0;                 // dry fire (0x449e1d)
+                burstLeft_ = 0;                 // dry fire (0x449e1d), sound +0x2C (0x449e03)
+                sound(3);
                 startReload();
             }
         }
@@ -475,7 +599,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
-            bool hitSomething = world.raycast(b.pos, next, hit);
+            bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter);
             // Water (0x44f0e4, tested after terrain and objects; the nearest
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
@@ -500,6 +624,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.explosive = b.explosive();
                 im.armed = !(b.flags & 0x01) || b.age > 8;
                 im.law = b.flags & 0x40;
+                im.flags = b.flags;
                 impacts_.push_back(im);
                 if (std::getenv("OPENDF_DEBUGHITS")) {
                     std::fprintf(stderr, "hit obj %d part %d at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part, hit.point.x,
@@ -515,10 +640,24 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 }
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
-                if (hit.object >= 0)
-                    world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power);
+                if (hit.object == -3) {
+                    // The player (0x44f184 / 0x44f2b2): armour class 0.
+                    playerHits_.push_back({(1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), hit.part, b.from});
+                } else if (hit.object >= 0)
+                    world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
+                                 world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
                 b.age = b.lifetime;
                 break;
+            }
+            // Whiz-by (0x44f330): the point of this step nearest the listener,
+            // if it lies inside the step and the round is within 40 m of the
+            // listener on both horizontal axes.
+            {
+                const Vec3 d = next - b.pos;
+                const float dd = dot(d, d);
+                const float t = dd > 0 ? dot(listener_ - b.pos, d) / dd : -1;
+                if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
+                    sounds_.push_back({0x41, b.pos + d * t});
             }
             b.pos = next;
             if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;

@@ -21,6 +21,14 @@ struct ItemDef {
     // from which items use which value.
     int hp = 0, damageClass = 0;
     std::string aiFunction;   // `ai_function` (brrl: explosive barrel, sgen: smoke generator, ...)
+    int interruptSound = 0;
+    int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)
+    // Vehicles (parser 0x448cec): `acceleration` (m/s^2 at 64 ticks/s,
+    // item +0xdc), `turn_rate` (degrees/s, +0xe0), `axle_dist` (m, +0xe4).
+    float acceleration = 0, turnRate = 0, axleDist = 0;
+    // `attrib:` flags (0x449262, def +0x24): good 1, evil 2, AIData 4, FO 8,
+    // movecb 0x10 (touch callback: pickups), powerup 0x20, flesh 0x40, NoAK 0x80.
+    uint32_t attrib = 0;   // `interrupt_sound_id`: sound id the object repeats (ambience)
 };
 
 class ItemDefs {
@@ -80,6 +88,8 @@ struct Mission {
     // Header +0x74: which of each model material's four colour/texture
     // variants this mission uses (DF.EXE 0x43f964).
     int colorVariant = 0;
+    // Header +0x84: fire missions (artillery strikes) available (0x44319d).
+    int fireMissions = 0;
     // The object at `index` of `group`, or null.
     const MissionObject* inGroup(int group, int index) const {
         if (group < 0 || group > 3 || index < 0 || index >= groupSize[group]) return nullptr;

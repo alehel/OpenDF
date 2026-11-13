@@ -12,6 +12,7 @@
 #include "core/Import.h"
 #include "core/Pff.h"
 #include "game/Game.h"
+#include "menu/Frontend.h"
 #include "formats/Anm.h"
 #include "formats/Chr.h"
 #include "formats/Mission.h"
@@ -102,7 +103,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr")) o.command = a;
+                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play")) o.command = a;
         else o.args.push_back(a);
     }
     return true;
@@ -754,7 +755,7 @@ int main(int argc, char** argv) {
     Options o;
     if (!parseArgs(argc, argv, o)) { usage(); return 1; }
     if (o.command == "import") return cmdImport(o);
-    const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission";
+    const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission" || o.command == "play";
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
@@ -794,6 +795,19 @@ int main(int argc, char** argv) {
             rc = runGame(vfs, g);
         }
         else if (o.command == "chr") rc = cmdChr(vfs, o);
+        else if (o.command == "play") {
+            FrontendOptions f;
+            f.gameDir = o.dataDir;
+            f.width = o.width;
+            f.height = o.height;
+            f.game.gameDir = o.dataDir;
+            f.game.width = o.width;
+            f.game.height = o.height;
+            if (!o.args.empty()) f.startScreen = o.args[0];
+            f.screenshot = o.screenshot;
+            f.frames = std::max(1, o.frames);
+            rc = runFrontend(vfs, f);
+        }
         else if (o.command == "check") rc = cmdCheck(vfs);
         else rc = cmdView(vfs, o);
     }

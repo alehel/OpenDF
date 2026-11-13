@@ -300,7 +300,6 @@ emitters. OpenDF starts the camera at the first `start, player`.
 | `.JIM` | binary | briefing-map annotations: 9-byte points (u8 kind, u16 x, u16 y, u32 n) then 16-byte names like `2-CP ALPHA`; for the M7 briefing screen |
 | `.PAL` | binary | mission map palettes |
 | `.KDV` | `xVDK`/`sVDK`/`pVDK` chunks | video: 640×480, includes `SAMP` audio chunks |
-| `.SBF` | `SBF0` | music bank with named tracks (`Intro`, …) |
 | `.MNU`, `.BIN`, `.RC`, `.H`, `.I` | | menu system resources |
 | `.ANM`, `.CHR` | | soldier animations / character data |
 
@@ -393,3 +392,50 @@ load-time scale ×0x1d2b0/65536 (0x469270), posing 0x4701f4 / 0x46df64.
   parent matrix), rotations are absolute per part; M = T·Rz(yaw)·R(pitch)·Rx(roll).
 - Ground contact: the origin sits above the lowest touching contact point.
 - Hit spheres: part matrix × raw centre (no axis remap, as DF.EXE does).
+
+## PWF sound banks (SNIPER.PWF, DFDLGnn.PWF)
+
+Header: u32 header size (0x1C), "PWF2" (or "PWF1"), u32 sample count, …,
++0x10 offset of the definitions block (PWF2 only). Sample entries (52 bytes
+from the header size): name[24], u32 offset, u32 size. A sample is either a
+RIFF WAV (PWF1) or DF.EXE's converted form "SAMP" (0x48cfb0): u32 byte count
+at +4, rate byte at +0xB = rate·16/22050 (0x10 = 22050 Hz, 0x08 = 11025 Hz),
+sample shift +0xC (0), unsigned 8-bit mono PCM from +0x10 (the block keeps the
+original WAV's size).
+
+Definitions block: {u32 0x14, u32 count, u32 offset}; definition 0x50 bytes:
+name at +4, pitch base +0x1C and random range +0x20 (16.16), layer count +0x24,
+8 layer offsets +0x28, maximum distance +0x48 (m), flags +0x4C. Layer 0x30:
+u16 variants, u16 round-robin index, i32 range (m), u32 flags (0x1 positional
+pan, 0x10 variants in turn, 0x2/0x4 against the play mask 6), u32, 8 variant
+offsets at +0x10. Variant 28 bytes: u32 sample, pitch base and random range
+(16.16), gain, cap.
+
+LOOP.DEF: `"name" "wav" volume clip maxdist pitcha pitchb` (loose WAV files).
+
+## DFMUSIC.SBF and DFMUSIC.BIN (menu music)
+
+DFMUSIC.SBF ("SBF0", read from disk next to DF.EXE):
+
+```
+0x00 "SBF0"  0x04 u32 0x100  0x08 u32 0  0x0C u32 0  0x10 u32 tableOffset (0x18)  0x14 u32 count (82)
+table: count x 32 bytes { char name[16]; u32 offset; u32 size; u32 blockSize (0x1008); u32 0 }
+block (0x1008 bytes): u32 nbytes (4096, less in the last block); u8 shiftL; u8 shiftR; u16 unused;
+                      u8 pcm[4096] unsigned 8-bit stereo L,R at 22050 Hz
+```
+
+The gain of a block is (V>>1)>>shift per channel, V the stream volume 0..255.
+
+DFMUSIC.BIN ("SCR0", in DFBASE.PFF) is a compiled music script:
+
+```
+0x00 "SCR0"  0x04 u32 0x100  0x08 u32 trackCount (1)  0x0C u32 offset of the track-offset table (0x20)
+track header "MU00" (file 0x24), offsets relative to it:
+  +0x08 name "DFMenu"  +0x20 codeBase (0x80)  +0x24 stateTable (0x68)  +0x28 stateCount (6)
+  +0x2C defaultState (0)
+states (track-relative): Begin, BasicLoop, Lost, Won, Cancelled, FromMP
+```
+
+Byte-coded stack VM (DF.EXE 0x4ab5ce, table 0x4ab070); jumps are relative to the code base, calls
+and states to the track. Globals Var00..Var15 at byte offsets 0x00..0x3C, `i` 0x40, `lastTime`
+0x44; the game writes Var0n with 0x4b8570. The full opcode table is in src/audio/Music.cpp.

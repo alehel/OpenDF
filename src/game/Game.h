@@ -4,7 +4,10 @@
 #include "../core/Pff.h"
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace df {
 
@@ -39,10 +42,31 @@ struct GameOptions {
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.
     int gpsIcons = 1;
+    // df.cfg "attributes" (Difficulty settings): 0x80 enemy AI hard, 0x100
+    // player health easy, 0x200 no squad members, 0x800 power ups on.
+    uint32_t attributes = 0;
+    // df.cfg CONTROLS / MUSIC: crosshairs (0x40200d), flipmouse and
+    // mousescale (0x42eba1: turn per count = mousescale << 14 binary angle),
+    // dialog_volume (0x472f44).
+    bool crosshairs = true, flipMouse = false;
+    int mouseScale = 128, dialogVolume = 200;
+    // The soldier's key bindings (profile +0x6a0), applied over the game
+    // table at mission start (0x41cca0): DF.EXE name, VK | mouse mask << 16.
+    std::vector<std::pair<std::string, uint32_t>> bindings;
     bool watch = false;
     std::string record;
 };
 
-int runGame(Vfs& vfs, const GameOptions& options);
+// What the front end needs back from a mission (debriefing, profile).
+struct MissionOutcome {
+    bool played = false;     // the mission ran
+    bool won = false;        // side 1 won
+    int kills = 0;           // people the player killed
+    bool quit = false;       // the window was closed: leave the program (exit code 2)
+};
+
+// `campaignFlags`: in, the soldier's campaign flags; out, updated only when
+// the mission was won (DF.EXE 0x401b47).
+int runGame(Vfs& vfs, const GameOptions& options, MissionOutcome* outcome = nullptr, uint32_t* campaignFlags = nullptr);
 
 } // namespace df

@@ -52,6 +52,19 @@ bool ItemDefs::parse(const std::string& text) {
             open = false;
             continue;
         }
+        if (line.compare(0, 7, "attrib:") == 0) {
+            std::istringstream as(line.substr(7));
+            std::string a;
+            while (as >> a) {
+                for (auto& ch : a) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                static const std::pair<const char*, uint32_t> bits[] = {{"good", 1}, {"evil", 2}, {"aidata", 4}, {"fo", 8},
+                                                                        {"movecb", 0x10}, {"powerup", 0x20}, {"flesh", 0x40},
+                                                                        {"noak", 0x80}};
+                for (const auto& b : bits)
+                    if (a == b.first) cur.attrib |= b.second;
+            }
+            continue;
+        }
         size_t sp = line.find_first_of(" \t");
         std::string key = line.substr(0, sp);
         std::string val = sp == std::string::npos ? "" : trim(line.substr(sp));
@@ -62,6 +75,11 @@ bool ItemDefs::parse(const std::string& text) {
         else if (key == "anim_def") cur.animDef = val;
         else if (key == "chr_file") cur.chrFile = val;
         else if (key == "ai_function") cur.aiFunction = val;
+        else if (key == "interrupt_sound_id") cur.interruptSound = std::atoi(val.c_str());
+        else if (key == "phrase_set") cur.phraseSet = std::atoi(val.c_str());
+        else if (key == "acceleration") cur.acceleration = float(std::atof(val.c_str()));
+        else if (key == "turn_rate") cur.turnRate = float(std::atof(val.c_str()));
+        else if (key == "axle_dist") cur.axleDist = float(std::atof(val.c_str()));
         else if (key == "hp") {
             std::istringstream hs(val);
             hs >> cur.hp >> cur.damageClass;
@@ -92,6 +110,7 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     m.dialogue = cstr(d, 0x64, 0x10);
     for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
     m.colorVariant = int(u32(d, 0x74) & 3);
+    m.fireMissions = int(u32(d, 0x84));
 
     // Layout from DF.EXE's loader (0x440490): four groups of 96-byte object
     // records (counts at 0x98..0xA4), 128 paths of 0x88 bytes, 64 records of

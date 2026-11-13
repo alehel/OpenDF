@@ -6,8 +6,12 @@
 #include "../formats/Mission.h"
 #include "../render/Models.h"
 #include "../render/Terrain.h"
+#include "../formats/Anm.h"
+#include "../formats/Chr.h"
+#include "Animator.h"
 
 #include <array>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -40,6 +44,25 @@ struct WorldObject {
     // to the body origin, and radius; metres.
     std::vector<std::array<float, 4>> spheres;
     std::vector<CollisionBox> boxes;   // model-space solid boxes
+    // People: skeleton, move table and the animation playing (0x44ca34
+    // poses the item's 3DI meshes, one per .CHR part).
+    const Chr* chr = nullptr;
+    const AnimDefs* moves = nullptr;
+    Animator anim;
+    float base = 0;                    // ground + lift: the origin sits its pose's height above this
+    int missionIndex = -1;             // index in Mission::objects
+    int moveNumber = -1;               // DF move number playing (obj+0x80)
+    int killer = -1;                   // who killed it (obj+0xf8; -3 the player)
+    int weaponMode = 0;                // people: the weapon held (obj+0x94, player-table mode)
+    float aimPitch = 0;                // people: aim pitch (obj+0x34), radians, up positive
+    float pitch = 0, roll = 0;         // vehicles: body pitch (nose up +) and roll (right side down +), radians
+    // Helicopters: rotor angles (binary angle, main and tail, += speed every
+    // tick, 0x47d064) and the rotor speed (blades/disc choice, 0x478114).
+    uint32_t rotorAngle[2] = {0, 0};
+    float rotorSpeed = 0;
+    float steer = 0;
+    float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
+    bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;
 };
@@ -69,9 +92,16 @@ public:
     // Pushes a vertical cylinder (feet at `feet`) out of solid boxes.
     Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
 
-    // First thing hit on the segment a→b (terrain or object box);
-    // `objects` false tests the terrain only.
-    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true) const;
+    // First thing hit on the segment a→b (terrain or object box, or the
+    // player's hit spheres: object -3); `objects` false tests the terrain
+    // only; `ignore` skips one object (the shooter; -3 the player).
+    // `people` false: people and the player do not block (lines of sight).
+    bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true) const;
+
+    // The player as a target for others' rounds: body origin, heading and
+    // the .CHR hit spheres of the current pose (set by the game each tick).
+    struct PlayerBody { bool present = false; Vec3 origin{0, 0, 0}; float heading = 0; std::vector<std::array<float, 4>> spheres; };
+    PlayerBody playerBody;
 
     // Explosion damage (DF.EXE blast queue 0x44fd4c / 0x450134, handler
     // 0x44fda8) at `at` with radius `radius` m; `heavy` = blast types 3/5
@@ -84,18 +114,42 @@ public:
     // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
     // whatever the armour; no line of sight; among objects only the piranha
     // (item 4048) is hurt.
-    std::vector<std::string> stab(Vec3 at);
+    std::vector<std::string> stab(Vec3 at, Vec3 attacker);
 
     // Applies damage from a bullet. Returns a short message when something
     // is destroyed or killed, empty otherwise.
     // DF.EXE 0x44f184: no effect unless `power` reaches the target's armour
     // class (ITEMS.DEF `hp A B`, B); people die when their hit points reach 0.
-    std::string damage(int index, int amount, int power = 99);
+    std::string damage(int index, int amount, int power = 99, int deathMove = -1, int killer = -1);
+    // DF.EXE's death move (0x46c920): 0xFE in water; type 1 (bullets, knife)
+    // 0xBE + part x 4 + direction; type 2 (blasts) 0xFA + direction; type
+    // 3 0xFF. Direction: where the attacker is, 0 front, 1 left, 2 back,
+    // 3 right of the victim.
+    int deathMove(int index, int type, int part, Vec3 from) const;
+    // Starts a person's move by DF.EXE number; false if their .ANM lacks it.
+    bool startMove(WorldObject& o, int number);
+    // Keeps a person in a move (obj+0x7c vs +0x80): starts it if it changed.
+    void requestMove(WorldObject& o, int number);
+    // Events of people's animations since the last call (footsteps).
+    struct AnimEvent { int object; int event; };
+    std::vector<AnimEvent> takeAnimEvents() { std::vector<AnimEvent> out; out.swap(animEvents_); return out; }
 
     void update(float dt);
+    // Objects destroyed (not people) since the last call, for their sounds.
+    std::vector<int> takeDestroyed() { std::vector<int> out; out.swap(destroyed_); return out; }
+
+    // A new object at run time (placed charges): its model, hit points and boxes.
+    int spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float heading);
+    void refreshBoxes(WorldObject& o) const;
 
 private:
-    void refreshBoxes(WorldObject& o) const;
+    std::vector<int> destroyed_;
+    std::vector<AnimEvent> animEvents_;
+    std::map<std::string, Chr> chrs_;
+    std::map<std::string, AnimDefs> anms_;
+    float animClock_ = 0;
+    int animTicks_ = 0;
+    void poseUpdate(WorldObject& o);
 };
 
 } // namespace df

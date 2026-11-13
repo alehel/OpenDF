@@ -26,7 +26,16 @@ public:
     // Switches the HUD font (F_SML640.PCX, F_SML800.PCX, ...).
     bool loadFont(Vfs& vfs, const std::string& name, std::string* error);
     // Loads a game PCX as a texture; pure black becomes transparent.
-    HudImage loadImage(Vfs& vfs, const std::string& name);
+    // `index0Transparent`: palette index 0 is the colour key (menu icon sheets).
+    HudImage loadImage(Vfs& vfs, const std::string& name, bool blackTransparent = true, bool index0Transparent = false);
+    // A texture from RGBA pixels (nearest filtering).
+    HudImage makeImage(int width, int height, const std::vector<uint8_t>& rgba);
+    // DF.EXE's menu button blend (0x407e50): dst = src / 2 + dst * 3 / 4.
+    void setTranslucent(bool on);
+    // Menu blends: 0 normal alpha, 1 src/2 + 3/4 dst (buttons), 2 src/2 +
+    // dst/2 (0x407cd8), 3 DF.EXE's line pixel (0x409964): src/2 plus half the
+    // background's blue only (its red and green are dropped); 4 opaque copy.
+    void setBlend(int mode);
 
     void begin(int width, int height);
     void end();

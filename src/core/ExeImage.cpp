@@ -48,6 +48,17 @@ bool ExeImage::u32(uint32_t va, uint32_t& out) const {
     return false;
 }
 
+std::string ExeImage::str(uint32_t va, size_t max) const {
+    std::string out;
+    const uint32_t rva = va - imageBase_;
+    for (const auto& sec : sections_) {
+        if (rva < sec.va || rva >= sec.va + sec.fileSize) continue;
+        for (size_t o = sec.fileOffset + (rva - sec.va); o < data_.size() && out.size() < max && data_[o]; ++o) out += char(data_[o]);
+        break;
+    }
+    return out;
+}
+
 bool ExeImage::i32(uint32_t va, int32_t& out) const {
     uint32_t v;
     if (!u32(va, v)) return false;

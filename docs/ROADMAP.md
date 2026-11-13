@@ -34,7 +34,7 @@ Each milestone ends with something you can run.
 
 ## M5: Audio
 - WAV playback from `AUDIO.PFF` (SFX, radio chatter)
-- `DFMUSIC.SBF` music bank; MIDI via a software synth
+- `DFMUSIC.SBF` music bank sequenced by `DFMUSIC.BIN` (done: menu music)
 - Positional 3D sound
 
 ## M6: AI and mission logic

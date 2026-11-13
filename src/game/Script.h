@@ -8,9 +8,7 @@
 // A fired event runs its actions at once or after its delay (the conditions
 // are checked again when the delay ends); repeating events re-arm.
 //
-// Behaviour that needs AI (teams spotting, engaging or reaching waypoints,
-// paths, AI properties) is evaluated as "not yet" / ignored until OpenDF has
-// AI; see docs/VERIFICATION.md.
+// The AI conditions and actions go to the host's AI (game/Ai.*).
 #pragma once
 
 #include "../formats/Mission.h"
@@ -35,6 +33,16 @@ public:
     virtual void showText(int id) = 0;     // campaign "Triggered Text", key ID%03i
     virtual void radio(int id) = 0;        // dialog dlg%03i
     virtual void endMission(int winnerSide) = 0;   // 0 = nobody
+    // AI (0x45c0e4 conditions, 0x46bbe8 / 0x46c444 / 0x46cafc actions).
+    virtual bool teamSpotted(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
+    virtual bool teamEngaging(int team) const { (void)team; return false; }
+    virtual bool teamAlerted(int team) const { (void)team; return false; }
+    virtual bool reachedWaypoint(int team, int path, int point) const { (void)team; (void)path; (void)point; return false; }
+    virtual void followPath(int team, int path) { (void)team; (void)path; }
+    virtual void aiProperty(int team, int subtype, int value) { (void)team; (void)subtype; (void)value; }
+    virtual void teamSpeed(int team, int kmh) { (void)team; (void)kmh; }
+    // 0x46ca54: someone of team p1 carries an item whose mission team is p2.
+    virtual bool teamCarrying(int team, int itemTeam) const { (void)team; (void)itemTeam; return false; }
 };
 
 class MissionScript {
@@ -73,5 +81,7 @@ private:
 // Campaign flags (DF.EXE 0x66f9d8): restored at mission start, saved back
 // when side 1 wins. Kept for the session.
 uint32_t& campaignFlags();
+// The flags a mission starts with (the soldier's); updated when side 1 wins.
+uint32_t& savedCampaignFlags();
 
 } // namespace df

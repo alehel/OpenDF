@@ -63,6 +63,10 @@ struct ModelLod {
     // OpenDF axes, metres: DF.EXE's model +0xa4 point list (the
     // first-person muzzle is point +0x90 of the player table, 0x44b4a0).
     std::vector<std::array<float, 3>> points;
+    // Per mesh: parent mesh (+0x24) and pivot (+0x34, 16.16, absolute,
+    // OpenDF axes). People have one mesh per .CHR part, posed about these.
+    std::vector<int> meshParent;
+    std::vector<std::array<float, 3>> meshPivot;
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
 };
@@ -71,6 +75,9 @@ struct Model3di {
     std::string name;
     int version = 0;
     std::string kind;                // header +0x28: "efct" billboard effect, "ef3d", ...
+    // Header +0x28..+0x34: the draw routine per LOD slot as a FourCC stored
+    // byte-reversed ("oleh" = "helo"), looked up in DF.EXE's table 0x4E53DC.
+    std::string lodCodes[4];
     float lodThreshold[4] = {0, 0, 0, 0};   // header +0x18..+0x24: projected-radius pixels
     float radius = 1;                // header +0x60, metres
     std::vector<Model3diTexture> textures;

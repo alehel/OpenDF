@@ -41,11 +41,16 @@
 #define GL_LINK_STATUS 0x8B82
 #define GL_INFO_LOG_LENGTH 0x8B84
 #endif
+#ifndef GL_CONSTANT_COLOR
+#define GL_CONSTANT_COLOR 0x8001
+#define GL_CONSTANT_ALPHA 0x8003
+#endif
 #ifndef GL_LINEAR_MIPMAP_LINEAR
 #define GL_LINEAR_MIPMAP_LINEAR 0x2703
 #endif
 
 #define DFGL_FUNCS(X) \
+    X(void, BlendColor, (GLfloat, GLfloat, GLfloat, GLfloat)) \
     X(GLuint, CreateShader, (GLenum)) \
     X(void, ShaderSource, (GLuint, GLsizei, const char* const*, const GLint*)) \
     X(void, CompileShader, (GLuint)) \
@@ -85,6 +90,7 @@
 DFGL_FUNCS(DFGL_DECLARE)
 #undef DFGL_DECLARE
 
+#define glBlendColor dfglBlendColor
 #define glCreateShader dfglCreateShader
 #define glShaderSource dfglShaderSource
 #define glCompileShader dfglCompileShader

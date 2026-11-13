@@ -73,6 +73,23 @@ bool Chr::parse(const std::vector<uint8_t>& d) {
             const int next = rd(d, fo);
             f.flags = uint32_t(rd(d, fo + 4));
             f.ticks = std::max(1, int(d[fo + 8] | d[fo + 9] << 8));
+            f.event = d[fo + 0xA];
+            f.event2 = d[fo + 0xB];
+            for (int k = 0; k < 3; ++k) f.root[size_t(k)] = rd(d, fo + 0xC + 4 * size_t(k)) * kScale;
+            f.anchor = d[fo + 0x18];
+            {
+                const int nt = d[fo + 0x1B];
+                const int to = rd(d, fo + 0x1C);
+                for (int k = 0; k < nt && k < 16 && to > 0 && size_t(to) + 8 * size_t(k) + 8 <= d.size(); ++k) {
+                    const size_t t = size_t(to) + 8 * size_t(k);
+                    ChrTransition tr;
+                    tr.cond[0] = d[t + 2];
+                    tr.cond[1] = d[t + 3];
+                    tr.anim = d[t + 4];
+                    tr.frame = int(d[t + 5]) - 1;
+                    f.transitions.push_back(tr);
+                }
+            }
             const int pts = rd(d, fo + 0x20);
             for (int k = 0; k < npts; ++k)
                 f.contacts.push_back({rd(d, size_t(pts) + 12 * size_t(k)) * kScale, rd(d, size_t(pts) + 12 * size_t(k) + 4) * kScale,
@@ -92,6 +109,38 @@ bool Chr::parse(const std::vector<uint8_t>& d) {
 const ChrAnimation* Chr::animation(int n) const {
     if (n < 0 || n >= int(anims_.size()) || anims_[size_t(n)].frames.empty()) return nullptr;
     return &anims_[size_t(n)];
+}
+
+ChrMatrix Chr::partRotation(const std::array<float, 3>& t) {
+    return multiply(rotation(2, -t[0]), multiply(rotation(1, t[1]), rotation(0, -t[2])));
+}
+
+std::vector<ChrMatrix> Chr::pose(const std::vector<std::array<float, 3>>& turns) const {
+    std::vector<ChrMatrix> mats;
+    for (size_t i = 0; i < order_.size() && i < turns.size(); ++i) {
+        const int pi = order_[i];
+        if (pi < 0 || pi >= int(parts_.size())) break;
+        const ChrPart& p = parts_[size_t(pi)];
+        std::array<float, 3> t{};
+        if (p.parent >= 0 && p.parent < int(mats.size())) t = transformPoint(mats[size_t(p.parent)], remap(p.joint));
+        ChrMatrix m = partRotation(turns[i]);
+        m.m[0][3] = t[0];
+        m.m[1][3] = t[1];
+        m.m[2][3] = t[2];
+        mats.push_back(m);
+    }
+    return mats;
+}
+
+std::vector<std::array<float, 4>> Chr::spheres(const std::vector<std::array<float, 3>>& turns) const {
+    const auto mats = pose(turns);
+    std::vector<std::array<float, 4>> out;
+    for (size_t i = 0; i < mats.size(); ++i) {
+        const ChrPart& p = parts_[size_t(order_[i])];
+        const auto c = transformPoint(mats[i], p.centre);
+        out.push_back({c[0], c[1], c[2], p.radius});
+    }
+    return out;
 }
 
 std::vector<ChrMatrix> Chr::pose(const ChrFrame& f) const {

@@ -29,7 +29,9 @@ bool parseRtxt(const std::vector<uint8_t>& d, std::vector<std::string>& out) {
 bool TextTable::parse(const std::vector<uint8_t>& d) {
     keys_.clear();
     sections_.clear();
+    positions_.clear();
     if (!parseRtxt(d, text_)) return false;
+    for (size_t i = 0; i < text_.size(); ++i) positions_.push_back(rd(d, 16 + i * 16 + 4));
     const size_t kb = rd(d, 4);
     const uint32_t ns = rd(d, kb);
     if (kb + 4 + size_t(ns) * 8 > d.size() || ns > 1000) return true;   // no key block: text only
@@ -60,6 +62,13 @@ const std::string* TextTable::find(const std::string& section, const std::string
             if (keys_[size_t(i)] == key) return &text_[size_t(i)];
     }
     return nullptr;
+}
+
+uint32_t TextTable::position(const std::string& section, const std::string& key) const {
+    const std::string* t = find(section, key);
+    if (!t) return 0;
+    const size_t i = size_t(t - text_.data());
+    return i < positions_.size() ? positions_[i] : 0;
 }
 
 } // namespace df
