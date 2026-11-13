@@ -187,7 +187,7 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
             if (x.object == int(i)) q = &x;
         consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired);
     }
-    float score = best * p.perception;
+    float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
     if (p.alert != 2) score *= 0.25f;
     if (bestId == -1 || float(rnd()) >= score * 65536.f) return false;
     if (std::getenv("OPENDF_DEBUGAI"))
@@ -265,7 +265,7 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         const float seen = std::min(float(p.seen), (16.f - f) * 62.f);
         const float errMul = (p.flags & 0x80) ? std::max(f, 16.f - seen / 62.f) : 5.f;
         const float unit = float(int(65536.f * 100.f / p.accuracy) * 30 >> 16);
-        const float spread = unit * errMul * 65536.f / 4294967296.f * 2 * kPi;
+        const float spread = unit * errMul * 65536.f / 4294967296.f * 2 * kPi / ((hard && o.side == 2) ? 4.f : 1.f);
         auto r = [&]() { return float(int(rnd()) - 0x8000) / 32768.f; };
         yaw += r() * spread;
         pitch += r() * spread / 4.f;

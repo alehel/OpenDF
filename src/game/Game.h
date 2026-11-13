@@ -40,6 +40,9 @@ struct GameOptions {
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.
     int gpsIcons = 1;
+    // df.cfg "attributes" (Difficulty settings): 0x80 enemy AI hard, 0x100
+    // player health easy, 0x200 no squad members, 0x800 power ups on.
+    uint32_t attributes = 0;
     bool watch = false;
     std::string record;
 };

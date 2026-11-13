@@ -25,6 +25,9 @@ class SoundSystem;
 class AiSystem {
 public:
     void init(World& world, const Mission& mission);
+    // "Enemy AI: Hard" (0x66fa88 bit 0x80): side 2 sees twice as well and
+    // aims four times tighter.
+    bool hard = false;
 
     // The player as others see it.
     struct PlayerView {

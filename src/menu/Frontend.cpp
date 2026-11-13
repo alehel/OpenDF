@@ -143,6 +143,7 @@ private:
     // Screens.
     void refreshSoldier();
     void refreshCampaign();
+    void refreshOptions();
     bool missionAvailable(int camp, int mis);
     uint32_t missionHeader(int camp, int mis, int offset);
     void acceptMission();
@@ -441,7 +442,7 @@ void Frontend::enter(Screen s) {
         if (MnuButton* b = mnu_.button("but_mainup")) b->drawstate = 4;   // online update: not in OpenDF
         break;
     case Options1: setMenu("OptionsMenu"); break;
-    case Options3: setMenu("Options3Menu"); break;
+    case Options3: setMenu("Options3Menu"); refreshOptions(); break;
     case Campaign:
         setMenu("CampMenu");
         camp_ = std::clamp(int(prof().get(0x28)), 1, 5);
@@ -627,6 +628,21 @@ void Frontend::refreshSoldier() {
         if (MnuButton* b = mnu_.button(n)) b->drawstate = deleting_ ? 1 : 0;
 }
 
+void Frontend::refreshOptions() {
+    // 0x41c150: the value boxes of the Difficulty page.
+    auto t = [&](const char* k) { const std::string* x = menuText_.find("GroupMainMenu", k); return x ? *x : std::string(k); };
+    auto put = [&](const char* b, const std::string& v) {
+        if (MnuButton* x = mnu_.button(b)) { x->text = v; x->attrib |= 0xC0; }
+    };
+    put("but_opt3_eaiw", t(options_ & 0x80 ? "OPT3HARD" : "OPT3NORMAL"));
+    put("but_opt3_phw", t(options_ & 0x100 ? "OPT3EASY" : "OPT3NORMAL"));
+    put("but_opt3_smw", t(options_ & 0x200 ? "OPT3OFF" : "OPT3ON"));
+    put("but_opt3_trw", t(options_ & 0x1000 ? "OPT3OFF" : "OPT3ON"));
+    put("but_opt3_bxw", t(options_ & 0x2000 ? "OPT3OFF" : "OPT3ON"));
+    put("but_opt3_pww", t(options_ & 0x800 ? "OPT3ON" : "OPT3OFF"));
+    put("but_opt3_gpsw", t(gpsIcons_ == 0 ? "OPT3GPSSHOWFRIENDLY" : gpsIcons_ == 1 ? "OPT3GPSDEFAULT" : "OPT3GPSSHOWALL"));
+}
+
 void Frontend::refreshCampaign() {
     std::vector<uint8_t> raw;
     char file[32];
@@ -799,14 +815,14 @@ void Frontend::event(MnuButton& b, int ev) {
     if (cb == "MNU_OPT1_DIFFICULTY") return standard(b, ev, to(Options3));
     if (cb == "MNU_OPT3_OPTIONS") return standard(b, ev, to(Options1));
     // Difficulty rows (0x41c150): each arrow toggles.
-    auto toggle = [&](uint32_t bit) { return [this, bit] { options_ ^= bit; }; };
+    auto toggle = [&](uint32_t bit) { return [this, bit] { options_ ^= bit; refreshOptions(); }; };
     if (cb == "MNU_OPT3_ENEMYAI") return standard(b, ev, toggle(0x80));
     if (cb == "MNU_OPT3_PLAYERHEALTH") return standard(b, ev, toggle(0x100));
     if (cb == "MNU_OPT3_SQUADMEMBERS") return standard(b, ev, toggle(0x200));
     if (cb == "MNU_OPT3_TRACERS") return standard(b, ev, toggle(0x1000));
     if (cb == "MNU_OPT3_BREAKX") return standard(b, ev, toggle(0x2000));
     if (cb == "MNU_OPT3_POWERUPS") return standard(b, ev, toggle(0x800));
-    if (cb == "MNU_OPT3_GPSICON") return standard(b, ev, [this, &b] { gpsIcons_ = (gpsIcons_ + (b.userid ? 1 : 2)) % 3; });
+    if (cb == "MNU_OPT3_GPSICON") return standard(b, ev, [this, &b] { gpsIcons_ = (gpsIcons_ + (b.userid ? 1 : 2)) % 3; refreshOptions(); });
     if (!cb.empty()) standard(b, ev, [] {});
 }
 
@@ -1061,6 +1077,7 @@ int Frontend::run() {
                 g.sidearm = sidearmName(prof().get(0x680));
                 g.soldierName = prof().name();
                 g.gpsIcons = gpsIcons_;
+                g.attributes = options_;
                 uint32_t flags = uint32_t(prof().get(0x70 + camp_ * 0x44));
                 outcome_ = MissionOutcome{};
                 runGame(vfs_, g, &outcome_, &flags);

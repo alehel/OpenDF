@@ -368,6 +368,7 @@ bool Game::loadMission(int index) {
     models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
     ai_.init(world_, mission_);
+    ai_.hard = (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
 
@@ -403,6 +404,7 @@ bool Game::loadMission(int index) {
     {
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
         playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
+        if (o_.attributes & 0x100) playerHp_ *= 4;   // Player Health: Easy (0x469c02)
         playerBody_ = Animator{};
         playerMove_.clear();
         damageFlash_ = 0;
@@ -425,8 +427,14 @@ bool Game::loadMission(int index) {
     buildRoute();
     // Powerups (attrib 0x20: ammo and medical crates) are removed at the start
     // in single player (0x402aa4, unless option bit 8).
-    for (auto& o : world_.objects)
-        if (o.item && (o.item->attrib & 0x20)) o.removed = true;
+    if (!(o_.attributes & 0x800))
+        for (auto& o : world_.objects)
+            if (o.item && (o.item->attrib & 0x20)) o.removed = true;
+    // Squad members off (0x200): the player's team-mates are taken out
+    // (APPROXIMATION: what DF.EXE does with them is not traced).
+    if (o_.attributes & 0x200)
+        for (auto& o : world_.objects)
+            if (o.person && o.side == kPlayerSide && o.missionGroup == 3) { o.removed = true; o.boxes.clear(); }
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
     charges_.clear();
@@ -762,7 +770,8 @@ void Game::touchPickups() {
             sound_.play2D(0x166);
             break;
         case 4045:
-            playerHp_ = std::max(playerHp_, items_.byId(kItemPlayerSoldier) ? items_.byId(kItemPlayerSoldier)->hp : 4);
+            playerHp_ = std::max(playerHp_, (items_.byId(kItemPlayerSoldier) ? items_.byId(kItemPlayerSoldier)->hp : 4) *
+                                                (o_.attributes & 0x100 ? 4 : 1));
             sound_.play2D(0x165);
             o.removed = true;
             o.boxes.clear();
