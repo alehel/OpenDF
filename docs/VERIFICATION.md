@@ -100,7 +100,7 @@ when DF.EXE is missing or a different version.
 
 | Item | Status | Source |
 |---|---|---|
-| Menu layout, fonts, buttons, screen flow | Original | DF.MNU, DFMENU.BIN; see AUDIT F1-F3 |
+| Menu layout, fonts, buttons, screen flow, settings pages, credits, briefing map, transitions | Original | DF.MNU, DFMENU.BIN; see AUDIT F1-F12 |
 | Menu music: stems, script, variables, stem timing | Original | DFMUSIC.SBF, DFMUSIC.BIN, DF.EXE VM 0x4ab5ce; see AUDIT F4 |
 | Menu music loudness against sound effects | APPROXIMATION | the block gain (V>>1)>>shift is DF.EXE's; it is applied as a float, (pcm − 128)/128 · 2^−shift · V/255, in OpenDF's mixer, whose overall scale against DF.EXE's mixer was not measured |
 | Settings and df.cfg | Original | see AUDIT F5, F6 |
@@ -109,4 +109,4 @@ when DF.EXE is missing or a different version.
 
 ## Not yet implemented, so not checkable
 
-Keyboard remap screen; screen transitions; multiplayer.
+Multiplayer (screens, network). Helicopter door gun turning (0x47d0e8; the gun mesh is drawn unturned and the gun aims at once) and the helicopter hit-test pose quirk (0x478070). The briefing text scrollbar's exact range (0x4129e0 not traced; arrows step one line).
