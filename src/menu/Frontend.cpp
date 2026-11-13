@@ -280,7 +280,7 @@ private:
     void drawBriefingText(const MnuButton& b);
     void drawBriefingMap(const MnuButton& b);
     void menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip = nullptr);
-    int briefLine_ = 0;
+    int briefLine_ = 0, briefTotal_ = 0, briefVisible_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
     int quitCode_ = 0;
@@ -774,6 +774,33 @@ void Frontend::enter(Screen s) {
             briefing_ = out;
         }
         loadBriefingMap();
+        {
+            // 0x41edbc: line breaks counted as the text is laid out in
+            // (348..558); quirk: `~` counts a break but does not reset x.
+            // Visible = trunc(272 / font height) (0x4122a0); the slider
+            // range is total - visible + 1, or 0 if it all fits.
+            MenuFont& f = font("AVA10B");
+            briefTotal_ = 0;
+            briefVisible_ = f.height > 0 ? 272 / f.height : 1;
+            std::vector<std::string> tokens;
+            std::string t;
+            for (char c : briefing_) {
+                if (c == ' ') { if (!t.empty()) tokens.push_back(t); t.clear(); }
+                else t += c;
+            }
+            if (!t.empty()) tokens.push_back(t);
+            float x = 348;
+            for (size_t i = 0; i < tokens.size(); ++i) {
+                if (i > 0 && tokens[i] == "~") { ++briefTotal_; continue; }
+                const float w = textWidth(f, tokens[i] + " ");
+                if (i > 0 && x + w > 558) { ++briefTotal_; x = 348; }
+                x += w;
+            }
+            if (MnuButton* sl = mnu_.button("but_mi_sl")) {
+                sl->sliderSize = briefTotal_ >= briefVisible_ ? briefTotal_ - briefVisible_ + 1 : 0;
+                sl->sliderPos = 0;
+            }
+        }
         break;
     }
     case Loadout:
@@ -1154,16 +1181,6 @@ void Frontend::drawBriefingText(const MnuButton& b) {
         }
         if (y + fh > bottom) break;
     }
-    // Lines in all (for the scroll limit).
-    int lines = 1;
-    float cx = left;
-    for (size_t i = 1; i < tokens.size(); ++i) {
-        if (tokens[i] == "~") { cx = left; ++lines; continue; }
-        const float w = textWidth(f, tokens[i] + " ");
-        if (cx + w > right) { cx = left; ++lines; }
-        cx += w;
-    }
-    briefLine_ = std::min(briefLine_, std::max(0, lines - 1));
 }
 
 void Frontend::clickLink() {
@@ -1558,11 +1575,19 @@ void Frontend::event(MnuButton& b, int ev) {
         return;
     }
     if (cb == "MNU_MIS_SCROLLBAR") {
-        if (ev == 1 || ev == 2) {
-            const std::string n = upperCase(b.name);
-            if (n == "BUT_MI_UP") briefLine_ = std::max(0, briefLine_ - 1);
-            else if (n == "BUT_MI_DN") ++briefLine_;
-        }
+        // 0x4129e0: press pushes with click9 at fx/2; release steps the first
+        // line within 0..total-visible+1 (0 when it all fits); the slider
+        // follows. The slider's owner draw (event 3) sets the line.
+        if (b.type == 3) return;
+        if (ev == 1) { b.drawstate = 3; sound("CLICK9.WAV", 128); }
+        else if (ev == 2) {
+            b.drawstate = 1;
+            if (briefTotal_ < briefVisible_) briefLine_ = 0;
+            else if (upperCase(b.name) == "BUT_MI_UP") briefLine_ = std::max(0, briefLine_ - 1);
+            else if (upperCase(b.name) == "BUT_MI_DN") briefLine_ = std::min(briefLine_ + 1, briefTotal_ - briefVisible_ + 1);
+            if (MnuButton* sl = mnu_.button("but_mi_sl")) sl->sliderPos = briefLine_;
+        } else if (ev == 6) b.drawstate = 2;
+        else if (ev == 7) b.drawstate = 1;
         return;
     }
     // Change Gear.
@@ -1886,6 +1911,7 @@ void Frontend::ownerDraw(MnuButton& b) {
         return;
     }
     if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
+    if (cb == "MNU_MIS_SCROLLBAR" && b.type == 3) { briefLine_ = std::max(0, b.sliderPos); return; }   // 0x412b10
     if (cb == "MNU_KBD_SCROLLBAR" && b.type == 3) {
         kbScroll_ = std::clamp(b.sliderPos, 0, 33);
         if (kbScroll_ != kbLastSlider_) { kbLastSlider_ = kbScroll_; refreshKeys(); }
