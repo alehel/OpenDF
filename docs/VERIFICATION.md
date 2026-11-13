@@ -105,7 +105,7 @@ when DF.EXE is missing or a different version.
 | Menu music loudness against sound effects | APPROXIMATION | the block gain (V>>1)>>shift is DF.EXE's; it is applied as a float, (pcm − 128)/128 · 2^−shift · V/255, in OpenDF's mixer, whose overall scale against DF.EXE's mixer was not measured |
 | Settings and df.cfg | Original | see AUDIT F5, F6 |
 | Renderer choices on the Colors row | APPROXIMATION | DF.EXE steps through the renderers it detected (0x4f5140); OpenDF offers all three |
-| Flip Mouse direction | INFERRED | DF.EXE negates the vertical mouse count when flipmouse is 0 (0x42ebd6); which way that turned the view in DF is not traced, so OpenDF keeps its own default and flips it when the option is set |
+| Flip Mouse direction | Original | 0x42eba1: mouse x > 0 queues command 0x9e and x < 0 0x9d (the game table's turn_right_abs/turn_left_abs, ids 0x9f/0x9e: command = id − 1, INFERRED from the pairing); y is negated unless flipmouse is set, then > 0 queues 0x9b (look_up_abs) and < 0 0x9c (look_dn_abs). With DirectInput's y growing toward the player, pushing the mouse forward looks up by default and down with Flip Mouse, as OpenDF does |
 
 ## Not yet implemented, so not checkable
 
