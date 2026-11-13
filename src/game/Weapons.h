@@ -37,7 +37,8 @@ struct WeaponDef {
     // First-person model offset from the eye, from DF.EXE's player weapon
     // table (record +0x78): forward, left, up in 1/256 m.
     int gunOffset[3];
-    int magazine, spareMags;
+    int magazine;               // rounds per magazine (gun table +0x08)
+    int magazines;              // n, gun table +0x04: spares n-1, or 2n-1 for the primary with the "Ammo" kit
     float muzzleVelocity;       // m/s
     float spreadDeg;            // standing, still, unzoomed
     std::vector<float> zoom;    // magnifications of the zoom inset (none = no scope)
@@ -49,7 +50,8 @@ struct WeaponDef {
 
 // Built-in copy of the original's values (fallback).
 const std::vector<WeaponDef>& builtinWeaponDefs();
-// Index of a weapon by short name (".45", "M4", "M40", "MP5", "SAW"), -1 if unknown.
+// Index of a weapon by short name (".45", "M4", "M40", "MP5", "SAW"); -1 for
+// "Ammo" or anything unknown.
 int weaponIndex(const std::string& name);
 
 struct Projectile {
@@ -70,10 +72,13 @@ public:
 
     // `gameText`: DFGAME.BIN strings, for the weapon names (may be empty).
     // `exe`: the original DF.EXE, for the weapon tables (may be null).
-    // The original carries a sidearm and the primary and secondary weapons
+    // The original carries a sidearm and the primary and secondary kits
     // chosen on Change Gear (indices into the weapon list; see weaponIndex).
+    // `secondary` < 0 is the "Ammo" kit (a new soldier's default): no second
+    // gun, and the primary gets 2n-1 spare magazines instead of n-1
+    // (DF.EXE 0x44b598, profile +0x688 == 1).
     void init(const std::vector<std::string>& gameText = {}, const ExeImage* exe = nullptr,
-              const ItemDefs* items = nullptr, int primary = 1, int secondary = 2);
+              const ItemDefs* items = nullptr, int primary = 1, int secondary = -1);
     // True if the weapon values were read from DF.EXE.
     bool fromExe() const { return fromExe_; }
     const std::string& modeName() const;

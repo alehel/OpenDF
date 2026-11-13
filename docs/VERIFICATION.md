@@ -21,7 +21,8 @@ when DF.EXE is missing or a different version.
 | Names and fire modes | Original | `DFGAME.BIN` strings, read at run time |
 | First-person model, offset and camera | Original | DF.EXE player weapon table `+0x64`, `+0x78`; matches footage |
 | Magazine size | Original | gun table `+0x08` (M4 30, M40 5, MP5 SD 30, SAW 200, .45 7) |
-| Starting magazines | **Open** | gun table `+0x04` = n; spares n−1, or 2n−1 when the 3rd argument of 0x44b598 is 1 — where that comes from is being traced; OpenDF uses 2n−1 for now |
+| Spare magazines | Original | gun table `+0x04` = n; spares n−1, or 2n−1 for the primary when the secondary Change Gear kit is "Ammo" (profile +0x688 == 1; 0x449787 → 0x44b598) |
+| Default loadout | Original | a new soldier (0x40ee14): sidearm .45, primary M4/M203, secondary Ammo. OpenDF's `--loadout PRIMARY,SECONDARY` until Change Gear exists; the M203, Barrett, HS .22, satchel, claymore and LAW are not implemented |
 | Muzzle velocity | Original (units inferred: m/s) | gun table `+0x0C` (M4 1000, M40 950, MP5 SD 295, SAW 1000, .45 295) |
 | Scope power | Inferred | player table `+0xA0` (M4 4, M40 8, 0 = no scope) |
 | Fire rate | Original | player table `+0x9C`: ticks between rounds at 60 ticks/s (M4 single 10, burst 6, M40 70, MP5 SD 10/6/6, SAW 6, .45 10); bursts of 3 about 0.1 s apart in footage |
@@ -29,13 +30,15 @@ when DF.EXE is missing or a different version.
 | Weapon text red | Original | 0x44b0a0: while reloading or out of ammunition |
 | Spread, damage, recoil | Approximation | candidate fields: player table `+0xA4`; gun table `+0x10..+0x1C` — not yet traced in code |
 | Sounds | Original (not played yet) | gun table `+0x24..+0x30` sound ids |
-| Loadout | Approximation | the original starts with the knife in hand and the weapons chosen on Change Gear; OpenDF gives all five |
+| Starting with the knife in hand | Not implemented | knife missing |
 
 ## Player and camera
 
 | Item | Status | Source |
 |---|---|---|
-| Field of view (90° horizontal on the 640×360 view) | **Footage-only** | fitted so the engine's gun offsets reproduce the footage; DF.EXE's projection constants being traced |
+| Field of view | Original | 0x440ff0: FOV 90 (0x404489) across the view width, focal = W/2 for both axes → 58.72° vertical on 640×360. Wider screens keep the vertical angle (OpenDF's widescreen choice) |
+| Scope view | Original | 0x450600: FOV parameter 28 / magnification, half-angle (fov+1)>>1 whole degrees, inset radius 100; M4 ×4 ≈ 8°, M40 ×8 ≈ 4° across the inset. Allowed when the weapon's table +0xA4 bit 0 is set |
+| Binocular view (22° main view) | Not implemented | 0x44b870 / 0x404489 path; also adds view sway |
 | Movement speeds | Original | the soldier's `.ANM` move table (`PLAYANIM.ANM`, via `anim_def` in ITEMS.DEF), read at run time: velocity in m/s per move, eight directions, one- or two-handed weapon. Running forward with a rifle 5.0 m/s (footage: ~5 m/s), pistol 6.0; walking (Shift) 1.5/1.0; crawling 1.0 forward and back, 0.5 sideways |
 | Crouched movement | Inferred | the original has no crouched moves (DF.EXE's move names: standing, walking, running, crawling, swimming only), so OpenDF stands the soldier up to move. To check against footage |
 | Walking moves 5 and 7 | Unclear | `PLAYANIM.ANM`'s comments for walking disagree with those for running about which of 5/7 is right-forward; OpenDF uses the running order |

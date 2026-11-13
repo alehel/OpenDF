@@ -22,23 +22,23 @@ const std::vector<WeaponDef>& builtinWeaponDefs() {
     // Copies of DF.EXE's values, used when DF.EXE cannot be read:
     //  - per mode: table index, fire cooldown in ticks (+0x9C);
     //  - first-person model (+0x64), gun offset (+0x78), scope power (+0xA0);
-    //  - per gun: magazine size (+0x08), magazines n (+0x04; the player gets
-    //    2n-1 spares, as footage of the original shows: 23 for the M4) and
-    //    muzzle velocity in m/s (+0x0C).
+    //  - per gun: magazine size (+0x08), magazines n (+0x04; spares n-1,
+    //    2n-1 for the primary with the "Ammo" kit) and muzzle velocity in
+    //    m/s (+0x0C).
     // Icons: WEAP640.PCX frames. Spread, damage and recoil are approximations.
     constexpr float reload = kReloadTicks * kTick;
     static const std::vector<WeaponDef> defs = {
         {{{"SpecOps .45 caliber pistol", F::Single, 5, 10}},
-         "PM19", 10, {102, -34, -43}, 7, 2 * 3 - 1, 295, 1.4f, {}, 1, reload, 1.6f, true},
+         "PM19", 10, {102, -34, -43}, 7, 3, 295, 1.4f, {}, 1, reload, 1.6f, true},
         {{{"M4 Assault Rifle, Single Shot", F::Single, 7, 10}, {"M4 Assault Rifle, Burst", F::Burst, 6, 6}},
-         "PM4", 4, {72, -44, -75}, 30, 2 * 12 - 1, 1000, 0.5f, {4.f}, 1, reload, 0.6f},
+         "PM4", 4, {72, -44, -75}, 30, 12, 1000, 0.5f, {4.f}, 1, reload, 0.6f},
         {{{"M40 Sniper Rifle", F::Single, 32, 70}},
-         "PM40", 9, {60, -35, -45}, 5, 2 * 12 - 1, 950, 0.08f, {8.f}, 2, reload, 2.5f},
+         "PM40", 9, {60, -35, -45}, 5, 12, 950, 0.08f, {8.f}, 2, reload, 2.5f},
         {{{"H&K MP5 SD, Single Shot", F::Single, 22, 10}, {"H&K MP5 SD, Burst", F::Burst, 21, 6},
           {"H&K MP5 SD, Full Auto", F::Auto, 20, 6}},
-         "PMP5", 11, {84, -35, -72}, 30, 2 * 12 - 1, 295, 0.7f, {}, 1, reload, 0.35f},
+         "PMP5", 11, {84, -35, -72}, 30, 12, 295, 0.7f, {}, 1, reload, 0.35f},
         {{{"SAW Auto. Weap., Full Auto", F::Auto, 12, 6}},
-         "PM249", 8, {85, -43, -73}, 200, 2 * 3 - 1, 1000, 1.0f, {}, 1, reload, 0.5f},
+         "PM249", 8, {85, -43, -73}, 200, 3, 1000, 1.0f, {}, 1, reload, 0.5f},
     };
     return defs;
 }
@@ -67,7 +67,7 @@ bool readExeTables(const ExeImage& exe, const ItemDefs* items, std::vector<Weapo
         if (!mode(first, 0xA0, scope)) return false;
         d.zoom = scope > 1 ? std::vector<float>{float(scope)} : std::vector<float>{};
         if (!gun(g, 0x04, n) || !gun(g, 0x08, d.magazine) || !gun(g, 0x0C, velocity)) return false;
-        d.spareMags = std::max(0, 2 * n - 1);
+        d.magazines = std::max(1, int(n));
         d.muzzleVelocity = float(velocity);
         if (items && mode(first, 0x64, fp))
             if (const ItemDef* it = items->byId(fp); it && !it->graphic.empty()) {
@@ -104,10 +104,15 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     }
     slots_.clear();
     const int n = int(defs_.size());
-    for (int d : {0, primary, secondary}) {
-        if (d < 0 || d >= n) d = 0;
-        slots_.push_back({d, defs_[d].magazine, defs_[d].spareMags, 0});
-    }
+    const bool ammoKit = secondary < 0;
+    auto add = [&](int d, bool doubled) {
+        if (d < 0 || d >= n) return;
+        const int m = defs_[size_t(d)].magazines;
+        slots_.push_back({d, defs_[size_t(d)].magazine, doubled ? 2 * m - 1 : m - 1, 0});
+    };
+    add(0, false);                              // sidearm: the .45 (the HS .22 is not implemented)
+    add(primary >= 0 ? primary : 1, ammoKit);   // primary
+    add(secondary, false);                      // secondary gun, if not the Ammo kit
     current_ = 1;   // the primary weapon (the original starts with the knife, not implemented yet)
     zoomLevel_ = 0;
     cooldown_ = reloadTimer_ = recoil_ = flashTimer_ = 0;

@@ -72,10 +72,10 @@ approximation), **todo** = not checked yet.
 |---|---|---|---|
 | G1 | Weapon switch delay | fixed | was a guessed 0.4 s; DF.EXE 0x44aafe clears cooldown and reload, no delay; an empty weapon starts reloading |
 | G2 | Reload rules | fixed | DF.EXE 0x44a004 / 0x449f58: reload discards the rounds left; the last round fired starts the reload at once; empty trigger reloads |
-| G7 | Loadout | open | sidearm + one primary + one secondary as in the original; which ones comes from Change Gear (not built), `--loadout` until then (default M4, M40: a placeholder) |
+| G7 | Loadout | fixed | default from DF.EXE 0x40ee14: .45, M4(/M203), Ammo; Ammo doubles the primary's spares (0x44b598); `--loadout` until Change Gear exists |
 | G3 | Bullet flight (gravity, 3 s life) | open | not traced in DF.EXE yet |
 | G4 | People die from one hit | open | ITEMS.DEF gives people hp 2-4; damage per gun (gun table +0x14?) not traced yet |
-| G5 | Zoom levels per weapon | open | scope power from player table +0xA0 (inferred); number of zoom steps not traced |
+| G5 | Scope | fixed | magnification table +0xA0, FOV 28/mag whole degrees (0x450600); one zoom step |
 | G6 | Message lifetime | fixed | see B1 |
 
 ## Found during the audit

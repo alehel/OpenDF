@@ -50,10 +50,11 @@ const Color kHudMessage = kHudWhite;
 // centred.
 constexpr float kTopBar = 60, kBottomBar = 60, kTopDivider = 350, kBottomDivider = 431;
 
-// The original's camera: 90° horizontal field of view across its 640x360 3D
-// view, i.e. about 58.7° vertical (matches the first-person weapon in footage
-// of the original). Wider screens keep this vertical angle and see more at
-// the sides.
+// The original's camera (DF.EXE 0x440ff0, FOV 0x5a set at 0x404489): 90°
+// horizontal across the 3D view, focal length = half the view width, the
+// same for both axes, so 58.72° vertical on the 640x360 view. Wider screens
+// keep this vertical angle and see more at the sides (OpenDF's widescreen
+// choice, which keeps the weapon where it is).
 const float kOriginalFovY = 2.f * std::atan(1.f / (640.f / 360.f));
 
 struct Message { std::string text; float age; };
@@ -606,9 +607,16 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glStencilFunc(GL_EQUAL, 1, 0xFF);
     glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 
-    // Same pixel density as the main view, magnified by the weapon's zoom.
+    // DF.EXE 0x450600 / 0x440ff0: the scope view's FOV parameter is 28 /
+    // magnification (integer), its half-angle (fov + 1) >> 1 whole degrees,
+    // and the focal length round(r / tan(half) + 0.5) in pixels of the
+    // 640-wide original (r = 100), across the inset's width.
+    (void)fovY;
     const float size = 2 * r;
-    const float insetFov = 2 * std::atan(std::tan(fovY * 0.5f) * (size / s.playH) / arsenal_.zoom());
+    const int fovParam = 28 / std::max(1, int(arsenal_.zoom()));
+    const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
+    const float focal = std::floor(100.f / std::tan(half) + 0.5f);
+    const float insetFov = 2 * std::atan(100.f / focal);
     glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
     glClear(GL_DEPTH_BUFFER_BIT);
     drawWorld(view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
@@ -1047,7 +1055,7 @@ int Game::run() {
             player_.pitch = o_.camera[4] * kPi / 180.f;
             player_.fly = o_.camera[2] > 2;
         }
-        if (o_.weapon >= 0) arsenal_.select(o_.weapon, 1);
+        if (o_.weapon >= 0) arsenal_.select(o_.weapon);
         if (o_.stance >= 0) player_.stance = Stance(std::clamp(o_.stance, 0, 2));
         for (int i = 0; i < o_.zoom; ++i) arsenal_.toggleZoom();
         showMap_ = o_.showMap;

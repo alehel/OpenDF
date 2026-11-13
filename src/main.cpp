@@ -47,7 +47,7 @@ struct Options {
     // Game testing aids (mission mode).
     int frames = 1, weapon = -1, stance = -1, zoom = 0;
     bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, killEnemies = false;
-    std::string inputScript, record, primary = "M4", secondary = "M40", soldierName;
+    std::string inputScript, record, primary = "M4", secondary = "Ammo", soldierName;
     int gpsIcons = 1;
     bool watch = false;
     int width = 1280, height = 720;
