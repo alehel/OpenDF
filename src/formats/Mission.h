@@ -76,6 +76,9 @@ struct Mission {
     // The player's route names: header +0xAC, one number per point of the
     // route path; text "WPN%03i" in the campaign's "Waypoint Names" section.
     int routeNameIds[8] = {};
+    // Header +0x74: which of each model material's four colour/texture
+    // variants this mission uses (DF.EXE 0x43f964).
+    int colorVariant = 0;
     // The object at `index` of `group`, or null.
     const MissionObject* inGroup(int group, int index) const {
         if (group < 0 || group > 3 || index < 0 || index >= groupSize[group]) return nullptr;

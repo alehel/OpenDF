@@ -245,6 +245,7 @@ bool Game::loadMission(int index) {
     // Testing: OPENDF_HEIGHTSCALE overrides metres per elevation step.
     if (const char* hs = std::getenv("OPENDF_HEIGHTSCALE")) terrain_.scale.heightScale = float(std::atof(hs));
     world_.terrain = &terrain_;
+    models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
 
     player_ = Player{};
@@ -541,23 +542,29 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.draw(view, proj, eye, viewDistance_);
-    // Model fog: the terrain's fog starts at the 200 m ring (scaled); models
-    // are drawn to 1024 m, where the terrain has 18 % fog. Model fog itself is
-    // not traced: approximation.
-    const float rs = terrain_.ringScale;
-    SceneLighting light{eye, terrain_.fogColor(), terrain_.sunDirection(), 200.f * rs, 5700.f * rs};
-    models_.begin(proj * view, light);
+    // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
+    // beyond 1020 m (either horizontal axis, or view depth + radius); LOD by
+    // projected radius F·R/depth against the model's thresholds.
+    const float focal = 320.f * terrain_.ringScale;
+    SceneLighting light;
+    light.lut = terrain_.lutTexture();
+    light.saturation = terrain_.saturationFactor();
+    light.highlight = terrain_.highlight();
     const Vec3 fwd = aimDirection();
-    const float zoom = zoomView ? arsenal_.zoom() : 1.f;
+    light.viewer = fwd * -1.f;
+    models_.begin(proj * view, light);
     struct Visible { const WorldObject* o; Vec3 at; int lod; };
     std::vector<Visible> visible;
     for (const auto& o : world_.objects) {
         if (o.removed) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
-        float dist = std::sqrt(dot(d, d));
-        if (dist > viewDistance_ + o.model->radius || dot(d, fwd) < -o.model->radius) continue;
-        visible.push_back({&o, at, ModelRenderer::chooseLod(*o.model, dist / zoom)});
+        if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
+        const float depth = dot(d, fwd);
+        if (depth < -o.model->radius || depth + o.model->headerRadius > 1020.f) continue;
+        const int lod = ModelRenderer::chooseLod(*o.model, std::max(depth, 0.01f), focal, o.person);
+        if (lod < 0) continue;
+        visible.push_back({&o, at, lod});
     }
     for (auto& v : visible) models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
     for (auto& v : visible) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
@@ -591,10 +598,23 @@ void Game::drawViewModel(const Screen& s) {
     // relative to the centre of the view (in screen heights); the extra width
     // only shows more of the world, so ultrawide screens look natural.
     Mat4 proj = perspective(kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
-    SceneLighting light{{0, 0, 0}, {0, 0, 0}, normalize(Vec3{0.3f, 0.9f, 0.4f}), 1e6f, 2e6f};
+    // The world light (DF.EXE 0x44bea4) rotated into view space, as the gun
+    // is drawn there; the viewer looks along -Z.
+    SceneLighting light;
+    {
+        const Mat4 rot = lookDir({0, 0, 0}, aimDirection(), {0, 1, 0});
+        const Vec3 L = light.light;
+        light.light = {rot.at(0, 0) * L.x + rot.at(0, 1) * L.y + rot.at(0, 2) * L.z,
+                       rot.at(1, 0) * L.x + rot.at(1, 1) * L.y + rot.at(1, 2) * L.z,
+                       rot.at(2, 0) * L.x + rot.at(2, 1) * L.y + rot.at(2, 2) * L.z};
+        light.viewer = {0, 0, 1};
+        light.lut = terrain_.lutTexture();
+        light.saturation = terrain_.saturationFactor();
+        light.highlight = terrain_.highlight();
+    }
     models_.begin(proj, light);
-    models_.draw(*m, 0, model);
-    models_.drawTranslucent(*m, 0, model, arsenal_.flash() > 0);
+    models_.draw(*m, 0, model, true, arsenal_.flash() > 0);
+    models_.drawTranslucent(*m, 0, model, true, arsenal_.flash() > 0);
     models_.end();
 }
 

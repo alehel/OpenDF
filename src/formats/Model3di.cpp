@@ -44,7 +44,8 @@ std::string upper(std::string s) {
 
 } // namespace
 
-bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* error) {
+bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* error, int variant) {
+    variant = std::clamp(variant, 0, 3);
     auto fail = [&](const char* msg) { if (error) *error = msg; return false; };
     Reader r{file};
     if (!r.ok(0, 0x80) || std::memcmp(file.data(), "3DI", 3) != 0) return fail("not a 3DI file");
@@ -56,6 +57,9 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
     const uint32_t lodCount = r.u32(0x14);
     const uint32_t texCount = r.u32(0x7C);
     if (lodCount == 0 || lodCount > 16 || texCount > 1024) return fail("implausible 3DI header");
+    for (int k = 0; k < 4; ++k) m.lodThreshold[k] = r.i32(0x18 + 4 * k) / 65536.f;
+    m.radius = r.i32(0x60) / 65536.f;
+    m.kind = r.str(0x28, 4);
 
     // Textures: 36-byte header, pixels (frame 0 is used), 256 x RGBA palette.
     size_t p = 0x80;
@@ -73,6 +77,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t texels = size_t(t.width) * t.height;
         if (texels == 0 || size < texels || !r.ok(pixels, size) || !r.ok(palette, 1024)) return fail("bad texture");
         t.rgba.resize(texels * 4);
+        t.indices.assign(file.begin() + std::ptrdiff_t(pixels), file.begin() + std::ptrdiff_t(pixels + texels));
         for (size_t k = 0; k < texels; ++k) {
             const uint8_t idx = file[pixels + k];
             const uint8_t* c = &file[palette + size_t(idx) * 4];
@@ -146,21 +151,25 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t matOff = q; q += size_t(nmat) * 76;
         if (!r.ok(p + layout.lodHeader, q - (p + layout.lodHeader))) return fail("truncated LOD data");
 
-        struct Mat { int tex; float rgb[3]; bool hidden; int blend; };
+        struct Mat { int tex; float rgb[3]; bool hidden; int blend; uint32_t flags; float spec; int specPow; float bright; };
         std::vector<Mat> mats(nmat);
         for (uint32_t i = 0; i < nmat; ++i) {
             const size_t o = matOff + size_t(i) * 76;
-            const uint32_t flags = r.u32(o + 0x10);
-            Mat mt{-1, {r.u8(o + 0x28) / 255.f, r.u8(o + 0x29) / 255.f, r.u8(o + 0x2A) / 255.f},
-                   // 0x0800 hidden, 0x0008 effect trails
-                   (flags & (0x0800 | 0x0008)) != 0,
-                   // 0x0020 muzzle flash, 0x8000 multiply, 0x0081 translucent
-                   (flags & 0x0020) ? 3 : (flags & 0x8000) ? 2 : (flags & 0x0081) == 0x0081 ? 1 : 0};
+            uint32_t flags = r.u16(o + 0x10);
+            const size_t rgbAt = o + 0x28 + 3 * size_t(variant);
+            Mat mt{-1, {r.u8(rgbAt) / 255.f, r.u8(rgbAt + 1) / 255.f, r.u8(rgbAt + 2) / 255.f}, false, 0, flags,
+                   r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f};
+            // Textured only if a texture has the variant's sequence id (0x43f217).
             if (flags & 0x0001) {
-                const uint8_t ti = r.u8(o + 0x34);
+                const uint8_t ti = r.u8(o + 0x34 + size_t(variant));
                 if (auto it = bySequence.find(ti); ti != 0xFF && it != bySequence.end()) mt.tex = it->second;
                 else if (auto jt = byName.find(upper(r.str(o, 12))); jt != byName.end()) mt.tex = jt->second;
             }
+            // 0x0800 hidden; 0x0008 is not drawn in the hi-colour renderer;
+            // 0x0080 and 0x8000 need a texture (no span for the untextured ones).
+            const bool textured = mt.tex >= 0;
+            mt.hidden = (flags & (0x0800 | 0x0008)) != 0 || ((flags & (0x0080 | 0x8000)) && !textured);
+            mt.blend = (flags & 0x8000) ? 2 : (flags & 0x0080) ? 1 : 0;
             mats[i] = mt;
         }
 
@@ -174,6 +183,8 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         };
 
         ModelLod lod;
+        lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
+        lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
         // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.
         for (uint32_t i = 0; i < nvol; ++i) {
@@ -184,7 +195,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             if (xmax < xmin || ymax < ymin || zmax < zmin) continue;
             lod.collision.push_back({{xmin, zmin, -ymax}, {xmax, zmax, -ymin}});
         }
-        std::map<int, size_t> batchIndex;   // material -> batch
+        std::map<int, size_t> batchIndex;   // material and mesh -> batch
         bool first = true;
         uint32_t face = 0, vBase = 0, nBase = 0;
         for (uint32_t mi = 0; mi < nm && face < nf; ++mi) {
@@ -204,13 +215,20 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 if (!valid) continue;
 
                 const Mat& mt = mats[matIdx];
-                const int key = int(matIdx);
+                const int key = int(matIdx) * 1024 + int(mi);
                 auto it = batchIndex.find(key);
                 if (it == batchIndex.end()) {
                     ModelBatch b;
                     b.texture = mt.tex;
                     std::copy(mt.rgb, mt.rgb + 3, b.color);
                     b.blend = mt.blend;
+                    b.flags = mt.flags;
+                    b.material = int(matIdx);
+                    b.mesh = int(mi);
+                    b.specular = mt.spec;
+                    b.specularPower = mt.specPow;
+                    b.fullbright = mt.bright;
+                    b.doubleSided = (mt.flags & 0x0002) != 0;
                     it = batchIndex.emplace(key, lod.batches.size()).first;
                     lod.batches.push_back(std::move(b));
                 }
@@ -225,10 +243,15 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 float len = std::sqrt(fn[0] * fn[0] + fn[1] * fn[1] + fn[2] * fn[2]);
                 if (len > 0) for (float& c : fn) c /= len;
 
+                // Face byte +0 bit 0x01: per-vertex normals (Gouraud); else the
+                // face normal (word +0x02) for all three (flat) (0x46fa5a).
+                const bool gouraud = (r.u8(fo) & 1) != 0;
+                const uint32_t faceNormal = nBase + uint32_t(r.u16(fo + 0x02));
                 for (int c = 0; c < 3; ++c) {
                     ModelVertex v{};
                     v.px = pos[c][0]; v.py = pos[c][1]; v.pz = pos[c][2];
-                    std::array<float, 3> n = ni[c] < nn ? normal(ni[c]) : std::array<float, 3>{fn[0], fn[1], fn[2]};
+                    const uint32_t nIdx = gouraud ? ni[c] : faceNormal;
+                    std::array<float, 3> n = nIdx < nn ? normal(nIdx) : std::array<float, 3>{fn[0], fn[1], fn[2]};
                     v.nx = n[0]; v.ny = n[1]; v.nz = n[2];
                     v.u = r.i32(fo + 0x04 + c * 4) / 65536.f;
                     v.v = r.i32(fo + 0x10 + c * 4) / 65536.f;

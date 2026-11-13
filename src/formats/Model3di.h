@@ -16,6 +16,7 @@ struct Model3diTexture {
     uint8_t sequence = 0;            // what materials refer to
     bool indexZeroTransparent = false;
     std::vector<uint8_t> rgba;       // width*height*4, decoded
+    std::vector<uint8_t> indices;    // the raw 8-bit texels (used as alpha by 0x8000 materials)
 };
 
 // One render-ready vertex, already converted to OpenDF world space:
@@ -26,13 +27,24 @@ struct ModelVertex {
     float u, v;
 };
 
+// Material flags (DF.EXE renderer, 0x46f9e3): 0x0001 textured, 0x0002
+// double-sided, 0x0008 background re-shade (not drawn in hi-colour), 0x0020
+// fullbright, 0x0040 decal depth, 0x0080 50 % translucent, 0x0200 colour key,
+// 0x0800 hidden, 0x4000 animated (material + frame), 0x8000 texel-as-alpha
+// blend toward the material colour.
 struct ModelBatch {
     int texture = -1;                // index into Model3di::textures, -1 = flat colour
-    float color[3] = {0.7f, 0.7f, 0.7f};
-    // 0 = opaque (alpha-tested), 1 = 50% translucent, 2 = multiply/darken
-    // (ground shadows, rotor blur discs), 3 = muzzle flash (additive, only
-    // drawn while the weapon fires).
+    float color[3] = {0.7f, 0.7f, 0.7f};   // the mission's colour variant
+    // 0 = opaque (colour key = texel 0 skipped), 1 = 50 % average (0x0080),
+    // 2 = texel-as-alpha toward `color` (0x8000).
     int blend = 0;
+    uint32_t flags = 0;
+    int material = 0;                // index in the LOD's material list
+    int mesh = 0;                    // mesh index (weapon models: 1-2 are the muzzle flash)
+    float specular = 0;              // +0x38, 16.16
+    int specularPower = 0;           // +0x40: s is squared this many times
+    float fullbright = -1;           // +0x3c when flag 0x0020, else -1
+    bool doubleSided = false;
     std::vector<ModelVertex> vertices;   // triangle list
 };
 
@@ -43,6 +55,7 @@ struct CollisionBox {
 
 struct ModelLod {
     std::vector<ModelBatch> batches;
+    int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
@@ -51,10 +64,15 @@ struct ModelLod {
 struct Model3di {
     std::string name;
     int version = 0;
+    std::string kind;                // header +0x28: "efct" billboard effect, "ef3d", ...
+    float lodThreshold[4] = {0, 0, 0, 0};   // header +0x18..+0x24: projected-radius pixels
+    float radius = 1;                // header +0x60, metres
     std::vector<Model3diTexture> textures;
     std::vector<ModelLod> lods;
 };
 
-bool loadModel3di(const std::vector<uint8_t>& file, Model3di& out, std::string* error);
+// `variant` picks which of a material's four colours/textures to use (the
+// mission header +0x74, DF.EXE 0x43f964).
+bool loadModel3di(const std::vector<uint8_t>& file, Model3di& out, std::string* error, int variant = 0);
 
 } // namespace df

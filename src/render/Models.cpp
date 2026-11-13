@@ -12,45 +12,71 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
 uniform mat4 uViewProj, uModel;
-out vec3 vWorld;
-out vec3 vNormal;
+uniform vec3 uLight, uViewer;
+uniform float uSpec, uBright;
+uniform int uSpecPow;
 out vec2 vUv;
+out vec2 vLit;   // shade for the front face, the back face
+float shade(vec3 n) {
+    vec3 h = normalize(uLight + uViewer);
+    float d = dot(n, uLight);
+    if (d < 0.0) d = -d / 4.0;                 // back light wrapped at 25 %
+    float lit = uBright >= 0.0 ? uBright : 0.55 + 0.5 * d;
+    if (uSpec != 0.0) {
+        float s = dot(n, h);
+        if (s > 0.0) {
+            for (int i = 0; i < uSpecPow && i < 8; ++i) s *= s;
+            lit += s * uSpec;
+        }
+    }
+    return clamp(lit * 32.0, 1.0, 60.0);       // shade level
+}
 void main() {
     vec4 w = uModel * vec4(aPos, 1.0);
-    vWorld = w.xyz;
-    vNormal = mat3(uModel) * aNormal;
+    vec3 n = normalize(mat3(uModel) * aNormal);
+    vLit = vec2(shade(n), shade(-n));
     vUv = aUv;
     gl_Position = uViewProj * w;
 }
 )";
 
 const char* kModelFS = R"(#version 330 core
-in vec3 vWorld;
-in vec3 vNormal;
 in vec2 vUv;
-uniform sampler2D uTex;
-uniform bool uTextured;
-uniform vec3 uColor, uEye, uFog, uSun;
-uniform float uAlpha, uFogStart, uFogEnd;
-uniform int uMode;   // 0 opaque, 1 translucent, 2 multiply, 3 additive flash
+in vec2 vLit;
+uniform sampler2D uTex, uIndex, uLut;
+uniform bool uTextured, uKey;
+uniform vec3 uColor, uHighlight;
+uniform float uSat;
+uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha
 out vec4 oColor;
+vec3 dec(vec3 c) { return pow(max(c, 0.0), vec3(1.25)); }
+vec3 enc(vec3 c) { return pow(max(c, 0.0), vec3(0.8)); }
+vec3 post(vec3 c) {
+    float y = (c.r + 2.0 * c.g + c.b) * 0.25;
+    c = clamp(y + (c - y) * uSat, 0.0, 1.0);
+    float k = 255.0 / 256.0, o = 0.5 / 256.0;
+    return vec3(texture(uLut, vec2(c.r * k + o, 0.5)).r, texture(uLut, vec2(c.g * k + o, 0.5)).g,
+                texture(uLut, vec2(c.b * k + o, 0.5)).b);
+}
 void main() {
+    float idx = uTextured ? texture(uIndex, vUv).r * 255.0 : 1.0;
+    if (uMode == 2) {               // 0x8000: dst += (C - dst) * texel / 256
+        oColor = vec4(post(uColor), idx / 256.0);
+        return;
+    }
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
+    if (uTextured && (uMode == 1 || uKey) && idx < 0.5) discard;   // texel 0 skipped
     if (c.a < 0.5) discard;
-    float fogF = smoothstep(uFogStart, uFogEnd, length(vWorld - uEye));
-    if (uMode == 2) {               // darkens what is behind; fades out with distance
-        oColor = vec4(mix(c.rgb, vec3(1.0), fogF), 1.0);
+    if (uMode == 1) {               // 0x0080: unlit (shade row 32), averaged 50/50
+        oColor = vec4(post(c.rgb), 0.5);
         return;
     }
-    if (uMode == 3) {               // muzzle flash: added on top, unlit
-        oColor = vec4(c.rgb * (1.0 - fogF), 1.0);
-        return;
-    }
-    vec3 n = normalize(vNormal);
-    if (!gl_FrontFacing) n = -n;
-    float light = 0.55 + 0.55 * max(dot(n, uSun), 0.0);
-    vec3 col = c.rgb * light;
-    oColor = vec4(mix(col, uFog, fogF), uAlpha);
+    // Shade table (0x435070 / 0x434d84): rows 0..31 black -> colour, rows
+    // 32..63 colour -> sky colour 16; mixed in the ^1.25 space.
+    float level = floor(gl_FrontFacing ? vLit.x : vLit.y);
+    vec3 lin = dec(c.rgb);
+    lin = level <= 31.0 ? lin * (level / 31.0) : lin + (dec(uHighlight) - lin) * ((level - 32.0) / 31.0);
+    oColor = vec4(post(enc(lin)), 1.0);
 }
 )";
 
@@ -85,19 +111,46 @@ GLuint uploadTexture(const Model3diTexture& t) {
     return id;
 }
 
+GLuint uploadIndices(const Model3diTexture& t) {
+    GLuint id;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, t.width, t.height, 0, GL_RED, GL_UNSIGNED_BYTE, t.indices.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    return id;
+}
+
 void setV3(GLuint p, const char* n, Vec3 v) { glUniform3f(glGetUniformLocation(p, n), v.x, v.y, v.z); }
 
 } // namespace
 
-ModelRenderer::~ModelRenderer() {
+void ModelRenderer::release() {
     for (auto& [name, m] : cache_) {
         for (GLuint t : m->textures) glDeleteTextures(1, &t);
+        for (GLuint t : m->indexTextures) glDeleteTextures(1, &t);
         for (auto& l : m->lods) {
             glDeleteBuffers(1, &l.vbo);
             glDeleteVertexArrays(1, &l.vao);
         }
     }
+    cache_.clear();
+    failed_.clear();
+}
+
+ModelRenderer::~ModelRenderer() {
+    release();
+    if (identityLut_) glDeleteTextures(1, &identityLut_);
     if (prog_) glDeleteProgram(prog_);
+}
+
+void ModelRenderer::setVariant(int variant) {
+    if (variant == variant_) return;
+    variant_ = variant;
+    release();   // models reload with the new colours (pointers held elsewhere must be refreshed)
 }
 
 bool ModelRenderer::init(std::string* error) {
@@ -106,10 +159,26 @@ bool ModelRenderer::init(std::string* error) {
     locModel_ = glGetUniformLocation(prog_, "uModel");
     locColor_ = glGetUniformLocation(prog_, "uColor");
     locTextured_ = glGetUniformLocation(prog_, "uTextured");
-    locAlpha_ = glGetUniformLocation(prog_, "uAlpha");
     locMode_ = glGetUniformLocation(prog_, "uMode");
+    locSpec_ = glGetUniformLocation(prog_, "uSpec");
+    locSpecPow_ = glGetUniformLocation(prog_, "uSpecPow");
+    locBright_ = glGetUniformLocation(prog_, "uBright");
+    locKey_ = glGetUniformLocation(prog_, "uKey");
     glUseProgram(prog_);
     glUniform1i(glGetUniformLocation(prog_, "uTex"), 0);
+    glUniform1i(glGetUniformLocation(prog_, "uIndex"), 1);
+    glUniform1i(glGetUniformLocation(prog_, "uLut"), 2);
+    {
+        std::vector<uint8_t> lut(256 * 3);
+        for (int i = 0; i < 256; ++i) lut[size_t(i) * 3] = lut[size_t(i) * 3 + 1] = lut[size_t(i) * 3 + 2] = uint8_t(i);
+        glGenTextures(1, &identityLut_);
+        glBindTexture(GL_TEXTURE_2D, identityLut_);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 256, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, lut.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    }
     glUseProgram(0);
     return true;
 }
@@ -124,7 +193,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     Model3di src;
     std::string err;
     if (!vfs.read(name, data)) err = "not found";
-    else if (!loadModel3di(data, src, &err)) {}
+    else if (!loadModel3di(data, src, &err, variant_)) {}
     else if (src.lods.empty()) err = "no geometry";
     if (!err.empty()) {
         failed_[name] = err;
@@ -134,19 +203,27 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
 
     auto g = std::make_unique<GpuModel>();
     g->name = name.substr(0, name.size() - 4);
-    for (auto& t : src.textures) g->textures.push_back(uploadTexture(t));
+    g->kind = src.kind;
+    std::copy(src.lodThreshold, src.lodThreshold + 4, g->lodThreshold);
+    g->headerRadius = src.radius > 0 ? src.radius : 1.f;
+    for (auto& t : src.textures) {
+        g->textures.push_back(uploadTexture(t));
+        g->indexTextures.push_back(uploadIndices(t));
+    }
     for (auto& l : src.lods) {
         GpuModel::Lod gl;
         std::vector<ModelVertex> all;
         for (auto& b : l.batches) {
-            GpuModel::Batch gb{GLint(all.size()), GLsizei(b.vertices.size()), b.texture,
-                               {b.color[0], b.color[1], b.color[2]}, b.blend};
+            GpuModel::Batch gb{GLint(all.size()), GLsizei(b.vertices.size()), b.texture, {b.color[0], b.color[1], b.color[2]},
+                               b.blend, b.flags, b.material, b.mesh, b.specular, b.specularPower, b.fullbright, b.doubleSided};
             all.insert(all.end(), b.vertices.begin(), b.vertices.end());
             gl.batches.push_back(gb);
         }
         std::copy(l.min, l.min + 3, gl.min);
         std::copy(l.max, l.max + 3, gl.max);
         gl.triangles = l.triangleCount;
+        gl.frames = l.frames;
+        gl.ticksPerFrame = l.ticksPerFrame;
         glGenVertexArrays(1, &gl.vao);
         glBindVertexArray(gl.vao);
         glGenBuffers(1, &gl.vbo);
@@ -175,55 +252,95 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     return out;
 }
 
-int ModelRenderer::chooseLod(const GpuModel& m, float distance) {
-    // Switch roughly when the object shrinks below ~25 / 10 radii of distance.
-    const float r = m.radius;
-    int lod = distance < r * 25 ? 0 : distance < r * 60 ? 1 : 2;
-    return std::min(lod, int(m.lods.size()) - 1);
+int ModelRenderer::chooseLod(const GpuModel& m, float depth, float focal, bool person) {
+    const float r = person ? 1.f : m.headerRadius;
+    const float s = depth < r ? 1024.f : focal * r / std::max(depth, 1e-3f);
+    if (s <= 0.5f) return -1;
+    for (int k = 0; k < 4; ++k)
+        if (s > m.lodThreshold[k]) return k < int(m.lods.size()) ? k : -1;
+    return -1;
 }
 
 void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
     glUseProgram(prog_);
     glUniformMatrix4fv(glGetUniformLocation(prog_, "uViewProj"), 1, GL_FALSE, viewProj.m);
-    setV3(prog_, "uEye", light.eye);
-    setV3(prog_, "uFog", light.fog);
-    setV3(prog_, "uSun", normalize(light.sun));
-    glUniform1f(glGetUniformLocation(prog_, "uFogStart"), light.fogStart);
-    glUniform1f(glGetUniformLocation(prog_, "uFogEnd"), light.fogEnd);
+    setV3(prog_, "uLight", normalize(light.light));
+    setV3(prog_, "uViewer", normalize(light.viewer));
+    setV3(prog_, "uHighlight", light.highlight);
+    glUniform1f(glGetUniformLocation(prog_, "uSat"), light.saturation);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, light.lut ? light.lut : identityLut_);
     glActiveTexture(GL_TEXTURE0);
-    glDisable(GL_CULL_FACE);
 }
 
-void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool flash) {
-    if (m.lods.empty()) return;
+void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, bool flash,
+                                int frame) {
+    if (m.lods.empty() || lod < 0) return;
     const auto& l = m.lods[std::clamp(lod, 0, int(m.lods.size()) - 1)];
     glUniformMatrix4fv(locModel_, 1, GL_FALSE, model.m);
     glBindVertexArray(l.vao);
+    // Animated materials (flag 0x4000): the batch of material base + frame is
+    // drawn instead of the base (0x46f72f); the others of the group are skipped.
+    auto animatedHidden = [&](const GpuModel::Batch& b) {
+        if (!(b.flags & 0x4000)) return false;
+        // Find this batch's position in its run of consecutive animated materials.
+        int start = b.material;
+        for (const auto& o : l.batches)
+            if ((o.flags & 0x4000) && o.material < start && o.material >= b.material - 64 && o.mesh == b.mesh) {
+                bool contiguous = true;
+                for (int k = o.material; k < b.material; ++k) {
+                    bool found = false;
+                    for (const auto& q : l.batches)
+                        if (q.material == k && (q.flags & 0x4000)) found = true;
+                    if (!found) contiguous = false;
+                }
+                if (contiguous) start = std::min(start, o.material);
+            }
+        return b.material - start != frame;
+    };
     for (const auto& b : l.batches) {
         if ((b.blend != 0) != translucent) continue;
-        if (b.blend == 3 && !flash) continue;
+        // First-person weapons: the fullbright muzzle-flash parts only while firing.
+        if (weapon && b.fullbright >= 0 && !flash) continue;
+        if (animatedHidden(b)) continue;
+        if (b.doubleSided) glDisable(GL_CULL_FACE);
+        else glEnable(GL_CULL_FACE);
+        if (b.flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(-1.f, -2.f);
+        }
         glUniform1i(locMode_, b.blend);
-        glUniform1f(locAlpha_, b.blend == 1 ? 0.5f : 1.0f);
-        if (b.blend == 2) glBlendFunc(GL_DST_COLOR, GL_ZERO);
-        else if (b.blend == 3) glBlendFunc(GL_ONE, GL_ONE);
-        else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUniform1i(locKey_, (b.flags & 0x0200) != 0);
+        glUniform1f(locSpec_, b.specular);
+        glUniform1i(locSpecPow_, b.specularPower);
+        glUniform1f(locBright_, b.fullbright);
         const bool textured = b.texture >= 0 && b.texture < int(m.textures.size());
         glUniform1i(locTextured_, textured);
-        if (textured) glBindTexture(GL_TEXTURE_2D, m.textures[b.texture]);
-        else glUniform3f(locColor_, b.color[0], b.color[1], b.color[2]);
+        glUniform3f(locColor_, b.color[0], b.color[1], b.color[2]);
+        if (textured) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, m.indexTextures[size_t(b.texture)]);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, m.textures[size_t(b.texture)]);
+        }
         glDrawArrays(GL_TRIANGLES, b.first, b.count);
+        if (b.flags & 0x0040) glDisable(GL_POLYGON_OFFSET_FILL);
     }
+    glDisable(GL_CULL_FACE);
 }
 
-void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model) { drawBatches(m, lod, model, false, false); }
+void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model, bool weapon, bool flash, int frame) {
+    drawBatches(m, lod, model, false, weapon, flash, frame);
+}
 
-void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool flash) {
+void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon, bool flash, int frame) {
+    // Translucent faces test depth but do not write it, in submission order.
     glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    // Ground shadows sit exactly on the terrain; pull them slightly forward.
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(-1.f, -4.f);
-    drawBatches(m, lod, model, true, flash);
+    drawBatches(m, lod, model, true, weapon, flash, frame);
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);

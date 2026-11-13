@@ -564,7 +564,10 @@ int cmdView(Vfs& vfs, Options& o) {
         terrain.draw(view, proj, cam.pos, viewDistance);
 
         if (!placed.empty()) {
-            SceneLighting light{cam.pos, terrain.fogColor(), terrain.sunDirection(), viewDistance * 0.35f, viewDistance * 0.98f};
+            SceneLighting light;
+            light.lut = terrain.lutTexture();
+            light.saturation = terrain.saturationFactor();
+            light.highlight = terrain.highlight();
             models.begin(proj * view, light);
             const Vec3 fwdView = cam.forward();
             struct Visible { const Placed* p; Vec3 at; int lod; };
@@ -576,7 +579,7 @@ int cmdView(Vfs& vfs, Options& o) {
                 float dist = std::sqrt(dot(d, d));
                 if (dist > viewDistance + p.model->radius) continue;
                 if (dot(d, fwdView) < -p.model->radius) continue;   // behind the camera
-                visible.push_back({&p, at, ModelRenderer::chooseLod(*p.model, dist)});
+                visible.push_back({&p, at, ModelRenderer::chooseLod(*p.model, dot(d, fwdView), float(dw) / 2.f, false)});
             }
             for (auto& v : visible) models.draw(*v.p->model, v.lod, objectMatrix(*v.p, v.at));
             for (auto& v : visible) models.drawTranslucent(*v.p->model, v.lod, objectMatrix(*v.p, v.at));
@@ -678,7 +681,7 @@ int cmdModels(Vfs& vfs, Options& o) {
             Vec3 eye = center + dir * dist;
             Mat4 proj = perspective(45.f * kPi / 180.f, float(dw) / std::max(dh, 1), dist * 0.01f, dist * 10.f);
             Mat4 view = lookDir(eye, center - eye, {0, 1, 0});
-            SceneLighting light{eye, {0.42f, 0.5f, 0.58f}, normalize(Vec3{0.5f, 0.8f, 0.35f}), 1e6f, 2e6f};
+            SceneLighting light;
             models.begin(proj * view, light);
             models.draw(*model, lod, Mat4{});
             models.drawTranslucent(*model, lod, Mat4{});

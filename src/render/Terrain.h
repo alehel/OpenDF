@@ -38,6 +38,11 @@ public:
 
     const TerrainDesc& desc() const { return desc_; }
     Vec3 fogColor() const;
+    // The TRN's colour finish, for models: gamma/filter table, saturation,
+    // and sky palette entry 16 (shade table highlight).
+    GLuint lutTexture() const { return texSkyPal_; }
+    float saturationFactor() const { return desc_.saturation / 128.f; }
+    Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
     GLuint colorTexture() const { return texColor_; }
     int mapSize() const { return size_; }

@@ -58,8 +58,7 @@ when DF.EXE is missing or a different version.
 | Terrain colour, detail, fog, sky, clouds, view distance | Original | see docs/AUDIT.md V4 |
 | Falling damage | Original | none: the landing code only zeroes the fall speed; no health write in DF.EXE depends on a fall |
 | Water | Approximation | DF.EXE's water (palette gradient, opacity blend table, turbidity scroll) not reproduced yet |
-| Model material flags | Inferred | |
-| LOD distances, model lighting | Approximation | |
+| Model material flags, LOD, lighting, fog | Original | see docs/AUDIT.md X8 |
 
 ## HUD and text
 
