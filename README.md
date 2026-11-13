@@ -70,8 +70,14 @@ The executable is `build\Release\opendf.exe`.
 ## Running
 
 Games live in `games/`, one folder per game (see [games/README.md](games/README.md)).
-Copy the contents of your Delta Force CD into `games/DeltaForce`, then start
-OpenDF with `--game` pointing at that folder:
+Import your Delta Force CD into `games/DeltaForce` from the mounted disc or a
+disc image (`.iso`, `.bin`/`.cue`, `.img`):
+
+```bash
+./build/opendf import /Volumes/DELTAFORCE   # or D:\, or DeltaForce.iso
+```
+
+Then start OpenDF with `--game` pointing at that folder:
 
 ```bash
 ./build/opendf --game games/DeltaForce mission C02M01
@@ -83,6 +89,7 @@ from the game's own `DFSETUP/DF.EXE`.
 
 | Command | Purpose |
 |---|---|
+| `opendf import SOURCE [DEST]` | copy a game from its disc, a folder or a disc image into `games/` (Delta Force 2's fake file sizes are cut back to the real ones) |
 | `opendf --game ROOT [--terrain DFG1] [--size 1600x900]` | terrain viewer |
 | `opendf --game ROOT mission [C02M01]` | play a mission in first person, starting where the player starts |
 | `opendf --game ROOT models [HUMVEE]` | browse all 362 `.3DI` models |

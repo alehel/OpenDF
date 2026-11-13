@@ -39,7 +39,20 @@ entry (recordSize bytes)
   u32 timestamp       (unix time)
   char name[16]       NUL-terminated, 8.3, upper case
 ```
-PFF3 files end with a short trailer ending in `KING`, which is ignored.
+PFF3 files end with a 12-byte trailer after the entry table whose last four
+bytes are `KING`; PFF2 files end with a 4-byte trailer. Both are ignored when
+reading, but `opendf import` keeps them so an imported archive is byte-identical
+to an honest copy.
+
+### Fake sizes on the Delta Force 2 CD
+
+As copy protection, the Delta Force 2 CD's directory lists `DF2.PFF`,
+`TERRAINS.PFF`, `AUDIO.PFF`, `MISSIONS.PFF` and `DF2INTRO.BIK` at about ten
+times their real size: each listed size is the real size followed by one extra
+digit (`TERRAINS.PFF`: 3,190,097,151 listed, 319,009,715 real), about 5.4 GB on a
+700 MB disc. A plain copy fails or reads into the files that follow. `opendf
+import` (src/core/Import.cpp) takes the real size from the archive's own entry
+table plus trailer, and a Bink video's from its header.
 
 ### PFF2 encryption
 

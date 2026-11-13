@@ -4,10 +4,12 @@
 //   opendf --game ROOT models [NAME]           3DI model viewer
 //   opendf --game ROOT list [EXT]              list archive contents
 //   opendf --game ROOT extract OUTDIR [EXT]    extract (and decrypt) files
+//   opendf import SOURCE [DEST]                copy a game off its CD / image
 //
 // DIR is the folder holding the game's PFF archives (the CD root or its
 // DFSETUP folder). It defaults to the current directory and its parent.
 
+#include "core/Import.h"
 #include "core/Pff.h"
 #include "game/Game.h"
 #include "formats/Anm.h"
@@ -100,7 +102,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr")) o.command = a;
+                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr")) o.command = a;
         else o.args.push_back(a);
     }
     return true;
@@ -111,6 +113,9 @@ void usage() {
         "OpenDF - Delta Force engine reimplementation\n"
         "\n"
         "usage:\n"
+        "  opendf import SOURCE [DEST]                        copy a game into games/ from its CD:\n"
+        "                                 a mounted disc or folder, .iso, .bin/.cue, .img\n"
+        "                                 or a raw disc device (DEST defaults to games/NAME)\n"
         "  opendf --game ROOT [--terrain NAME] [--size WxH]   terrain viewer\n"
         "  opendf --game ROOT mission [C02M01]                play a mission in first person\n"
         "  opendf --game ROOT models [NAME]                   3DI model viewer\n"
@@ -162,6 +167,38 @@ bool mountData(Vfs& vfs, Options& o) {
     if (vfs.mountGameDir(o.dataDir, &err) && vfs.exists("DFG1.TRN")) return true;
     std::fprintf(stderr, "No Delta Force data (DF.PFF etc.) under %s\n%s", o.dataDir.string().c_str(), err.c_str());
     return false;
+}
+
+// `opendf import SOURCE [DEST]`: copies a game off its CD (or an image of it)
+// into DEST, by default games/<DeltaForce|DF2> next to the current folder.
+int cmdImport(const Options& o) {
+    if (o.args.empty() || o.args.size() > 2) {
+        std::fprintf(stderr, "usage: opendf import SOURCE [DEST]\n"
+                             "  SOURCE: the mounted CD (e.g. /Volumes/DELTAFORCE2 or D:\\), a folder,\n"
+                             "          an .iso, .bin/.cue or .img image, or a raw disc device\n");
+        return 1;
+    }
+    const fs::path source = o.args[0];
+    fs::path dest;
+    if (o.args.size() == 2) dest = o.args[1];
+    else {
+        const std::string game = detectGame(source);
+        if (game.empty()) {
+            std::fprintf(stderr, "Can't tell which game %s holds; give a destination: opendf import %s games/NAME\n",
+                         source.string().c_str(), source.string().c_str());
+            return 1;
+        }
+        dest = fs::path("games") / game;
+    }
+    std::string err;
+    const int failed = importGame(source, dest, &err);
+    if (failed < 0) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+    if (failed == 0 && detectGame(dest) == "DeltaForce")
+        std::printf("Run it with: opendf --game %s mission\n", dest.string().c_str());
+    return failed ? 1 : 0;
 }
 
 int cmdList(Vfs& vfs, const Options& o) {
@@ -716,6 +753,7 @@ int cmdModels(Vfs& vfs, Options& o) {
 int main(int argc, char** argv) {
     Options o;
     if (!parseArgs(argc, argv, o)) { usage(); return 1; }
+    if (o.command == "import") return cmdImport(o);
     const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission";
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

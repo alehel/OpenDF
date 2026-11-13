@@ -25,6 +25,7 @@ add_executable(opendf
   src/main.cpp
   src/audio/Audio.cpp
   src/core/ExeImage.cpp
+  src/core/Import.cpp
   src/core/Pff.cpp
   src/formats/Anm.cpp
   src/formats/Chr.cpp
