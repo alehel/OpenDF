@@ -133,7 +133,19 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
         const bool onPath = !v.dead && pathStep(world, ai, v);
         if (onPath) { v.mode = 2; v.targetSpeed = teamSpeed; }
         else if (v.gunTarget != -1 && !v.dead) {
-            v.mode = 2;   // attack approach (0x47bf0c): set in doorGun
+            // Attack approach (0x47bf0c) toward the target's position when
+            // acquired: > 80 m 15 m/s at 18 m; 30-80 m 5 m/s at 8 m; 8-30 m
+            // hover at 8 m; closer 5 m/s at 8 m. The Black Hawk turns its door
+            // to the target: +22.5 / +67.5 degrees in the middle bands.
+            const Vec3 d = world.nearest(v.gunAcquired, o.pos) - o.pos;
+            const float dist = std::sqrt(d.x * d.x + d.z * d.z);
+            const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
+            float h = std::atan2(d.x, -d.z);
+            if (dist > 80) { v.targetSpeed = 15; v.mode = 2; }
+            else if (dist > 30) { v.targetSpeed = 5; v.mode = 1; if (hawk) h += kPi / 8; }
+            else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h += 3 * kPi / 8; }
+            else { v.targetSpeed = 5; v.mode = 1; }
+            v.targetHeading = h;
         } else if (!v.dead && (v.flags & 2) && v.hasHome) {
             // Back to the point where the path ended (0x47c4f0).
             const Vec3 d = world.nearest(v.home, o.pos) - o.pos;
@@ -213,7 +225,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
 // yaw bias shrinking by 1/4 after each burst. APPROXIMATIONS: targets are
 // the nearest visible enemy under 100 m (DF.EXE scores them as soldiers do
 // and draws against distance); the muzzle is 1 m below the helicopter; the
-// gun's angle limits are not applied.
+// gun turns to the aim at once (DF.EXE slews 0x800000 per tick).
 void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound, const Target& player) {
     WorldObject& o = world.objects[size_t(v.object)];
     if (v.dead || (v.flags & 1) || v.rotor < float(0x14000000)) return;
@@ -260,8 +272,22 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     const Vec3 d = world.nearest(targetPos(v.gunTarget), muzzle) - muzzle;
     const float turn = 2 * kPi / 4294967296.f;
     auto err = [&]() { return (float(int(rnd()) - 0x8000) / 32768.f) * float(0x200000) * turn; };
-    const float yaw = std::atan2(d.x, -d.z) + v.bias * turn + err();
-    const float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) + err();
+    float yaw = std::atan2(d.x, -d.z) + v.bias * turn + err();
+    float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) + err();
+    // Gun limits relative to the body (0x47c220 / 0x47c340); it fires only
+    // within 16.9 degrees of the aim: gazelle yaw +-45, pitch 0..-45; Black
+    // Hawk yaw -135..-45 (its door), pitch 0..-16.9.
+    {
+        const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
+        float rel = wrapAngle(yaw - o.heading);
+        const float deg = kPi / 180.f;
+        const float lo = hawk ? -135 * deg : -45 * deg, hi = hawk ? -45 * deg : 45 * deg;
+        const float plo = hawk ? -16.9f * deg : -45 * deg;
+        const float cr = std::clamp(rel, lo, hi), cp = std::clamp(pitch, plo, 0.f);
+        if (std::abs(cr - rel) > 16.9f * deg || std::abs(cp - pitch) > 16.9f * deg) return;
+        yaw = o.heading + cr;
+        pitch = cp;
+    }
     const ModeDef& md = modeInfo(12);
     const GunDef& g = gunInfo(md.gun);
     Projectile p;
