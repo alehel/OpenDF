@@ -11,7 +11,12 @@ const struct { int number; const char* name; float visibility, aim; } kMoves[] =
     {3, "Standing_SLW", 1.f, 1.f}, {4, "Standing_SCW", 1.f, 1.f}, {5, "Standing_BIN", 1.f, 1.f},
     {6, "Standing_SWTCH", 1.f, 1.f}, {7, "Standing_KNIFE", 1.f, 1.f}, {10, "Standing_S_1HW", 1.f, 1.f},
     {11, "Standing_S_2HW", 1.f, 1.f}, {12, "Standing_S_SLW", 1.f, 1.f}, {13, "Standing_S_SCW", 1.f, 1.f},
-    {14, "Standing_S_KNIFE", 1.f, 1.f}, {20, "Walking0_1HW", 2.f, 2.f}, {21, "Walking1_1HW", 2.f, 2.f},
+    {14, "Standing_S_KNIFE", 1.f, 1.f},
+    // Delta Force 2 only (DF2.EXE's table 0x4ab758, records 13..17; DF.EXE
+    // has no numbers 15..19): the ladder moves.
+    {15, "Ladder_Stand", 1.f, 1.f}, {16, "Ladder_Up", 1.f, 1.f}, {17, "Ladder_Down", 1.f, 1.f},
+    {18, "Ladder_Left", 1.f, 1.f}, {19, "Ladder_Right", 1.f, 1.f},
+    {20, "Walking0_1HW", 2.f, 2.f}, {21, "Walking1_1HW", 2.f, 2.f},
     {22, "Walking2_1HW", 2.f, 2.f}, {23, "Walking3_1HW", 2.f, 2.f}, {24, "Walking4_1HW", 2.f, 2.f},
     {25, "Walking5_1HW", 2.f, 2.f}, {26, "Walking6_1HW", 2.f, 2.f}, {27, "Walking7_1HW", 2.f, 2.f},
     {28, "Walking0_2HW", 2.f, 2.f}, {29, "Walking1_2HW", 2.f, 2.f}, {30, "Walking2_2HW", 2.f, 2.f},

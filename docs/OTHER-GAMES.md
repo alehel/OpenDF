@@ -219,8 +219,20 @@ First differences from DF1:
     (movecb) do not push. Type 4 volumes are ladders: no gravity, and the
     chooser climbs: forward +0x800 (run +0x1000) a chooser tick (odd ticks)
     with Ladder_Up, back down, the diagonals half, sideways Ladder_Left /
-    Right (0x43f951); the player always may, AI with ai flag 0x400 (BMS
-    record +0xC bit 0x1000). Type 6 volumes set +0x64 & 0x1000000: the
+    Right (0x43f951 walk, 0x43fa42 run; jump tables 0x43fb40 / 0x43fb60);
+    the player always may, AI with ai flag 0x400 (BMS record +0xC bit
+    0x1000; 73 soldiers in D03M03/06/08, D05M06/09, D06M05/11/19). The
+    chooser 0x43f690 is the person move's (0x44044f) for everyone, so an AI
+    walking or running into a ladder climbs it (AiSystem: the walk / run
+    move becomes the ladder move while +0x64 & 0x400000, z at once; back
+    to it out of the volume). AI only goes forward, so none climbs down.
+    Only PLAYANIM.ANM has the Ladder_* moves (velocity 0.25 / 0.5); enemy
+    .ANMs climb in place with no horizontal step (INFERRED: DF2's table
+    entry for a missing move). A side push sinks 0.02 m a tick, so a
+    walker (0x800 per odd tick) pressed against a wall cannot climb, a
+    runner (0x1000) can (READ: 0x440a8b). `OPENDF_TESTLADDER=1|ITEM` sends
+    the first such soldier into the nearest ladder (testing; D06M11's
+    powcamp guard tower: climbed 27.5 to 32.9 m and stepped onto it). Type 6 volumes set +0x64 & 0x1000000: the
     armory (item 103099 `armory`, model AMMODUMP, in the multiplayer maps;
     KHUFU and TAVERN have one too). READ quirks kept: the sum of a mesh is
     cleared only when a point reaches the mesh box, so a mesh no point
@@ -228,8 +240,20 @@ First differences from DF1:
     (World::resolve does nothing under DF2 rules) and no face ground: the
     surface is found only by overlap, so a falling person lands when the
     feet cube enters the roof volume. Placed charges go on a volume top
-    within 0.25 m (0x4520d6 → 0x43fb80, a 1/256 m point). Not done: riding
-    a moving platform (+0xF8 velocity and turn, 0x440876).
+    within 0.25 m (0x4520d6 → 0x43fb80, a 1/256 m point). Riding: before
+    moving, a person on a platform (+0xF8, the object whose volume pushed
+    him up; DF1 +0x100, the owner of the face 0x435dc0 found) gets its
+    per-tick velocity +0x3C/+0x40 and is turned about its origin by its
+    turn (DF2 +0x9C, DF1 +0x90), heading too (0x440876..0x440944, DF1
+    0x43634d..0x43643d; READ). Movers write them: veh0/herc/boat while the
+    speed is not 0 (stale when stopped), helo every tick (turn only above
+    6 m), loco +0x40 only, carg the loco's +0x40 and 0 turn, the boat's
+    death zeroes them. DF2 moves the people before the objects (0x440238,
+    0x4402bd), so the rider follows one tick behind. +0xF8 is cleared only
+    on the terrain, so a jump from a train keeps its speed. D06M05 (a
+    train with soldiers on its cars, the team dropped from 100 m) and D03M10
+    put soldiers on the cars; `OPENDF_TEAMSPEED=10:40` starts D06M05's
+    train at once; `OPENDF_DEBUGRIDE=1` lists the riders.
   - **sound**: DF2's tables read from the user's DF2.EXE (sound names
     0x4B85A8, 469 records, ids below 0x400; voice sets 0x4B70FC, 22 sets: the
     new 16-21 are ids 700-772), built-in copies otherwise; no terrain
@@ -447,9 +471,12 @@ First differences from DF1:
     0x42a980: the nearest "vwal crack" within 10 m turns into its husk, a
     blast with 10 fragments) are in; no shipped mission places them and their
     models are not on the disc: `OPENDF_TESTDF2ITEMS=1` places one of each
-    with stand-in models (testing). Pickups: two points (feet, feet + pose
-    height + 0.5 m) within ±(0.5 m + R) on all axes, then the volumes
-    (0x440f80; INFERRED R = the header radius and the volume box);
+    with stand-in models (testing); a gone-off mine and trigger stay drawn
+    (the draw list 0x4490d0 skips only +0x64 & 2, the draw 0x4459f0 takes
+    the husk only with flag 8 and a husk). Pickups: the person mover's two
+    0.5 m cubes against the volume planes (0x440f80, World::df2Overlap);
+    the bld2 crush box is ±flat radius across, ±height up (entry +0x68 =
+    LOD 0 header +0x24, stored at 0x43e6aa);
   - **vehicles** (by ITEMS.DEF move_function): herc flies level at its
     start height and keeps moving when shot down (0x42c240); boat floats on
     four samples clamped to the water, dies in five big blasts and sinks
@@ -521,11 +548,11 @@ First differences from DF1:
     text placement (0x43d4c0);
   - *also INFERRED*: the fog pass's depth unit in the software z-buffer (the
     D3D per-vertex fog is view depth, 0x460449), the rain's depth write,
-    the crush box height (entry +0x68), the Options2 prompt's Escape (jump
+    the Options2 prompt's Escape (jump
     table 0x41d698 not decoded), the scroll-bar arrow placement (0x40c3f0
     not read);
   - *approximations*: the water's own fog quad folded into the fog pass;
-    DF2 pickups test boxes, not the v8 volume planes (not loaded);
+    (DF2 pickups and Land Mines now use the v8 volume planes, 0x440f80);
   - *not yet reproduced*: the image-button text rules of 0x43d4c0 in full
     (hotkey underline, the stale justify value, image-less F centred on x),
     the scroll bars' thumb, page zones and drag;

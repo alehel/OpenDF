@@ -302,8 +302,9 @@ Vec3 World::nearest(Vec3 p, Vec3 ref) const {
     return {wrap(p.x, ref.x), p.y, wrap(p.z, ref.z)};
 }
 
-float World::groundHeight(Vec3 feet, float step) const {
-    if (!df2Rules) return faceGround(feet, step);   // DF.EXE 0x435dc0 (people and the player)
+float World::groundHeight(Vec3 feet, float step, int* owner) const {
+    if (!df2Rules) return faceGround(feet, step, owner);   // DF.EXE 0x435dc0 (people and the player)
+    if (owner) *owner = -1;
     // Delta Force 2 (0x43fb80): the terrain or a volume top the point is in,
     // among the objects a person's list would hold (10 m margin, 0x43f2b0).
     return df2Surface(feet, step, df2Neighbours(feet, 10.f));
@@ -465,8 +466,9 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
     });
 }
 
-float World::faceGround(Vec3 feet, float step) const {
+float World::faceGround(Vec3 feet, float step, int* owner) const {
     float best = terrain->heightAt(feet.x, feet.z);
+    if (owner) *owner = -1;   // mover +0x100 = 0 (0x435dd9)
     for (const auto& o : objects) {
         if (o.person || o.removed || !o.model || o.model->hitMeshes.empty()) continue;
         const Vec3 at = nearest(o.pos, feet);
@@ -482,12 +484,40 @@ float World::faceGround(Vec3 feet, float step) const {
                 const float zf = -(f.n[0] * L[0] + f.n[1] * L[1] + f.d) / f.n[2];
                 // Back to the world: file (x, y, z) is model (x, z, -y).
                 const float wy = w.at(1, 0) * L[0] + w.at(1, 1) * zf + w.at(1, 2) * -L[1] + w.at(1, 3);
-                if (wy >= best && wy <= feet.y + step) best = wy;
+                if (wy >= best && wy <= feet.y + step) {
+                    best = wy;
+                    if (owner) *owner = int(&o - objects.data());   // +0x100 = n (an equal later face too)
+                }
             }
             return true;
         });
     }
     return best;
+}
+
+// DF.EXE 0x43634d..0x43643d / DF2.EXE 0x440876..0x440944 (READ): with a
+// platform p, x += p+0x3C, y += p+0x40; then if p's turn (DF1 +0x90, DF2
+// +0x9C) is not 0: (dx, dy) = position - p's position, (s, c) = sincos(turn)
+// (0x435c40 / 0x41ab10: sine, then cosine), x = p.x + c dx - s dy, y = p.y +
+// s dx + c dy (products >> 22), heading += turn. No z: the platform's height
+// reaches the rider through the ground pass. In OpenDF axes (z = -y, the
+// heading clockwise) the same turn is a clockwise rotation by tickTurn.
+void World::carry(int platform, Vec3& pos, float& heading) const {
+    if (platform < 0 || size_t(platform) >= objects.size()) return;
+    const WorldObject& p = objects[size_t(platform)];
+    pos.x += p.tickVel.x;
+    pos.z += p.tickVel.z;
+    if (p.tickTurn != 0) {
+        const Vec3 c = nearest(p.pos, pos);
+        const float dx = pos.x - c.x, dz = pos.z - c.z;
+        const float sn = std::sin(p.tickTurn), cs = std::cos(p.tickTurn);
+        pos.x = c.x + cs * dx - sn * dz;
+        pos.z = c.z + sn * dx + cs * dz;
+        heading += p.tickTurn;
+    }
+    const float ext = extent();
+    pos.x -= std::floor(pos.x / ext) * ext;
+    pos.z -= std::floor(pos.z / ext) * ext;
 }
 
 // DF2.EXE 0x440f80(points, halves, count, object, &push, &flags), READ:
@@ -907,7 +937,9 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
     }
     if (df2Rules && !o.husk && (o.item->aiFunction == "mine" || o.item->aiFunction == "vtrg")) {
         // DF2.EXE 0x4295f0 / 0x42a980: flagged destroyed (4, or 0x10C) but
-        // not removed; with no husk the model stays (INFERRED drawn as it was).
+        // not removed; with no husk the model stays drawn (the draw list
+        // 0x4490d0 skips only +0x64 & 2, the draw 0x4459f0 takes the husk only
+        // with flag 8 and a husk).
         o.hp = 0;
         o.wrecked = true;
         destroyed_.push_back(index);
@@ -1037,6 +1069,24 @@ void World::update(float dt) {
         // DF2.EXE 0x440225: +0x18 != 0).
         for (auto& o : objects)
             if (o.person && !o.removed) personTick(o);
+        // Testing: OPENDF_DEBUGRIDE=1 lists, every 120 ticks, the people
+        // standing on an object (+0x100 / +0xF8) and where they are on it;
+        // =N (N > 1) follows world object N every 10 ticks.
+        const char* ride = std::getenv("OPENDF_DEBUGRIDE");
+        const int follow = ride ? std::atoi(ride) : 0;
+        if (ride && personTicks_ % (follow > 1 ? 10 : 120) == 0)
+            for (size_t i = 0; i < objects.size(); ++i) {
+                const WorldObject& o = objects[i];
+                if (!o.person || o.removed || (follow > 1 && int(i) != follow)) continue;
+                const bool on = o.platform >= 0 && size_t(o.platform) < objects.size();
+                const WorldObject* p = on ? &objects[size_t(o.platform)] : nullptr;
+                const Vec3 rel = p ? nearest(o.pos, p->pos) - p->pos : Vec3{0, 0, 0};
+                if (p || o.airborne || follow > 1)
+                    std::fprintf(stderr, "ride t %u person %zu move %d at (%.2f %.2f %.2f)%s%s on %d %s rel (%.2f %.2f %.2f) vel %.3f turn %.4f hdg %.1f%s\n", personTicks_, i, o.moveNumber,
+                                 o.pos.x, o.base, o.pos.z, o.airborne ? " AIR" : "", o.alive() ? "" : " dead", o.platform,
+                                 p && p->item ? p->item->name.c_str() : "-", rel.x, o.base - (p ? p->pos.y : 0.f), rel.z,
+                                 p ? std::sqrt(dot(p->tickVel, p->tickVel)) * 60.f : 0.f, p ? p->tickTurn : 0.f, p ? p->heading * 57.2958f : 0.f, o.ladder ? " LADDER" : "");
+            }
     }
     for (auto& o : objects)
         if (o.dead && o.fall > 0 && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
@@ -1068,6 +1118,8 @@ void World::personTick(WorldObject& o) {
 }
 
 void World::personTickDf1(WorldObject& o) {
+    // Riding the platform +0x100 every tick (0x43634d), before the move.
+    carry(o.platform, o.pos, o.heading);
     // z += vz + the swim move's dz every tick (DF.EXE 0x436440..0x436459).
     o.base += o.vz + o.swimDz;
     o.swimDz = 0;
@@ -1075,7 +1127,7 @@ void World::personTickDf1(WorldObject& o) {
     // DF.EXE: AI ground pass on ticks with (tick & 3) == 3 (0x4364bf),
     // object faces within 0.5 m above the feet; gravity 0xB20 a pass.
     if ((personTicks_ & 3) != 3) { o.pos.y = o.base + o.hip; return; }
-    const float g = faceGround({o.pos.x, o.base, o.pos.z}, 0.5f);
+    const float g = faceGround({o.pos.x, o.base, o.pos.z}, 0.5f, &o.platform);
     const float G = 0xB20 / 65536.f;
     const float d = o.base - g;
     const float z = o.base + o.hip;               // the origin (obj +0x2C)
@@ -1122,7 +1174,9 @@ void World::personTickDf2(WorldObject& o) {
         o.pos.x -= std::floor(o.pos.x / ext) * ext;
         o.pos.z -= std::floor(o.pos.z / ext) * ext;
     }
-    // z += vz + dz (0x440962..0x44096f); +0x64 &= ~0x01400000.
+    // Riding the platform +0xF8 (0x440876), then z += vz + dz
+    // (0x440962..0x44096f); +0x64 &= ~0x01400000.
+    carry(o.platform, o.pos, o.heading);
     o.base += o.vz + o.swimDz;
     o.swimDz = 0;
     o.ladder = o.armory = false;

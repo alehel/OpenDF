@@ -1405,7 +1405,8 @@ void Game::startCollapse(int index) {
     // within +-R across and +-H up and down of the building loses 100 hp.
     // R, H = model entry +0x64 / +0x68. +0x64 is the 3DI header's +0x64, the
     // flat radius (the header is read verbatim into the entry, 0x43e591);
-    // +0x68 INFERRED to be the height (its store was not found).
+    // +0x68 is then overwritten with the LOD 0 header +0x24, the height
+    // (0x43e6aa..0x43e6ad): GpuModel::height.
     const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
     for (size_t j = 0; j < world_.objects.size(); ++j) {
         WorldObject& t = world_.objects[j];
@@ -1912,38 +1913,22 @@ void Game::df2Blast(Vec3 at, int fragments, float heading) {
 // +0x40..+0x54 widened by r, then inside a volume's convex hull (every
 // plane, vol +0x48 count / +0x4c, i16 normal x4 and i16 d << 8: n·p + d - r
 // < 0); type 4 and 6 volumes only set out-flags 1 / 4 (0x4412fb..0x441318).
-// APPROXIMATION: OpenDF has no v8 collision planes loaded, so it tests a
-// +-0.5 m box around each point against the volumes' boxes, yaw only.
+// The same test as the person mover's push-out (World::df2Overlap, READ),
+// true when a volume other than type 4 / 6 is entered.
 bool Game::df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const {
-    if (!o.model || o.model->collision.empty()) return false;
-    const Vec3 at = world_.nearest(o.pos, feet);
-    const float reach = o.model->headerRadius + 0.5f;
     const Vec3 pts[2] = {world_.nearest(origin, feet), feet + Vec3{0, 0.5f, 0}};
-    bool near = false;
-    for (const Vec3& q : pts)
-        near = near || (std::abs(q.x - at.x) <= reach && std::abs(q.z - at.z) <= reach && std::abs(q.y - at.y) <= reach);
-    if (!near) return false;
-    const float th = kPi * 0.5f - o.heading, c = std::cos(th), sn = std::sin(th);
-    for (const Vec3& q : pts) {
-        const Vec3 dd = q - at;
-        const Vec3 l{c * dd.x - sn * dd.z, dd.y, sn * dd.x + c * dd.z};
-        for (const auto& b : o.model->collision) {
-            if (b.type != 1 && b.type != 3) continue;
-            if (!(l.x + 0.5f >= b.min[0] && l.x - 0.5f <= b.max[0] && l.z + 0.5f >= b.min[2] && l.z - 0.5f <= b.max[2] &&
-                  l.y + 0.5f >= b.min[1] && l.y - 0.5f <= b.max[1]))
-                continue;
-            if (b.type == 3 && std::hypot(l.x - b.cx, l.z - b.cz) > b.r + 0.5f) continue;
-            return true;
-        }
-    }
-    return false;
+    const float halves[2] = {0.5f, 0.5f};
+    Vec3 push;
+    uint32_t flags = 0;
+    return world_.df2Overlap(o, pts, halves, 2, push, flags);
 }
 
 // A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
 // its hp is above 0, the common blast at the mine with no fragments (owned
 // by the mover), a Smoke Generator 104046 0.5 m above it (0x4531e0 ->
-// 0x4142e0), flags |= 4, hp 0, radar shape 0. The mine stays (no husk;
-// INFERRED still drawn); later contacts and rounds do nothing.
+// 0x4142e0), flags |= 4, hp 0, radar shape 0. The mine stays drawn (the
+// draw list 0x4490d0 skips only +0x64 & 2 and no model; the draw 0x4459f0
+// takes the husk only with flag 8); later contacts and rounds do nothing.
 void Game::mineContact(int index) {
     WorldObject& o = world_.objects[size_t(index)];
     if (o.hp <= 0 || o.wrecked || o.removed) return;
@@ -1972,7 +1957,7 @@ bool Game::df2ItemDestroyed(int index) {
     if (f == "mine") {
         // 0x4295f0: hit by a round (event 1) or a blast (2) to hp <= 0: flags
         // |= 4 and the common blast at the mine (no lift), no fragments; no
-        // smoke, no husk (INFERRED still drawn), the radar shape kept.
+        // smoke, no husk (still drawn: 0x4490d0, 0x4459f0), the radar shape kept.
         df2Blast(o.pos, 0, o.heading);
         return true;
     }
@@ -1983,7 +1968,8 @@ bool Game::df2ItemDestroyed(int index) {
         // vwalx without its own break step (gnrc 0x4297c0 sees flag 8 and
         // idles: no effect, no "destroyed" message), then the common blast
         // with 10 fragments at the wall's origin (owner 0). The trigger
-        // itself gets 0x10C (no husk; INFERRED still drawn).
+        // itself gets 0x10C and, having no husk +0x14, is still drawn with its
+        // own model (0x4459f0: the husk only when flag 8 and +0x14 is set).
         int best = -1;
         float bestD = 0;
         for (size_t j = 0; j < world_.objects.size(); ++j) {
@@ -2112,7 +2098,7 @@ void Game::tickDf2Items() {
         WorldObject& m = world_.objects[i];
         if (!m.item || m.item->id != 104054 || m.hp <= 0 || m.wrecked || m.removed) continue;
         for (const auto& q : world_.objects)
-            if (q.person && q.alive() && df2Touch(m, q.pos, Vec3{q.pos.x, q.base, q.pos.z})) {   // APPROXIMATION: q.base for the pose's foot
+            if (q.person && q.alive() && df2Touch(m, q.pos, Vec3{q.pos.x, q.base, q.pos.z})) {   // base = origin + (frame +0x44 << 8)
                 mineContact(int(i));
                 break;
             }
@@ -5204,6 +5190,11 @@ int Game::run() {
                              world_.groundHeight(f, 0.5f), e.y, terrain_.waterLevel(),
                              player_.swimming() ? "SWIM" : player_.inWater() ? "FLOAT" : "land", player_.speed(),
                              player_.chute ? " CHUTE" : "", player_.armory() ? " ARMORY" : "", player_.onLadder() ? " LADDER" : "");
+                if (player_.platform() >= 0 && size_t(player_.platform()) < world_.objects.size()) {
+                    const WorldObject& po = world_.objects[size_t(player_.platform())];
+                    std::fprintf(stderr, "  on %s (object %d) at (%.2f, %.2f), yaw %.1f\n", po.item ? po.item->name.c_str() : "?", player_.platform(),
+                                 po.pos.x, po.pos.z, player_.yaw * 57.2958f);
+                }
             }
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
@@ -5306,6 +5297,92 @@ int Game::run() {
                 if (const float vy = player_.takeLanding(); mission_.version >= 0x0F && vy < 0) {
                     const int n = int(-vy / 60.f * 65536.f / 10360.5f);
                     if (n >= 1) hurtPlayer((1 << std::min(n, 20)) - 1, 4, player_.feet);   // kind 4 (0x43f645)
+                }
+                // Testing: OPENDF_TEAMSPEED="TEAM:KMH[,TEAM:KMH...]" sets team
+                // speeds at tick 1, as the script's set-speed action does
+                // (0x46cafc), e.g. to start a mission's train at once.
+                if (static bool once = false; !once && std::getenv("OPENDF_TEAMSPEED")) {
+                    once = true;
+                    for (const char* p = std::getenv("OPENDF_TEAMSPEED"); p && *p;) {
+                        int team = 0, kmh = 0, n = 0;
+                        if (std::sscanf(p, "%d:%d%n", &team, &kmh, &n) != 2) break;
+                        ai_.teamSpeed(team, kmh);
+                        p += n;
+                        if (*p == ',') ++p;
+                    }
+                }
+                // Testing: OPENDF_TESTLADDER=1 (DF2) at tick 30 takes the first
+                // soldier allowed on ladders (BMS +0xC & 0x1000), finds the
+                // nearest object with a type-4 volume (sampled every 0.25 m;
+                // =ITEMNAME only objects of that item), sets him on the ground
+                // 1 m in front of the middle of the ladder, facing it, and
+                // makes him run on (AiSystem::testWalk; OPENDF_TESTLADDERWALK=1
+                // walks).
+                if (static bool once = false; !once && std::getenv("OPENDF_TESTLADDER") && world_.df2Rules && ticks_ > 30) {
+                    once = true;
+                    const std::string want = std::getenv("OPENDF_TESTLADDER");
+                    int who = -1;
+                    for (size_t j = 0; j < world_.objects.size() && who < 0; ++j)
+                        if (world_.objects[j].person && world_.objects[j].alive() && world_.objects[j].climbs) who = int(j);
+                    float bestD = 1e9f;
+                    int on = -1;
+                    std::vector<Vec3> pts;   // object frame: (right, up, forward)
+                    for (size_t j = 0; who >= 0 && j < world_.objects.size(); ++j) {
+                        const WorldObject& n = world_.objects[j];
+                        if (n.person || n.removed || !n.model || !n.model->hasVolumes) continue;
+                        if (want != "1" && (!n.item || n.item->name != want)) continue;
+                        const Vec3 c = world_.nearest(n.pos, world_.objects[size_t(who)].pos);
+                        const Vec3 dd = c - world_.objects[size_t(who)].pos;
+                        const float dist = std::sqrt(dd.x * dd.x + dd.z * dd.z);
+                        if (dist >= bestD) continue;
+                        const Vec3 fwd{std::sin(n.heading), 0, -std::cos(n.heading)}, right{-fwd.z, 0, fwd.x};
+                        const float R = n.model->flatRadius, H = n.model->headerRadius, half = 0.05f;
+                        std::vector<Vec3> found;
+                        for (float x = -R; x <= R; x += 0.25f)
+                            for (float z = -R; z <= R; z += 0.25f)
+                                for (float y = -H; y <= H; y += 0.25f) {
+                                    const Vec3 q = c + right * x + fwd * z + Vec3{0, y, 0};
+                                    Vec3 push;
+                                    uint32_t flags = 0;
+                                    world_.df2Overlap(n, &q, &half, 1, push, flags);
+                                    if (flags & 1) found.push_back({x, y, z});
+                                }
+                        if (!found.empty()) { bestD = dist; on = int(j); pts = found; }
+                    }
+                    if (who >= 0 && on >= 0) {
+                        WorldObject& s = world_.objects[size_t(who)];
+                        const WorldObject& n = world_.objects[size_t(on)];
+                        // One ladder: the points within 1.5 m (across) of the lowest.
+                        Vec3 first = pts[0];
+                        for (const Vec3& q : pts) if (q.y < first.y) first = q;
+                        std::vector<Vec3> one;
+                        for (const Vec3& q : pts) if (std::abs(q.x - first.x) <= 1.5f && std::abs(q.z - first.z) <= 1.5f) one.push_back(q);
+                        pts = one;
+                        float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
+                        for (const Vec3& q : pts) {
+                            const float v[3] = {q.x, q.y, q.z};
+                            for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], v[k]), hi[k] = std::max(hi[k], v[k]);
+                        }
+                        // The ladder's thin horizontal axis faces outward, away from the centre.
+                        const float mx = (lo[0] + hi[0]) * 0.5f, mz = (lo[2] + hi[2]) * 0.5f;
+                        const bool alongX = hi[0] - lo[0] < hi[2] - lo[2];
+                        const float ox = alongX ? (mx < 0 ? -1.f : 1.f) : 0.f, oz = alongX ? 0.f : (mz < 0 ? -1.f : 1.f);
+                        const Vec3 fwd{std::sin(n.heading), 0, -std::cos(n.heading)}, right{-fwd.z, 0, fwd.x};
+                        const Vec3 c = world_.nearest(n.pos, s.pos);
+                        const Vec3 mid = c + right * mx + fwd * mz;
+                        Vec3 at = c + right * (mx + ox * ((hi[0] - lo[0]) * 0.5f + 1.f)) + fwd * (mz + oz * ((hi[2] - lo[2]) * 0.5f + 1.f));
+                        at.y = terrain_.heightAt(at.x, at.z);
+                        std::fprintf(stderr, "ladder test: person %d to (%.2f %.2f %.2f) at %s (object %d), ladder %d points, middle (%.2f %.2f) heights %.2f..%.2f\n",
+                                     who, at.x, at.y, at.z, n.item ? n.item->name.c_str() : "?", on, int(pts.size()), mid.x, mid.z, c.y + lo[1], c.y + hi[1]);
+                        s.pos = {at.x, at.y + s.hip, at.z};
+                        s.base = at.y;
+                        s.heading = std::atan2(mid.x - at.x, -(mid.z - at.z));
+                        s.vz = 0;
+                        s.airborne = false;
+                        s.platform = -1;
+                        s.neighbours = world_.df2Neighbours(s.pos, 10.f, who);
+                        ai_.testWalk(who, std::getenv("OPENDF_TESTLADDERWALK") != nullptr);
+                    }
                 }
                 if (static bool once = false; !once && std::getenv("OPENDF_TESTBLD2") && ticks_ > 30) {
                     once = true;
