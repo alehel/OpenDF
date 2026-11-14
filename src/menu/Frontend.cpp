@@ -11,6 +11,7 @@
 #include "../formats/Rtxt.h"
 #include "../render/Gl.h"
 #include "../render/Hud.h"
+#include "../render/Window.h"
 #include "Mnu.h"
 
 #include <algorithm>
@@ -332,7 +333,7 @@ bool Frontend::openWindow() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height,
-                            SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
+                            windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE));
     if (!win_) return false;
     ctx_ = SDL_GL_CreateContext(win_);
     const char* missing = nullptr;
@@ -2137,6 +2138,7 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
         // (0x418b91 -> 0x418b50), which marks DF_LEAD as done (0x4d9120).
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) ++keys;
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) introLeadSkip_ = true;
@@ -2265,6 +2267,7 @@ int Frontend::run() {
     while (screen_ != Quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) { next_ = Quit; break; }
             if (e.type == SDL_TEXTINPUT && !editing_.empty()) textInput(e.text.text);
             if (screen_ == Keyboard && kbCapture_ != 0) {
@@ -2281,6 +2284,10 @@ int Frontend::run() {
                 SDL_GetWindowSize(win_, &ww, &wh);
                 SDL_GL_GetDrawableSize(win_, &dw, &dh);
                 const float px = float(mx) * float(dw) / float(std::max(1, ww)), py = float(my) * float(dh) / float(std::max(1, wh));
+                // The window may have changed size since the last frame (fullscreen).
+                scale_ = std::min(float(dw) / 640.f, float(dh) / 480.f);
+                offX_ = (float(dw) - 640.f * scale_) / 2;
+                offY_ = (float(dh) - 480.f * scale_) / 2;
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
                 if (screen_ == Start) {

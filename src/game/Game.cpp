@@ -4,6 +4,7 @@
 #include "../render/Hud.h"
 #include "../render/Models.h"
 #include "../render/Terrain.h"
+#include "../render/Window.h"
 #include "../formats/Rtxt.h"
 #include "../formats/Chr.h"
 #include "../formats/Dlg.h"
@@ -5199,7 +5200,7 @@ int Game::run() {
         return 1;
     }
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height,
-                            SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE));
+                            windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE)));
     if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
     SDL_GLContext ctx = SDL_GL_CreateContext(win_);
     if (!ctx) { std::fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); SDL_DestroyWindow(win_); return 1; }
@@ -5279,6 +5280,7 @@ int Game::run() {
             SDL_Event e;
             bool zoomClick = false;
             while (SDL_PollEvent(&e)) {
+                if (fullscreenEvent(win_, e)) continue;
                 if (e.type == SDL_QUIT) { running = false; quit_ = true; }
                 if (leaveMission_) running = false;
                 else if (df2Hud_.on && showMap_ && (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)) {
@@ -5328,6 +5330,7 @@ int Game::run() {
             const Uint8* kb = SDL_GetKeyboardState(nullptr);
             Uint8 keys[SDL_NUM_SCANCODES];
             std::memcpy(keys, kb, sizeof keys);
+            maskFullscreenKey(keys);   // the fullscreen toggle's Enter / F
             for (SDL_Scancode sc : inputHeld_) keys[sc] = 1;
             const Uint32 mouse = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
             auto down = [&](Action a) { return controls_.down(a, keys, mouse); };

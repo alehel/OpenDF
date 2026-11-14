@@ -27,9 +27,12 @@ bool gamePlayable(GameKind kind);
 //   game=/path/to/DeltaForce
 //   [launcher]
 //   last=/path/to/DeltaForce
+//   [display]
+//   fullscreen=0
 struct LauncherSettings {
     std::vector<std::filesystem::path> games;
     std::filesystem::path last;   // the game launched last time (picks the launcher's look)
+    bool fullscreen = false;      // [display] fullscreen=1: OpenDF's windows start fullscreen
 
     static std::filesystem::path defaultFile();
     // False if the file does not exist (first start).
