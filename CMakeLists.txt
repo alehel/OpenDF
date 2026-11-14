@@ -25,6 +25,7 @@ add_executable(opendf
   src/main.cpp
   src/audio/Audio.cpp
   src/audio/Music.cpp
+  src/formats/Image.cpp
   src/audio/Pwf.cpp
   src/core/ExeImage.cpp
   src/core/Import.cpp
@@ -67,6 +68,13 @@ else()
   target_link_libraries(opendf PRIVATE SDL2::SDL2-static)
 endif()
 target_link_libraries(opendf PRIVATE OpenGL::GL)
+# libjpeg (optional): the later games' JPEG terrain colour maps.
+find_package(JPEG QUIET)
+if(JPEG_FOUND)
+  target_compile_definitions(opendf PRIVATE OPENDF_HAVE_JPEG)
+  target_include_directories(opendf PRIVATE ${JPEG_INCLUDE_DIRS})
+  target_link_libraries(opendf PRIVATE ${JPEG_LIBRARIES})
+endif()
 
 if(MSVC)
   target_compile_options(opendf PRIVATE /W3 /utf-8)

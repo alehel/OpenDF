@@ -67,9 +67,25 @@ First differences from DF1:
 
 - `opendf --game games/DF2|DFLW|DFTFD list|extract` works: the setup folders
   (`DF2SETUP`, `DFLSETUP`, `TFDSETUP`) and the later archives are mounted.
-- `check` on Delta Force 2: TRN and PCX parse; every BMS loads but its header
-  differs (the terrain field holds the dialogue name); all 621 3DI files are
-  version 8, not yet supported.
+- Delta Force 2 formats now read:
+  - **3DI version 8** (all 618 v8 models; the 3 version-7 files are refused by
+    DF2.EXE too): 52-byte texture headers with a second name, 16-bit
+    index+alpha textures (material flag 0x8000 = alpha blend), the texture
+    variant mask (3 camouflage variants), 192-byte LOD headers, collision
+    planes, 80-byte volumes, 120-byte materials (DF2.EXE 0x43e570).
+  - **BMS version 0x0F**: a 0x208-byte header (title/author 32 bytes, terrain
+    0x44, dialogue 0x54, flags 0x78 with night 0x100000, weather 0xAC); the
+    rest is DF1's layout (DF2.EXE 0x403bd0).
+  - **SCR text scrambling** (ITEMS.DEF, LOOP.DEF, .ANM): reversed payload XORed
+    with `s = rol(rol(s,11)+s,4) ^ 1` from 0x01234567 (DF2.EXE 0x4614f0),
+    undone in `Vfs::read`.
+  - Terrain colour maps as JPEG (libjpeg, optional at build time) or TGA.
+- `opendf --game games/DF2 mission KH_DS21` loads and draws (terrain, objects,
+  HUD) with DF1's rules and built-in tables. Not yet: DF2's detail textures
+  (TGA tile strips), sky (TGA palette), `CAL` surface data, `KSA` animations,
+  sounds (no SNIPER.PWF: DF2's banks differ), the new ITEMS.DEF attribute bits
+  (NoTool 0x100, Snap 0x200, PFoil 0x400, Train 0x800, S&D 0x1000, NoCTool
+  0x2000), and everything DF1 reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order
 

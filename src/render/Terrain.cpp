@@ -1,4 +1,5 @@
 #include "Terrain.h"
+#include "../formats/Image.h"
 
 #include "../formats/Pcx.h"
 
@@ -276,14 +277,32 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     if (!parseTrn(std::string(raw.begin(), raw.end()), desc_)) return fail("cannot parse " + trnName);
 
     IndexedImage color, elev, detail;
-    if (!loadImage(vfs, desc_.colorMap, color)) return fail("missing colour map " + desc_.colorMap);
+    // Delta Force 2 and later: a true-colour JPEG/TGA colour map (no palette).
+    RgbaImage colorRgba;
+    bool trueColor = false;
+    if (!loadImage(vfs, desc_.colorMap, color)) {
+        std::vector<uint8_t> d;
+        for (const char* ext : {".JPG", ".TGA"})
+            if (vfs.read(withExt(desc_.colorMap, ext), d) && decodeRgbaImage(d, colorRgba)) { trueColor = true; break; }
+        if (!trueColor)
+            return fail("missing colour map " + desc_.colorMap + (jpegSupported() ? "" : " (OpenDF was built without libjpeg)"));
+        color.width = colorRgba.width;
+        color.height = colorRgba.height;
+        color.pixels.assign(size_t(color.width) * size_t(color.height), 0);
+    }
     if (!loadImage(vfs, desc_.elevMap, elev)) return fail("missing elevation map " + desc_.elevMap);
     if (color.width != color.height || elev.width != color.width || elev.height != color.height)
         return fail("colour/elevation maps must be equal-sized squares");
     size_ = color.width;
     heights_ = elev.pixels;
 
-    texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, color.palette).data(), true, true);
+    if (trueColor) {
+        std::vector<uint8_t> rgb(size_t(size_) * size_t(size_) * 3);
+        for (size_t i = 0; i < size_t(size_) * size_t(size_); ++i)
+            for (int k = 0; k < 3; ++k) rgb[i * 3 + size_t(k)] = colorRgba.rgba[i * 4 + size_t(k)];
+        texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, rgb.data(), true, true);
+    } else
+        texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, color.palette).data(), true, true);
     {
         uint8_t byIndex[256];
         for (int i = 0; i < 256; ++i) {
@@ -304,6 +323,24 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         }
         surface_.resize(color.pixels.size());
         for (size_t i = 0; i < color.pixels.size(); ++i) surface_[i] = byIndex[color.pixels[i]];
+        if (trueColor) {
+            // APPROXIMATION (later games): the nearest TRN `type` colour per
+            // pixel; how DF2 picks surfaces is not traced (char_data .CAL).
+            for (size_t i = 0; i < surface_.size(); ++i) {
+                int best = 1;
+                long bestD = -1;
+                for (const auto& t : desc_.types) {
+                    const long dr = colorRgba.rgba[i * 4] - t.r, dg = colorRgba.rgba[i * 4 + 1] - t.g, db = colorRgba.rgba[i * 4 + 2] - t.b;
+                    const long dd = dr * dr + dg * dg + db * db;
+                    if (bestD < 0 || dd < bestD) {
+                        bestD = dd;
+                        const std::string& m = t.material;
+                        best = m == "dirt" ? 1 : m == "grass" ? 2 : m == "snow" ? 3 : m == "cement" ? 4 : m == "sand" ? 5 : m == "packed_dirt" ? 6 : 0;
+                    }
+                }
+                surface_[i] = uint8_t(desc_.types.empty() ? 1 : best);
+            }
+        }
     }
     texHeight_ = makeTex2D(size_, size_, GL_R8, GL_RED, heights_.data(), true, false);
 
