@@ -101,7 +101,8 @@ struct Mission {
     int variantWord = 0, lightFlags = 0;
     int windKph = 0, windDeg = 0;
     int waterOverride = -1;
-    SkyOverride sky;                         // Delta Force 2: header 0xB8..0xE4                  // Delta Force 2: header flag 0x78 bit 0 -> +0x88; -1 none            // Delta Force 2: header +0xE8 / +0xEC
+    SkyOverride sky;                         // Delta Force 2: header 0xB8..0xE4
+    int winIds[4] = {0, 0, 0, 0}, loseIds[4] = {0, 0, 0, 0};   // Delta Force 2: header 0xB0 / 0xB4                  // Delta Force 2: header flag 0x78 bit 0 -> +0x88; -1 none            // Delta Force 2: header +0xE8 / +0xEC
     // The object at `index` of `group`, or null.
     const MissionObject* inGroup(int group, int index) const {
         if (group < 0 || group > 3 || index < 0 || index >= groupSize[group]) return nullptr;

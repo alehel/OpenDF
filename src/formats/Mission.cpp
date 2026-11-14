@@ -138,6 +138,12 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         m.sky.gamma = d[0xE0];
         m.sky.saturation = d[0xE1];
         for (int k = 0; k < 3; ++k) m.sky.filter[k] = d[size_t(0xE2 + k)];
+        // Goals (DF2.EXE 0x442520): win ids +0xB0..+0xB3, lose ids +0xB4..+0xB7
+        // (DF2WPN.BIN STRWINCOND / STRLOSECOND%03i), 0 ends a list.
+        for (int k = 0; k < 4; ++k) {
+            m.winIds[k] = d[size_t(0xB0 + k)];
+            m.loseIds[k] = d[size_t(0xB4 + k)];
+        }
         m.windKph = int(u32(d, 0xE8));
         m.windDeg = int(u32(d, 0xEC));
     } else {

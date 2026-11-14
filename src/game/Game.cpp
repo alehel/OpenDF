@@ -360,6 +360,15 @@ private:
         HudImage top, bottom, weap, pos, itm, rad;
     } df2Hud_;
     void drawDf2Strips(const Screen& s);
+    // DF2.EXE 0x45c160: a panel darkened 50 % with a one-pixel orange outline,
+    // in the virtual 1024x768 space.
+    void df2Panel(const Screen& s, float vx0, float vy0, float vx1, float vy1);
+    // A DF2GAME.BIN string (section, key), or `fallback`.
+    std::string df2Text(const char* section, const char* key, const char* fallback) const {
+        const std::string* t = gameTable_.find(section, key);
+        return t && !t->empty() ? *t : std::string(fallback);
+    }
+    bool nvg_ = false;   // DF2 night vision ([0x765740], forced on for night missions)
     void drawDf2Bottom(const Screen& s);
     void drawDf2Top(const Screen& s);
     // A HUD.DEF point in this window: x left- or right-anchored about the
@@ -526,11 +535,16 @@ bool Game::loadMission(int index) {
     {
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
         playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
-        if (o_.attributes & 0x100) playerHp_ *= 4;   // Player Health: Easy (0x469c02)
+        // Player Health: Easy (0x469c02); DF2 has no such option (health is
+        // the ITEMS.DEF hp as it is, DF2.EXE 0x412a0a).
+        if ((o_.attributes & 0x100) && mission_.version < 0x0F) playerHp_ *= 4;
         playerBody_ = Animator{};
         playerMove_.clear();
         damageFlash_ = 0;
         air_ = 0;
+        // DF2.EXE 0x44781e: night missions (header flag 0x100000) start with
+        // the night vision on.
+        nvg_ = mission_.version >= 0x0F && (mission_.lightFlags & 0x10);
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
@@ -1443,7 +1457,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
     }
-    // Debug keys (not in the original): N free flight.
+    // Delta Force 2: N toggles the night vision (action 51, [0x765740]).
+    if (df2Hud_.on && k.keysym.sym == SDLK_n && !(k.keysym.mod & KMOD_CTRL)) { nvg_ = !nvg_; return; }
+    // Debug keys (not in the original): N free flight (Ctrl+N in DF2).
     if (k.keysym.sym == SDLK_n) { player_.fly = !player_.fly; return; }
     (void)shift;
     // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
@@ -1761,7 +1777,8 @@ void Game::drawViewModel(const Screen& s) {
 // view stays as it is), like the original.
 void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     if (!scopeShown() || showMap_) return;
-    const float cx = s.cx(160), cy = s.playY + s.playH * 0.5f, r = s.y(100);
+    // Delta Force 2 (0x44deb0): centre (0.75 W, H / 2) of the screen, r = W·5/32.
+    const float cx = s.cx(160), cy = df2Hud_.on ? s.h * 0.5f : s.playY + s.playH * 0.5f, r = s.y(100);
 
     glEnable(GL_STENCIL_TEST);
     glClearStencil(0);
@@ -1793,6 +1810,12 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     drawWorld(view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
+    // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.
+    if (df2Hud_.on && (mission_.lightFlags & 0x10)) {
+        hud_.begin(int(s.w), int(s.h));
+        hud_.nightVision(cx, cy, r, 1.f);
+        hud_.end();
+    }
 }
 
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
@@ -2120,7 +2143,51 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
     // bright green border, ticks from r/4 to r/2 in the four directions, the
     // range "%3im" at (500, 312.5).
-    if (scopeShown() && !showMap_) {
+    if (scopeShown() && !showMap_ && df2Hud_.on) {
+        // DF2.EXE 0x44e2a0: a black ring; posts solid black from the edge to
+        // r/2, the inner ±r/2 segments half blended with 0x000080; the range
+        // "%4im" at (780, 500) in orange ("10km+", "1m-"); the zeroing "%4im"
+        // (setting × 100 m, X/Z; OpenDF keeps setting 0) at (700, 500) in
+        // yellow, not for the LAW; the laser designator's square of r/8.
+        const float zx = s.cx(160), zy = s.h * 0.5f, r = s.y(100);
+        const Color black{0.004f, 0.004f, 0.004f, 1}, navy{0, 0, 0.5f, 0.5f};
+        hud_.ring(zx, zy, r, t, black);
+        const bool laser = arsenal_.mode().type == 10;
+        if (!laser) {
+            hud_.rect(zx - r, zy, r / 2, t, black);
+            hud_.rect(zx + r / 2, zy, r / 2, t, black);
+            hud_.rect(zx, zy - r, t, r / 2, black);
+            hud_.rect(zx, zy + r / 2, t, r / 2, black);
+            hud_.rect(zx - r / 2, zy, r, t, navy);
+            hud_.rect(zx, zy - r / 2, t, r, navy);
+        } else {
+            const float d = r / 8;
+            hud_.rect(zx - d, zy - d, 2 * d, t, kDf2Amber);
+            hud_.rect(zx - d, zy + d, 2 * d, t, kDf2Amber);
+            hud_.rect(zx - d, zy - d, t, 2 * d, kDf2Amber);
+            hud_.rect(zx + d, zy - d, t, 2 * d, kDf2Amber);
+        }
+        const float range = rangeToAim();
+        char buf[32];
+        if (laser) {
+            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
+            else std::snprintf(buf, sizeof buf, "Range: %3im", int(range));
+            hud_.text(s.vx(770) - hud_.textWidth(buf, s.text()) / 2, s.vy(450), buf, kDf2Amber, s.text());
+            const bool target = range >= 0 && range <= 999;
+            const char* status = target ? "Laser Active" : "No Target";
+            if (target || (ticks_ & 0x10))
+                hud_.text(s.vx(770) - hud_.textWidth(status, s.text()) / 2, s.vy(300), status, kDf2Amber, s.text());
+        } else {
+            if (range < 0 || range > 9999) std::snprintf(buf, sizeof buf, "10km+");
+            else if (range < 1) std::snprintf(buf, sizeof buf, "1m-");
+            else std::snprintf(buf, sizeof buf, "%4dm", int(range));
+            hud_.text(s.vx(780), s.vy(500), buf, kDf2Amber, s.text());
+            if (arsenal_.modeIndex() != 0x1c) {
+                std::snprintf(buf, sizeof buf, "%4dm", 0);
+                hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+            }
+        }
+    } else if (scopeShown() && !showMap_) {
         const float zx = s.cx(160), zy = cy, r = s.y(100);
         hud_.ring(zx, zy, r, t, kHudBright);
         const float in = r * 0.25f, out = r * 0.5f;
@@ -2162,7 +2229,12 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // 0x482f02: dead, until the mission is over: "You Are Dead" centred at
     // x 512, top + 0x14 (as the end panel), in the message colour
     // ([0x66f948]: colour table entry [0x66fa48], white by default).
-    if (playerDead() && missionResult_ < 0) {
+    if (playerDead() && missionResult_ < 0 && df2Hud_.on) {
+        // DF2.EXE: STRMISC11 centred at (512, top+20) in the HUD colour
+        // ([0x653618], white by default).
+        const std::string dead = df2Text("Misc", "STRMISC11", "You are dead.");
+        hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
+    } else if (playerDead() && missionResult_ < 0) {
         const char* dead = "You Are Dead";
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
     }
@@ -2223,6 +2295,15 @@ float Game::df2Y(const Screen& s, int y, bool bottom) const {
     // Bottom-strip points are in screen rows of the mode (0x442020 copies
     // DHB to rows screenH - h ..).
     return bottom ? s.h - (float(s.modeW) * 0.75f - float(y)) * s.art() : float(y) * s.art();
+}
+
+void Game::df2Panel(const Screen& s, float vx0, float vy0, float vx1, float vy1) {
+    const float x0 = s.vx(vx0), x1 = s.vx(vx1), y0 = s.vy(vy0), y1 = s.vy(vy1), t = s.px();
+    hud_.multiply(x0, y0, x1 - x0, y1 - y0, {0.5f, 0.5f, 0.5f, 1});
+    hud_.rect(x0, y0, x1 - x0, t, kDf2Amber);
+    hud_.rect(x0, y1 - t, x1 - x0, t, kDf2Amber);
+    hud_.rect(x0, y0, t, y1 - y0, kDf2Amber);
+    hud_.rect(x1 - t, y0, t, y1 - y0, kDf2Amber);
 }
 
 void Game::drawDf2Strips(const Screen& s) {
@@ -2590,6 +2671,13 @@ void Game::drawHelp(const Screen& s) {
 void Game::drawPaused(const Screen& s) {
     // 0x48327c: a darkened box (shade level 10) from (310, 330) to (714, 438)
     // and "Game Paused" centred at (512, 380) in green (0x66f938).
+    if (df2Hud_.on) {
+        // DF2.EXE 0x442b60: the panel box and STROVER7 centred at (512, 380), green.
+        df2Panel(s, 310, 330, 714, 438);
+        const std::string t = df2Text("Overlays", "STROVER7", "Game Paused");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+        return;
+    }
     const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     const char* t = "Game Paused";
@@ -2601,6 +2689,19 @@ void Game::drawOldMessages(const Screen& s) {
     // (512, 120) in bright green, then the 16 latest lines from x 130, y 160,
     // 30 apart, the oldest at the top (APPROXIMATION: order inferred), each
     // in its message colour (white here).
+    if (df2Hud_.on) {
+        // DF2.EXE 0x442850: the panel box, STROVER43 centred at (512, 120) in
+        // orange, the system history's entries 15..0 (oldest first) at x 130,
+        // y 160 + 30k, each in its own colour.
+        df2Panel(s, 100, 100, 924, 668);
+        const std::string t = df2Text("Overlays", "STROVER43", "Messages");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kDf2Amber, s.text());
+        for (int k = 0; k < 16; ++k) {
+            const size_t e = size_t(15 - k);
+            if (e < df2Sys_.size()) hud_.text(s.vx(130), s.vy(160 + 30 * float(k)), df2Sys_[e].text, df2Sys_[e].colour, s.text());
+        }
+        return;
+    }
     const float x0 = s.vx(100), x1 = s.vx(924), y0 = s.vy(100), y1 = s.vy(668);
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     const char* t = "Messages";
@@ -2662,11 +2763,14 @@ void Game::drawBinoculars(const Screen& s) {
     char buf[32];
     if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "Distance: 1km+");
     else std::snprintf(buf, sizeof buf, "Distance: %3im", int(dist));
-    hud_.text(s.vx(768) - hud_.textWidth(buf, s.text()) / 2, s.vy(369), buf, kHudBright, s.text());
+    // DF2.EXE 0x45a9e0: the same texts in orange, 15 above the 3D view's centre.
+    const float ty = df2Hud_.on ? s.playY + s.playH * 0.5f - s.vy(15) : s.vy(369);
+    const Color tc = df2Hud_.on ? kDf2Amber : kHudBright;
+    hud_.text(s.vx(768) - hud_.textWidth(buf, s.text()) / 2, ty, buf, tc, s.text());
     float deg = 360.f - cam.yaw * 180.f / kPi;
     deg -= 360.f * std::floor(deg / 360.f);
     std::snprintf(buf, sizeof buf, "Heading: %3i", int(deg));
-    hud_.text(s.vx(256) - hud_.textWidth(buf, s.text()) / 2, s.vy(369), buf, kHudBright, s.text());
+    hud_.text(s.vx(256) - hud_.textWidth(buf, s.text()) / 2, ty, buf, tc, s.text());
 }
 
 void Game::drawMissionEnd(const Screen& s) {
@@ -2677,6 +2781,20 @@ void Game::drawMissionEnd(const Screen& s) {
     // outline in bright green (0x66f94c); three lines centred at x 512 in
     // green (0x66f938) with tops at 136, 176, 206 virtual.
     const bool won = missionResult_ == kPlayerSide;
+    if (df2Hud_.on) {
+        // DF2.EXE 0x441660: panel (128, top+20)-(896, top+150), green lines
+        // centred at x 512 with tops top+40, +80 and +110 (SP).
+        const float top = s.playY / s.vy(1);
+        df2Panel(s, 128, top + 20, 896, top + 150);
+        const std::string lines[3] = {won ? df2Text("Overlays", "STROVER1", "Congratulations!  Mission Completed Successfully.")
+                                          : df2Text("Overlays", "STROVER2", "Game Over.  Mission Incomplete."),
+                                      df2Text("Overlays", "STROVER3", "Hit Enter to end mission."),
+                                      df2Text("Overlays", "STROVER4", "Hit Space Bar to replay mission")};
+        const float tops[3] = {40, 80, 110};
+        for (int i = 0; i < 3; ++i)
+            hud_.text(s.vx(512) - hud_.textWidth(lines[i], s.text()) / 2, s.vy(top + tops[i]), lines[i], kHudPureGreen, s.text());
+        return;
+    }
     const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72.5f), y1 = s.y(153.75f), t = s.px();
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     hud_.rect(x0, y0, x1 - x0, t, kHudBright);
@@ -2696,6 +2814,37 @@ void Game::drawGoals(const Screen& s) {
     // "Win Conditions:" then up to four M%02iSUBGOAL%02i lines (green once
     // met, white until then); 10 units further "Lose Conditions:" and up to
     // four M%02iSUBFAIL%02i lines (red once hit, white until then).
+    if (df2Hud_.on) {
+        // DF2.EXE 0x442520: right-aligned at x 1000 from top+20, 25 apart,
+        // each line twice (0x402000 shadow at +1,+1 pixel); "Win Conditions:"
+        // then the header's win ids as DF2WPN STRWINCOND%03i (0x804000 once
+        // met), 10 lower "Lose Condiitions:" (sic) and STRLOSECOND%03i (red
+        // once hit); others white.
+        const float ts = s.text(), sh = s.px(), top = s.playY / s.vy(1);
+        float y = top + 20;
+        auto line = [&](const std::string& text, Color c) {
+            const float x = s.vx(1000) - hud_.textWidth(text, ts);
+            hud_.text(x + sh, s.vy(y) + sh, text, rgb(0x40, 0x20, 0), ts);
+            hud_.text(x, s.vy(y), text, c, ts);
+            y += 25;
+        };
+        line(df2Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
+        for (int i = 0; i < 4 && mission_.winIds[i]; ++i) {
+            char key[24];
+            std::snprintf(key, sizeof key, "STRWINCOND%03d", mission_.winIds[i]);
+            const std::string* t = wpnText_.find("WinConditions", key);
+            line(t ? *t : key, script_.goalDone(i + 1) ? rgb(0x80, 0x40, 0) : kHudWhite);
+        }
+        y += 10;
+        line(df2Text("Overlays", "STROVER52", "Lose Condiitions:"), kHudWhite);
+        for (int i = 0; i < 4 && mission_.loseIds[i]; ++i) {
+            char key[24];
+            std::snprintf(key, sizeof key, "STRLOSECOND%03d", mission_.loseIds[i]);
+            const std::string* t = wpnText_.find("LoseConditions", key);
+            line(t ? *t : key, script_.failDone(i + 1) ? kHudRed : kHudWhite);
+        }
+        return;
+    }
     const float ts = s.text(), sh = s.px();
     float y = 72.5f;
     auto line = [&](const std::string& text, Color c) {
@@ -3135,8 +3284,22 @@ int Game::run() {
                 glViewport(0, 0, dw, dh);
             } else {
                 drawWorld(view, proj, binoculars_ && !playerDead());
-                drawViewModel(s);
-                drawZoomInset(s, view, fovY);
+                if (df2Hud_.on) {
+                    // DF2.EXE 0x45c610: the scope inset, the night vision
+                    // (0x449450), then the weapon pass (0x448980).
+                    drawZoomInset(s, view, fovY);
+                    glViewport(0, 0, dw, dh);
+                    if (nvg_ && !showMap_) {
+                        hud_.begin(dw, dh);
+                        hud_.nightVision(s.w * 0.5f, s.playY + s.playH * 0.5f, float(s.modeW) * 5.f / 32.f * s.art());
+                        hud_.end();
+                    }
+                    glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
+                    drawViewModel(s);
+                } else {
+                    drawViewModel(s);
+                    drawZoomInset(s, view, fovY);
+                }
                 glViewport(0, 0, dw, dh);
                 drawHud(s, proj * view);
             }

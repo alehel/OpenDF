@@ -51,6 +51,11 @@ public:
     void rect(float x, float y, float w, float h, Color c);
     // Multiplies what is already drawn by `c` (the damage flash).
     void multiply(float x, float y, float w, float h, Color c);
+    // Adds what is drawn to itself (dst × 2, saturating).
+    void brighten(float x, float y, float w, float h);
+    // Delta Force 2's night vision over an ellipse of half-height r and
+    // half-width 2r (one pixel rows): green only, ×4 saturating.
+    void nightVision(float cx, float cy, float r, float widthScale = 2.f);
     void line(float x0, float y0, float x1, float y1, float thickness, Color c);
     void puff(float cx, float cy, float radius, Color c);   // soft-edged disc
     void image(GLuint texture, float x, float y, float w, float h, Color tint = {1, 1, 1, 1});

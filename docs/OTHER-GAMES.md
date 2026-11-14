@@ -191,7 +191,20 @@ First differences from DF1:
     carry on under the water and splash where they cross it. Not yet: Kevlar
     (75·(n+1) energy), people's health scale, objects' damage, explosions,
     scope zeroing (X/Z), DF2's loadout screen.
-- Not yet: DF2's mission-end panel and menus, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
+  - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
+    50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
+    STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
+    pause (STROVER7), the message log (the system history 15..0, own colours),
+    the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
+    header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
+    as spelt), binocular texts in orange at the view's centre − 15; the
+    scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
+    half-blended navy inner segments, "%4im" range in orange, the zeroing
+    readout in yellow (always 0 m: X/Z zeroing not yet), the laser square;
+    night vision (key N, on at the start of night missions: 0x44781e) as an
+    ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
+    scope image green ×4 at night. DF2 has no "Player Health: Easy".
+- Not yet: DF2's command map (tabs, Map/Mission), X/Z scope zeroing, DF2's menus, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order

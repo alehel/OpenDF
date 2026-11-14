@@ -257,6 +257,31 @@ void Hud::multiply(float x, float y, float w, float h, Color c) {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
+void Hud::brighten(float x, float y, float w, float h) {
+    flush();
+    glBlendFunc(GL_DST_COLOR, GL_ONE);
+    rect(x, y, w, h, {1, 1, 1, 1});
+    flush();
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+void Hud::nightVision(float cx, float cy, float r, float widthScale) {
+    auto rows = [&](Color c) {
+        for (float dy = -r; dy < r; dy += 1.f) {
+            const float hw = widthScale * std::sqrt(std::max(0.f, r * r - (dy + 0.5f) * (dy + 0.5f)));
+            if (hw > 0) rect(cx - hw, cy + dy, 2 * hw, 1.f, c);
+        }
+        flush();
+    };
+    flush();
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    rows({0, 1, 0, 1});
+    glBlendFunc(GL_DST_COLOR, GL_ONE);
+    rows({1, 1, 1, 1});
+    rows({1, 1, 1, 1});
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
 void Hud::end() {
     flush();
     glBindVertexArray(0);
