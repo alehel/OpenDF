@@ -146,9 +146,9 @@ First differences from DF1:
   - **wind**: fixed for the mission from the BMS header (+0xE8 kph, +0xEC
     degrees it blows from; DF2.EXE 0x45d3f8), shown as `Wind: SW, 3kph` /
     `Wind: None`. The `sp_wind` option (default/none/random) only applies in
-    multiplayer. Not yet: its only physical effect, DF2's projectile drag
-    toward the wind velocity (0x44c2f0, per-ammo drag bands; DF1 has no
-    drag), and rain/snow drifting with it.
+    multiplayer. Its physical effect, DF2's projectile drag toward the wind
+    velocity (0x44c2f0, per-ammo drag bands; DF1 has no drag), is in
+    (`Arsenal::df2Drag`).
   - **heights** (DF2.EXE 0x464c30, 0x464798): the elevation PCX smoothed
     into 8.8 words, H = 256·Σw·h/29 with the wrapping kernel [2 3 2; 3 9 3;
     2 3 2], compared as H << 7: **0.5 m a step** (DF1 0.25 m); ground under
@@ -312,8 +312,8 @@ First differences from DF1:
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up
     (and, INFERRED, the player's start marker) descend 0x2222 a tick under
     `parachut` (PFoil items) or `pararnd`; landing leaves the canopy, which
-    tips over and sinks for 1800 ticks (`para` 0x42c570). Not yet: script
-    action 18 (teleport) and whether teleported paratroopers open a chute.
+    tips over and sinks for 1800 ticks (`para` 0x42c570). Script action 18
+    (teleport, 0x41955c) moves the team (`teleportTeam`).
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
     flags}), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
