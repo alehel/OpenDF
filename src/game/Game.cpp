@@ -734,8 +734,10 @@ bool Game::loadMission(int index) {
     // the chute flag and markers never carry it (df2_parachute.md), so the
     // player would free-fall and die at the ten missions that start 100-160 m
     // up (D03M04, D03M11, D03M15, D05M03, D05M12, D06M03, D06M05, D06M06,
-    // D06M14, D06M16); the start heights sit on the 100 m test and the
-    // D06M06 briefing says the player will paradrop.
+    // D06M14, D06M16); the start heights sit on the 100 m test, the D06M06
+    // briefing says the player will paradrop, and the Land Warrior mission
+    // editor manual gives the rule: a "Start, Player" Z of 100.00..300.00
+    // parachutes the player in (also AI units).
     player_.chute = mission_.version >= 0x0F && startLift >= 100.f;
     if (player_.chute) player_.feet.y += startLift + 1.f;
     else if (mission_.version >= 0x0F && startLift > 0) player_.feet.y = terrain_.heightAt(player_.feet.x, player_.feet.z) + startLift;

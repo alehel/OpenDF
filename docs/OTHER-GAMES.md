@@ -413,9 +413,14 @@ First differences from DF1:
     (0x45bb10); the player and teleports copy a marker flag that is never
     set, so that EXE would drop the player to its death at the ten missions
     starting 100-160 m up and kill its scripted paradrop teams. OpenDF applies
-    the soldiers' 100 m rule to them too (the start heights sit on that test
-    and the D06M06 briefing says the player paradrops); a patched DF2.EXE or
-    a play-test of the retail game would settle it. Below 100 m the player
+    the soldiers' 100 m rule to them too: the start heights sit on that test,
+    the D06M06 briefing says the player paradrops, reviews and walkthroughs
+    describe DF2 missions opening with an automatic parachute drop, and the
+    Land Warrior mission editor manual (same engine family) says a "Start,
+    Player" marker with Z between 100.00 and 300.00 makes the player
+    parachute in, and that this also works for AI units. (DF2's own editor
+    manual says nothing about it; a patched DF2.EXE, the last official patch
+    being 1.06.15, may set the flag where this one does not.) Below 100 m the player
     starts at the marker's height and drops, as DF2.EXE does;
   - *settled since*: the ammo display's kinds (DF2's own record +0x0C, with
     grenades red while firing or empty and binoculars red unless up), radar
