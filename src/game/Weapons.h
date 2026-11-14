@@ -196,7 +196,6 @@ public:
     void cycle();                 // 0x44b81c: next slot with a mode, wrapping
     void reload();                // 0x44a004
     void toggleZoom();
-    void cancelZoom() { zoomLevel_ = 0; }
 
     // Runs the weapon on 60 Hz ticks. Messages go to the HUD.
     void update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
@@ -221,14 +220,22 @@ public:
     int spares() const { return spares_[size_t(mode().gun)]; }
 
     float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
-    // DF2.EXE 0x447b40: the scope flag counts only for modes with flag 0x1.
-    bool zoomed() const { return zoomLevel_ > 0 && (!df2_ || (mode().flags & 1)); }
+    // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40);
+    // in DF.EXE (0x44b420) also not while a move or jump key is down this
+    // tick ([0x93351c] & 0x41e) or the binoculars are up ([0x93367c]), so
+    // the scope comes back when the player stops.
+    bool zoomed() const {
+        return zoomLevel_ > 0 && (mode().flags & 1) && (df2_ || (!moveKeys_ && !binoculars_));
+    }
+    void setMoveKeys(bool down) { moveKeys_ = down; }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
     const float* kick() const { return kick_; }
     // Binoculars up ([0x93367c]): no firing, no scope.
-    void setBinoculars(bool on) { binoculars_ = on; if (on) zoomLevel_ = 0; }
+    // The binoculars leave the scope flag as it is (its only writer is the
+    // toggle, 0x44b498 / 0x447b30).
+    void setBinoculars(bool on) { binoculars_ = on; }
     float flash() const { return flashTimer_; }
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     // Rounds not fired by the player's weapon (shrapnel); they hit and do
@@ -282,6 +289,7 @@ private:
     float flashTimer_ = 0;
     float kick_[3] = {0, 0, 0};
     bool binoculars_ = false;
+    bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
     std::vector<Projectile> bullets_;
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;

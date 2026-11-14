@@ -2027,7 +2027,7 @@ int Frontend::run() {
     // (0x4014a5) and reset when a mission ends (0x40491b / 0x473162).
     music_.setIntegerUnits(true);
     audio_.setDfMixer(true, !missionPlayed_);
-    audio_.setDf1Wavs(true);   // 0x48cfb0's 16-bit conversion
+    audio_.setDfGame(1);   // DF.EXE's WAV conversion (0x48cfb0) and mixer
     audio_.openDevice();
     // DF.EXE opens DFMUSIC.SBF from its own folder (0x4b81b0).
     if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
@@ -2131,6 +2131,7 @@ int Frontend::run() {
         last = now;
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
+            audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             ++screenTicks_;
             static const int leadTicks = std::getenv("OPENDF_LEADTICKS") ? std::atoi(std::getenv("OPENDF_LEADTICKS")) : 600;   // testing
             if (screen_ == Start && screenTicks_ >= leadTicks && leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; }

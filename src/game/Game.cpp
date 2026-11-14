@@ -5091,7 +5091,7 @@ int Game::run() {
         // teardown into the Game Loop (0x43b68d -> 0x42f420 -> 0x43cb50 ->
         // 0x4712e0), so never on in a DF2 mission.
         audio_.setDfMixer(true, mission_.version < 0x0F && o_.mixerHook);
-        audio_.setDf1Wavs(mission_.version < 0x0F);   // DF.EXE 0x48cfb0's loose-WAV conversion
+        audio_.setDfGame(mission_.version < 0x0F ? 1 : 2);   // the WAV conversion and mixer of DF.EXE / DF2.EXE
         if (!o_.record.empty()) {
             audioOut_ = std::fopen((o_.record + ".pcm").c_str(), "wb");
         } else if (!hidden && !audio_.openDevice()) {
@@ -5187,11 +5187,13 @@ int Game::run() {
                 player_.pitch += rate * (float(down(Action::LookUp)) - float(down(Action::LookDown)));
             }
             player_.pitch = std::clamp(player_.pitch, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
-            // Any move or jump key turns the scope off (0x4373ab).
-            if (in.forward != 0 || in.strafe != 0 || in.jump) {
-                arsenal_.cancelZoom();
-                if (binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
-            }
+            // Any move or jump key puts the binoculars down (0x4373ab: the
+            // key bits [0x93351c] & 0x41e clear [0x93367c]); the scope flag
+            // stays, DF.EXE only hides the scope while the keys are down
+            // (0x44b44d in 0x44b420, Arsenal::zoomed).
+            const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
+            arsenal_.setMoveKeys(moveKeys);
+            if (moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.mode().oneHanded();

@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 #include <array>
+#include <cstdio>
 
 #include <cstdint>
 #include <functional>
@@ -24,7 +25,20 @@ class Vfs;
 struct SoundClip {
     std::vector<int16_t> samples;   // mono
     int rate = 22050;
+    // The games' in-memory rate field (SAMP +8, DF.EXE 0x48cfb0 / DF2.EXE
+    // 0x4711a0): (rate·16 / 22050) << 24, an integer divide. The integer
+    // mixer steps by it (0x4a9a10 / 0x4a0092); 0 = derive it from `rate`.
+    uint32_t rateField = 0;
 };
+
+// A RIFF WAV converted as the games convert a loaded file in place (DF.EXE
+// 0x48cfb0, DF2.EXE 0x4711a0): the canonical 44-byte header is assumed
+// (rate +0x18, bits +0x22, data size +0x28, data from +0x2c, whatever the
+// chunks really are); 8-bit data is copied, 16-bit scaled to 8 bits by
+// 0x7eff0000 / peak from the sample's low byte (DF1, `full16` false) or the
+// whole word (DF2). `size` is how many bytes follow `d` in memory. Returns
+// false if it is not a RIFF file of at least 0x2c bytes.
+bool dfConvertWav(const uint8_t* d, size_t size, bool full16, SoundClip& out);
 
 class Audio {
 public:
@@ -65,13 +79,25 @@ public:
         hook_ = hook;
         iprev_[0] = iprev_[1] = 0;
     }
-    // Delta Force's loose-WAV conversion (DF.EXE 0x48cfb0) for clips decoded
-    // from now on: 16-bit data goes through DF.EXE's 16 -> 8-bit step and
-    // its low-byte bug (see Audio::clip). Off for Delta Force 2.
-    void setDf1Wavs(bool on) {
+    // Which game's sound code runs: 0 none (SDL's WAV decoder, float
+    // steps), 1 Delta Force (DF.EXE), 2 Delta Force 2 (DF2.EXE). It picks
+    // the loose-WAV conversion of clips decoded from now on (dfConvertWav)
+    // and, with the integer mixer on, DF2's mixer differences: a buffer
+    // mixed in four parts with each voice's pitch sliding a quarter of the
+    // way per part (0x48e05a, 0x48f818, 0x48e531), gains flipped in sign
+    // when that is nearer the old ones (0x49fcba), updates to a voice not
+    // yet started ignored (0x49fbf4).
+    void setDfGame(int game) {
         std::lock_guard<std::mutex> lock(mutex_);
-        df1Wavs_ = on;
+        dfGame_ = game;
+        fifo_.clear();
+        fifoAt_ = 0;
     }
+    // Testing: OPENDF_AUDIODUMP=FILE makes openDevice() open no device and
+    // instead the caller's advance(seconds) mixes that much (at kRate, the
+    // fractions carried) and appends it to FILE as raw s16le stereo.
+    // Returns true while dumping.
+    bool advance(double seconds);
     // A stereo stream added to the mix (the front-end music); it adds
     // `frames` interleaved float frames at kRate into its buffer.
     void setStream(std::function<void(float*, int)> stream) {
@@ -92,7 +118,18 @@ private:
         bool loop = false;
         int volume = 0;
         int group = 0;
+        // The integer mixer's state (DF.EXE voice +0x24/+0x28/+8, DF2.EXE
+        // +0x24/+0x28, +8 current step, +0x34 target, +0x38 per-part delta,
+        // +0x3e updated): gains as the games' integers, steps in 1/1024
+        // samples.
+        int gL = 0, gR = 0;
+        int32_t stepCur = 0, stepTarget = 0, stepDelta = 0;
+        bool updated = false;
+        bool started = false;   // DF2: mixed at least once (else still pending)
     };
+    void dfMixBlock(int frames);   // DF2.EXE 0x48e028 over one call's frames
+    void dfVoices(int32_t* acc, int from, int frames);
+    void dfOutput(const int32_t* acc, int16_t* out, int frames);
     static void callback(void* self, Uint8* stream, int len);
 
     mutable std::mutex mutex_;
@@ -105,7 +142,11 @@ private:
     std::vector<float> scratch_;
     float feedback_[2] = {0, 0};   // the last output sample per channel (0x497fda)
     bool dfMixer_ = false, hook_ = false;
-    bool df1Wavs_ = false;
+    int dfGame_ = 0;
+    std::vector<int16_t> fifo_;   // DF2: mixed blocks not yet handed out
+    size_t fifoAt_ = 0;
+    FILE* dump_ = nullptr;
+    double dumpCarry_ = 0;
     int32_t iprev_[2] = {0, 0};
     std::array<int32_t, 32> ring_{};
     int32_t ringSum_ = 0;

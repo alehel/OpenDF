@@ -43,6 +43,11 @@ per frame). Example, remapping STRAFE LEFT to K on the Keyboard page:
 `OPENDF_FE2EVENTS="30 c 325 130; 40 k K" opendf --game games/DF2 play keyboard --screenshot k.ppm --frames 20`
 (this saves the soldier file, so keep a copy of `df2plyrs.sav`).
 
+The front ends' sound can be captured: `OPENDF_AUDIODUMP=FILE` opens no audio device and
+mixes 0.016 s per menu tick into FILE as raw s16le stereo at 22050 Hz (with `--screenshot`,
+four ticks per frame), e.g. `OPENDF_AUDIODUMP=brief.raw opendf --game games/DF2 play briefing
+--screenshot b.ppm --frames 500`, then `ffmpeg -f s16le -ar 22050 -ac 2 -i brief.raw -af volumedetect -f null -`.
+
 More aids: `OPENDF_NOFLY=1` keeps a `--camera` start higher than 2 m
 under the physics (the player falls instead of flying), e.g. onto the
 C03M03 radio-station roof with `--camera 392,-560,8,90,-20`;
