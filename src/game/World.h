@@ -28,6 +28,11 @@ struct WorldObject {
     bool person = false;
     bool dead = false;                 // person killed
     bool removed = false;              // destroyed without a husk
+    // Delta Force: a carried goal item (+0x6c |= 0x102, 0x46c980). It is
+    // `removed` (not drawn or hit) but stays in the object list, at the
+    // carrier's origin (0x4365c6 -> 0x436a0c), and sight (0x45b6e0) does not
+    // skip hidden objects, so it still blocks sight lines.
+    bool carried = false;
     float fall = 0;                    // 0..1 while a killed person falls
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
     bool wrecked = false;              // destroyed, husk shown

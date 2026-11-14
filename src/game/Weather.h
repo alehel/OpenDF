@@ -15,8 +15,9 @@ namespace df {
 class Weather {
 public:
     ~Weather();
-    // 0x46ba90: 0 none, 1 rain, 2 snow (names INFERRED from the fall speeds
-    // and the snow sprite); clears every particle.
+    // 0x46ba90: 0 none, 1 rain, 2 snow (READ: type 1 splashes with effect 17,
+    // item 107017 "rain poink"; type 2 draws item 107018 "snow", 0x46b94d);
+    // clears every particle.
     void start(int type);
     int type() const { return type_; }
     // One sim tick (0x46baa0). Wind and water level in 16.16 m (DF2 axes: x

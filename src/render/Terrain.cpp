@@ -177,8 +177,11 @@ void main() {
 
 // Delta Force 2's fog pass (DF2.EXE 0x4485b0, software frame; the D3D copy
 // 0x45b620 uses the same blend): f = min(255, z >> (fog_level + 8)) with z
-// the pixel's depth in 16.16 m (INFERRED: view depth, the only reading that
-// makes f reach 255 at the band cut-off 2^fog_level m), then out = c + (C -
+// the pixel's depth in 16.16 m (view depth: READ for the D3D per-vertex fog,
+// the projected vertex's z >> (fog_level + 8) clamped to 0..255 at
+// 0x460449..0x46045d; the pass itself 0x448640..0x4486a8; what the software
+// rasterizer stores per pixel in the z-buffer was not traced, so INFERRED
+// there), then out = c + (C -
 // c)·f/256 per channel in plain byte space; drawn as fog_color with alpha
 // f/256 over the frame. Empty depth (the sky, z 0x7fffffff) gives f = 255.
 const char* kFogFS = R"(#version 330 core
@@ -490,8 +493,9 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             // cal[remap[remap[o]]]. Right only where the used indices are
             // exactly 0..N-1; on the DF* terrains it differs on 24-98 % of
             // the cells, which is what the player hears. remap of an unused
-            // index is 0 (INFERRED: the table 0x50edf0 is zero at first start;
-            // a later terrain would see stale entries).
+            // index is 0 at first start (READ: 0x50edf0 lies past .data's raw
+            // data, zero-filled at load; its only writer 0x4643ea never clears
+            // it, so a later terrain would see stale entries).
             std::array<bool, 256> used{};
             for (uint8_t p : detail.pixels) used[p] = true;
             std::array<uint8_t, 256> remap{};
@@ -816,7 +820,9 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         // the plane's own fog quad (0x467568..0x46760e, alpha clamp(depth >>
         // (fog_level + 8))) is the same blend as the fog pass, which OpenDF
         // applies to the water through drawFog (APPROXIMATION: one blend of
-        // the finished pixel instead of the quad's blend before the pass).
+        // the finished pixel instead of the quad's blend before the pass; not
+        // settled: the quad's z-write and its order against the fog pass
+        // 0x4485b0 in the software frame were not traced).
         glUseProgram(progWater_);
         glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 1);
         glUniform1i(glGetUniformLocation(progWater_, "uTint"), 0);

@@ -427,17 +427,47 @@ First differences from DF1:
     shapes (signed byte +0x4C, live positions, 0x403590 / 0x421510), rounds
     under water, the player item by id (0x4128d0: 105300..105309; ghillie /
     LAR V only change the drawn model, 0x415410);
-  - *also INFERRED*: the fog pass's depth unit, DF2's pickup radius and
-    volume box, the smk2 colour;
+  - *settled since*: rain vs snow (type 1 splashes item 107017 "rain
+    poink", type 2 draws 107018 "snow", 0x46b94d); the flake test 0x404a20
+    (a 1/128 m sphere against the view frustum, near 1/16 m, far 4080 m);
+    the smk2 colour (0x411f70 is the scene grade 0x411ec0), roll (+0x38
+    about model x, 0x42bc00) and tint (replaces the material colour,
+    0x4603bf); the fireballs' flag 0x800 is additive in the software spans
+    (0x45eac0 → 0x484ffd, paddusb); the searchlight factors (+0x64 & 1 the
+    player slot, & 0x4000 fired, move table +0x10) and its perception (record
+    +0x24, 0x40386c) and the ÷4 when AI byte +0xb4 is 0 (0x425eb8, now in);
+    DF2 pickups: R = header +0x60, two 0.5 m points at the origin and the
+    pose's foot + 0.5 m (0x4409a2), a sphere against each volume's planes
+    (0x440f80); the CAL remap table starts zeroed (0x50edf0 past .data);
+    the front end's PCX key is index 0 for every 8-bit image (0x462dd3);
+    the briefing map centre is the "Briefing Map Center" marker 6038 and
+    points are at 4 m a pixel about 512 (0x404546, 0x4045dd); the command
+    map prompt y = (H − bottom strip)·768/H − 160 (0x45cb40, 0x443e21);
+    the scroll bar's thumb and zones (0x40c7d0, 0x40c8c0); the image-button
+    text placement (0x43d4c0);
+  - *also INFERRED*: the fog pass's depth unit in the software z-buffer (the
+    D3D per-vertex fog is view depth, 0x460449), the rain's depth write,
+    the crush box height (entry +0x68), the Options2 prompt's Escape (jump
+    table 0x41d698 not decoded), the scroll-bar arrow placement (0x40c3f0
+    not read);
   - *approximations*: the water's own fog quad folded into the fog pass;
+    DF2 pickups test boxes, not the v8 volume planes (not loaded);
+  - *not yet reproduced*: the image-button text rules of 0x43d4c0 in full
+    (hotkey underline, the stale justify value, image-less F centred on x),
+    the scroll bars' thumb, page zones and drag;
   - *done since*: the player's fall damage (0x43f600), the M203 arming
     (the same 8 ticks as DF1);
   - *done since*: the delay grenade's slide and fuse, the command map's
     Team tab with squad orders, its W waypoint tool, elevation / contour
     views, Players and Weapons tabs and selection panel, the front end's keyboard page, credits,
     voice briefing, slider dragging and screen timing;
-  - *not yet*: bld2's per-mesh fireball clouds (0x42abc0, steps 3..11);
-    multiplayer (out of scope).
+  - *done since*: bld2's per-mesh fireballs (0x402e73..0x402fba, steps
+    3..11: one dust cloud per mesh 1..count−2 at the centre of the mesh box
+    +0x40..+0x54, move 0x42abc0: drag >> 8, rising to 0x200, growth >> 7 up
+    to 0.75, colour from (ff ff c0) through (ff c0 40), (c0 40 00) to
+    (40 00 00) over t = 6·age, gone at 0x300; drawn additive and ungraded);
+    `OPENDF_TESTBLD2=<item name>` picks the bld2 to destroy;
+  - *not yet*: multiplayer (out of scope).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
     differences, READ): fire also needs under 128 m at night, no parachute,
     no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more

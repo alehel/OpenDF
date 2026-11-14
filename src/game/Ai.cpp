@@ -202,9 +202,10 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
 // light's current heading and its pitch from the light's pitch must both be
 // within 0x10/256 turn (22.5 degrees); distance under 1000 m; the sight line
 // 0x406180 gives 1..2. score = (100 / d) · (16 - |dyaw|) / 16 (dyaw in 1/256
-// turns) · move visibility · 6 if it fired lately · 2 unless its flag 1 is
-// set (INFERRED: flag 1 marks the player, as in the fall damage 0x43f600);
-// the factor meanings are INFERRED. Returns the best score, 0 if none.
+// turns) · move visibility (move table +0x10, 0x425df3..0x425e05) · 6 if
+// it fired (+0x64 & 0x4000, set at 0x44a9dc; 0x425e09..0x425e1f) · 2
+// unless +0x64 & 1, the player-controlled slot (0x447833; 0x425e5e).
+// Returns the best score, 0 if none.
 float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
                           int& bestId, Vec3& bestPos) const {
     float best = 0;

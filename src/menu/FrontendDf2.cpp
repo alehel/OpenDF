@@ -448,7 +448,8 @@ HudImage FrontendDf2::file(const std::string& name) {
     HudImage im;
     std::vector<uint8_t> data;
     if (key.size() > 4 && key.compare(key.size() - 4, 4, ".PCX") == 0) {
-        // PCX art: palette index 0 is the colour key (INFERRED for the 4-frame strips).
+        // PCX art: palette index 0 is the colour key (0x462d20: the 8-bit blit
+        // skips index 0, 0x462dd3, for every frame; frame height = h / frames).
         im = hud().loadImage(vfs_, key, false, true);
     } else if (vfs_.read(key, data)) {
         RgbaImage rgba;
@@ -963,8 +964,15 @@ void FrontendDf2::drawButton(D2Button& b) {
     const float fh = float(font(b.font).height);
     float y = float(b.y);
     if (im.texture) y += std::floor((float(b.h) - fh) / 2);
-    // F / H centre; an image button without D/E/F centres too (INFERRED:
-    // the text-in-image placement 0x419fd0 is not traced).
+    // F / H centre; an image button without D/E/F centres too. The button
+    // draw 0x43d4c0 (READ, not yet reproduced in full): rectangle left = x+2,
+    // right = x+w-2 with an image (D adds user1 to left), left = right = x
+    // without one; justify F/H (0xA0) centre, E (0x10) right, D (8) left,
+    // none: the previous button's value (a stale stack slot). No hotkey:
+    // top = y - ftol(font height · 0.4) with an image, then 0x469380 centres
+    // vertically in (top, y + h). A '&' hotkey goes through 0x419fd0 /
+    // 0x41a1f0 / 0x41a0d0 with the letter underlined. So an image-less F
+    // label centres on x, not on x + w/2 as here.
     if ((b.attrib & (0x20 | 0x80)) || (im.texture && !(b.attrib & (0x8 | 0x10)))) text(b.font, float(b.x) + float(b.w) / 2, y, b.text, c, 2);
     else if (b.attrib & 0x10) text(b.font, im.texture ? float(b.x + b.w) : float(b.x), y, b.text, c, 1);
     else text(b.font, float(b.x + 2 + (im.texture ? b.user1 : 0)), y, b.text, c, 0);
@@ -1167,21 +1175,27 @@ void FrontendDf2::loadBriefing() {
                 RgbaImage im;
                 if (decodeRgbaImage(raw, im)) briefMap_ = hud().makeImage(im.width, im.height, im.rgba);
             }
-            // The player's route (path flag 2): map metres are 1:1 with the
-            // 1024² picture (the 256² JPG x4).
+            // 0x404390 converts every point to the 1024² picture (0x4045dd..
+            // 0x404639): px = 0x200 + (x16.16 >> 18), py = 0x200 - (y >> 18),
+            // a quarter of the map metres about the centre.
+            auto toPic = [](float x, float y) {
+                const int32_t xi = int32_t(std::lround(x * 65536.f)), yi = int32_t(std::lround(y * 65536.f));
+                return std::pair<float, float>{float(0x200 + (xi >> 18)), float(0x200 - (yi >> 18))};
+            };
+            // The player's route (path flag 2).
             for (const auto& p : m.paths)
                 if (p.flags & 2) {
                     for (int idx : p.points)
-                        if (const MissionObject* o = m.inGroup(2, idx); o && waypoints_.size() < 50) waypoints_.push_back({o->x, -o->y});
+                        if (const MissionObject* o = m.inGroup(2, idx); o && waypoints_.size() < 50) waypoints_.push_back(toPic(o->x, o->y));
                     break;
                 }
-            // Centred on the player's start (the first group-3 object of side 1, INFERRED).
-            float px = 512, py = 512;
+            // Centre: the last group-2 marker of type 0x1796 = 6038, item
+            // 106038 "Briefing Map Center" (0x404546..0x404559); without one
+            // the centre stays at (0, 0) -> the picture's middle (512, 512).
+            float mx = 0, my = 0;
             for (const auto& o : m.objects)
-                if (o.group == 3) { px = o.x; py = -o.y; break; }
-            for (auto& w : waypoints_) { w.first = std::fmod(w.first + 1024.f, 1024.f); w.second = std::fmod(w.second + 1024.f, 1024.f); }
-            px = std::fmod(px + 1024.f, 1024.f);
-            py = std::fmod(py + 1024.f, 1024.f);
+                if (o.group == 2 && o.type == 6038) { mx = o.x; my = o.y; }
+            const auto [px, py] = toPic(mx, my);
             mapX_ = std::clamp(px - 140.f, 0.f, 1024.f - 279.f);
             mapY_ = std::clamp(py - 160.f, 0.f, 1024.f - 323.f);
         }
