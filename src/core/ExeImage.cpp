@@ -67,6 +67,8 @@ bool ExeImage::i32(uint32_t va, int32_t& out) const {
 }
 
 fs::path findGameExe(const fs::path& gameDir) {
+    // Delta Force's DF.EXE (the later games' executables are not read: their
+    // tables are at other addresses, docs/OTHER-GAMES.md).
     for (const fs::path& dir : {gameDir, gameDir / "DFSETUP", gameDir / "dfsetup"}) {
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;

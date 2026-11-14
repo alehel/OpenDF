@@ -103,9 +103,22 @@ bool Vfs::mount(const fs::path& archive, std::string* error) {
 
 bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
     // Install order: base data first, then the CD packs that patch into it.
-    static const char* kArchives[] = {"DFBASE.PFF", "DF.PFF", "MISSIONS.PFF", "AUDIO.PFF", "VIEWS.PFF"};
+    // Delta Force; then the later games' archives (docs/OTHER-GAMES.md):
+    // terrain packs, Delta Force 2's DF2.PFF, Land Warrior's DFLW.PFF and
+    // Task Force Dagger's SMALL.PFF.
+    static const char* kArchives[] = {"DFBASE.PFF", "DF.PFF", "MISSIONS.PFF", "AUDIO.PFF", "VIEWS.PFF",
+                                      "TERRAINS.PFF", "DF2.PFF", "DFLW.PFF", "SMALL.PFF"};
 
-    std::vector<fs::path> roots = {gameDir, gameDir / "DFSETUP", gameDir / "dfsetup"};
+    // The game's setup folder: DFSETUP, DF2SETUP, DFLSETUP or TFDSETUP (any case).
+    std::vector<fs::path> roots = {gameDir};
+    {
+        std::error_code ec;
+        if (fs::is_directory(gameDir, ec))
+            for (auto& de : fs::directory_iterator(gameDir, ec)) {
+                const std::string n = toUpper(de.path().filename().string());
+                if (de.is_directory(ec) && (n == "DFSETUP" || n == "DF2SETUP" || n == "DFLSETUP" || n == "TFDSETUP")) roots.push_back(de.path());
+            }
+    }
     // Case-insensitive lookup so a lower-cased copy of the CD works on Linux.
     auto findIn = [](const fs::path& dir, const std::string& want) -> fs::path {
         std::error_code ec;

@@ -165,8 +165,10 @@ bool mountData(Vfs& vfs, Options& o) {
         return false;
     }
     std::string err;
-    if (vfs.mountGameDir(o.dataDir, &err) && vfs.exists("DFG1.TRN")) return true;
-    std::fprintf(stderr, "No Delta Force data (DF.PFF etc.) under %s\n%s", o.dataDir.string().c_str(), err.c_str());
+    // Delta Force (DFG1.TRN) or one of the later games' archives (list,
+    // extract and the model viewer work on those; docs/OTHER-GAMES.md).
+    if (vfs.mountGameDir(o.dataDir, &err) && (vfs.exists("DFG1.TRN") || vfs.exists("ITEMS.DEF"))) return true;
+    std::fprintf(stderr, "No Delta Force data (PFF archives) under %s\n%s", o.dataDir.string().c_str(), err.c_str());
     return false;
 }
 

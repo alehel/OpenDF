@@ -63,6 +63,14 @@ First differences from DF1:
   `DRVMGT.DLL`, `00000000.256`): the executable is likely encrypted, which
   matters for reading its tables (DF1's approach reads values out of `DF.EXE`).
 
+## Status in OpenDF
+
+- `opendf --game games/DF2|DFLW|DFTFD list|extract` works: the setup folders
+  (`DF2SETUP`, `DFLSETUP`, `TFDSETUP`) and the later archives are mounted.
+- `check` on Delta Force 2: TRN and PCX parse; every BMS loads but its header
+  differs (the terrain field holds the dialogue name); all 621 3DI files are
+  version 8, not yet supported.
+
 ## Suggested order
 
 1. Mount the later layouts: `DF2SETUP/`, `DFLSETUP/`, `TFDSETUP/`, their
