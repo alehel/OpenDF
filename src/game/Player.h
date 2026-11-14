@@ -30,6 +30,7 @@ public:
     float yaw = 0, pitch = 0;        // yaw: compass radians, pitch: up positive
     Stance stance = Stance::Stand;
     bool fly = false;                // debug free flight (N)
+    bool chute = false;              // Delta Force 2: on a parachute (0.133 m a tick down)
     const AnimDefs* moves = nullptr; // the soldier's .ANM table
     bool oneHanded = false;          // pistol: the *_1HW moves
     // Eye height above the feet per stance (stand, crouch, prone) and hand

@@ -62,7 +62,8 @@ struct WorldObject {
     float rotorSpeed = 0;
     float steer = 0;
     float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5
-    int collapse = -1;                 // DF2 bld2: collapse step (0..64), -1 none
+    int collapse = -1;
+    bool chute = false;                // DF2: on a parachute (person flag +0x64 & 0x20)                 // DF2 bld2: collapse step (0..64), -1 none
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
@@ -129,6 +130,8 @@ public:
     // Swaps a destroyed object to its husk (or removes it), as damage() does
     // at once in DF1; DF2's collapsing buildings do it at step 8.
     void applyHusk(int index);
+    // DF2: people who landed from a parachute this tick (for the canopy).
+    std::vector<int> takeLandings() { std::vector<int> out; out.swap(landings_); return out; }
     // Knife (blast kind 2, 0x44ffd0, radius 1 m): every living person whose
     // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
     // whatever the armour; no line of sight; among objects only the piranha
@@ -162,6 +165,8 @@ public:
     void refreshBoxes(WorldObject& o) const;
 
 private:
+    std::vector<int> landings_;
+    float chuteClock_ = 0;
     std::vector<int> destroyed_;
     std::vector<AnimEvent> animEvents_;
     std::map<std::string, Chr> chrs_;

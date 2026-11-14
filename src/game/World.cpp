@@ -141,6 +141,13 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.lift = mo.z;
         o.person = item->type == "person";
         o.base = o.pos.y;
+        // Delta Force 2 (0x45bb10): a person 100 m or more up starts on a
+        // parachute, 1 m higher.
+        if (df2Rules && o.person && mo.z >= 100.f) {
+            o.chute = true;
+            o.base += 1.f;
+            o.pos.y += 1.f;
+        }
         if (o.person) {
             // Character models have their origin at the hips; stand them on their feet.
             o.hip = -o.model->lods[0].min[1];
@@ -755,6 +762,21 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
 }
 
 void World::update(float dt) {
+    // DF2 parachutes (0x440b2b): -0x2222 a tick (0.133 m) while above the
+    // ground and the water; landing ends it and leaves the canopy.
+    for (chuteClock_ += dt; chuteClock_ >= 1.f / 60.f; chuteClock_ -= 1.f / 60.f)
+        for (size_t i = 0; i < objects.size(); ++i) {
+            WorldObject& o = objects[i];
+            if (!o.chute) continue;
+            o.base -= 0x2222 / 65536.f;
+            const float ground = terrain->heightAt(o.pos.x, o.pos.z), water = terrain->waterLevel();
+            if (o.base <= ground || (water != 0 && o.base < water)) {
+                o.base = std::max(o.base, ground);
+                o.chute = false;
+                landings_.push_back(int(i));
+            }
+            o.pos.y = o.base + o.hip;
+        }
     for (auto& o : objects)
         if (o.dead && o.fall > 0 && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
     // People's animations: 30 ticks a second (the odd 60 Hz ticks).

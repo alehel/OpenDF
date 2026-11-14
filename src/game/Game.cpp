@@ -287,6 +287,8 @@ private:
         // Smoke puffs ("smok", 0x480bfc): drift and rise speeds in m/tick,
         // roll in turns.
         bool smoke = false; float drift = 0, rise = 0, roll = 0;
+        // DF2's landed canopy (`para` 0x42c570): heading, tipping 0..90°.
+        bool canopy = false; float heading = 0, pitch = 0;
     };
     std::vector<Effect> effects_;
     // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
@@ -507,6 +509,7 @@ bool Game::loadMission(int index) {
     player_.floatOrigin = floatOrigin_;
     player_.swimOrigin = swimOrigin_;
     player_.feet = {512, 0, 512};
+    float startLift = 0;
     for (const auto& obj : mission_.objects) {
         const ItemDef* item = items_.byMissionType(obj.type);
         if (item && item->id == kItemPlayerStart) {
@@ -514,10 +517,15 @@ bool Game::loadMission(int index) {
             player_.feet = {obj.x, 0, -obj.y};
             player_.wrap(ext);
             player_.yaw = obj.heading * kPi / 180.f;
+            startLift = obj.z;
             break;
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
+    // Delta Force 2 (0x45bb10): a start 100 m or more up is a parachute
+    // drop, 1 m higher (INFERRED for the player's start marker, as for people).
+    player_.chute = mission_.version >= 0x0F && startLift >= 100.f;
+    if (player_.chute) player_.feet.y += startLift + 1.f;
     {
         Loadout lo;
         if (const int r = loadoutRow(o_.sidearm); r >= 0) lo.sidearm = r;
@@ -1372,6 +1380,14 @@ void Game::spawnPuff(Vec3 at) {
 void Game::tickEffects() {
     for (auto& e : effects_) {
         ++e.age;
+        if (e.canopy) {
+            // 0x42c570: pitch t·300 << 14 up to 90°, sinking 0x400 a tick, then
+            // 0x0c00 a tick at 90°; gone under -16 m.
+            if (e.age * 300 <= 0x10000) { e.pitch = float(e.age * 300) / 65536.f * kPi / 2; e.pos.y -= 0x400 / 65536.f; }
+            else { e.pitch = kPi / 2; e.pos.y -= 0xc00 / 65536.f; }
+            if (e.pos.y < -16.f) e.age = e.life;
+            continue;
+        }
         if (!e.smoke) continue;
         e.pos.x += e.drift;
         e.pos.z -= e.drift * 0.25f;
@@ -1773,6 +1789,11 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);
             models_.drawPosed(*v.o->model, v.lod, body, pose);
+            // DF2: the parachute over a falling person (0x4153b0): `parachut`
+            // for PFoil items (attrib 0x400), else `pararnd`, same transform and LOD.
+            if (v.o->chute)
+                if (const ItemDef* ci = items_.byId(v.o->item && (v.o->item->attrib & 0x400) ? 107037 : 107038); ci && !ci->graphic.empty())
+                    if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) models_.draw(*cm, std::min(v.lod, int(cm->lods.size()) - 1), body);
             // The held weapon (0x44cc34): the mode's third-person item (+0x68),
             // its LOD's first mesh, at the right hand (mesh 7) turned by the
             // fixed offset 0x44d3c0 (-30, -65, -30 degrees as yaw, pitch, roll).
@@ -1808,6 +1829,13 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         const Vec3 at = world_.nearest(e.pos, eye);
         const Vec3 d = at - eye;
         if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f || dot(d, fwd) < 0.5f) continue;
+        if (e.canopy) {
+            WorldObject body;
+            body.heading = e.heading;
+            body.pitch = e.pitch;
+            models_.draw(*e.model, 0, body.matrix(at));
+            continue;
+        }
         const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
         // Model +X faces the heading; the quad's normal is +X, turned to the camera.
         Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
@@ -3557,9 +3585,33 @@ int Game::run() {
                 for (const auto& d : kDestroyed)
                     if (o.item && o.item->id - 100000 == d.first) playSound(d.second, o.pos);
             }
+            for (int i : world_.takeLandings()) {
+                // 0x413d70: the canopy left where the person landed, 1800 ticks.
+                const WorldObject& o = world_.objects[size_t(i)];
+                if (const ItemDef* ci = items_.byId(o.item && (o.item->attrib & 0x400) ? 107037 : 107038); ci && !ci->graphic.empty())
+                    if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) {
+                        Effect e{cm, Vec3{o.pos.x, o.base, o.pos.z}, 1.f, 0, 1800, 1, 1};
+                        e.canopy = true;
+                        e.heading = o.heading;
+                        effects_.push_back(e);
+                    }
+            }
             for (const auto& at : arsenal_.takeStabs())
                 for (auto& m : world_.stab(at, player_.origin())) pushMessage(m);
-            for (const auto& sp : player_.takeSpawns()) spawnEffect(sp.slot, sp.pos);
+            for (const auto& sp : player_.takeSpawns()) {
+                if (sp.slot == -1) {
+                    // The player's canopy (PFoil: `parachut`).
+                    if (const ItemDef* ci = items_.byId(107037); ci && !ci->graphic.empty())
+                        if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) {
+                            Effect e{cm, sp.pos, 1.f, 0, 1800, 1, 1};
+                            e.canopy = true;
+                            e.heading = player_.yaw;
+                            effects_.push_back(e);
+                        }
+                    continue;
+                }
+                spawnEffect(sp.slot, sp.pos);
+            }
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
                 tickEffects();

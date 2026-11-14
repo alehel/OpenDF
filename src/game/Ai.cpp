@@ -542,8 +542,9 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
         if (!o.alive()) continue;
         if (o.hp < p.lastHp) hurt(world, p.object);
         p.lastHp = o.hp;
-        // Movement (0x436158): the move's .ANM speed along the heading.
-        if (o.moves && o.moveNumber >= 0) {
+        // Movement (0x436158): the move's .ANM speed along the heading (not
+        // while on a DF2 parachute).
+        if (o.moves && o.moveNumber >= 0 && !o.chute) {
             const char* name = moveName(o.moveNumber);
             const AnimMove* mv = name ? o.moves->find(name) : nullptr;
             if (mv && mv->velocity > 0) {

@@ -261,6 +261,19 @@ First differences from DF1:
     23-27). APPROXIMATION: the footprint is the flat-radius square, and the
     smk2 dust cloud is drawn as OpenDF's smoke puff. `OPENDF_TESTBLD2=1`
     destroys a mission's first bld2 at tick 30 (testing).
+  - **vehicles** (by ITEMS.DEF move_function): herc flies level at its
+    start height and keeps moving when shot down (0x42c240); boat floats on
+    four samples clamped to the water, dies in five big blasts and sinks
+    0x800 a tick (0x401f60, 0x42be10); loco runs along the map's y axis at its
+    team's speed (the path only fires its events), horn 803 on starting,
+    loop 808 (0x42c4a0, 0x401340); carg cars copy the first loco's step and
+    rock ±1.4° every 32 m (0x42c440, coupling 0x45bd1f); DF2's veh0 eases its
+    steer by at most 0.18° a tick (0x41efa1);
+  - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up
+    (and, INFERRED, the player's start marker) descend 0x2222 a tick under
+    `parachut` (PFoil items) or `pararnd`; landing leaves the canopy, which
+    tips over and sinks for 1800 ticks (`para` 0x42c570). Not yet: script
+    action 18 (teleport) and whether teleported paratroopers open a chute.
 - Not yet: X/Z scope zeroing, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 

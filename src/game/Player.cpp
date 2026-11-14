@@ -63,6 +63,19 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
 
     const float water = world.terrain->waterLevel();
+    if (chute && !fly) {
+        // DF2.EXE 0x440b2b: -0x2222 a tick while above the ground and the
+        // water (no steering traced); landing leaves the canopy (spawn 21).
+        feet.y -= 0x2222 / 65536.f * 60.f * dt;
+        const float ground = world.groundHeight(feet, kStep);
+        if (feet.y <= ground || (water != 0 && feet.y + landOrigin() < water)) {
+            feet.y = std::max(feet.y, ground);
+            chute = false;
+            spawns_.push_back({-1, feet});   // the canopy (the game spawns it)
+        }
+        wrap(world.extent());
+        return;
+    }
     if (inWater_ && !fly) {
         updateInWater(dt, in, world, water);
         return;
