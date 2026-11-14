@@ -152,8 +152,16 @@ void Audio::mix(int16_t* out, int frames) {
     voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
                                  [](const Voice& v) { return !v.loop && v.pos >= (uint64_t(v.clip->samples.size()) << 32); }),
                   voices_.end());
-    for (size_t i = 0; i < scratch_.size(); ++i)
-        out[i] = int16_t(std::clamp(scratch_[i] * master_, -1.f, 1.f) * 32767.f);
+    // DF.EXE's mixer (0x497f9c): a centred full-volume voice of a full-scale
+    // 8-bit sample is 127 x 62 of 32767 (half what OpenDF's gains give), and
+    // each output sample starts from the previous one >> 2 (0x497fda) before
+    // the voices are added, then is clamped to 16 bits.
+    for (size_t i = 0; i < scratch_.size(); ++i) {
+        float& prev = feedback_[i & 1];
+        const float y = std::clamp(scratch_[i] * 0.5f * master_ + prev * 0.25f, -1.f, 1.f);
+        prev = y;
+        out[i] = int16_t(y * 32767.f);
+    }
 }
 
 } // namespace df

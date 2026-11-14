@@ -82,6 +82,7 @@ private:
     static constexpr int kOneShotVoices = 10, kLoopVoices = 6;
     float master_ = 1;
     std::vector<float> scratch_;
+    float feedback_[2] = {0, 0};   // the last output sample per channel (0x497fda)
     std::function<void(float*, int)> stream_;
 };
 
