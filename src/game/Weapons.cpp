@@ -348,6 +348,7 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
         d.icon = -1;
         // Bursts (0x414ad0): 6, 8 and 51 (shot 8 then 9), 21, 35, 36.
         d.burst = m == 6 || m == 8 || m == 51 || m == 21 || m == 35 || m == 36;
+        d.binoculars = (f & 0x200) != 0;   // tested by the move chooser 0x43f690 (0x43f76a / 0x43f7b3)
         if (items && d.item > 0)
             if (const ItemDef* it = items->byId(100000 + d.item); it && !it->graphic.empty()) {
                 std::string g = it->graphic;
@@ -401,6 +402,9 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
               typeMode(lo.primary, 2), typeMode(lo.secondary, 0), typeMode(lo.gear, 0), typeMode(21, 1), typeMode(lo.grenade, 0)};
     for (int& s : slots_)
         if (s < 0 || s >= int(modes_.size()) || !modes_[size_t(s)].works()) s = 0;
+    // Slot 10: T[35] mode 0 (47, the binoculars, kind 12: fires nothing).
+    if (const int b = typeMode(35, 0); b > 0 && b < int(modes_.size())) slots_[kBinocularSlot] = b;
+    prevSlot_ = 3;
     gear_ = lo.gear;
     df2_ = true;
     fromExe_ = true;
@@ -478,7 +482,7 @@ void Arsenal::refill() {
 }
 
 void Arsenal::select(int slot) {
-    if (slot < 0 || slot >= kSlots) return;
+    if (slot < 0 || slot >= int(slots_.size())) return;   // 10: DF2's binoculars (0x41b6e3)
     // DF.EXE 0x44aa74 / DF2.EXE 0x4480b0 (the key handlers 0x42de85 /
     // 0x41bced call it for any slot 0-9): no test for an empty slot or for
     // the slot already held, so the same key again cancels a running

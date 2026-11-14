@@ -306,8 +306,21 @@ First differences from DF1:
     with no reload gate. DF2's scope flag [0x7655f4] is only toggled
     (0x447b30, from command 0x41b35a; cleared with the weapon block at the
     mission start, 0x4477bf) and counts for flag-0x1 modes (0x447b40), so it
-    survives weapon changes, reloads, moving and the binoculars. DF1's
-    [0x93353c] is the same (AUDIT G5), only hidden while moving. Kevlar is checked on every person
+    survives weapon changes, reloads, moving and the binoculars. DF2's
+    binoculars are a weapon slot: B (0x41b6e3) selects slot 10 (T[35] mode
+    47, kind 12, flags 0x200, no scope bit) and saves the slot held in
+    [0x76553c], B again selects that slot. So with the scope flag on, the
+    scope is hidden while the binoculars are held and comes back with the
+    gun. The binocular view (FOV 22, the random offset 0x4481e0 picked anew
+    on each raise, the Heading/Distance texts) shows only in the raised
+    moves 0x68/0x72/5, which the move chooser 0x43f690 picks for a 0x200
+    mode at speed bits ((+0x74 >> 3) & 3) zero: walking keeps the
+    binoculars in hand (their HUD name red) but lowers the view. The scope
+    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18), while
+    the shot's origin and the designator take 0x447b40 alone; the mouse
+    turns at an eighth while the inset shows (0x41ae13). DF1's [0x93353c]
+    is the same (AUDIT G5), hidden while moving or with the binoculars up
+    ([0x93367c], a flag that moving clears, 0x4373ab). Kevlar is checked on every person
     (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that
     byte (0x45429d and the network copies); placed soldiers have none.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
@@ -571,8 +584,11 @@ First differences from DF1:
     the player's included (0x40e330); Weapons tab colour −1 = white
     (0x4198e0); the prompt box rounded to 4 pixels and halved (0x45c160);
     arrival at an off-route HUD waypoint (0x446230: its own radius +0x88,
-    then entry 1 via 0x446700); f_sml drawn at 640/mode in the command map
-    (the Players headings no longer overlap); the rain's lines test but do
+    then entry 1 via 0x446700); the command map runs at 640x480 (0x45da2a
+    sets resolution index 4, closing restores it, 0x45d9ea), and the mode
+    set reloads f_sml%i / f_LG%i at i = min(width, 800) (0x45c0a0), so the
+    map's text is F_SML640 / F_LG640 at any display mode (the Players
+    headings no longer overlap); the rain's lines test but do
     not write depth (0x46014f); the software water writes its rows' depth
     (0x485e17) and is fogged by the fog pass, its fog quad 0x467568 being
     the hardware path's;
