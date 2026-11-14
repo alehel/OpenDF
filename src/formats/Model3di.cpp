@@ -198,8 +198,9 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             const bool textured = mt.tex >= 0;
             mt.hidden = (flags & (0x0800 | 0x0008)) != 0 || ((flags & (0x0080 | 0x8000)) && !textured) ||
                         (layout.v8 && (flags & 0x0001) && !textured);   // v8: a missing texture hides it
-            // v8: 0x8000 marks the alpha textures (blended by their alpha).
-            mt.blend = (flags & 0x8000) ? (layout.v8 ? 1 : 2) : (flags & 0x0080) ? 1 : 0;
+            // v8: 0x8000 marks the alpha textures (16-bit index + alpha):
+            // lit as usual and blended by the texel's alpha (mode 3).
+            mt.blend = (flags & 0x8000) ? (layout.v8 ? 3 : 2) : (flags & 0x0080) ? 1 : 0;
             mats[i] = mt;
         }
         std::vector<int> matTextures;

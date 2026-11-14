@@ -47,7 +47,7 @@ uniform sampler2D uTex, uIndex, uLut;
 uniform bool uTextured, uKey;
 uniform vec3 uColor, uHighlight;
 uniform float uSat;
-uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha
+uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha, 3 texture alpha (DF2)
 out vec4 oColor;
 vec3 dec(vec3 c) { return pow(max(c, 0.0), vec3(1.25)); }
 vec3 enc(vec3 c) { return pow(max(c, 0.0), vec3(0.8)); }
@@ -66,7 +66,9 @@ void main() {
     }
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
     if (uTextured && (uMode == 1 || uKey) && idx < 0.5) discard;   // texel 0 skipped
-    if (c.a < 0.5) discard;
+    if (uMode == 3) {
+        if (c.a < 1.0 / 255.0) discard;
+    } else if (c.a < 0.5) discard;
     if (uMode == 1) {               // 0x0080: unlit (shade row 32), averaged 50/50
         oColor = vec4(post(c.rgb), 0.5);
         return;
@@ -76,7 +78,7 @@ void main() {
     float level = floor(gl_FrontFacing ? vLit.x : vLit.y);
     vec3 lin = dec(c.rgb);
     lin = level <= 31.0 ? lin * (level / 31.0) : lin + (dec(uHighlight) - lin) * ((level - 32.0) / 31.0);
-    oColor = vec4(post(enc(lin)), 1.0);
+    oColor = vec4(post(enc(lin)), uMode == 3 ? c.a : 1.0);
 }
 )";
 

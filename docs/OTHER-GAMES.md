@@ -70,7 +70,9 @@ First differences from DF1:
 - Delta Force 2 formats now read:
   - **3DI version 8** (all 618 v8 models; the 3 version-7 files are refused by
     DF2.EXE too): 52-byte texture headers with a second name, 16-bit
-    index+alpha textures (material flag 0x8000 = alpha blend), the texture
+    index+alpha textures (material flag 0x8000: lit like any surface and
+    blended by the texel alpha; DF1's 0x8000/0x0080 blends do not apply.
+    How DF2's renderer DLL draws them is INFERRED, not traced), the texture
     variant mask (3 camouflage variants), 192-byte LOD headers, collision
     planes, 80-byte volumes, 120-byte materials (DF2.EXE 0x43e570).
   - **BMS version 0x0F**: a 0x208-byte header (title/author 32 bytes, terrain
