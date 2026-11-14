@@ -24,6 +24,7 @@ struct GpuModel {
         std::vector<int> materialTextures;
         std::vector<int> meshParent;                  // see ModelLod
         std::vector<std::array<float, 3>> meshPivot;
+        std::vector<float> meshRadius;
     };
     std::string name;
     std::string kind;                  // "efct" = billboard effect

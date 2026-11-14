@@ -93,9 +93,11 @@ First differences from DF1:
     alpha, one tile a map cell; the **sky gradient** from column 0 of the TGA
     sky palette (sampled to 16 steps: APPROXIMATION); **surfaces** from the
     `char_data` .CAL (DT/GS/SW/RK/CT/SD → dirt/grass/snow/rock/sand; the
-    tile's own line, not DF2.EXE's permuted table: APPROXIMATION).
-- Not yet: DF2's per-mesh hit spheres for soldiers (KSA has no skeleton: DF2
-  uses one sphere per mesh, radius mesh +0x64, 0x44b2f0), the new layer flag
+    tile's own line, not DF2.EXE's permuted table: APPROXIMATION);
+  - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
+    per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
+    body pre-test and nearest-along-the-ray rule are DF1's.
+- Not yet: the new layer flag
   0x80 (random-then-sequential variants), the speed-of-sound delay for distant
   sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),
   fog keys, the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1

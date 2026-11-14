@@ -2560,7 +2560,12 @@ int Game::run() {
                 world_.playerBody.present = !playerDead();
                 world_.playerBody.origin = player_.origin();
                 world_.playerBody.heading = player_.yaw;
-                if (!playerBody_.angles().empty()) world_.playerBody.spheres = playerChr_.spheres(playerBody_.angles());
+                if (!playerBody_.angles().empty()) {
+                    if (!playerChr_.ksa()) world_.playerBody.spheres = playerChr_.spheres(playerBody_.angles());
+                    else if (const ItemDef* it = items_.byId(playerItem_); it && !it->graphic.empty())
+                        if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty())
+                            world_.playerBody.spheres = World::ksaSpheres(*bm, playerChr_, playerBody_.angles(), 0.f);
+                }
                 {
                     AiSystem::PlayerView pv;
                     pv.alive = !playerDead();

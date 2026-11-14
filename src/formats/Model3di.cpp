@@ -262,6 +262,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             lod.meshPivot.push_back(layout.mesh >= 0x40 ? std::array<float, 3>{r.i32(mo + 0x34) / 65536.f, r.i32(mo + 0x3c) / 65536.f,
                                                                                -r.i32(mo + 0x38) / 65536.f}
                                                         : std::array<float, 3>{0, 0, 0});
+            lod.meshRadius.push_back(layout.mesh >= 0x68 ? r.i32(mo + 0x64) / 65536.f : 0.f);
         }
         if (li == 0) lod.hitMeshes.resize(nm);
         std::map<int, size_t> batchIndex;   // material and mesh -> batch

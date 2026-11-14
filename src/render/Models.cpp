@@ -230,6 +230,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         gl.materialTextures = l.materialTextures;
         gl.meshParent = l.meshParent;
         gl.meshPivot = l.meshPivot;
+        gl.meshRadius = l.meshRadius;
         gl.ticksPerFrame = l.ticksPerFrame;
         glGenVertexArrays(1, &gl.vao);
         glBindVertexArray(gl.vao);

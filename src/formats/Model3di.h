@@ -87,6 +87,9 @@ struct ModelLod {
     // OpenDF axes). People have one mesh per .CHR part, posed about these.
     std::vector<int> meshParent;
     std::vector<std::array<float, 3>> meshPivot;
+    // Per mesh +0x64 (16.16 m, v8 meshes of 0x70 bytes): Delta Force 2's
+    // hit-sphere radius about the posed pivot (DF2.EXE 0x44b2f0); 0 if absent.
+    std::vector<float> meshRadius;
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
 };

@@ -194,11 +194,44 @@ void World::requestMove(WorldObject& o, int number) {
     if (o.moveNumber != number) startMove(o, number);
 }
 
+std::vector<std::array<float, 4>> World::ksaSpheres(const GpuModel& m, const Chr& chr,
+                                                   const std::vector<std::array<float, 3>>& turns, float aimPitch) {
+    std::vector<std::array<float, 4>> out;
+    if (m.lods.empty()) return out;
+    const auto& l = m.lods[0];
+    const float aim = std::clamp(aimPitch, -kPi / 2, kPi / 2) / (2 * kPi);
+    const size_t n = std::min(l.meshPivot.size(), turns.size());
+    std::vector<ChrMatrix> rot(n);
+    std::vector<std::array<float, 3>> origin(n);   // file axes (x forward, y left, z up)
+    auto fileAxes = [](const std::array<float, 3>& p) { return std::array<float, 3>{p[0], -p[2], p[1]}; };
+    for (size_t k = 0; k < n; ++k) {
+        std::array<float, 3> t = turns[k];
+        if (k == 1) t[1] += aim * 0.25f;
+        if (k == 2) t[1] += aim * 0.75f;
+        rot[k] = chr.rotationFor(t);
+        const auto pivot = fileAxes(l.meshPivot[k]);
+        const int parent = k < l.meshParent.size() ? l.meshParent[k] : -1;
+        if (k == 0 || parent < 0 || size_t(parent) >= k) origin[k] = pivot;
+        else {
+            // The pivot offset from the parent's, carried by the parent's rotation.
+            const auto pp = fileAxes(l.meshPivot[size_t(parent)]);
+            const float rel[3] = {pivot[0] - pp[0], pivot[1] - pp[1], pivot[2] - pp[2]};
+            const ChrMatrix& r = rot[size_t(parent)];
+            for (int i = 0; i < 3; ++i)
+                origin[k][size_t(i)] = origin[size_t(parent)][size_t(i)] + r.m[i][0] * rel[0] + r.m[i][1] * rel[1] + r.m[i][2] * rel[2];
+        }
+        const float radius = k < l.meshRadius.size() ? l.meshRadius[k] : 0.f;
+        out.push_back({origin[k][0], origin[k][1], origin[k][2], radius});
+    }
+    return out;
+}
+
 void World::poseUpdate(WorldObject& o) {
     // Hit spheres from the current pose (0x4701f4); the origin sits the
     // pose's contact-point height above the ground (0x4364c8).
     if (!o.chr) return;
-    o.spheres = o.chr->spheres(o.anim.angles());
+    if (o.chr->ksa()) o.spheres = o.model ? ksaSpheres(*o.model, *o.chr, o.anim.angles(), o.aimPitch) : decltype(o.spheres){};
+    else o.spheres = o.chr->spheres(o.anim.angles());
     if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) {
         o.hip = Chr::originHeight(*f);
         o.pos.y = o.base + o.hip;

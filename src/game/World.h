@@ -79,6 +79,11 @@ struct RayHit {
 
 class World {
 public:
+    // Delta Force 2 (.KSA, no skeleton; DF2.EXE 0x44b2f0): one sphere per
+    // mesh, centred on the posed mesh pivot (0x449df0 pose, aim pitch 1/4
+    // torso, 3/4 head), radius mesh +0x64. Same axes as WorldObject::spheres.
+    static std::vector<std::array<float, 4>> ksaSpheres(const GpuModel& m, const Chr& chr,
+                                                        const std::vector<std::array<float, 3>>& turns, float aimPitch);
     Terrain* terrain = nullptr;
     std::vector<WorldObject> objects;
 
