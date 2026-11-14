@@ -94,7 +94,8 @@ struct Mission {
     // Header +0x74 as a whole (2 = the snow soldiers) and +0x7A (0x10 =
     // night: night soldiers, tracers) (0x469ae0, 0x44d5a0).
     int variantWord = 0, lightFlags = 0;
-    int windKph = 0, windDeg = 0;            // Delta Force 2: header +0xE8 / +0xEC
+    int windKph = 0, windDeg = 0;
+    int waterOverride = -1;                  // Delta Force 2: header flag 0x78 bit 0 -> +0x88; -1 none            // Delta Force 2: header +0xE8 / +0xEC
     // The object at `index` of `group`, or null.
     const MissionObject* inGroup(int group, int index) const {
         if (group < 0 || group > 3 || index < 0 || index >= groupSize[group]) return nullptr;

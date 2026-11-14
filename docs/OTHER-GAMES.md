@@ -135,8 +135,21 @@ First differences from DF1:
     multiplayer. Not yet: its only physical effect, DF2's projectile drag
     toward the wind velocity (0x44c2f0, per-ammo drag bands; DF1 has no
     drag), and rain/snow drifting with it.
-- Not yet: water is not drawn on DF2 maps (the level is read, e.g. D03M03
-  8.75 m), DF2's swimming (vertical speed damped ×0.8 a tick in water,
+  - **heights** (DF2.EXE 0x464c30, 0x464798): the elevation PCX smoothed
+    into 8.8 words, H = 256·Σw·h/29 with the wrapping kernel [2 3 2; 3 9 3;
+    2 3 2], compared as H << 7: **0.5 m a step** (DF1 0.25 m); ground under
+    the water level darkened at load by ×(255 − 6·depth steps)/256, at least
+    25/256 (0x4637c0); the mission's water height override (flag 0x78 bit 0,
+    +0x88, 0x45d6ae);
+  - **water** (0x4670a0 hardware, 0x466b60 software as the reference): one
+    plane at the level out to 2047 m, the 256-wide `water_map` PCX in its own
+    palette graded like the terrain, 16 texels a metre, DF1's ±0.25 m wobble
+    (16 m, 512 ticks), averaged 50/50 with the scene and writing depth;
+    drawn before the objects with the camera above it, after them below it,
+    then a 50 % tint with palette entry 255 over the view. No water when the
+    PCX fails to load (RIPPLE3 is not on the disc: DMDG3 and DMS2 are dry).
+    `water_palette` and `water_opacity` are ignored, as in DF2.EXE.
+- Not yet: DF2's swimming (vertical speed damped ×0.8 a tick in water,
   0x440b2b; the player now walks on the bottom), DF2's mission-end panel and
   menus, the new layer flag
   0x80 (random-then-sequential variants), the speed-of-sound delay for distant

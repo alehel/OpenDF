@@ -44,7 +44,7 @@ out vec2 vCell;
 out vec3 vWorld;
 float elev(vec2 c) {
     vec2 m = mod(c, uMapSize);
-    return texelFetch(uHeight, ivec2(m), 0).r * 255.0 * uHScale;
+    return texelFetch(uHeight, ivec2(m), 0).r * uHScale;   // elevation steps
 }
 void main() {
     vec2 c = uOrigin + aPos.xy * uChunkScale;
@@ -172,10 +172,23 @@ in vec3 vWorld;
 uniform sampler2D uWaterIdx, uGradient, uScene;
 uniform vec4 uViewport;     // x, y, w, h of the 3D view
 uniform float uOpacity, uPhase;
-uniform bool uBelow;
+uniform bool uBelow, uDf2, uTint;
+uniform vec3 uWaterColor;
 out vec4 oColor;
 const float kTwoPi = 6.28318531;
 void main() {
+    if (uDf2) {
+        // Delta Force 2 (DF2.EXE 0x466b60, span 0x485e17): the ripple map's
+        // own (graded) colours, 16 texels a metre, the same wobble as DF1,
+        // averaged 50/50 with what is drawn; under water a 50 % tint with
+        // palette entry 255 (0x448bb0).
+        if (uTint) { oColor = vec4(uWaterColor, 0.5); return; }
+        vec2 t = vWorld.xz * 16.0;
+        float iu = mod(t.x * 4.0 + uPhase, 1024.0), iv = mod(t.y * 4.0 + uPhase, 1024.0);
+        vec2 w = t + 4.0 * vec2(cos(kTwoPi * iv / 1024.0), sin(kTwoPi * iu / 1024.0));
+        oColor = vec4(texture(uWaterIdx, w / 256.0).rgb, 0.5);
+        return;
+    }
     vec3 under = texture(uScene, (gl_FragCoord.xy - uViewport.xy) / uViewport.zw).rgb * 255.0;
     float lum = floor((under.r + 2.0 * under.g + under.b) / 4.0);
     float r = 0.0;
@@ -297,12 +310,46 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     if (color.width != color.height || elev.width != color.width || elev.height != color.height)
         return fail("colour/elevation maps must be equal-sized squares");
     size_ = color.width;
-    heights_ = elev.pixels;
+    gen2_ = trueColor;
+    if (gen2_ && waterOverride >= 0) desc_.waterHeight = float(waterOverride);
+    heights_.assign(elev.pixels.begin(), elev.pixels.end());
+    if (gen2_) {
+        // Delta Force 2 (DF2.EXE 0x464c30): heights smoothed into 8.8 words,
+        // H = 256 · Σ w·h / 29 with the wrapping kernel [2 3 2; 3 9 3; 2 3 2],
+        // compared as H << 7 against 16.16 metres: 0.5 m an elevation step.
+        static const int kW[3][3] = {{2, 3, 2}, {3, 9, 3}, {2, 3, 2}};
+        std::vector<float> smooth(heights_.size());
+        for (int z = 0; z < size_; ++z)
+            for (int x = 0; x < size_; ++x) {
+                int sum = 0;
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dx = -1; dx <= 1; ++dx)
+                        sum += kW[dz + 1][dx + 1] *
+                               elev.pixels[size_t((z + dz + size_) % size_) * size_t(size_) + size_t((x + dx + size_) % size_)];
+                smooth[size_t(z) * size_t(size_) + size_t(x)] = float(256 * sum / 29) / 256.f;
+            }
+        heights_.swap(smooth);
+        scale.heightScale = 0.5f;
+    } else {
+        scale.heightScale = 0.25f;
+    }
 
     if (trueColor) {
         std::vector<uint8_t> rgb(size_t(size_) * size_t(size_) * 3);
         for (size_t i = 0; i < size_t(size_) * size_t(size_); ++i)
             for (int k = 0; k < 3; ++k) rgb[i * 3 + size_t(k)] = colorRgba.rgba[i * 4 + size_t(k)];
+        // DF2.EXE 0x4637c0 (when water_height is not 0): ground under the
+        // level darkened, depth = waterH - H in 8.8, d = depth·6/256,
+        // RGB × (d > 230 ? 25 : 255 - d) / 256.
+        if (desc_.waterHeight != 0) {
+            const int waterH = int(desc_.waterHeight) * 256;
+            for (size_t i = 0; i < size_t(size_) * size_t(size_); ++i) {
+                const int depth = waterH - int(heights_[i] * 256.f);
+                if (depth <= 0) continue;
+                const int d = depth * 6 / 256, f = d > 230 ? 25 : 255 - d;
+                for (int k = 0; k < 3; ++k) rgb[i * 3 + size_t(k)] = uint8_t(rgb[i * 3 + size_t(k)] * f / 256);
+            }
+        }
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, rgb.data(), true, true);
     } else
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, color.palette).data(), true, true);
@@ -345,7 +392,14 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             }
         }
     }
-    texHeight_ = makeTex2D(size_, size_, GL_R8, GL_RED, heights_.data(), true, false);
+    glGenTextures(1, &texHeight_);
+    glBindTexture(GL_TEXTURE_2D, texHeight_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, size_, size_, 0, GL_RED, GL_FLOAT, heights_.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
     if (!loadImage(vfs, desc_.detailMap, detail) || detail.width != size_ || detail.height != size_) {
         detail.width = detail.height = size_;
@@ -470,7 +524,38 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     // palette is missing; the gradient T from water palette entries 0..15.
     IndexedImage water, waterPal;
     hasWater_ = false;
-    if (desc_.waterHeight != 0 && loadImage(vfs, desc_.waterMap, water) && loadImage(vfs, desc_.waterPalette, waterPal) &&
+    if (gen2_ && desc_.waterHeight != 0) {
+        // Delta Force 2 (DF2.EXE 0x465390..0x4667d0): water_map is a 256-wide
+        // PCX coloured by its own palette, graded like the terrain; no
+        // water_palette. If it does not load the map has no water at all
+        // (level 0; RIPPLE3, named by DMDG3 and DMS2, is not on the disc).
+        if (loadImage(vfs, desc_.waterMap, water) && water.width == 256 && water.hasPalette) {
+            auto graded = [&](const Rgb& c) {
+                const float y = (c.r + 2.f * c.g + c.b) / 4.f;
+                const float in[3] = {float(c.r), float(c.g), float(c.b)};
+                Rgb out;
+                uint8_t* o = &out.r;
+                for (int ch = 0; ch < 3; ++ch) {
+                    const float v = std::clamp(y + (in[ch] - y) * desc_.saturation / 128.f, 0.f, 255.f);
+                    o[ch] = lut[size_t(int(v)) * 3 + size_t(ch)];
+                }
+                return out;
+            };
+            std::vector<uint8_t> rgb(water.pixels.size() * 3);
+            for (size_t i = 0; i < water.pixels.size(); ++i) {
+                const Rgb c = graded(water.palette[water.pixels[i]]);
+                rgb[i * 3] = c.r;
+                rgb[i * 3 + 1] = c.g;
+                rgb[i * 3 + 2] = c.b;
+            }
+            texWater_ = makeTex2D(water.width, water.height, GL_RGB8, GL_RGB, rgb.data(), false, true);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+            waterColor_ = graded(water.palette[255]);
+            hasWater_ = true;
+        } else {
+            desc_.waterHeight = 0;
+        }
+    } else if (desc_.waterHeight != 0 && loadImage(vfs, desc_.waterMap, water) && loadImage(vfs, desc_.waterPalette, waterPal) &&
         waterPal.hasPalette) {
         texWater_ = makeTex2D(water.width, water.height, GL_R8, GL_RED, water.pixels.data(), false, true);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
@@ -614,6 +699,42 @@ float Terrain::cellHeight(float x, float z) const {
 void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks) {
     if (!hasWater_) return;
     const float level = desc_.waterHeight * scale.heightScale;
+    if (gen2_) {
+        // Delta Force 2: one plane at the level out to 2047 m (fog_level 0),
+        // depth-tested and writing depth; seen from below as well, then the
+        // under-water tint over the whole view (camera at or below the level).
+        glUseProgram(progWater_);
+        glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 1);
+        glUniform1i(glGetUniformLocation(progWater_, "uTint"), 0);
+        glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
+        setF(progWater_, "uPhase", std::fmod(ticks * 2.f, 1024.f));
+        setV3(progWater_, "uWaterColor", {waterColor_.r / 255.f, waterColor_.g / 255.f, waterColor_.b / 255.f});
+        setV3(progWater_, "uEye", eye);
+        setM4(progWater_, "uViewProj", proj * view);
+        setF(progWater_, "uLevel", level);
+        setF(progWater_, "uExtent", 2047.f);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texWater_);
+        glBindVertexArray(waterVao_);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDisable(GL_CULL_FACE);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        if (eye.y <= level) {
+            glUniform1i(glGetUniformLocation(progWater_, "uTint"), 1);
+            glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+        }
+        glDisable(GL_BLEND);
+        glBindVertexArray(0);
+        return;
+    }
+    glUseProgram(progWater_);
+    glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
     // What is already drawn: copied so the water can read its luminance.
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
@@ -738,7 +859,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     const float chunkWorld = kChunkCells * cell, blockCells = kChunkCells * 8.f, blockWorld = blockCells * cell;
     const int bx = int(std::floor(eye.x / blockWorld)), bz = int(std::floor(eye.z / blockWorld));
     auto visible = [&](float cx, float cz, float size) {
-        const float radius = size * 0.75f + 255.f * scale.heightScale;
+        const float radius = size * 0.75f + 256.f * scale.heightScale;
         const Vec3 d{cx - eye.x, 0, cz - eye.z};
         const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
         if (horiz > terrainDistance + radius) return -1.f;

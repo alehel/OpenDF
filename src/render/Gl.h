@@ -23,6 +23,9 @@
 #define GL_RED 0x1903
 #define GL_RG 0x8227
 #endif
+#ifndef GL_R32F
+#define GL_R32F 0x822E
+#endif
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif

@@ -62,6 +62,12 @@ public:
     // F / 320: the original's ring distances scale with the focal length of
     // its display mode (F = width / 2 at 90°).
     float ringScale = 1.f;
+    // Delta Force 2: the mission's water height override (BMS flag 0x78 bit 0,
+    // word +0x88, in TRN water_height units); -1 none. Set before load().
+    int waterOverride = -1;
+    // Delta Force 2 water (DF2.EXE 0x4670a0/0x466b60): drawn before the
+    // objects while the camera is above it, after them below it.
+    bool df2Water() const { return gen2_ && hasWater_; }
 
 private:
     struct Mesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
@@ -71,7 +77,9 @@ private:
 
     TerrainDesc desc_;
     int size_ = 0;
-    std::vector<uint8_t> heights_;
+    std::vector<float> heights_;   // elevation steps (DF2: smoothed, fractional)
+    bool gen2_ = false;            // Delta Force 2 terrain (true-colour map)
+    Rgb waterColor_{0, 0, 0};      // DF2: graded water palette entry 255 (under-water tint, radar)
     bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha
 
     GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0;

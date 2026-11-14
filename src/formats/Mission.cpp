@@ -122,6 +122,9 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         m.lightFlags = (u32(d, 0x78) & 0x100000) ? 0x10 : 0;
         // Wind for the whole mission (DF2.EXE 0x45d3f8 -> 0x46bbf0): speed
         // kph at +0xE8, the direction it blows from in degrees at +0xEC.
+        // Flag 0x78 bit 0: the mission's own water height (word +0x88, TRN
+        // water_height units; DF2.EXE 0x45d6ae).
+        if (u32(d, 0x78) & 1) m.waterOverride = int(u32(d, 0x88) & 0xFFFF);
         m.windKph = int(u32(d, 0xE8));
         m.windDeg = int(u32(d, 0xEC));
     } else {

@@ -425,6 +425,7 @@ bool Game::loadMission(int index) {
     }
     std::string trn = mission_.terrain;
     if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
+    terrain_.waterOverride = mission_.waterOverride;
     if (!terrain_.load(vfs_, trn, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.c_str());
         return false;
@@ -1507,6 +1508,10 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.draw(view, proj, eye, viewDistance_);
+    // Delta Force 2: the water before the objects while the camera is above
+    // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
+    const bool waterFirst = terrain_.df2Water() && eye.y > terrain_.waterLevel();
+    if (waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
     // beyond 1020 m (either horizontal axis, or view depth + radius); LOD by
     // projected radius F·R/depth against the model's thresholds.
@@ -1663,7 +1668,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     }
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
-    terrain_.drawWater(view, proj, eye, float(ticks_));
+    if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
 }
 
 void Game::drawViewModel(const Screen& s) {
