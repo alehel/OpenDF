@@ -278,7 +278,23 @@ private:
     std::map<std::string, D2FontTex> fonts_;
     float scale_ = 1, offX_ = 0, offY_ = 0;
     int mouseX_ = 0, mouseY_ = 0;
-    std::string hover_, pressed_;
+    std::string hover_, pressed_, dragging_;
+    void dragTo(D2Button& b) {
+        // 0x42f150: value = (mouse - pos - knob/2) / length · range, clamped.
+        const HudImage im = image(b.image);
+        const float len = float(std::max(1, b.p3));
+        const float m = b.type == 2 ? float(mouseX_ - b.x - im.width / 2) : float(mouseY_ - b.y - im.height / 2);
+        b.p2 = std::clamp(int(m / len * float(b.p1)), 0, b.p1);
+        // Event 0xA: the settings sliders write their values.
+        if (b.name == "but_opt1_mssl") soldier().set(0x5b0, b.p2);
+        else if (b.name == "but_opt1_sfsl") soldier().set(0x5b8, b.p2);
+        else if (b.name == "but_opt1_dvsl") soldier().set(0x5c0, b.p2);
+        else if (b.name == "but_opt1_mvsl") { cfg_.set("music_volume", b.p2); music_.setVolume(std::clamp(b.p2, 0, 255)); }
+        else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
+        else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
+        else if (b.name == "but_mb_mpvsl") mapY_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 323.f);
+        else if (b.name == "but_mb_mphsl") mapX_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 279.f);
+    }
 
     Screen screen_ = Screen::Soldier, next_ = Screen::Soldier, returnTo_ = Screen::Main;
     std::string menuName_;
@@ -301,6 +317,28 @@ private:
     float mapX_ = 0, mapY_ = 0;
     std::vector<std::pair<float, float>> waypoints_;
     int optPage_ = 1;
+    // Voice briefing (0x437aa0): <mission>NN.WAV, NN 01..19, in order.
+    int briefVoice_ = 0, briefVoiceTicks_ = 0, briefHandle_ = 0;
+    void stopVoice() {
+        if (briefHandle_) audio_.stop(briefHandle_);
+        briefHandle_ = 0;
+        briefVoice_ = 0;
+        briefVoiceTicks_ = 0;
+        if (D2Button* b = btn("but_mb_rbbtn")) b->text = menuText("PLAY_BRIEFING", "PLAY BRIEFING");
+    }
+    void nextVoice() {
+        while (briefVoice_ >= 1 && briefVoice_ <= 19) {
+            char n[32];
+            std::snprintf(n, sizeof n, "%s%02d.WAV", bms_.substr(0, std::min<size_t>(6, bms_.size())).c_str(), briefVoice_++);
+            if (const SoundClip* c = audio_.clip(vfs_, n)) {
+                const float g = float(std::clamp(soldier().get(0x5c0), 0, 255)) / 255.f * 0.5f;
+                briefHandle_ = audio_.play(c, g, g);
+                briefVoiceTicks_ = c->rate > 0 ? int(c->samples.size() * 1000 / size_t(c->rate) / 16) + 1 : 1;
+                return;
+            }
+        }
+        stopVoice();
+    }
     std::mt19937 rng_{1};
 };
 
@@ -1005,8 +1043,9 @@ void FrontendDf2::event(D2Button& b, int ev) {
         next_ = Screen::Briefing;
     }
     // Briefing.
-    else if (cb == "mb_StartMission" || cb == "cg_StartMission") startMission();
+    else if (cb == "mb_StartMission" || cb == "cg_StartMission") { stopVoice(); startMission(); }
     else if (cb == "mb_ChangeGear") {
+        stopVoice();
         // Entering from the briefing: the mission's defaults (header +0x94..+0x97,
         // non-zero ones: sidearm, primary, secondary, auxiliary).
         const uint32_t g = header(bms_, 0x94);
@@ -1014,7 +1053,16 @@ void FrontendDf2::event(D2Button& b, int ev) {
         for (int k = 0; k < 4; ++k)
             if (const int v = int((g >> (8 * k)) & 0xFF)) soldier().set(slots[k], v);
         next_ = Screen::Gear;
-    } else if (cb == "mb_Back") next_ = returnTo_;
+    } else if (cb == "mb_Back") { stopVoice(); next_ = returnTo_; }
+    else if (cb == "mb_Replay") {
+        // PLAY_BRIEFING / STOP_BRIEFING.
+        if (briefVoice_) stopVoice();
+        else {
+            briefVoice_ = 1;
+            b.text = menuText("STOP_BRIEFING", "STOP BRIEFING");
+            nextVoice();
+        }
+    }
     else if (cb == "mb_BriefUp") briefLine_ = std::max(0, briefLine_ - 1);
     else if (cb == "mb_BriefDown") ++briefLine_;
     else if (cb == "mb_MapUp") mapY_ = std::max(0.f, mapY_ - 16);
@@ -1141,6 +1189,26 @@ int FrontendDf2::run() {
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
                 if (stageTicks_ > 0 || !editing_.empty()) continue;
+                if (D2Button* d = btn(dragging_)) {
+                    if (e.type == SDL_MOUSEMOTION) dragTo(*d);
+                    else if (e.type == SDL_MOUSEBUTTONUP) dragging_.clear();
+                    continue;
+                }
+                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT)
+                    if (D2Menu* m = menu())
+                        for (int i : m->buttons) {
+                            D2Button& s = mnu_.buttons[size_t(i)];
+                            if ((s.type != 2 && s.type != 3) || s.drawstate == 0 || s.drawstate == 4) continue;
+                            const HudImage knob = image(s.image);
+                            const float w = s.type == 2 ? float(s.p3 + knob.width) : float(knob.width);
+                            const float h = s.type == 3 ? float(s.p3 + knob.height) : float(knob.height);
+                            if (mouseX_ >= s.x && mouseX_ < s.x + w && mouseY_ >= s.y && mouseY_ < s.y + h) {
+                                dragging_ = s.name;
+                                dragTo(s);
+                                break;
+                            }
+                        }
+                if (!dragging_.empty()) continue;
                 D2Button* b = hit(mouseX_, mouseY_);
                 const std::string name = b ? b->name : std::string();
                 if (name != hover_) {
@@ -1183,6 +1251,7 @@ int FrontendDf2::run() {
                     if (b.flash > 0) --b.flash;
                 }
             // The next incomplete region blinks while none is chosen (0x42fc50).
+            if (briefVoice_ && --briefVoiceTicks_ <= 0) nextVoice();
             music_.update();
         }
         if (!editing_.empty())
