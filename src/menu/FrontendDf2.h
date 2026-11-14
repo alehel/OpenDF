@@ -15,11 +15,9 @@ namespace df {
 
 int runFrontendDf2(Vfs& vfs, const FrontendOptions& options);
 
-// Plays a Bink video (DF2INTRO.BIK) full screen until it ends or is
-// skipped. DF2.EXE does not decode Bink itself: it runs RAD's
-// binkplay.exe on the file and waits for it (0x435830). This is OpenDF's
-// hook for that, called where DF2.EXE starts binkplay. It does nothing
-// yet: the decoder is pending a decision on Bink support.
-void playBinkVideo(const std::filesystem::path& path);
+// DF2.EXE does not decode Bink itself: it runs RAD's binkplay.exe on
+// DF2INTRO.BIK and waits for it (0x435830). OpenDF plays the file with its
+// own decoder (formats/Bink.h) where DF2.EXE starts binkplay
+// (FrontendDf2::playBinkVideo).
 
 } // namespace df

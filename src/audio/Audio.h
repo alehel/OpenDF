@@ -105,6 +105,15 @@ public:
         stream_ = std::move(stream);
     }
 
+    // A stereo stream added to the output after the game's mixer (none of
+    // its feedback, hook or volume): a separate program's sound, such as
+    // binkplay's movie soundtrack, which DF2's mixer never sees. It adds
+    // `frames` interleaved s16 frames at kRate into `out` (clamping).
+    void setDirectStream(std::function<void(int16_t*, int)> stream) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        direct_ = std::move(stream);
+    }
+
     // Mixes `frames` stereo frames (interleaved s16) at kRate.
     void mix(int16_t* out, int frames);
 
@@ -153,6 +162,7 @@ private:
     int ringAt_ = 0;
     std::vector<int32_t> iscratch_;
     std::function<void(float*, int)> stream_;
+    std::function<void(int16_t*, int)> direct_;
 };
 
 } // namespace df

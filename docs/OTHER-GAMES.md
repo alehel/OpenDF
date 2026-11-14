@@ -543,9 +543,12 @@ First differences from DF1:
     500 ms, the quit flag ends the wait); then the menu video mode
     (0x436c40), the music (0x43cbc0) and Choose Soldier. No logo or splash
     image; skipping is binkplay's own. The IntroSplash state (a demo-build
-    menu) is unreachable in retail. OpenDF runs the same sequence and calls
-    `playBinkVideo(path)` (src/menu/FrontendDf2.h), which plays nothing
-    yet: a Bink decoder is pending a decision on Bink support.
+    menu) is unreachable in retail. OpenDF runs the same sequence and,
+    where DF2.EXE starts binkplay, plays the movie with its own Bink 1
+    decoder (`FrontendDf2::playBinkVideo`, src/formats/Bink.{h,cpp},
+    docs/FORMATS.md "Bink video"; skipping by any key or click is
+    INFERRED, binkplay was not traced). The decoder also handles Land
+    Warrior's DFLWINT.BIK (revision `i`).
     `OPENDF_DEBUGVIDEO=1` prints the command DF2.EXE would run. DF2.EXE
     still carries DF1's ANIMMGR KDV player (its strings at file 0x87d9f),
     but DF2 ships no KDV file.
