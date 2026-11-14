@@ -158,6 +158,7 @@ public:
     // The mode in a slot (null if empty), e.g. for the help screen.
     const ModeDef* slotMode(int i) const { return i >= 0 && i < kSlots && slots_[size_t(i)] ? &modes_[size_t(slots_[size_t(i)])] : nullptr; }
     const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
+    int modeIndex() const { return slots_[size_t(current_)]; }   // the player-table mode number
     const GunDef& gun() const { return guns_[size_t(mode().gun)]; }
     const std::string& modeName() const { return mode().name; }
     // Ammunition of the current mode's gun (0x933354 / 0x9333d4 / 0x933454).

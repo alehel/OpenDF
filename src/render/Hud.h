@@ -28,13 +28,16 @@ public:
     // Loads a game PCX as a texture; pure black becomes transparent.
     // `index0Transparent`: palette index 0 is the colour key (menu icon sheets).
     HudImage loadImage(Vfs& vfs, const std::string& name, bool blackTransparent = true, bool index0Transparent = false);
+    // Delta Force 2's HUD icons (weap/pos/itm/rad%i.pcx): the palette index
+    // through DF2's amber ramp, for drawing with blend 5 (additive).
+    HudImage loadAmberImage(Vfs& vfs, const std::string& name);
     // A texture from RGBA pixels (nearest filtering).
     HudImage makeImage(int width, int height, const std::vector<uint8_t>& rgba);
     // DF.EXE's menu button blend (0x407e50): dst = src / 2 + dst * 3 / 4.
     void setTranslucent(bool on);
     // Menu blends: 0 normal alpha, 1 src/2 + 3/4 dst (buttons), 2 src/2 +
     // dst/2 (0x407cd8), 3 DF.EXE's line pixel (0x409964): src/2 plus half the
-    // background's blue only (its red and green are dropped); 4 opaque copy.
+    // background's blue only (its red and green are dropped); 4 opaque copy; 5 saturating add.
     void setBlend(int mode);
 
     void begin(int width, int height);

@@ -172,6 +172,7 @@ void Hud::setBlend(int mode) {
     case 2: glBlendColor(0.5f, 0.5f, 0.5f, 0.5f); glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_ALPHA); break;
     case 3: glBlendColor(0.f, 0.f, 0.5f, 0.5f); glBlendFunc(GL_CONSTANT_ALPHA, GL_CONSTANT_COLOR); break;
     case 4: glBlendFunc(GL_ONE, GL_ZERO); break;   // opaque copy
+    case 5: glBlendFunc(GL_ONE, GL_ONE); break;    // saturating add (DF2.EXE 0x450c10, paddusb)
     default: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
     }
 }
@@ -184,6 +185,25 @@ void Hud::setTranslucent(bool on) {
     } else {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
+}
+
+HudImage Hud::loadAmberImage(Vfs& vfs, const std::string& name) {
+    HudImage out;
+    std::vector<uint8_t> data;
+    IndexedImage img;
+    if (!vfs.read(name, data) || !decodePcx(data, img)) return out;
+    // The file's palette is dropped for a ramp built at load (DF2.EXE
+    // 0x443e9a): index i -> ((i * 255) >> 8, i >> 1, 0).
+    std::vector<uint8_t> rgba(img.pixels.size() * 4);
+    for (size_t i = 0; i < img.pixels.size(); ++i) {
+        const int g = img.pixels[i];
+        rgba[i * 4] = uint8_t((g * 255) >> 8);
+        rgba[i * 4 + 1] = uint8_t(g >> 1);
+        rgba[i * 4 + 2] = 0;
+        rgba[i * 4 + 3] = 255;
+    }
+    out = makeImage(img.width, img.height, rgba);
+    return out;
 }
 
 HudImage Hud::loadImage(Vfs& vfs, const std::string& name, bool blackTransparent, bool index0Transparent) {

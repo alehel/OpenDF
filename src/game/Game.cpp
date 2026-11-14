@@ -7,6 +7,7 @@
 #include "../formats/Rtxt.h"
 #include "../formats/Chr.h"
 #include "../formats/Dlg.h"
+#include "../formats/HudDef.h"
 #include "../audio/Audio.h"
 #include "Controls.h"
 #include "Player.h"
@@ -343,6 +344,21 @@ private:
     ModelRenderer& models_ = *modelsPtr_;
     Hud& hud_ = *hudPtr_;
     HudImage stanceIcons_, weaponIcons_;
+    // Delta Force 2's HUD (docs/OTHER-GAMES.md): two bitmap strips
+    // (DHT%iG / DHB%iG), amber icons drawn additively and positions per
+    // display mode from HUD.DEF (DF2.EXE 0x443bd0, 0x444150).
+    struct Df2Hud {
+        bool on = false;
+        HudDef def;
+        HudImage top, bottom, weap, pos, itm, rad;
+    } df2Hud_;
+    void drawDf2Strips(const Screen& s);
+    void drawDf2Bottom(const Screen& s);
+    void drawDf2Top(const Screen& s);
+    // A HUD.DEF point in this window: x left- or right-anchored about the
+    // strip's seam, y from the top (top strip) or the bottom (bottom strip).
+    float df2X(const Screen& s, int x, bool bottom) const;
+    float df2Y(const Screen& s, int y, bool bottom) const;
     int hudMode_ = 0;   // display mode whose HUD assets are loaded
     void useHudMode(int modeW);
     World world_;
@@ -682,6 +698,22 @@ void Game::useHudMode(int modeW) {
     if (modeW == hudMode_) return;
     hudMode_ = modeW;
     char name[32];
+    if (df2Hud_.on) {
+        // DF2.EXE 0x443bd0: strips copied as they are; the icons through
+        // the amber ramp (their own palettes are dropped).
+        std::snprintf(name, sizeof name, "DHT%dG.PCX", modeW);
+        df2Hud_.top = hud_.loadImage(vfs_, name, false);
+        std::snprintf(name, sizeof name, "DHB%dG.PCX", modeW);
+        df2Hud_.bottom = hud_.loadImage(vfs_, name, false);
+        std::snprintf(name, sizeof name, "WEAP%d.PCX", modeW);
+        df2Hud_.weap = hud_.loadAmberImage(vfs_, name);
+        std::snprintf(name, sizeof name, "POS%d.PCX", modeW);
+        df2Hud_.pos = hud_.loadAmberImage(vfs_, name);
+        std::snprintf(name, sizeof name, "ITM%d.PCX", modeW);
+        df2Hud_.itm = hud_.loadAmberImage(vfs_, name);
+        std::snprintf(name, sizeof name, "RAD%d.PCX", modeW);
+        df2Hud_.rad = hud_.loadAmberImage(vfs_, name);
+    }
     std::snprintf(name, sizeof name, "POS%d.PCX", modeW);
     stanceIcons_ = hud_.loadImage(vfs_, name);
     std::snprintf(name, sizeof name, "WEAP%d.PCX", modeW);
@@ -2041,8 +2073,14 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
 
-    drawTopBar(s);
-    drawBottomBar(s);
+    if (df2Hud_.on) {
+        drawDf2Strips(s);
+        drawDf2Top(s);
+        drawDf2Bottom(s);
+    } else {
+        drawTopBar(s);
+        drawBottomBar(s);
+    }
     // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
     // multiplied by (255, 255 - v, 255 - v) / 256, a red tint of strength v.
     if (damageFlash_ > 0) {
@@ -2051,6 +2089,82 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     }
     hud_.end();
 }
+
+// Delta Force 2's HUD. DF2.EXE draws each display mode's art 1:1 at that
+// mode's pixel positions from HUD.DEF; here the mode's pixels are scaled to
+// the window height (s.art()). Wider windows (a modern amenity): the strips
+// are split at a seam, the left part stays at the left, the right part at
+// the right, and the seam column is stretched across the gap; HUD.DEF
+// points left of the seam are left-anchored, the others right-anchored.
+namespace {
+// Seam columns in 640 pixels, inside a panel so the stretch continues its
+// frame: the bottom strip's extras panel, the top strip's chat panel.
+constexpr float kDf2SeamBottom = 320.f, kDf2SeamTop = 190.f;
+}   // namespace
+
+float Game::df2X(const Screen& s, int x, bool bottom) const {
+    const float n = float(s.modeW), seam = (bottom ? kDf2SeamBottom : kDf2SeamTop) * n / 640.f;
+    return float(x) < seam ? float(x) * s.art() : s.w - (n - float(x)) * s.art();
+}
+
+float Game::df2Y(const Screen& s, int y, bool bottom) const {
+    // Bottom-strip points are in screen rows of the mode (0x442020 copies
+    // DHB to rows screenH - h ..).
+    return bottom ? s.h - (float(s.modeW) * 0.75f - float(y)) * s.art() : float(y) * s.art();
+}
+
+void Game::drawDf2Strips(const Screen& s) {
+    // DHT copied to the top rows (0x442170), DHB to the bottom rows
+    // (0x442020), opaque.
+    hud_.setBlend(4);
+    auto strip = [&](const HudImage& img, float y, float seam640) {
+        if (!img.texture) return;
+        const float k = s.art(), w = float(img.width) * k, h = float(img.height) * k;
+        const float seam = seam640 * float(img.width) / 640.f, su = seam / float(img.width);
+        const float left = seam * k, right = w - left;
+        if (s.w <= w + 0.5f) {
+            hud_.image(img.texture, (s.w - w) * 0.5f, y, w, h);
+            return;
+        }
+        hud_.imageUV(img.texture, 0, y, left, h, 0, 0, su, 1);
+        hud_.imageUV(img.texture, s.w - right, y, right, h, su, 0, 1, 1);
+        const float du = 1.f / float(img.width);
+        hud_.imageUV(img.texture, left, y, s.w - right - left, h, su, 0, su + du, 1);
+    };
+    strip(df2Hud_.top, 0, kDf2SeamTop);
+    strip(df2Hud_.bottom, s.h - float(df2Hud_.bottom.height) * s.art(), kDf2SeamBottom);
+    hud_.setBlend(0);
+}
+
+void Game::drawDf2Bottom(const Screen& s) {
+    const int n = s.modeW;
+    const float k = s.art();
+    hud_.setBlend(5);   // the icons add their amber to the strip (0x450c10)
+    // Weapon icon (0x443370): WEAP%i 22 frames, by mode; top-left at gun_icon.
+    static const signed char kWeapFrame[53] = {
+        -1, 12, 12, -1, 7, 10, 4, 4, -1, -1, 4, 13, 8, 8, 8, 3, -1, -1, -1, -1, 11, 11, 11, -1, -1, -1, -1,
+        1, 5, 2, 2, -1, 9, 0, 0, -1, -1, 6, 6, 15, 16, 16, -1, 19, 21, 20, -1, 14, 17, 0, 0, 13, 13};
+    const int mode = arsenal_.modeIndex();
+    if (df2Hud_.weap.texture && mode >= 0 && mode < 53 && kWeapFrame[mode] >= 0) {
+        const int f = kWeapFrame[mode];
+        const float fh = float(df2Hud_.weap.height / 22);
+        const float x = df2X(s, df2Hud_.def.value(n, "gun_icon", 0), true), y = df2Y(s, df2Hud_.def.value(n, "gun_icon", 1), true);
+        const float H = float(df2Hud_.weap.height);
+        hud_.imageUV(df2Hud_.weap.texture, x, y, float(df2Hud_.weap.width) * k, fh * k, 0, float(f) * fh / H, 1,
+                     float(f + 1) * fh / H);
+    }
+    // Stance (0x442bc0): POS%i 3 frames prone, crouched, standing; top-left at pos_icon.
+    if (df2Hud_.pos.texture) {
+        const int f = player_.stance == Stance::Prone ? 0 : player_.stance == Stance::Crouch ? 1 : 2;
+        const float fh = float(df2Hud_.pos.height / 3), H = float(df2Hud_.pos.height);
+        const float x = df2X(s, df2Hud_.def.value(n, "pos_icon", 0), true), y = df2Y(s, df2Hud_.def.value(n, "pos_icon", 1), true);
+        hud_.imageUV(df2Hud_.pos.texture, x, y, float(df2Hud_.pos.width) * k, fh * k, 0, float(f) * fh / H, 1,
+                     float(f + 1) * fh / H);
+    }
+    hud_.setBlend(0);
+}
+
+void Game::drawDf2Top(const Screen& s) { (void)s; }
 
 void Game::drawBriefing(const Screen& s) {
     // 0x482cb8: darkened box (200, 200)-(824, 568); "Mission Briefing"
@@ -2399,6 +2513,11 @@ int Game::run() {
     if (!loadGl(&missing)) { std::fprintf(stderr, "missing OpenGL function %s\n", missing); rc = 1; }
     else if (!models_.init(&err) || !hud_.init(vfs_, &err)) { std::fprintf(stderr, "%s\n", err.c_str()); rc = 1; }
     else if (!loadMission(int(it - missions_.begin()))) rc = 1;
+
+    // Delta Force 2's HUD: its strips and HUD.DEF (Land Warrior and Task
+    // Force Dagger have a HUD.DEF too, with other art).
+    if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
+        df2Hud_.on = df2Hud_.def.parse(def);
 
     if (rc == 0) {
         if (o_.hasCamera) {
