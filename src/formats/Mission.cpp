@@ -59,7 +59,10 @@ bool ItemDefs::parse(const std::string& text) {
                 for (auto& ch : a) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                 static const std::pair<const char*, uint32_t> bits[] = {{"good", 1}, {"evil", 2}, {"aidata", 4}, {"fo", 8},
                                                                         {"movecb", 0x10}, {"powerup", 0x20}, {"flesh", 0x40},
-                                                                        {"noak", 0x80}};
+                                                                        {"noak", 0x80},
+                                                                        // Delta Force 2 (DF2.EXE 0x41e020, strings 0x4ab5b8)
+                                                                        {"notool", 0x100}, {"snap", 0x200}, {"pfoil", 0x400},
+                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000}};
                 for (const auto& b : bits)
                     if (a == b.first) cur.attrib |= b.second;
             }
@@ -82,7 +85,7 @@ bool ItemDefs::parse(const std::string& text) {
         else if (key == "axle_dist") cur.axleDist = float(std::atof(val.c_str()));
         else if (key == "hp") {
             std::istringstream hs(val);
-            hs >> cur.hp >> cur.damageClass;
+            hs >> cur.hp >> cur.damageClass >> cur.hp3;   // DF2: up to three (+0x94/+0x98/+0x9c)
         }
     }
     return !items_.empty();

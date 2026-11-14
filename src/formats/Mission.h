@@ -22,6 +22,7 @@ struct ItemDef {
     // class: 0 soft (bullets work), 1 armoured vehicles, 2 trees; inferred
     // from which items use which value.
     int hp = 0, damageClass = 0;
+    int hp3 = 0;              // Delta Force 2: a third `hp` value (item +0x9c), 0-4 on buildings; meaning not traced
     std::string aiFunction;   // `ai_function` (brrl: explosive barrel, sgen: smoke generator, ...)
     int interruptSound = 0;
     int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)
@@ -29,7 +30,9 @@ struct ItemDef {
     // item +0xdc), `turn_rate` (degrees/s, +0xe0), `axle_dist` (m, +0xe4).
     float acceleration = 0, turnRate = 0, axleDist = 0;
     // `attrib:` flags (0x449262, def +0x24): good 1, evil 2, AIData 4, FO 8,
-    // movecb 0x10 (touch callback: pickups), powerup 0x20, flesh 0x40, NoAK 0x80.
+    // movecb 0x10 (touch callback: pickups), powerup 0x20, flesh 0x40, NoAK 0x80;
+    // Delta Force 2 adds NoTool 0x100, Snap 0x200, PFoil 0x400, Train 0x800,
+    // S&D 0x1000, NoCTool 0x2000.
     uint32_t attrib = 0;   // `interrupt_sound_id`: sound id the object repeats (ambience)
 };
 
