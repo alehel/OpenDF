@@ -25,6 +25,7 @@ struct GpuModel {
         std::vector<int> meshParent;                  // see ModelLod
         std::vector<std::array<float, 3>> meshPivot;
         std::vector<float> meshRadius;
+        std::vector<std::array<float, 3>> meshCentre;   // see ModelLod (file axes)
     };
     std::string name;
     std::string kind;                  // "efct" = billboard effect
@@ -77,7 +78,9 @@ public:
     // Multiplies the colour and alpha of what is drawn next; `replace`: the
     // colour instead replaces the material colour of texel-as-alpha parts
     // (DF2's vertex colour 0x445e50). begin() resets it to (1, 1, 1, 1).
-    void setTint(float r, float g, float b, float a, bool replace = false);
+    // raw: a replacing colour that skips the scene grade (DF2's bld2 fireball
+    // colours, set by 0x42abc0 without 0x411f70).
+    void setTint(float r, float g, float b, float a, bool replace = false, bool raw = false);
     // The mission's colour variant (cleared models reload with it).
     void setVariant(int variant);
 

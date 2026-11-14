@@ -533,7 +533,9 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
     int extra = 0;
     for (size_t i = 0; i < objects.size(); ++i) {
         const WorldObject& o = objects[i];
-        if (int(i) == looker || int(i) == target || o.person || !o.model || o.removed) continue;
+        // DF1 skips only empty records, the looker and the target (0x45b737,
+        // 0x45b74a, 0x45b792): a carried item (hidden, +0x6c & 2) still counts.
+        if (int(i) == looker || int(i) == target || o.person || !o.model || (o.removed && !(o.carried && !df2Rules))) continue;
         const Vec3 at = nearest(o.pos, mid);
         const float R = o.model->headerRadius;
         if (at.x < std::min(a.x, b.x) - R || at.x > std::max(a.x, b.x) + R || at.y < std::min(a.y, b.y) - R ||

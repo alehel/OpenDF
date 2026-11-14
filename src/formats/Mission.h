@@ -109,7 +109,8 @@ struct Mission {
     int fogLevel = -1;
     int64_t fogColor = -1;
     // Flag 0x78 bit 3 -> the weather type +0xAC (0x45d707 -> 0x46ba90):
-    // 0 none, 1 rain, 2 snow (names INFERRED from the fall speeds and sprite).
+    // 0 none, 1 rain, 2 snow (READ: type 1 splashes with effect 17 = item
+    // 107017 "rain poink", type 2 draws item 0x1b6a = 107018 "snow", 0x46b94d).
     int weather = 0;
     SkyOverride sky;                         // Delta Force 2: header 0xB8..0xE4
     int winIds[4] = {0, 0, 0, 0}, loseIds[4] = {0, 0, 0, 0};   // Delta Force 2: header 0xB0 / 0xB4                  // Delta Force 2: header flag 0x78 bit 0 -> +0x88; -1 none            // Delta Force 2: header +0xE8 / +0xEC

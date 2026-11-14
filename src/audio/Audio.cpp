@@ -50,7 +50,42 @@ const SoundClip* Audio::clip(Vfs& vfs, const std::string& name) {
         Uint8* buf = nullptr;
         Uint32 len = 0;
         SDL_RWops* rw = SDL_RWFromConstMem(data.data(), int(data.size()));
-        if (SDL_LoadWAV_RW(rw, 1, &spec, &buf, &len)) {
+        bool df1 = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            df1 = df1Wavs_;
+        }
+        if (df1 && data.size() >= 0x2c && std::memcmp(data.data(), "RIFF", 4) == 0 && (data[0x22] | data[0x23] << 8) == 16) {
+            // DF.EXE 0x48cfb0 converts a loose WAV in place, reading the
+            // canonical 44-byte header: rate +0x18, bits +0x22, data size
+            // +0x28, data at +0x2c. 16-bit data (0x48d03e): n = size >> 1;
+            // peak = max |s| (0x48d05f, the word negated); scale = 0x7eff0000
+            // / peak (unsigned; a silent clip would fault); then per sample
+            // ((int8 low byte · scale) + 0x800000) >> 24 (logical, low 32
+            // bits) ^ 0x80 (0x48d093: `movsx eax, byte ptr [esi]` reads the
+            // low byte, not the high one). The mixer reads unsigned 8-bit
+            // (0x498045). On the shipped data (INST177/INST178, peak 32768,
+            // scale 0xfdfe) every byte comes out 0x80: silent. 8-bit data is
+            // copied as it is, so it keeps SDL's path below.
+            const auto u32 = [&](size_t o) { return uint32_t(data[o]) | uint32_t(data[o + 1]) << 8 | uint32_t(data[o + 2]) << 16 | uint32_t(data[o + 3]) << 24; };
+            const uint32_t bytes = std::min<uint32_t>(u32(0x28), uint32_t(data.size() - 0x2c));
+            const size_t n = bytes >> 1;
+            uint32_t peak = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const uint16_t w = uint16_t(data[0x2c + 2 * i] | data[0x2d + 2 * i] << 8);
+                peak = std::max<uint32_t>(peak, (w & 0x8000) ? uint16_t(-w) : w);
+            }
+            out = std::make_unique<SoundClip>();
+            out->rate = int(u32(0x18));
+            out->samples.resize(n);
+            const uint32_t scale = peak ? 0x7eff0000u / peak : 0;   // DF.EXE divides by zero here
+            for (size_t i = 0; i < n; ++i) {
+                const int32_t lo = int8_t(data[0x2c + 2 * i]);
+                const uint8_t b = uint8_t(((uint32_t(lo * int64_t(scale)) + 0x800000u) >> 24) ^ 0x80u);
+                out->samples[i] = int16_t((int(b) - 128) * 256);   // U8 -> S16, as SDL converts the 8-bit clips
+            }
+            SDL_RWclose(rw);
+        } else if (SDL_LoadWAV_RW(rw, 1, &spec, &buf, &len)) {
             // To signed 16-bit mono at the clip's own rate.
             SDL_AudioCVT cvt;
             if (SDL_BuildAudioCVT(&cvt, spec.format, spec.channels, spec.freq, AUDIO_S16SYS, 1, spec.freq) >= 0) {

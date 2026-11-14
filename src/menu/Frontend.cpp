@@ -2027,6 +2027,7 @@ int Frontend::run() {
     // (0x4014a5) and reset when a mission ends (0x40491b / 0x473162).
     music_.setIntegerUnits(true);
     audio_.setDfMixer(true, !missionPlayed_);
+    audio_.setDf1Wavs(true);   // 0x48cfb0's 16-bit conversion
     audio_.openDevice();
     // DF.EXE opens DFMUSIC.SBF from its own folder (0x4b81b0).
     if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
