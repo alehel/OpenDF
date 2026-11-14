@@ -365,8 +365,15 @@ First differences from DF1:
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:
   - *unverified guesses* (INFERRED, listed above): the player's parachute
-    start and teleported paratroopers' chutes (no setter found in DF2.EXE;
-    the missions' 100 m+ drops only make sense with them);
+    start and teleported paratroopers' chutes. A full sweep of DF2.EXE
+    (1999-10-19) finds the chute flag set only by the soldiers' start pass
+    (0x45bb10); the player and teleports copy a marker flag that is never
+    set, so that EXE would drop the player to its death at the ten missions
+    starting 100-160 m up and kill its scripted paradrop teams. OpenDF applies
+    the soldiers' 100 m rule to them too (the start heights sit on that test
+    and the D06M06 briefing says the player paradrops); a patched DF2.EXE or
+    a play-test of the retail game would settle it. Below 100 m the player
+    starts at the marker's height and drops, as DF2.EXE does;
   - *settled since*: the ammo display's kinds (DF2's own record +0x0C, with
     grenades red while firing or empty and binoculars red unless up), radar
     shapes (signed byte +0x4C, live positions, 0x403590 / 0x421510), rounds
