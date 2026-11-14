@@ -79,6 +79,9 @@ void VehicleSystem::driveTrain(World& world, AiSystem& ai, Vehicle& v, float tea
         // (0x1000000 = 1.4°, one period per 32 m of y). A destroyed car rolls on.
         v.vyTick = v.loco >= 0 ? vehicles_[size_t(v.loco)].vyTick : 0.f;
         o.pos.z += v.vyTick;
+        // carg zeroes +0x3C, +0x40, +0x44, +0x9C, then +0x40 = the loco's.
+        o.tickVel = {0, 0, v.vyTick};
+        o.tickTurn = 0;
         o.roll = 4.f * float(0x400000) / 4294967296.f * 2 * kPi * std::cos(-o.pos.z / 32.f * 2 * kPi);
         return;
     }
@@ -99,6 +102,7 @@ void VehicleSystem::driveTrain(World& world, AiSystem& ai, Vehicle& v, float tea
     else if (v.loco >= 0 && vehicles_[size_t(v.loco)].vyTick != 0) v.vyTick = vehicles_[size_t(v.loco)].vyTick;
     else if (v.loco < 0) v.vyTick = 0;
     if (v.speed != 0 || v.loco >= 0) o.pos.z += v.vyTick;
+    o.tickVel = {0, 0, v.vyTick};   // loco: +0x40 only (+0x3C and +0x9C stay 0)
     const float accel = (o.item ? o.item->acceleration : 1.f) / kTicks * (v.dead ? 2.f : 1.f);
     if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
     else v.speed += v.targetSpeed > v.speed ? accel : -accel;
@@ -166,6 +170,7 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     const float dyaw = (kPi / 4.f) / axle * v.speed * std::sin(steer) / kTicks;
     o.heading += dyaw;
     const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, right{std::cos(o.heading), 0, std::sin(o.heading)};
+    const Vec3 was = o.pos;
     o.pos = o.pos + fwd * (v.speed * std::cos(steer) / kTicks);
     {
         const int idx = int(std::floor(-dyaw * 2048.f / (2 * kPi)));   // DF yaw grows anticlockwise
@@ -174,6 +179,14 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
             o.pos.x += lat * std::cos(o.heading);   // DF (sin θ, cos θ) with θ = π/2 − heading
             o.pos.z -= lat * std::sin(o.heading);
         }
+    }
+    // The step is the velocity +0x3C / +0x40 and the turn +0x90 (DF1
+    // 0x480732..0x480797) / +0x9C (DF2 veh0 0x41f09d..0x41f0fe, herc
+    // 0x42c240, boat 0x42be10), written only while the speed is not 0: a
+    // stopped vehicle keeps its last values (DF1 0x480520 skips the move).
+    if (v.speed != 0) {
+        o.tickVel = {o.pos.x - was.x, 0, o.pos.z - was.z};
+        o.tickTurn = dyaw;
     }
     const float accel = (o.item ? o.item->acceleration : 1.f) / kTicks * (v.dead ? 2.f : 1.f);
     if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
@@ -283,6 +296,10 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
         const float err = wrapAngle(v.targetHeading - o.heading);
         v.yawRate = std::clamp(err, -maxTurn, maxTurn);
         o.heading += v.yawRate;
+        // +0x90 (DF1 0x47ba4c) / +0x9C (DF2 0x426580): 0 first, ± the rate
+        // when turning by it; reaching the target heading leaves 0. Below
+        // 6 m the routine is not called and the last value stays.
+        o.tickTurn = std::abs(err) < maxTurn ? 0.f : v.yawRate;
     }
     // Tail-rotor spin (0x47d0bc): min(hits << 22, 0x1400000) per tick,
     // anticlockwise, beyond what the heading controller can hold.
@@ -312,6 +329,9 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     }
     const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
     o.pos = o.pos + fwd * (v.speed / kTicks);
+    // Velocity +0x3C / +0x40 = speed (cos, sin) >> 6, 0 at speed 0 (DF1
+    // 0x47bb1c, DF2 0x426660).
+    o.tickVel = fwd * (v.speed / kTicks);
     o.pos.y += v.vz;
     if (o.pos.y < ground + rest) {
         // On the ground; hitting it fast while falling destroys it (0x47d1da).
@@ -512,6 +532,7 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
                 // to each side.
                 const Vec3 c = o.pos + Vec3{0, 1, 0};
                 for (const Vec3 d : {Vec3{0, 0, 0}, Vec3{5, 0, 0}, Vec3{-5, 0, 0}, Vec3{0, 0, -5}, Vec3{0, 0, 5}}) bigBlast(c + d);
+                o.tickVel = {0, 0, 0};   // then +0x3C..+0x50 are zeroed (6 dwords)
             } else if (detonate) {
                 const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
                 if (v.helo) {

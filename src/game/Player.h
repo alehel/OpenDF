@@ -70,6 +70,9 @@ public:
     bool armory() const { return armory_; }
     // Delta Force 2: on a ladder (a type-4 volume, +0x64 & 0x400000).
     bool onLadder() const { return ladder_; }
+    // The object stood on (DF1 +0x100, DF2 +0xF8; -1 none): it carries the
+    // player along (DF.EXE 0x43634d, DF2.EXE 0x440876).
+    int platform() const { return platform_; }
     // The vertical speed (m/s, down negative) of the last landing; 0 after read.
     float takeLanding() { const float v = landingSpeed_; landingSpeed_ = 0; return v; }
 
@@ -88,6 +91,8 @@ private:
     float poseOrigin_ = 0;           // DF2: the chosen move's origin height above the feet
     bool ladder_ = false, armory_ = false;
     std::vector<int> neighbours_;    // DF2 +0xFC: the objects that can push (0x43f2b0)
+    int platform_ = -1;              // DF1 +0x100 / DF2 +0xF8
+    float carryClock_ = 0;           // DF1: the 60 Hz ticks of the platform carry
     uint32_t listTicks_ = 0x40;      // DF2 [0x9e2e60]: rebuilt when it reaches 0x40
 
     std::string move_ = "Standing_2HW";

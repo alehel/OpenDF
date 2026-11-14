@@ -69,6 +69,14 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         wrap(world.extent());
         return;
     }
+    // DF.EXE 0x436158 runs for the player too: riding the platform +0x100
+    // every 60 Hz tick (0x43634d), in every state. OpenDF moves the DF1
+    // player by the frame time, so the carry runs on its own tick clock.
+    if (!fly) {
+        for (carryClock_ += dt; carryClock_ >= 1.f / 60.f; carryClock_ -= 1.f / 60.f) world.carry(platform_, feet, yaw);
+    } else {
+        platform_ = -1;
+    }
     if (inWater_ && !fly) {
         updateInWater(dt, in, world, water);
         return;
@@ -160,7 +168,7 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     // Ground (0x43655b..0x436a07): below ground snaps up; within 1/32 m holds;
     // higher up gravity applies, and over 0.5 m (or moving up) is airborne
     // until landing. No falling damage.
-    const float ground = world.groundHeight(feet, kStep);
+    const float ground = world.groundHeight(feet, kStep, &platform_);   // 0x435dc0 also sets +0x100
     float d = feet.y - ground;
     if (onGround_) {
         if (d < 0) { feet.y = ground; vy_ = 0; }
@@ -174,7 +182,7 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     } else {
         vy_ -= kGravity * dt;
         feet.y += vy_ * dt;
-        d = feet.y - world.groundHeight(feet, kStep);
+        d = feet.y - world.groundHeight(feet, kStep, &platform_);
         if (d < 0) { feet.y -= d; landingSpeed_ = vy_; vy_ = 0; onGround_ = true; }
     }
 
@@ -235,7 +243,7 @@ void Player::updateInWater(float dt, const PlayerInput& in, const World& world, 
     feet.x = f.x;
     feet.z = f.z;
     originY_ += vert * dt;
-    const float ground = world.groundHeight({feet.x, originY_ - poseOrigin, feet.z}, kStep);
+    const float ground = world.groundHeight({feet.x, originY_ - poseOrigin, feet.z}, kStep, &platform_);
     if (originY_ - poseOrigin < ground) {
         originY_ = ground + poseOrigin;
         if (vy_ < 0) vy_ = 0;
@@ -393,7 +401,9 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
         stepDz_ = dz;
     }
 
-    // Movement (0x440947..0x44096f); +0x64 &= ~0x01400000.
+    // Riding the platform +0xF8 (0x440876..0x440944), then the movement
+    // (0x440947..0x44096f); +0x64 &= ~0x01400000.
+    world.carry(platform_, feet, yaw);
     feet.x += step_.x;
     feet.z += step_.z;
     z += vz_ + stepDz_;
@@ -411,6 +421,7 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
         feet.z = origin.z;
         z = origin.y;
         onObject = c.onObject;
+        if (c.onObject) platform_ = c.platform;   // 0x440a24
         if (c.ladder) { onGround_ = true; ladder_ = true; }   // 0x440abf: not airborne, 0x400000
         armory_ = c.armory;
     }
@@ -418,6 +429,7 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
     // Ground and the state table (0x440af6..0x440c9e).
     const float feetY = z - poseOrigin_;
     const float d = onObject ? 0.f : feetY - world.terrain->heightAt(feet.x, feet.z);
+    if (!onObject && d <= 0) platform_ = -1;   // 0x440b1f
     const bool below = water != 0 && z < water;
     if (chute) {
         if (d > 0 && !below) vz_ = -0x2222 / 65536.f;

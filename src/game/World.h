@@ -79,7 +79,16 @@ struct WorldObject {
     // climb) and & 0x1000000 (a type-6 volume: an armory area).
     bool ladder = false, armory = false;
     bool climbs = false;               // DF2: AI block +0x34 & 0x400 (BMS record +0xC & 0x1000): may use ladders
-    int platform = -1;                 // DF2 +0xF8: the object stood on (-1 none)
+    // People: the object stood on (-1 none): DF1 +0x100, the owner of the
+    // face 0x435dc0 found (0 when the terrain is highest); DF2 +0xF8, the
+    // object whose volume pushed up (0x440a24), cleared on the terrain (0x440b1f).
+    int platform = -1;
+    // Movers: this tick's velocity (DF +0x3C / +0x40, m a tick; OpenDF x / z)
+    // and turn (DF1 +0x90, DF2 +0x9C; radians a tick, OpenDF heading sense),
+    // as the move routine left them: what carries people standing on it
+    // (DF1 0x43634d, DF2 0x440876). 0 for objects that never move.
+    Vec3 tickVel{0, 0, 0};
+    float tickTurn = 0;
     std::vector<int> neighbours;       // DF2 +0xFC/+0x100: objects near enough to touch (0x43f2b0)
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
@@ -115,11 +124,17 @@ public:
 
     // Highest surface under (x, z) that a body whose feet are at `feetY` can
     // stand on: the terrain, or the top of a box at most `step` above the feet.
-    float groundHeight(Vec3 feet, float step) const;
+    float groundHeight(Vec3 feet, float step, int* owner = nullptr) const;
     // DF.EXE 0x435dc0: the terrain, or the highest object face (LOD 0, posed,
     // not near-vertical, not 0x01000000) under (x, z) no higher than feet +
     // step. People are never surfaces.
-    float faceGround(Vec3 feet, float step) const;
+    // `owner` (if given) gets the object of the face (DF1 +0x100), -1 the terrain.
+    float faceGround(Vec3 feet, float step, int* owner = nullptr) const;
+    // Riding a platform (DF.EXE 0x43634d..0x43643d, DF2.EXE 0x440876..0x440944,
+    // READ): x, y += the platform's +0x3C / +0x40; if its turn is not 0, the
+    // position is turned by it about the platform's origin (sin/cos tables
+    // 0x435c40 / 0x41ab10, 1.0 = 0x400000) and the heading +0x30 += turn.
+    void carry(int platform, Vec3& pos, float& heading) const;
     // Every person every tick (DF.EXE 0x436158, DF2.EXE 0x440400): fall by
     // gravity, land on the surface below.
     void personTick(WorldObject& o);

@@ -56,3 +56,13 @@ a crate. `OPENDF_DEBUGPLAYER` also prints the surface under the feet, CHUTE,
 ARMORY (DF2 type-6 volume) and LADDER, and whether Request Weapons was
 accepted. `OPENDF_DEBUGSWIM=1` prints people entering and leaving the water;
 `OPENDF_DEBUGOBJ=1` lists the mission's objects with their positions.
+`OPENDF_TEAMSPEED="TEAM:KMH,..."` sets team speeds at the first tick (as the
+script's set-speed action), e.g. `OPENDF_TEAMSPEED=10:40` starts D06M05's
+train at once; with `OPENDF_NOFLY=1 --camera -491.5,1356,4,0,-15` the
+player drops onto a flatcar and rides it. `OPENDF_DEBUGRIDE=1` lists every
+120 ticks the people standing on an object (DF1 +0x100 / DF2 +0xF8), their
+place on it and its velocity and turn; `=N` follows world object N every
+10 ticks (move, height, LADDER). `OPENDF_TESTLADDER=1` (DF2) sends the first
+soldier allowed on ladders (BMS +0xC & 0x1000) running into the nearest
+ladder (type-4 volume) at tick 30; `=ITEM` only that item's ladders,
+`OPENDF_TESTLADDERWALK=1` walks instead (e.g. D06M11: the powcamp tower).

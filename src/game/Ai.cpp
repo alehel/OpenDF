@@ -644,6 +644,41 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
         if (!o.alive()) continue;
         if (o.hp < p.lastHp) hurt(world, p.object);
         p.lastHp = o.hp;
+        if (p.testWalk && !(o.moveNumber >= 16 && o.moveNumber <= 19)) {
+            const bool two = modeInfo(p.weapon).flags & 4;
+            world.requestMove(o, p.testWalkSlow ? (two ? 28 : 20) : (two ? 68 : 60));
+        }
+        // Delta Force 2 ladders (0x440444: the chooser 0x43f690 on odd
+        // ticks, for the AI as for the player): while the person stood in a
+        // type-4 volume last tick (+0x64 & 0x400000, which the push-out sets
+        // only with AI +0x34 & 0x400), a walk or run move (control word
+        // +0x74: direction bits 0-2, speed bits 3-4 = 1 walk / 2 run) becomes
+        // a ladder move by direction and z moves at once: walk 0x43f951
+        // (table 0x43fb40), run 0x43fa42 (0x43fb60): forward +0x800 / +0x1000
+        // 16 Ladder_Up, back the same down 17 Ladder_Down, left / right 18 /
+        // 19, the diagonals half. Out of the volume the chooser gives the
+        // walk / run move again. AiSystem walks and runs forward only, so
+        // in practice an AI walking into a ladder climbs it, and none climbs
+        // down (INFERRED from the moves AiSystem gives; DF2's AI sets the
+        // control word, not the move).
+        if (world.df2Rules && (ticks_ & 1) && !o.chute && !o.swimming) {
+            const bool onLadderMove = o.moveNumber >= 16 && o.moveNumber <= 19;
+            const int want = onLadderMove ? p.gait : o.moveNumber;
+            int dir = -1, speed = 0;
+            for (const auto& [lo, sp] : {std::pair{20, 1}, {28, 1}, {40, 1}, {48, 1}, {60, 2}, {68, 2}, {80, 2}, {88, 2}})
+                if (want >= lo && want < lo + 8) { dir = want - lo; speed = sp; }
+            if (o.ladder && dir >= 0) {
+                static const int climb[8] = {2, 1, 0, -1, -2, -1, 0, 1};
+                static const int ladderMove[8] = {16, 18, 18, 18, 17, 19, 19, 19};
+                o.base += float(climb[dir] * (speed == 2 ? 0x800 : 0x400)) / 65536.f;
+                p.gait = want;
+                world.requestMove(o, ladderMove[dir]);
+                if (o.moveNumber != ladderMove[dir]) o.moveNumber = ladderMove[dir];   // not in this .ANM: still the ladder move
+            } else if (onLadderMove) {
+                world.requestMove(o, p.gait);
+                p.gait = -1;
+            }
+        }
         // Movement (0x436158): the move's .ANM speed along the heading (not
         // while on a DF2 parachute).
         if (o.moves && o.moveNumber >= 0 && !o.chute) {
@@ -653,7 +688,14 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 // On land velocity / 60 along the heading; swimming the
                 // move's whole per-frame distance and a vertical part
                 // (World::personStep: DF.EXE 0x43621a, DF2.EXE 0x4404dc).
-                Vec3 next = o.pos + world.personStep(o, mv->velocity);
+                Vec3 step = world.personStep(o, mv->velocity);
+                // DF2 ladder moves go along heading + their direction (move
+                // table +0: Ladder_Down 4, Left 1, Right 7; 0x4ab758).
+                if (const int md = o.moveNumber == 17 ? 4 : o.moveNumber == 18 ? 1 : o.moveNumber == 19 ? 7 : 0; md) {
+                    const float a = -float(md) * kPi / 4.f, c = std::cos(a), sn = std::sin(a);
+                    step = {c * step.x - sn * step.z, step.y, sn * step.x + c * step.z};
+                }
+                Vec3 next = o.pos + step;
                 // Kept out of collision volumes like the player (0x437a28:
                 // the same +-0.75 m mover box), on odd ticks only (0x436cbe);
                 // DF2 pushes people out of the volumes in World::personTick.
@@ -667,7 +709,7 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 // Height: World::personTick (gravity and the ground pass).
             }
         }
-        if (--p.think <= 0) {
+        if (!p.testWalk && --p.think <= 0) {
             think(world, p, shots, sound, player);
             p.think = std::max(1, p.think);
             p.delay = p.think;

@@ -56,6 +56,9 @@ public:
     // One 60 Hz tick: people move (their move's speed along their heading)
     // and think when their timer runs out.
     void tick(World& world, Arsenal& shots, SoundSystem& sound, const PlayerView& player);
+    // Testing (OPENDF_TESTLADDER): the soldier on world object `object`
+    // stops thinking and keeps running (walking with `walk`) along his heading.
+    void testWalk(int object, bool walk = false) { if (Person* p = byObject(object)) { p->testWalk = true; p->testWalkSlow = walk; } }
 
     // A shot was fired (0x44d71f / 0x46c228): noise of radius `range`
     // metres for side `side`, and the shooter counts as firing (x6 to be
@@ -138,6 +141,8 @@ private:
         int unseenLimit = 60 * 62;    // +0xA8: BMS +0x54 x 62 (default 60 s)
         float nearestPlayer = 0;      // +0xAC: distance to the player at the last successful scan
         int order = 0;                // +0xBB: 1 hold fire, 2 cover me, 3 hold position (command map)
+        int gait = -1;                // DF2: the walk / run move a ladder move replaced (the control word +0x74)
+        bool testWalk = false, testWalkSlow = false;
     };
     struct Noise { Vec3 at; float r; int side; int flags; };
 
