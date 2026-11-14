@@ -134,6 +134,9 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
         case 1: host.followPath(p1, a[4]); break;
         case 3: host.aiProperty(p1, a[2], a[4]); break;
         case 11: host.teamSpeed(p1, a[4]); break;
+        case 16: host.setTeamSide(p1, a[4]); break;    // Delta Force 2 (0x41953a)
+        case 17: host.moveTeam(p1, a[4]); break;       // Delta Force 2 (0x41954b)
+        case 18: host.teleportTeam(p1, a[4]); break;   // Delta Force 2 (0x41955c)
         // 12 / 13 (AI properties of a side in a box) are not used by any mission.
         default: ++unhandled_; break;
         }

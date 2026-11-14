@@ -308,6 +308,38 @@ private:
     void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
     void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
     void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
+    void setTeamSide(int team, int side) override {
+        if (team == 0) return;   // 0x4133c5: team 0 is left alone
+        for (auto& o : world_.objects)
+            if (o.team == team) o.side = side;
+    }
+    void moveTeam(int team, int newTeam) override {
+        if (team == 0) return;
+        for (auto& o : world_.objects)
+            if (o.team == team) o.team = newTeam;
+    }
+    void teleportTeam(int team, int value) override {
+        // DF2.EXE 0x416960: the target's position and angles to every person
+        // of the team. INFERRED: a target 100 m or more above the ground puts
+        // them on a chute (DF2 copies the target's own flag 0x20, which no
+        // code was found to set; the missions drop paratroopers this way).
+        for (const auto& mo : mission_.objects) {
+            if (mo.type != 6088 || (mo.raw[18] & 0xFF) != team) continue;
+            if (reinterpret_cast<const uint8_t*>(mo.raw)[0x4A] != value) continue;
+            const float ext = terrain_.mapExtent();
+            const Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
+            for (auto& o : world_.objects) {
+                if (!o.person || o.team != team || !o.alive()) continue;
+                o.pos.x = at.x;
+                o.pos.z = at.z;
+                o.heading = mo.heading * kPi / 180.f;
+                o.base = terrain_.heightAt(at.x, at.z) + mo.z;
+                o.chute = mo.z >= 100.f;
+                o.pos.y = o.base + o.hip;
+            }
+            break;
+        }
+    }
     void playSound(int id, Vec3 at) { sound_.play(id, at); }
     FILE* audioOut_ = nullptr;
     double audioClock_ = 0;

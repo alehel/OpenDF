@@ -43,6 +43,13 @@ public:
     virtual void teamSpeed(int team, int kmh) { (void)team; (void)kmh; }
     // 0x46ca54: someone of team p1 carries an item whose mission team is p2.
     virtual bool teamCarrying(int team, int itemTeam) const { (void)team; (void)itemTeam; return false; }
+    // Delta Force 2 action 18 (0x416960): every person of `team` to the
+    // teleport target (6088) of that team whose record +0x4A is `value`.
+    virtual void teleportTeam(int team, int value) { (void)team; (void)value; }
+    // Delta Force 2 action 16 (0x4133c0): every object of team p1 to side p2
+    // (+0x68); action 17 (0x413340): every object of team p1 to team p2 (+0x6a).
+    virtual void setTeamSide(int team, int side) { (void)team; (void)side; }
+    virtual void moveTeam(int team, int newTeam) { (void)team; (void)newTeam; }
 };
 
 class MissionScript {
