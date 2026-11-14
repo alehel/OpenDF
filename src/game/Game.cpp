@@ -538,7 +538,8 @@ private:
         bool dButton = false;         // the D button's state (= [0x765600] when the Map tab is entered)
         bool contours = false;        // 0xbd0588 (BSS: starts 0, never reset)
         int scrollPlayers = 0, scrollTeam = 0;   // [0xbd0594], [0xbd0598]
-        int barWidget = 0, barAnchorY = 0, barCount = 0;   // 0x40c040's widget, [0xbcc488], [0xbcc490]
+        int barWidget = 0, barAnchorY = 0, barCount = 0;
+        std::map<int, std::string> planText;   // teammates' controller +0x14 (0x403380), by object   // 0x40c040's widget, [0xbcc488], [0xbcc490]
         // A list's scroll-bar record (0x40c3f0) and its thumb (0x40c710) in
         // 640 px: track x0..x1, ty0 (+0x14 = y0 + 16 - 1), ty1 (+0x1c = y1 - 16).
         struct Bar { int x0, x1, ty0, ty1, top, bottom; };
@@ -3661,8 +3662,11 @@ int Game::df2SelItem(Df2Sel s) const {
     return 6089;
 }
 
-// The player and the squad (OpenDF's side 1 soldiers): the objects of the
-// player array 0xc399c0 on the player's team (INFERRED mapping).
+// The player and the squad: the objects of the player array 0xc399c0 on the
+// player's team (+0x68, BMS byte +0x43 = OpenDF's side). The player array is
+// mission group 3: the mission loader puts group 0 at 0xc4a5c0 (0x403d89),
+// 1 at 0xcd05c0 (0x403df2), 2 at 0xd135c0 (0x403e5b) and 3 at 0xc399c0
+// (0x403ec4, count [0xd42b04]) through 0x403590 (READ).
 bool Game::df2SelOnPlayerTeam(Df2Sel s) const {
     if (s.kind == 1) return true;
     if (s.kind != 2 || !df2SelValid(s)) return false;
@@ -4232,17 +4236,21 @@ void Game::drawDf2CommandMap(const Screen& s) {
             if (!df2SelOnPlayerTeam(sel)) return;
             value(272, df2GridName(px, py));
             head(320, df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan"));
-            value(344, df2Text("Cmap", "CMAP_PLANNONE", "None"));   // plans: multiplayer, empty here
+            // The plan: controller +0x14, empty -> CMAP_PLANNONE. The player's
+            // is a multiplayer plan (empty here); a teammate's is the
+            // TeamOrders L_* text 0x403380 copies there when its order changes.
+            std::string plan;
+            if (sel.kind == 2)
+                if (auto pt = m.planText.find(sel.index); pt != m.planText.end()) plan = pt->second;
+            value(344, plan.empty() ? df2Text("Cmap", "CMAP_PLANNONE", "None") : plan);
             head(392, df2Text("Cmap", "CMAP_HEADING_WEAPONS", "Weapons"));
+            // Each non-zero controller byte +0xb6..+0xba. A teammate's are
+            // never written (see the Team tab), so only the heading shows.
             float y = 416;
             if (sel.kind == 1) {
                 const int types[5] = {df2Loadout_.primary, df2Loadout_.secondary, df2Loadout_.gear, df2Loadout_.sidearm, df2Loadout_.grenade};
                 for (int t : types)
                     if (t) { value(y, df2TypeName(t)); y += 24; }
-            } else {
-                // A squad mate's weapon types are not kept by OpenDF: its
-                // weapon's name instead (APPROXIMATION).
-                value(y, arsenal_.modeAt(world_.objects[size_t(sel.index)].weaponMode).name);
             }
             return;
         }
@@ -4423,34 +4431,62 @@ void Game::drawDf2CommandMap(const Screen& s) {
         infoPanel();
         actionButtons();
     } else if (m.tab == 2) {
-        // Team tab (0x40f190): the squad from (80, 224), 28 apart, the player
-        // first, skipping the scroll position ([0xbd0598]); headings
-        // Name/Plan/Weapon at (344, 196); the selected one's buttons: the
-        // player "Set my plan to..." (plans: multiplayer, no effect in single
-        // player), a teammate "Set teammate to..." with the four orders
-        // (0x4113b0).
-        const Color dim = rgb(0x60, 0x30, 0);
-        char hdr[96];
-        std::snprintf(hdr, sizeof hdr, "%s/%s/%s", df2Text("Cmap", "CMAP_HEADING_NAME", "Name").c_str(),
-                      df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan").c_str(), df2Text("Cmap", "CMAP_HEADING_WEAPON", "Weapon").c_str());
-        hud_.text(X(V(344)) - hud_.textWidth(hdr, k) / 2, Y(V(196)), hdr, cHead, k);
+        // Team tab (0x40f190): the rows of the list builder 0x40ca80 (player
+        // array, same team, self included) from (80, 224), 28 apart, skipping
+        // the scroll position ([0xbd0598]). Heading "%s/%s/%s" (0x4a52a8) of
+        // Name / Weapon / Plan centred at (344, 196). Each row (0x40f2c8):
+        // the number (scroll + r + 1) right-aligned at x0 - 12 with a black
+        // shadow at +1, the name shadowed at x0, [ ] in red round the selected
+        // one, then the weapon at x0 + W·208/1024 (the controller's +0xb6
+        // type's name) and the plan at x0 + W·384/1024: a player (+0x64 & 1)
+        // its plan text (controller +0x14), the others TeamOrders S_HPHF /
+        // S_HPCM / S_HP by the order byte +0xbb, else S_NONE; empty ->
+        // CMAP_PLANNONE. Selected 0xff9020, else 0xc06000. The selected one's
+        // buttons: the player "Set my plan to..." (plans: multiplayer, no
+        // effect in single player), a teammate "Set teammate to..." with the
+        // four orders (0x4113b0).
+        {
+            char hdr[96];
+            std::snprintf(hdr, sizeof hdr, "%s/%s/%s", df2Text("Cmap", "CMAP_HEADING_NAME", "Name").c_str(),
+                          df2Text("Cmap", "CMAP_HEADING_WEAPON", "Weapon").c_str(), df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan").c_str());
+            hud_.text(X(V(344)) - hud_.textWidth(hdr, k) / 2, Y(V(196)), hdr, cHead, k);
+        }
         scrollBar(608, 216, 616, m.scrollTeam, 14);
-        float row = 224;
-        int n = 0;
-        auto line = [&](Df2Sel id, const std::string& name, const std::string& plan, const std::string& weapon) {
-            if (n++ < m.scrollTeam || row > 616) return;
-            const std::string t = name + "/" + plan + "/" + weapon;
-            hud_.text(X(V(80)), Y(V(row)), t, id == m.sel ? cSel : dim, k);
-            row += 28;
+        int r = 0, n = 0;
+        auto line = [&](Df2Sel id, const std::string& name, const std::string& weapon, const std::string& plan) {
+            if (n++ < m.scrollTeam || r >= 14) return;
+            const float x0 = V(80), y0 = V(224 + 28 * float(r));
+            const bool selected = id == m.sel;
+            const Color c = selected ? cSel : cHead;
+            const std::string num = std::to_string(m.scrollTeam + r + 1);
+            const float nw = hud_.textWidth(num, 1);
+            hud_.text(X(x0 - 11 - nw), Y(y0 + 1), num, cBlack, k);
+            hud_.text(X(x0 - 12 - nw), Y(y0), num, c, k);
+            shadowed(x0, y0, name, c);
+            if (selected) {
+                hud_.text(X(x0), Y(y0), "[", kDf2Red, k);
+                hud_.text(X(V(82) + hud_.textWidth(name, 1)), Y(y0), "]", kDf2Red, k);
+            }
+            shadowed(x0 + std::floor(640.f * 208.f / 1024.f), y0, weapon, c);
+            shadowed(x0 + std::floor(640.f * 384.f / 1024.f), y0, plan, c);
+            ++r;
         };
         static const char* kOrderKey[4] = {"CMAP_BTN_NOORDER", "CMAP_BTN_HPHF", "CMAP_BTN_HPCM", "CMAP_BTN_HP"};
         static const char* kOrderDef[4] = {"No orders", "Hold Position, Hold Fire", "Hold Position, Cover Me", "Hold Position"};
-        line(Df2Sel{1, 0}, o_.soldierName.empty() ? "Player" : o_.soldierName, df2Text("Cmap", "CMAP_PLANNONE", "None"), arsenal_.modeName());
+        static const char* kShortKey[4] = {"S_NONE", "S_HPHF", "S_HPCM", "S_HP"};
+        static const char* kShortDef[4] = {"None", "HPHF", "HPCM", "HP"};
+        const std::string planNone = df2Text("Cmap", "CMAP_PLANNONE", "None");
+        // The player's row first (INFERRED: the player is the first object of
+        // its team in mission group 3 in the shipped missions).
+        line(Df2Sel{1, 0}, df2SelName(Df2Sel{1, 0}), df2TypeName(df2Loadout_.primary), planNone);
         for (size_t i = 0; i < world_.objects.size(); ++i) {
-            const WorldObject& o = world_.objects[i];
-            if (!o.person || !o.alive() || o.side != 1) continue;
-            line(Df2Sel{2, int(i)}, o.item ? o.item->name : "?", df2Text("Cmap", kOrderKey[std::clamp(ai_.order(int(i)), 0, 3)], kOrderDef[0]),
-                 arsenal_.modeAt(o.weaponMode).name);
+            // Teammates: no code writes a mission soldier's controller bytes
+            // +0xb6..+0xba (writers: the network 0x408eca / 0x40a071 /
+            // 0x40a60b and the local player's join copy 0x454273), so the
+            // weapon column shows type 0, "None".
+            if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)}) || !world_.objects[i].alive()) continue;
+            const int ord = std::clamp(ai_.order(int(i)), 0, 3);
+            line(Df2Sel{2, int(i)}, df2SelName(Df2Sel{2, int(i)}), df2TypeName(0), df2Text("TeamOrders", kShortKey[ord], kShortDef[ord]));
         }
         if (m.sel.kind == 1) {
             hud_.text(X(V(80)), Y(V(640)), df2Text("Cmap", "CMAP_SETPLAN", "Set my plan to..."), cHead, k);
@@ -4617,8 +4653,7 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
             if (r == 0) { df2Select(Df2Sel{1, 0}); return; }
             int row = 0;
             for (size_t i = 0; i < world_.objects.size(); ++i) {
-                const WorldObject& o = world_.objects[i];
-                if (!o.person || !o.alive() || o.side != 1) continue;
+                if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)}) || !world_.objects[i].alive()) continue;
                 if (++row == r) { df2Select(Df2Sel{2, int(i)}); return; }
             }
             return;
@@ -4631,6 +4666,9 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
                     char key[16];
                     std::snprintf(key, sizeof key, "STRMISC%02d", 34 + i);
                     pushMessage(df2Text("Misc", key, "Acknowledged."), rgb(0, 0xff, 0));
+                    // ... and TeamOrders L_NONE / L_HPHF / L_HPCM / L_HP to the plan (+0x14).
+                    static const char* kLong[4] = {"L_NONE", "L_HPHF", "L_HPCM", "L_HP"};
+                    m.planText[m.sel.index] = df2Text("TeamOrders", kLong[i], kLong[i]);
                 }
         }
         return;
