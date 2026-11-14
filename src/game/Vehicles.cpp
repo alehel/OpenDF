@@ -102,15 +102,29 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
         v.targetSpeed = (onPath && !v.dead) ? teamSpeed : 0.f;
         v.think = std::abs(v.speed) > 0 ? 0x40 : 0x10;
     }
-    const float accel = (o.item ? o.item->acceleration : 1.f) / kTicks * (v.dead ? 2.f : 1.f);
-    if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
-    else v.speed += v.targetSpeed > v.speed ? accel : -accel;
+    // veh0 move (0x480689): steer = heading error / 8; turn (π/4)/L·v·sin
+    // steer; forward v·cos steer; a lateral term (L/2)·SIN[turn per tick
+    // in 1/2048 turns] along DF's (sin yaw, cos yaw), only for indices >= 0
+    // (DF.EXE reads before its sine table otherwise: 0 or garbage, taken as
+    // 0); all with the new yaw and the speed before this tick's ramp.
     const float steer = wrapAngle(v.targetHeading - o.heading) / 8.f;
     o.steer = steer;   // drawn by the `tire` routine (0x4808fc)
     const float axle = o.item && o.item->axleDist > 0 ? o.item->axleDist : 2.3f;
-    o.heading += (kPi / 4.f) / axle * v.speed * std::sin(steer) / kTicks;
+    const float dyaw = (kPi / 4.f) / axle * v.speed * std::sin(steer) / kTicks;
+    o.heading += dyaw;
     const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, right{std::cos(o.heading), 0, std::sin(o.heading)};
     o.pos = o.pos + fwd * (v.speed * std::cos(steer) / kTicks);
+    {
+        const int idx = int(std::floor(-dyaw * 2048.f / (2 * kPi)));   // DF yaw grows anticlockwise
+        if (idx >= 0) {
+            const float lat = std::sin(float(idx) * 2 * kPi / 2048.f) * axle * 0.5f / 64.f;
+            o.pos.x += lat * std::cos(o.heading);   // DF (sin θ, cos θ) with θ = π/2 − heading
+            o.pos.z -= lat * std::sin(o.heading);
+        }
+    }
+    const float accel = (o.item ? o.item->acceleration : 1.f) / kTicks * (v.dead ? 2.f : 1.f);
+    if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
+    else v.speed += v.targetSpeed > v.speed ? accel : -accel;
     const float ext = world.extent();
     o.pos.x -= std::floor(o.pos.x / ext) * ext;
     o.pos.z -= std::floor(o.pos.z / ext) * ext;
