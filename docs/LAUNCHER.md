@@ -79,9 +79,37 @@ game=/Users/me/OpenDF/games/DF2
 
 [launcher]
 last=/Users/me/OpenDF/games/DF2
+
+[display]
+fullscreen=0
 ```
 
 `--settings FILE` uses another file (for testing).
+
+## Fullscreen
+
+An OpenDF amenity (the original games set a display mode of their own; OpenDF's
+window is its own): **Alt+Enter** (Alt+keypad Enter too; on macOS also
+**Cmd+Ctrl+F**, the system's shortcut, or **Cmd+F**) switches between a window
+and desktop fullscreen in the launcher, both front ends (also during the
+intro movies, where it does not skip them), missions and the viewers. The
+key press goes no further, so Enter does not also start a game or press a
+menu button, and a mission does not see it held. F11 is not used: it is
+Delta Force's contour map key.
+
+- The setting is one for the whole run: every window OpenDF opens (launcher,
+  front end, mission, back to the front end) follows it.
+- Each toggle is written to `opendf.ini` (`[display] fullscreen=1`, the rest
+  of the file kept), also when the launcher was skipped with `--game`; the
+  next start uses it.
+- `--fullscreen` / `--windowed` start that way for this run (a toggle is
+  still remembered).
+- The 640x480 screens are scaled to the new size with the aspect ratio kept
+  and the mouse follows; missions use the whole screen.
+- Screenshot runs (`--screenshot`, hidden windows) never go fullscreen and do
+  not write the setting.
+
+Code: `src/render/Window.{h,cpp}`; `main.cpp` loads and saves the setting.
 
 ## Testing
 

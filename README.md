@@ -109,6 +109,13 @@ from the game's own `DFSETUP/DF.EXE`.
 | `--camera X,Y,HEIGHT,YAW,PITCH` | start at map metres X (east), Y (north), HEIGHT above ground, facing compass YAW, PITCH (degrees) |
 | `opendf --game ROOT list [.EXT]` | list every file in the archives |
 | `opendf --game ROOT extract OUTDIR [.EXT]` | extract files (encrypted ones decoded) |
+| `--fullscreen` / `--windowed` | start fullscreen or in a window (default: as last time) |
+
+**Fullscreen:** **Alt+Enter** (on macOS also **Cmd+Ctrl+F** or **Cmd+F**) switches between a
+window and fullscreen anywhere: the launcher, both games' menus, missions and the viewers.
+It is OpenDF's own desktop fullscreen (the screens are scaled with the aspect ratio kept) and
+is remembered in `opendf.ini` ([docs/LAUNCHER.md](docs/LAUNCHER.md#fullscreen)). F11 is left
+alone: it is Delta Force's contour map key.
 
 Viewer controls: mouse to look, **WASD** to move, **Shift** to go faster,
 **Space / C** for up / down, **F** to switch between walking and flying,

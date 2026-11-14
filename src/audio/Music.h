@@ -28,6 +28,12 @@ public:
     void setVolume(int v) { master_ = v; }   // cd_volume, 0..255
     // DF.EXE's integer units for Audio's DF mixer: (pcm − 128) · ((V >> 1) >> shift).
     void setIntegerUnits(bool on) { integer_ = on; }
+    // Delta Force 2's VM and music engine: the switch opcode 0x35
+    // (0x48b610) and the script's setVolume / fadeTo (0x33 8 / 9, 0x48b74a /
+    // 0x48b75c), whose fade moves over one stem (0x46bf86); the stream
+    // volume, set as each block is queued (0x46c050 -> 0x470cf0, applied to
+    // the whole ring by 0x4a0372), is master · fade >> 8 (0x46bfd0).
+    void setDf2(bool on) { df2_ = on; }
     // Once per menu frame (0x4b8490 from the menu loop 0x406bf8): queues
     // at most one block while fewer than 13 are queued, or, when the stem
     // is fully read, runs one script tick to pick the next.
@@ -38,6 +44,7 @@ public:
 private:
     struct Stem { std::string name; uint32_t offset = 0, size = 0, block = 0x1008; };
     void tick();                   // one script tick: runs until a yield
+    bool step();                   // one instruction; true when it yields (carry set)
     void play(int stem);
     uint32_t u32(size_t at) const;
     int32_t pop() { if (stack_.empty()) return 0; const int32_t v = stack_.back(); stack_.pop_back(); return v; }
@@ -59,6 +66,11 @@ private:
     std::vector<Block> queue_;     // the ring (16 slots, at most 13 queued)
     uint32_t played_ = 0;          // frames played of queue_.front()
     int master_ = 255;
+    bool df2_ = false;
+    // DF2.EXE's fade (16.16): current 0xd86b5c, target 0xd86b60, step per
+    // block 0xd86b64 (set when a stem starts, 0x46bf86); the stream volume.
+    int32_t fade_ = 0xff0000, fadeTarget_ = 0xff0000, fadeStep_ = 0;
+    int streamVol_ = 255;
     bool integer_ = false;
     bool debug_ = false;          // OPENDF_DEBUGMUSIC: print each PLAY
     std::mutex mutex_;

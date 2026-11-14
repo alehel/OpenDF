@@ -62,6 +62,7 @@ add_executable(opendf
   src/render/Hud.cpp
   src/render/Models.cpp
   src/render/Terrain.cpp
+  src/render/Window.cpp
 )
 target_include_directories(opendf PRIVATE src)
 

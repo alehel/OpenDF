@@ -12,6 +12,7 @@
 #include "../game/Controls.h"
 #include "../render/Gl.h"
 #include "../render/Hud.h"
+#include "../render/Window.h"
 
 #include <SDL.h>
 
@@ -551,7 +552,7 @@ bool FrontendDf2::openWindow() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    const Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (o_.screenshot.empty() ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_HIDDEN);
+    const Uint32 flags = windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (o_.screenshot.empty() ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_HIDDEN));
     win_ = SDL_CreateWindow("OpenDF - Delta Force 2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height, flags);
     if (!win_) return false;
     ctx_ = SDL_GL_CreateContext(win_);
@@ -1854,6 +1855,7 @@ void FrontendDf2::playBinkVideo(const std::filesystem::path& path) {
     for (int n = 0;; ++n) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN) skip = true;
         }
@@ -1946,6 +1948,7 @@ int FrontendDf2::run() {
     // the mode-3 hook set at start-up (0x420919: 0x4712b0(3, 1)) and reset
     // when the menus close for the Game Loop (0x42f420 -> 0x4712e0).
     music_.setIntegerUnits(true);
+    music_.setDf2(true);   // DF2.EXE's VM (switch 0x35) and engine (fades, 0x46bfd0)
     audio_.setDfMixer(true, true);
     audio_.setDfGame(2);   // DF2.EXE's WAV conversion (0x4711a0) and mixer (0x48e028)
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
@@ -1975,6 +1978,7 @@ int FrontendDf2::run() {
     while (screen_ != Screen::Quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) { next_ = Screen::Quit; leaveTicks_ = 0; windowQuit = true; break; }
             if (e.type == SDL_TEXTINPUT && !editing_.empty()) {
                 for (const char* p = e.text.text; *p; ++p)
@@ -1987,6 +1991,10 @@ int FrontendDf2::run() {
                 SDL_GetWindowSize(win_, &ww, &wh);
                 SDL_GL_GetDrawableSize(win_, &dw, &dh);
                 const float px = float(mx) * float(dw) / float(std::max(1, ww)), py = float(my) * float(dh) / float(std::max(1, wh));
+                // The window may have changed size since the last frame (fullscreen).
+                scale_ = std::min(float(dw) / 640.f, float(dh) / 480.f);
+                offX_ = (float(dw) - 640.f * scale_) / 2;
+                offY_ = (float(dh) - 480.f * scale_) / 2;
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
                 if (busy() || !editing_.empty()) continue;

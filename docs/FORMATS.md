@@ -440,6 +440,24 @@ states (track-relative): Begin, BasicLoop, Lost, Won, Cancelled, FromMP
 Byte-coded stack VM (DF.EXE 0x4ab5ce, table 0x4ab070); jumps are relative to the code base, calls
 and states to the track. Globals Var00..Var15 at byte offsets 0x00..0x3C, `i` 0x40, `lastTime`
 0x44; the game writes Var0n with 0x4b8570. The full opcode table is in src/audio/Music.cpp.
+Opcode 0x01 pushes its byte zero-extended (DF.EXE 0x4ab681, DF2.EXE 0x48b2c1).
+
+Delta Force 2: DF2MUSIC.SBF (next to DF2.EXE) and DF2MUSIC.BIN (track "DF2Menu", 13 states:
+0 Begin picks by Var00/Var02, 1 the intro (int201..204, toms1xx), 2..4 after a mission, 5..11 one
+per page group, 12 the page switch). DF2.EXE's VM (0x48b1f0, table 0x48ac50) adds a switch,
+opcode 0x35 (0x48b610; a nop in DF.EXE): operands `n, unused, entrySize, totalLength`, then n
+entries; a value below n runs its entry's first instruction and, when that ends at the entry's end,
+goes on after the switch (totalLength from the opcode); otherwise the switch is skipped. State 12
+switches on Var01 (0→5, 1→6, 2/3→7, 4→5, 5→8, 6→9, 7→10, 8/9→7, 10→11), the page states pick
+random stems with switches. `0x33 8` setVolume and `0x33 9` fadeTo (0x48b74a / 0x48b75c → 0x46c240
+/ 0x46c280) set the fade and its target (0..255, 16.16); when a stem starts the step is
+(target − fade) / (size / blockSize) (0x46bf86), and each queued block sets the stream volume to
+master · fade >> 8 before stepping (0x46c050; the volume applies to the whole ring, 0x4a0372). The
+menus write Var01 every frame from the current state (0x43cc20 from the main loop 0x45ecd8):
+Campaign 1, MultiPlayer / JoinMultiPlayer / NovaWorld 2 (10 with 0x4cdf4c), Options1/2 3,
+ChooseSoldier 4, Credits 5, MissionBriefing 6, ChangeGear 7, HostMultiPlayer 8, HostOptions1 9,
+others 0. Without the switch every page state was skipped and the script fell back to Begin,
+which with Var00 = 0 restarted the intro piece.
 
 ## KDV video (INTRO.KDV, VIEWS.PFF H_*.KDV)
 
