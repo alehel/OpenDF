@@ -148,7 +148,21 @@ bool Vfs::exists(const std::string& name) const { return index_.count(toUpper(na
 bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
     auto it = index_.find(toUpper(name));
     if (it == index_.end()) return false;
-    return it->second.archive->read(it->second.archive->entries()[it->second.index], out);
+    if (!it->second.archive->read(it->second.archive->entries()[it->second.index], out)) return false;
+    // Delta Force 2 and later scramble some text files (ITEMS.DEF, LOOP.DEF,
+    // .ANM): "SCR\x01", then the payload reversed and XORed with a stream
+    // s = rol(rol(s, 11) + s, 4) ^ 1 from s = 0x01234567 (DF2.EXE 0x4614f0).
+    if (out.size() >= 4 && std::memcmp(out.data(), "SCR\x01", 4) == 0) {
+        std::vector<uint8_t> body(out.rbegin(), out.rend() - 4);
+        uint32_t st = 0x01234567;
+        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+        for (auto& b : body) {
+            st = rol(rol(st, 11) + st, 4) ^ 1;
+            b ^= uint8_t(st);
+        }
+        out.swap(body);
+    }
+    return true;
 }
 
 std::vector<std::string> Vfs::list(const std::string& extension) const {

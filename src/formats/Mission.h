@@ -76,6 +76,7 @@ struct MissionEvent {
 struct MissionRecord { int32_t raw[8] = {}; };   // a condition or an action
 
 struct Mission {
+    int version = 0x0D;                     // header byte 3: 0x0D Delta Force, 0x0F Delta Force 2 and later
     std::string title, author, terrain, dialogue;
     std::vector<MissionObject> objects;     // all groups, in file order
     int groupStart[4] = {}, groupSize[4] = {};

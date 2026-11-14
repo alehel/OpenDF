@@ -104,21 +104,39 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         return false;
     }
     m = Mission{};
-    m.title = cstr(d, 0x04, 0x28);
-    m.author = cstr(d, 0x2C, 0x28);
-    m.terrain = cstr(d, 0x54, 0x10);
-    m.dialogue = cstr(d, 0x64, 0x10);
-    for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
+    m.version = d[3];
+    // Delta Force 2 and later (version 0x0F, DF2.EXE 0x403bd0): a 0x208-byte
+    // header with 32-byte title/author, terrain at 0x44 and dialogue at 0x54,
+    // flags at 0x78 (night 0x100000), weather at 0xAC instead of the route
+    // names (those moved to the waypoint records' +0x58); the rest as DF1.
+    const bool v15 = m.version >= 0x0F;
+    if (v15) {
+        if (d.size() < 0x208) {
+            if (error) *error = "truncated BMS header";
+            return false;
+        }
+        m.title = cstr(d, 0x04, 0x20);
+        m.author = cstr(d, 0x24, 0x20);
+        m.terrain = cstr(d, 0x44, 0x10);
+        m.dialogue = cstr(d, 0x54, 0x10);
+        m.lightFlags = (u32(d, 0x78) & 0x100000) ? 0x10 : 0;
+    } else {
+        m.title = cstr(d, 0x04, 0x28);
+        m.author = cstr(d, 0x2C, 0x28);
+        m.terrain = cstr(d, 0x54, 0x10);
+        m.dialogue = cstr(d, 0x64, 0x10);
+        for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
+        m.lightFlags = d.size() > 0x7A ? d[0x7A] : 0;
+    }
     m.colorVariant = int(u32(d, 0x74) & 3);
     m.variantWord = int(u32(d, 0x74));
-    m.lightFlags = d.size() > 0x7A ? d[0x7A] : 0;
     m.fireMissions = int(u32(d, 0x84));
 
     // Layout from DF.EXE's loader (0x440490): four groups of 96-byte object
     // records (counts at 0x98..0xA4), 128 paths of 0x88 bytes, 64 records of
     // 32 bytes, 32 names of 20 bytes, then the event system.
     auto fail = [&](const char* what) { if (error) *error = what; return false; };
-    size_t o = 0x10C;
+    size_t o = v15 ? 0x208 : 0x10C;
     for (int g = 0; g < 4; ++g) {
         const uint32_t n = u32(d, 0x98 + 4 * g);
         if (n > 10000 || o + size_t(n) * 0x60 > d.size()) return fail("BMS object table truncated");
