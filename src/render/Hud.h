@@ -62,6 +62,10 @@ public:
     // Everything outside a circle of `radius` around (cx, cy) goes black.
     void scopeMask(float cx, float cy, float radius);
 
+    // Restricts drawing to a rectangle (pixels, top-left origin) until unclip().
+    void clip(float x, float y, float w, float h);
+    void unclip();
+
     int width() const { return width_; }
     int height() const { return height_; }
 

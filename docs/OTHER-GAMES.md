@@ -98,7 +98,31 @@ First differences from DF1:
     tile's own line, not DF2.EXE's permuted table: APPROXIMATION);
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
-    body pre-test and nearest-along-the-ray rule are DF1's.
+    body pre-test and nearest-along-the-ray rule are DF1's;
+  - **DF2's own HUD** (DF2.EXE 0x442940; full notes in the tracing specs):
+    the 3D view is only the rows between two opaque bitmap strips
+    (`DHT%iG`/`DHB%iG`, 0x45cb40); every position per display mode from
+    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000; the weapon,
+    stance, carried-item and radar-frame images through a fixed amber ramp
+    (index i → (i·255>>8, i>>1, 0)) added onto the strip (0x450c10, saturating);
+    weapon icon by mode from a 22-frame sheet (0x443370); weapon name from
+    `HudGuns` HG%03i centred, red when not ready, clips "\x01 n" / `NA`,
+    a proportional solid rounds bar and the chamber bar (0x443110);
+    waypoint lines `WP%i: name`, `HEADING: NA`, `GRID: NA`, `RANGE`,
+    `ELEVATION` (0x442c30) with names per waypoint record +0x58 from
+    `DF2WPN.BIN` "WPNames"; the player's name (0x441b20); the radar: the
+    colour map north-up at 1.6 m a pixel at 640 (scale as the command map),
+    route lines, objects by their marker shape, GPS soldiers, the player, the
+    next-waypoint dot on the `map_radius` ring (0x421510, 0x4226c0,
+    0x443850); the top strip: the last three of two 40-line histories
+    (system and chat), each line in its own colour, no timeout (0x442170);
+    the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
+    (0x45a9e0). Wider windows (amenity): each strip is split inside one
+    panel, the halves stay at the window's sides and that panel stretches;
+    HUD.DEF points follow their half. INFERRED: the weapon's ammo kind uses
+    DF1's weapon type numbers; radar objects use record +0x4C as their
+    shape. Not yet: the wind line, the breath bar, the radar's water blend and
+    nearest-texel sampling.
 - Not yet: the new layer flag
   0x80 (random-then-sequential variants), the speed-of-sound delay for distant
   sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),

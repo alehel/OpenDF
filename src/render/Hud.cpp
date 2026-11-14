@@ -265,6 +265,17 @@ void Hud::end() {
     glEnable(GL_DEPTH_TEST);
 }
 
+void Hud::clip(float x, float y, float w, float h) {
+    flush();
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(std::floor(x)), int(std::floor(float(height_) - y - h)), int(std::ceil(w)), int(std::ceil(h)));
+}
+
+void Hud::unclip() {
+    flush();
+    glDisable(GL_SCISSOR_TEST);
+}
+
 void Hud::flush() {
     if (verts_.empty()) return;
     glBufferData(GL_ARRAY_BUFFER, std::ptrdiff_t(verts_.size() * sizeof(Vertex)), verts_.data(), GL_STREAM_DRAW);

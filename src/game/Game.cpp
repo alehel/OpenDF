@@ -58,6 +58,8 @@ const Color kHudMessage = kHudWhite;
 // scaled by height and, on wide screens, the right-hand group stays anchored
 // to the right edge instead of being stretched; things in the 3D view stay
 // centred.
+// Delta Force 2's HUD colours: text and lines 0xff8000, red 0xff0000.
+constexpr Color kDf2Amber{1.f, 128.f / 255.f, 0.f, 1.f}, kDf2Red{1.f, 0.f, 0.f, 1.f};
 constexpr float kTopBar = 60, kBottomBar = 60, kTopDivider = 350, kBottomDivider = 431;
 
 // The original's camera (DF.EXE 0x440ff0, FOV 0x5a set at 0x404489): 90°
@@ -167,7 +169,7 @@ private:
     void drawTopBar(const Screen& s);
     void drawBottomBar(const Screen& s);
     void drawCommandMap(const Screen& s);
-    void drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead);
+    void drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead, float radius = -1);
     void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
@@ -187,6 +189,7 @@ private:
     float floatOrigin_ = 0.1489f, swimOrigin_ = 0.3184f;   // PLAYER01.CHR Floating / Swimming
     std::string missionName_;             // from the campaign text (DFCAMPxx.BIN)
     TextTable campText_;                  // DFCAMPxx.BIN
+    TextTable wpnText_;                   // Delta Force 2: DF2WPN.BIN (waypoint names)
     TextTable menuText_;                  // DFMENU.BIN
     TextTable gameTable_;                 // DFGAME.BIN by section and key
     // Placed charges: satchels (schg), claymores (clay radio, cly2 motion).
@@ -382,7 +385,16 @@ private:
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
     std::deque<std::string> history_;     // the 16 latest messages (ring 0x68a280)
     void drawOldMessages(const Screen& s);
-    void pushMessage(const std::string& text) {
+    // Delta Force 2's top strip (DF2.EXE 0x442170): two histories of 40
+    // {text, colour}, newest first; sys at sys_message, chat at chat_message.
+    struct Df2Line { std::string text; Color colour; };
+    std::deque<Df2Line> df2Sys_, df2Chat_;
+    void pushMessage(const std::string& text, Color df2Colour = {1, 1, 1, 1}, bool df2Chat = false) {
+        if (df2Hud_.on) {
+            auto& h = df2Chat ? df2Chat_ : df2Sys_;
+            h.push_front({text.substr(0, 119), df2Colour});
+            while (h.size() > 40) h.pop_back();
+        }
         messages_.push_back({text, 0});
         history_.push_back(text);
         while (history_.size() > 16) history_.pop_front();
@@ -607,9 +619,18 @@ void Game::buildRoute() {
         const MissionObject* o = mission_.inGroup(2, path->points[i]);
         if (!o) continue;
         RoutePoint rp{o->x, o->y, float(o->raw[7]), {}, o};   // record +0x1C: arrival radius, metres
-        char key[16];
-        std::snprintf(key, sizeof key, "WPN%03d", mission_.routeNameIds[i]);
-        if (const std::string* n = campText_.find("Waypoint Names", key); n && !n->empty()) rp.name = *n;
+        char key[24];
+        const std::string* n = nullptr;
+        if (mission_.version >= 0x0F) {
+            // Delta Force 2: each waypoint names itself, record +0x58 ->
+            // STRWPNAME%03i in DF2WPN.BIN "WPNames" (DF2.EXE 0x403afe).
+            std::snprintf(key, sizeof key, "STRWPNAME%03d", o->raw[0x58 / 4]);
+            n = wpnText_.find("WPNames", key);
+        } else {
+            std::snprintf(key, sizeof key, "WPN%03d", mission_.routeNameIds[i]);
+            n = campText_.find("Waypoint Names", key);
+        }
+        if (n && !n->empty()) rp.name = *n;
         else rp.name = std::to_string(i);   // DF.EXE falls back to "%i"
         route_.push_back(std::move(rp));
     }
@@ -952,7 +973,7 @@ void Game::weaponEvent(const WeaponEvent& e) {
         break;
     case WeaponEvent::LaserPressed:
         sound_.play2D(0x1AE);
-        if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTED")) pushMessage(*t);
+        if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTED")) pushMessage(*t, kDf2Red, true);
         break;
     case WeaponEvent::LaserRequest:
         // 0x4482e0: a strike on the way if any are left and one of 16 slots
@@ -964,7 +985,7 @@ void Game::weaponEvent(const WeaponEvent& e) {
             if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTOK")) pushMessage(*t);
         } else {
             sound_.play2D(0x1B0);
-            if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTDENIED")) pushMessage(*t);
+            if (const std::string* t = gameTable_.find("Fire Missions", "REQUESTDENIED")) pushMessage(*t, kDf2Red, true);
         }
         break;
     }
@@ -1872,9 +1893,9 @@ void Game::drawBottomBar(const Screen& s) {
     hud_.text(s.rx(437.5f), s.by(441.9f), missionName_, kHudGreen, ts);
 }
 
-void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead) {
+void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead, float radius) {
     // DF.EXE 0x43e434: radius 5 virtual units, doubled on the command map.
-    const float r = s.y(6.25f), t = s.px();
+    const float r = radius > 0 ? radius : s.y(6.25f), t = s.px();
     switch (type) {
     case 1: hud_.ring(x, y, r, t, c); break;                                  // hollow circle
     case 2: hud_.ring(x, y, r / 2, r, c); hud_.ring(x, y, r, t, kHudBlack); break;   // filled circle, black outline
@@ -2007,7 +2028,15 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
 
     const float cx = s.w * 0.5f, cy = s.playY + s.playH * 0.5f, t = s.px();
     if (showMap_) drawCommandMap(s);
-    else if (crosshair_) {
+    else if (crosshair_ && df2Hud_.on) {
+        // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
+        // W*640/65536 mode pixels from the centre of the 3D rows.
+        const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
+        hud_.rect(cx - a - b, cy, b, t, kDf2Amber);
+        hud_.rect(cx + a, cy, b, t, kDf2Amber);
+        hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
+        hud_.rect(cx, cy + a, t, b, kDf2Amber);
+    } else if (crosshair_) {
         // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to the
         // left/top and 5..11 to the right/bottom of the centre.
         hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
@@ -2137,34 +2166,200 @@ void Game::drawDf2Strips(const Screen& s) {
 }
 
 void Game::drawDf2Bottom(const Screen& s) {
+    // DF2.EXE 0x442020, in this order: radar, weapon block, waypoint block,
+    // extras, stance icon, carried item. Text in the HUD font, 0xff8000.
     const int n = s.modeW;
-    const float k = s.art();
-    hud_.setBlend(5);   // the icons add their amber to the strip (0x450c10)
-    // Weapon icon (0x443370): WEAP%i 22 frames, by mode; top-left at gun_icon.
+    const float k = s.art(), ts = s.text();
+    const HudDef& def = df2Hud_.def;
+    auto X = [&](const char* key, size_t i = 0) { return df2X(s, def.value(n, key, i), true); };
+    auto Y = [&](const char* key, size_t i = 1) { return df2Y(s, def.value(n, key, i), true); };
+    auto centred = [&](const std::string& t, float x, float y, Color c) { hud_.text(x - hud_.textWidth(t, ts) / 2, y, t, c, ts); };
+    auto frameOf = [&](const HudImage& img, int frames, int f, float x, float y) {
+        const float fh = float(img.height / frames), H = float(img.height);
+        hud_.imageUV(img.texture, x, y, float(img.width) * k, fh * k, 0, float(f) * fh / H, 1, float(f + 1) * fh / H);
+    };
+
+    // Radar (0x421510, 0x4226c0): the terrain colour map north-up in the
+    // `map` rectangle at (scale << 10) / W m a pixel (1.6 m at 640), then
+    // rad%i.pcx added over it, then the blips (size 5W/1024 pixels).
+    const float mx0 = X("map", 0), my0 = Y("map", 1), mx1 = X("map", 2), my1 = Y("map", 3);
+    const float mcx = (mx0 + mx1) * 0.5f, mcy = (my0 + my1) * 0.5f;
+    const float mPerPx = 1024.f / float(n) * mapScale_ / k;   // metres per window pixel
+    const Vec3 c = player_.feet;
+    if (mx1 > mx0 && my1 > my0) {
+        const float ext = terrain_.mapExtent(), hw = (mx1 - mx0) * 0.5f * mPerPx, hh = (my1 - my0) * 0.5f * mPerPx;
+        hud_.imageUV(terrain_.colorTexture(), mx0, my0, mx1 - mx0, my1 - my0, (c.x - hw) / ext, (c.z - hh) / ext, (c.x + hw) / ext,
+                     (c.z + hh) / ext);
+    }
+    if (df2Hud_.rad.texture) {
+        hud_.setBlend(5);
+        const float w = float(df2Hud_.rad.width) * k, h = float(df2Hud_.rad.height) * k;
+        const float cx = (df2X(s, def.value(n, "map", 0), true) + df2X(s, def.value(n, "map", 2), true)) * 0.5f;
+        hud_.image(df2Hud_.rad.texture, std::floor(cx - w / 2), std::floor(mcy - h / 2), w, h);
+        hud_.setBlend(0);
+    }
+    {
+        hud_.clip(mx0, my0, mx1 - mx0, my1 - my0);
+        const float blip = float(std::max(1, 5 * n / 1024)) * k;
+        auto teamColour = [](int side) {
+            return side == 1 ? rgb(0x10, 0x40, 0xff) : side == 2 ? rgb(0xff, 0, 0) : side == 3 ? rgb(0xff, 0xff, 0) : side == 4 ? rgb(0xff, 0xff, 0xff) : rgb(0, 0xff, 0);
+        };
+        const double px = player_.missionX(), py = player_.missionY();
+        auto toRadar = [&](double x, double y) {
+            return std::pair<float, float>{mcx + float(x - px) / mPerPx, mcy - float(y - py) / mPerPx};
+        };
+        // Route lines between the waypoints (0x44f550), orange.
+        for (size_t i = 0; i + 1 < route_.size(); ++i) {
+            auto [ax, ay] = toRadar(route_[i].x, route_[i].y);
+            auto [bx, by] = toRadar(route_[i + 1].x, route_[i + 1].y);
+            hud_.line(ax, ay, bx, by, s.px(), kDf2Amber);
+        }
+        // Soldiers by the GPS option (0 none, 1 marked, 2 all), shape 5.
+        if (o_.gpsIcons > 0)
+            for (const auto& o : world_.objects) {
+                if (o.missionGroup != 3 || !o.person || o.removed) continue;
+                if (o_.gpsIcons == 1 && !o.mapMarker) continue;
+                const Vec3 at = world_.nearest(o.pos, c);
+                drawMapMarker(s, mcx + (at.x - c.x) / mPerPx, mcy + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead,
+                              blip);
+            }
+        // Objects with a radar shape (record +0x4C, INFERRED to be DF2's
+        // obj+0x6e); the current waypoint blinks.
+        const MissionObject* current = route_.empty() ? nullptr : route_[size_t(routeIndex_)].object;
+        for (const auto& o : mission_.objects) {
+            const int type = o.raw[19] & 0xFFFF;
+            if (!type || o.group == 3) continue;
+            if (&o == current && !(ticks_ & 16)) continue;
+            auto [bx, by] = toRadar(o.x, o.y);
+            drawMapMarker(s, bx, by, type, teamColour(int((uint32_t(o.raw[16]) >> 24) & 0xFF)), 0, false, blip);
+        }
+        // The player: shape 5 in its team colour (green).
+        drawMapMarker(s, mcx, mcy, 5, teamColour(0), player_.yaw, false, blip);
+        hud_.unclip();
+    }
+    // The next waypoint (0x443850): a filled dot of radius 3 on the ring of
+    // map_radius in its compass bearing.
+    if (!route_.empty()) {
+        const RoutePoint& p = route_[size_t(routeIndex_)];
+        const double ex = p.x - player_.missionX(), ny = p.y - player_.missionY(), len = std::sqrt(ex * ex + ny * ny);
+        if (len > 0) {
+            const float r = float(def.value(n, "map_radius", 0)) * k;
+            hud_.ring(mcx + float(ex / len) * r, mcy - float(ny / len) * r, 1.5f * k, 3.f * k, kDf2Amber);
+        }
+    }
+
+    // Weapon block (0x443110): icon, name centred at weapon_name (red when
+    // not ready), the clips text centred at weapon_clips, the rounds bar
+    // (solid, proportional) and the chamber bar, by the weapon's kind.
+    hud_.setBlend(5);
     static const signed char kWeapFrame[53] = {
         -1, 12, 12, -1, 7, 10, 4, 4, -1, -1, 4, 13, 8, 8, 8, 3, -1, -1, -1, -1, 11, 11, 11, -1, -1, -1, -1,
         1, 5, 2, 2, -1, 9, 0, 0, -1, -1, 6, 6, 15, 16, 16, -1, 19, 21, 20, -1, 14, 17, 0, 0, 13, 13};
     const int mode = arsenal_.modeIndex();
-    if (df2Hud_.weap.texture && mode >= 0 && mode < 53 && kWeapFrame[mode] >= 0) {
-        const int f = kWeapFrame[mode];
-        const float fh = float(df2Hud_.weap.height / 22);
-        const float x = df2X(s, df2Hud_.def.value(n, "gun_icon", 0), true), y = df2Y(s, df2Hud_.def.value(n, "gun_icon", 1), true);
-        const float H = float(df2Hud_.weap.height);
-        hud_.imageUV(df2Hud_.weap.texture, x, y, float(df2Hud_.weap.width) * k, fh * k, 0, float(f) * fh / H, 1,
-                     float(f + 1) * fh / H);
+    if (df2Hud_.weap.texture && mode >= 0 && mode < 53 && kWeapFrame[mode] >= 0)
+        frameOf(df2Hud_.weap, 22, kWeapFrame[mode], X("gun_icon"), Y("gun_icon"));
+    hud_.setBlend(0);
+    const ModeDef& md = arsenal_.mode();
+    const int kind = md.type;   // the weapon record's kind (+0x0C); DF1's numbering (INFERRED same)
+    const int clips = arsenal_.spares(), rounds = arsenal_.rounds(), cap = arsenal_.gun().magazine;
+    const bool chamber = arsenal_.chambered();
+    bool showRounds = false, showChamber = false, clipText = false, ok = true;
+    switch (kind) {
+    case 1: showRounds = showChamber = clipText = true; ok = !arsenal_.reloading() && (clips || rounds || chamber); break;
+    case 2: showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;
+    case 3: case 4: case 5: showRounds = showChamber = clipText = true; break;
+    case 6: showChamber = true; ok = !arsenal_.firing() && (clips || chamber); break;
+    case 7: case 9: showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;
+    case 10: clipText = true; ok = fireMissions_ > 0; break;
+    case 11: showChamber = clipText = true; break;
+    default: break;
     }
-    // Stance (0x442bc0): POS%i 3 frames prone, crouched, standing; top-left at pos_icon.
-    if (df2Hud_.pos.texture) {
-        const int f = player_.stance == Stance::Prone ? 0 : player_.stance == Stance::Crouch ? 1 : 2;
-        const float fh = float(df2Hud_.pos.height / 3), H = float(df2Hud_.pos.height);
-        const float x = df2X(s, df2Hud_.def.value(n, "pos_icon", 0), true), y = df2Y(s, df2Hud_.def.value(n, "pos_icon", 1), true);
-        hud_.imageUV(df2Hud_.pos.texture, x, y, float(df2Hud_.pos.width) * k, fh * k, 0, float(f) * fh / H, 1,
-                     float(f + 1) * fh / H);
+    std::string name = arsenal_.modeName();
+    char key[16];
+    std::snprintf(key, sizeof key, "HG%03d", mode);
+    if (const std::string* t = gameTable_.find("HudGuns", key)) name = *t;
+    const Color nameColour = ok ? kDf2Amber : kDf2Red;
+    centred(name, X("weapon_name"), Y("weapon_name"), nameColour);
+    char buf[32];
+    if (clipText) std::snprintf(buf, sizeof buf, "\x01 %d", kind == 10 ? fireMissions_ : clips);
+    else std::snprintf(buf, sizeof buf, "NA");
+    centred(buf, X("weapon_clips"), Y("weapon_clips"), kDf2Amber);
+    if (showRounds) {
+        const int x0 = def.value(n, "weapon_rounds", 0), x1 = def.value(n, "weapon_rounds", 2);
+        const int64_t frac = cap ? (int64_t(rounds) << 16) / cap : 0x10000;
+        const int w = int((int64_t(x1 - x0) * frac) >> 16);
+        if (w > 0) {
+            const float a = X("weapon_rounds", 0), top = Y("weapon_rounds", 1), bottom = Y("weapon_rounds", 3);
+            hud_.rect(a, top, float(w) * k, bottom - top, kDf2Amber);
+        }
+    }
+    if (showChamber && chamber) {
+        const float a = X("weapon_chamber", 0), b = X("weapon_chamber", 2), top = Y("weapon_chamber", 1), bottom = Y("weapon_chamber", 3);
+        hud_.rect(a, top, b - a, bottom - top, nameColour);
+    }
+
+    // Waypoint block (0x442c30): left-aligned lines; heading and grid always NA.
+    {
+        std::string lines[5] = {"NO WAYPOINT", "  HEADING: NA", "  GRID: NA", "  RANGE: NA", "  ELEVATION: NA"};
+        if (!route_.empty()) {
+            const RoutePoint& p = route_[size_t(routeIndex_)];
+            char line[160];
+            std::snprintf(line, sizeof line, "WP%d: %s", routeIndex_ + 1, p.name.c_str());
+            lines[0] = line;
+            const long dx = long(std::floor(p.x - player_.missionX())), dy = long(std::floor(p.y - player_.missionY()));
+            const long d = long(std::sqrt(double(dx * dx + dy * dy)));
+            if (d < 1000) std::snprintf(line, sizeof line, "  RANGE: %ldm", d);
+            else std::snprintf(line, sizeof line, "  RANGE: %ldkm+", d / 1000);
+            lines[3] = line;
+            // The waypoint's own height (w+0x2c): ground plus its lift.
+            const float elev = terrain_.heightAt(float(p.x), float(-p.y)) + (p.object ? p.object->z : 0.f);
+            std::snprintf(line, sizeof line, "  ELEVATION: %dm", int(std::floor(elev)));
+            lines[4] = line;
+        }
+        const char* keys[5] = {"waypoint_name", "waypoint_heading", "waypoint_grid", "waypoint_dist", "waypoint_elev"};
+        for (int i = 0; i < 5; ++i) hud_.text(X(keys[i]), Y(keys[i]), lines[i], kDf2Amber, ts);
+    }
+
+    // Extras (0x441b20): the player's name; the wind (extra2) waits for
+    // DF2's wind; extra3/4 are multiplayer only, extra5 is empty.
+    hud_.text(X("extra1"), Y("extra1"), o_.soldierName, kDf2Amber, ts);
+
+    hud_.setBlend(5);
+    // Stance (0x442bc0): POS%i 3 frames prone, crouched, standing.
+    if (df2Hud_.pos.texture)
+        frameOf(df2Hud_.pos, 3, player_.stance == Stance::Prone ? 0 : player_.stance == Stance::Crouch ? 1 : 2, X("pos_icon"), Y("pos_icon"));
+    // Carried item (0x442360): ITM%i 7 frames by item id.
+    if (df2Hud_.itm.texture && carried_ >= 0 && world_.objects[size_t(carried_)].item) {
+        int f = -1;
+        switch (world_.objects[size_t(carried_)].item->id - 100000) {
+        case 4038: f = 0; break;
+        case 4008: case 4018: f = 2; break;
+        case 4077: f = 3; break;
+        case 4021: f = 4; break;
+        case 4034: f = 5; break;
+        case 4035: case 4036: case 4128: f = 6; break;
+        default: break;
+        }
+        if (f >= 0) frameOf(df2Hud_.itm, 7, f, X("carrying_icon"), Y("carrying_icon"));
     }
     hud_.setBlend(0);
 }
 
-void Game::drawDf2Top(const Screen& s) { (void)s; }
+void Game::drawDf2Top(const Screen& s) {
+    // DF2.EXE 0x442170: three lines of each history at (x0 + 2, y0 + k·12W/640),
+    // the oldest of the three on top, each in its own colour; no timeout.
+    const int n = s.modeW;
+    const float ts = s.text(), sp = float(12 * n / 640) * s.art();
+    auto history = [&](const std::deque<Df2Line>& h, const char* key) {
+        const float x = df2X(s, df2Hud_.def.value(n, key, 0) + 2, false), y = df2Y(s, df2Hud_.def.value(n, key, 1), false);
+        for (int row = 0; row < 3; ++row) {
+            const size_t e = size_t(2 - row);
+            if (e < h.size() && !h[e].text.empty()) hud_.text(x, y + float(row) * sp, h[e].text, h[e].colour, ts);
+        }
+    };
+    history(df2Chat_, "chat_message");
+    history(df2Sys_, "sys_message");
+}
 
 void Game::drawBriefing(const Screen& s) {
     // 0x482cb8: darkened box (200, 200)-(824, 568); "Mission Briefing"
@@ -2440,9 +2635,12 @@ int Game::run() {
         return 1;
     }
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
-    if (vfs_.read("DFGAME.BIN", raw)) parseRtxt(raw, gameText_);
+    // Delta Force 2 names its game text DF2GAME.BIN.
+    const char* gameBin = vfs_.exists("DFGAME.BIN") ? "DFGAME.BIN" : "DF2GAME.BIN";
+    if (vfs_.read(gameBin, raw)) parseRtxt(raw, gameText_);
     if (vfs_.read("DFMENU.BIN", raw)) menuText_.parse(raw);
-    if (vfs_.read("DFGAME.BIN", raw)) gameTable_.parse(raw);
+    if (vfs_.read("DF2WPN.BIN", raw)) wpnText_.parse(raw);
+    if (vfs_.read(gameBin, raw)) gameTable_.parse(raw);
     {
         // The player soldier (ITEMS.DEF "player01") names its move table.
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
@@ -2795,13 +2993,19 @@ int Game::run() {
             s.u = s.h / 480.f;
             s.top = kTopBar * s.u;
             s.bottom = kBottomBar * s.u;
-            // The 3D view: rows letterbox/8 .. 1 - letterbox/8 of the height (0x404650).
-            s.playY = float(letterbox_) * s.h / 8.f;
-            s.playH = std::max(1.f, s.h - 2 * s.playY);
             // The largest of the original's modes (640x480, 800x600,
             // 1024x768) that fits the window height.
             s.modeW = s.h >= 768 ? 1024 : s.h >= 600 ? 800 : 640;
             useHudMode(s.modeW);
+            // The 3D view: rows letterbox/8 .. 1 - letterbox/8 of the height
+            // (0x404650); Delta Force 2: the rows between its strips, DHT_h ..
+            // H - DHB_h (DF2.EXE 0x45cb40).
+            s.playY = float(letterbox_) * s.h / 8.f;
+            s.playH = std::max(1.f, s.h - 2 * s.playY);
+            if (df2Hud_.on && df2Hud_.top.texture && df2Hud_.bottom.texture) {
+                s.playY = float(df2Hud_.top.height) * s.art();
+                s.playH = std::max(1.f, s.h - s.playY - float(df2Hud_.bottom.height) * s.art());
+            }
 
             glViewport(0, 0, dw, dh);
             glClearColor(0, 0, 0, 1);
