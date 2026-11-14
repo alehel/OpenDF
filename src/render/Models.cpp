@@ -48,6 +48,8 @@ uniform bool uTextured, uKey;
 uniform vec3 uColor, uHighlight;
 uniform float uSat;
 uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha, 3 texture alpha (DF2)
+uniform vec4 uTint;
+uniform bool uOverride;   // DF2 0x445e50: the colour replaces the material's (texel-as-alpha parts)
 out vec4 oColor;
 vec3 dec(vec3 c) { return pow(max(c, 0.0), vec3(1.25)); }
 vec3 enc(vec3 c) { return pow(max(c, 0.0), vec3(0.8)); }
@@ -58,10 +60,16 @@ vec3 post(vec3 c) {
     return vec3(texture(uLut, vec2(c.r * k + o, 0.5)).r, texture(uLut, vec2(c.g * k + o, 0.5)).g,
                 texture(uLut, vec2(c.b * k + o, 0.5)).b);
 }
+void shade();
 void main() {
+    shade();
+    if (uOverride && uMode == 2) oColor.a *= uTint.a;
+    else oColor *= uTint;
+}
+void shade() {
     float idx = uTextured ? texture(uIndex, vUv).r * 255.0 : 1.0;
     if (uMode == 2) {               // 0x8000: dst += (C - dst) * texel / 256
-        oColor = vec4(post(uColor), idx / 256.0);
+        oColor = vec4(post(uOverride ? uTint.rgb : uColor), idx / 256.0);
         return;
     }
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
@@ -212,6 +220,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     g->headerRadius = src.radius > 0 ? src.radius : 1.f;
     g->flatRadius = src.flatRadius;
     g->height = src.height;
+    std::copy(src.box, src.box + 4, g->box);
     for (auto& t : src.textures) {
         g->textures.push_back(uploadTexture(t));
         g->indexTextures.push_back(uploadIndices(t));
@@ -284,6 +293,8 @@ void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
     setV3(prog_, "uViewer", normalize(light.viewer));
     setV3(prog_, "uHighlight", light.highlight);
     glUniform1f(glGetUniformLocation(prog_, "uSat"), light.saturation);
+    glUniform4f(glGetUniformLocation(prog_, "uTint"), 1, 1, 1, 1);
+    glUniform1i(glGetUniformLocation(prog_, "uOverride"), 0);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, light.lut ? light.lut : identityLut_);
     glActiveTexture(GL_TEXTURE0);
@@ -359,6 +370,11 @@ void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& mode
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+}
+
+void ModelRenderer::setTint(float r, float g, float b, float a, bool replace) {
+    glUniform4f(glGetUniformLocation(prog_, "uTint"), r, g, b, a);
+    glUniform1i(glGetUniformLocation(prog_, "uOverride"), replace ? 1 : 0);
 }
 
 void ModelRenderer::end() {

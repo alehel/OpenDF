@@ -103,6 +103,14 @@ struct Mission {
     int variantWord = 0, lightFlags = 0;
     int windKph = 0, windDeg = 0;
     int waterOverride = -1;
+    // Delta Force 2, applied after the terrain loads (0x45d6df): flag 0x78
+    // bit 1 -> fog_level = +0x8C (0x45d6e7), bit 2 -> fog_color = +0x90,
+    // R << 16 | G << 8 | B (0x45d6f7); -1 not set.
+    int fogLevel = -1;
+    int64_t fogColor = -1;
+    // Flag 0x78 bit 3 -> the weather type +0xAC (0x45d707 -> 0x46ba90):
+    // 0 none, 1 rain, 2 snow (names INFERRED from the fall speeds and sprite).
+    int weather = 0;
     SkyOverride sky;                         // Delta Force 2: header 0xB8..0xE4
     int winIds[4] = {0, 0, 0, 0}, loseIds[4] = {0, 0, 0, 0};   // Delta Force 2: header 0xB0 / 0xB4                  // Delta Force 2: header flag 0x78 bit 0 -> +0x88; -1 none            // Delta Force 2: header +0xE8 / +0xEC
     // The object at `index` of `group`, or null.

@@ -28,6 +28,11 @@ struct TerrainDesc {
     int gamma = 128;
     int saturation = 128;
     int sunSlope = 45;
+    // Delta Force 2 (parser 0x465ab0, record +0x15C / +0x160): fog distance
+    // 2^fog_level m, 0 = no fog; fog_color R,G,B, default (192,192,192)
+    // (0x4639db). No TRN on the disc has them; missions override them.
+    int fogLevel = 0;
+    int fogColor[3] = {192, 192, 192};
     std::vector<TerrainColorType> types;
 };
 

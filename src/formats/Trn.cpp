@@ -53,6 +53,13 @@ bool parseTrn(const std::string& text, TerrainDesc& d) {
         else if (key == "gamma") d.gamma = std::atoi(val.c_str());
         else if (key == "saturation") d.saturation = std::atoi(val.c_str());
         else if (key == "sun_slope") d.sunSlope = std::atoi(val.c_str());
+        else if (key == "fog_level") d.fogLevel = std::atoi(val.c_str());
+        else if (key == "fog_color") {
+            std::string v = val;
+            for (auto& ch : v) if (ch == ',') ch = ' ';
+            std::istringstream fs(v);
+            fs >> d.fogColor[0] >> d.fogColor[1] >> d.fogColor[2];
+        }
         else if (key == "filter") {
             std::string v = val;
             for (auto& ch : v) if (ch == ',') ch = ' ';

@@ -117,7 +117,7 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     m.version = d[3];
     // Delta Force 2 and later (version 0x0F, DF2.EXE 0x403bd0): a 0x208-byte
     // header with 32-byte title/author, terrain at 0x44 and dialogue at 0x54,
-    // flags at 0x78 (night 0x100000), weather at 0xAC instead of the route
+    // flags at 0x78 (night 0x100000), the weather type at 0xAC instead of the route
     // names (those moved to the waypoint records' +0x58); the rest as DF1.
     const bool v15 = m.version >= 0x0F;
     if (v15) {
@@ -135,6 +135,9 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         // Flag 0x78 bit 0: the mission's own water height (word +0x88, TRN
         // water_height units; DF2.EXE 0x45d6ae).
         if (u32(d, 0x78) & 1) m.waterOverride = int(u32(d, 0x88) & 0xFFFF);
+        if (u32(d, 0x78) & 2) m.fogLevel = int(u32(d, 0x8C));
+        if (u32(d, 0x78) & 4) m.fogColor = int64_t(u32(d, 0x90) & 0xFFFFFF);
+        if (u32(d, 0x78) & 8) m.weather = int(u32(d, 0xAC));
         // The sky block (a SUNSETS.DEF entry): clouds 0xB8, gradient 0xC8,
         // height 0xD8, horizon 16.16 0xDC, gamma/sat/r/g/b bytes 0xE0..0xE4.
         m.sky.clouds = cstr(d, 0xB8, 0x10);

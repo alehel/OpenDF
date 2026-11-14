@@ -73,6 +73,7 @@ uniform sampler2DArray uDetailColor, uDetailShade;
 uniform bool uAlphaDetail;
 uniform float uMapSize, uTiles, uRingScale;
 uniform vec3 uEye, uFog, uCloudCol;
+uniform bool uDf2;
 out vec4 oColor;
 void main() {
     vec2 uv = (vCell + 0.5) / uMapSize;
@@ -97,9 +98,11 @@ void main() {
     }
     // Far rings (0x43b3f0): ring k (100·2^k .. 100·2^(k+1) m) samples colour
     // mip k with fog level k: f = max(0, 20k - 15)/256 toward sky colour 0.
+    // Delta Force 2 has no ring fog (its bands 0x4678ed..0x467954 are only
+    // cut at the fog distance; distance fog is the fog_level pass alone).
     float k = clamp(floor(log2(dist / near)), 0.0, 6.0);
     vec3 base = textureLod(uColor, uv, k).rgb;
-    float f = max(0.0, 20.0 * k - 15.0) / 256.0;
+    float f = uDf2 ? 0.0 : max(0.0, 20.0 * k - 15.0) / 256.0;
     oColor = vec4(post(enc(mix(dec(base), dec(uFog), f))), 1.0);
 }
 )";
@@ -119,13 +122,41 @@ uniform mat4 uInvRot;
 uniform vec2 uTan;
 uniform vec3 uEye;
 uniform float uCloudH, uHorizon, uPitchTan, uTime;
-uniform bool uDf2;
+uniform bool uDf2, uNoSky;
 uniform vec3 uPal[17];
-uniform sampler2D uClouds;
+uniform sampler2D uClouds, uGrad;
+uniform vec4 uViewport;
+uniform int uHorizonRow, uSkyStep, uKMax;
 out vec4 oColor;
+// Clouds (0x43b5f4): the sky map projected on a plane sky_height m up,
+// 8 m per texel, drifting with time; the texel (0..255), -1 for none.
+float cloudTexel(vec3 dir) {
+    if (dir.y <= 0.001 || uEye.y >= uCloudH) return -1.0;
+    float t = (uCloudH - uEye.y) / dir.y;
+    vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
+    return texture(uClouds, p / 512.0).r * 255.0;
+}
 void main() {
     vec3 v = vec3(vNdc.x * uTan.x, vNdc.y * uTan.y, -1.0);
     vec3 dir = normalize((uInvRot * vec4(v, 0.0)).xyz);
+    if (uDf2) {
+        // Delta Force 2 (0x467700): screen row k above the horizon row takes
+        // gradient entry min(255, (k·s) >> 16), 256 steps not interpolated
+        // and constant across the row; rows at or below the horizon, and
+        // every row when the pitch is under -45 degrees (DF2 draws no sky
+        // then), take entry 0 (OpenDF's fill).
+        int row = int(floor(uViewport.y + uViewport.w - gl_FragCoord.y));
+        int k = uHorizonRow - row;
+        int idx = (uNoSky || k < 0) ? 0 : (k > uKMax ? 255 : min(255, (k * uSkyStep) >> 16));
+        vec3 sky = texelFetch(uGrad, ivec2(idx, 0), 0).rgb;
+        // Clouds (0x4679b0, span 0x485c80): lerp(gradient, cloud colour,
+        // density / 256) per row LUT, in plain byte space; no grading (2.7
+        // of the DF2 terrain notes).
+        float px = cloudTexel(dir);
+        if (px >= 0.0) sky = mix(sky, uPal[16], px / 256.0);
+        oColor = vec4(sky, 1.0);
+        return;
+    }
     // Gradient (0x43b930): index L = 2·horizon per 640-scale row above the
     // horizon row (centre + tan(pitch)·F + 5); colours 0..15 interpolated
     // in linear space, 16 sub-steps each.
@@ -134,21 +165,37 @@ void main() {
     int kk = int(L) >> 4;
     float j = mod(floor(L), 16.0) / 16.0;
     vec3 sky = kk == 0 ? dec(uPal[0]) : mix(dec(uPal[kk - 1]), dec(uPal[min(kk, 15)]), j);
-    // Clouds (0x43b5f4): the sky map projected on a plane sky_height m up,
-    // 8 m per texel, drifting with time; pixels over 128 blend toward sky
-    // colour 16 in 64 steps.
-    if (dir.y > 0.001 && uEye.y < uCloudH) {
-        float t = (uCloudH - uEye.y) / dir.y;
-        vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
-        float px = texture(uClouds, p / 512.0).r * 255.0;
+    // Pixels over 128 blend toward sky colour 16 in 64 steps.
+    float px = cloudTexel(dir);
+    if (px >= 0.0) {
         float c = px < 128.0 ? 0.0 : min(62.0, floor((px - 128.0) / 2.0)) / 64.0;
-        // Delta Force 2 (0x4679b0, span 0x485c80): the texel is a density,
-        // lerp(gradient, cloud colour, density / 256).
-        if (uDf2) c = px / 256.0;
         sky = mix(sky, dec(uPal[16]), c);
     }
-    // Delta Force 2 does not grade the sky (2.7 of the DF2 terrain notes).
-    oColor = vec4(uDf2 ? enc(sky) : post(enc(sky)), 1.0);
+    oColor = vec4(post(enc(sky)), 1.0);
+}
+)";
+
+// Delta Force 2's fog pass (DF2.EXE 0x4485b0, software frame; the D3D copy
+// 0x45b620 uses the same blend): f = min(255, z >> (fog_level + 8)) with z
+// the pixel's depth in 16.16 m (INFERRED: view depth, the only reading that
+// makes f reach 255 at the band cut-off 2^fog_level m), then out = c + (C -
+// c)·f/256 per channel in plain byte space; drawn as fog_color with alpha
+// f/256 over the frame. Empty depth (the sky, z 0x7fffffff) gives f = 255.
+const char* kFogFS = R"(#version 330 core
+uniform sampler2D uDepth;
+uniform vec4 uViewport;
+uniform vec3 uFogColor;
+uniform float uM10, uM14;
+uniform int uLevel;
+out vec4 oColor;
+void main() {
+    float d = texelFetch(uDepth, ivec2(gl_FragCoord.xy - uViewport.xy), 0).r;
+    float f = 255.0;
+    if (d < 1.0) {
+        float depth = uM14 / ((2.0 * d - 1.0) + uM10);   // view depth, metres
+        f = min(255.0, floor(depth * 65536.0 / exp2(float(uLevel + 8))));
+    }
+    oColor = vec4(uFogColor, f / 256.0);
 }
 )";
 
@@ -268,12 +315,12 @@ Terrain::~Terrain() { release(); }
 
 void Terrain::release() {
     GLuint texs[] = {texColor_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
-                     texWaterGrad_, texScene_, texRadar_};
+                     texWaterGrad_, texScene_, texRadar_, texSkyGrad_, texDepth_};
     for (GLuint t : texs) if (t) glDeleteTextures(1, &t);
     texRadar_ = 0;
     texColor_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
-    texWaterGrad_ = texScene_ = 0;
-    sceneW_ = sceneH_ = 0;
+    texWaterGrad_ = texScene_ = texSkyGrad_ = texDepth_ = 0;
+    sceneW_ = sceneH_ = depthW_ = depthH_ = 0;
     for (auto& m : lods_) {
         if (m.vao) glDeleteVertexArrays(1, &m.vao);
         if (m.vbo) glDeleteBuffers(1, &m.vbo);
@@ -284,8 +331,8 @@ void Terrain::release() {
     if (waterVao_) glDeleteVertexArrays(1, &waterVao_);
     if (waterVbo_) glDeleteBuffers(1, &waterVbo_);
     skyVao_ = waterVao_ = waterVbo_ = 0;
-    for (GLuint p : {progTerrain_, progSky_, progWater_}) if (p) glDeleteProgram(p);
-    progTerrain_ = progSky_ = progWater_ = 0;
+    for (GLuint p : {progTerrain_, progSky_, progWater_, progFog_}) if (p) glDeleteProgram(p);
+    progTerrain_ = progSky_ = progWater_ = progFog_ = 0;
 }
 
 bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
@@ -305,6 +352,13 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         desc_.gamma = skyOverride.gamma;
         desc_.saturation = skyOverride.saturation;
         for (int k = 0; k < 3; ++k) desc_.filter[k] = skyOverride.filter[k];
+    }
+    // Delta Force 2: the mission's fog after the terrain's (0x45d6df).
+    if (fogLevelOverride >= 0) desc_.fogLevel = fogLevelOverride;
+    if (fogColorOverride >= 0) {
+        desc_.fogColor[0] = int((fogColorOverride >> 16) & 0xFF);
+        desc_.fogColor[1] = int((fogColorOverride >> 8) & 0xFF);
+        desc_.fogColor[2] = int(fogColorOverride & 0xFF);
     }
 
     IndexedImage color, elev, detail;
@@ -389,24 +443,10 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         }
         surface_.resize(color.pixels.size());
         for (size_t i = 0; i < color.pixels.size(); ++i) surface_[i] = byIndex[color.pixels[i]];
-        if (trueColor) {
-            // APPROXIMATION (later games): the nearest TRN `type` colour per
-            // pixel; how DF2 picks surfaces is not traced (char_data .CAL).
-            for (size_t i = 0; i < surface_.size(); ++i) {
-                int best = 1;
-                long bestD = -1;
-                for (const auto& t : desc_.types) {
-                    const long dr = colorRgba.rgba[i * 4] - t.r, dg = colorRgba.rgba[i * 4 + 1] - t.g, db = colorRgba.rgba[i * 4 + 2] - t.b;
-                    const long dd = dr * dr + dg * dg + db * db;
-                    if (bestD < 0 || dd < bestD) {
-                        bestD = dd;
-                        const std::string& m = t.material;
-                        best = m == "dirt" ? 1 : m == "grass" ? 2 : m == "snow" ? 3 : m == "cement" ? 4 : m == "sand" ? 5 : m == "packed_dirt" ? 6 : 0;
-                    }
-                }
-                surface_[i] = uint8_t(desc_.types.empty() ? 1 : best);
-            }
-        }
+        // Delta Force 2 ignores the TRN `type` lines (the parser skips them,
+        // 0x465e5b): its only surface source is the .CAL class below; no
+        // .CAL (or unmatched names) means class 0 everywhere.
+        if (trueColor) std::fill(surface_.begin(), surface_.end(), uint8_t(0));
     }
     glGenTextures(1, &texHeight_);
     glBindTexture(GL_TEXTURE_2D, texHeight_);
@@ -426,8 +466,6 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     // per detail tile (DF2.EXE 0x466290): DT dirt 1, GS grass 2, SW snow 3,
     // RK/CT rock/concrete 4, SD sand 5 (classes 1..5 are OpenDF's surfaces;
     // RD road 8, MD mud 9, IE ice 10, QS 11 and other names: no effect).
-    // APPROXIMATION: the tile's own line is used; DF2.EXE permutes the
-    // table after loading (0x466686) and reads it through the new indices.
     if (trueColor && !desc_.charData.empty()) {
         std::vector<uint8_t> raw;
         if (vfs.read(withExt(desc_.charData, ".CAL"), raw)) {
@@ -444,7 +482,25 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
                 cls[i++] = !digit ? 0 : pre == "DT" ? 1 : pre == "GS" ? 2 : pre == "SW" ? 3 : (pre == "RK" || pre == "CT") ? 4 : pre == "SD" ? 5 : 0;
                 line.clear();
             }
-            for (size_t c = 0; c < surface_.size() && c < detail.pixels.size(); ++c) surface_[c] = cls[detail.pixels[c]];
+            // DF2.EXE's renumbering, copied with its bug: the detail map is
+            // rewritten to ranks among the used indices (remap[old] = rank,
+            // 0x4643a0..0x464425), then the CAL table is permuted the same
+            // way again, table[i] = cal[remap[i]] (0x466668..0x4666b4), and
+            // looked up through the rewritten map: class(o) =
+            // cal[remap[remap[o]]]. Right only where the used indices are
+            // exactly 0..N-1; on the DF* terrains it differs on 24-98 % of
+            // the cells, which is what the player hears. remap of an unused
+            // index is 0 (INFERRED: the table 0x50edf0 is zero at first start;
+            // a later terrain would see stale entries).
+            std::array<bool, 256> used{};
+            for (uint8_t p : detail.pixels) used[p] = true;
+            std::array<uint8_t, 256> remap{};
+            int n = 0;
+            for (int o = 0; o < 256; ++o)
+                if (used[size_t(o)]) remap[size_t(o)] = uint8_t(n++);
+            std::array<uint8_t, 256> eff{};
+            for (int o = 0; o < 256; ++o) eff[size_t(o)] = cls[remap[remap[size_t(o)]]];
+            for (size_t c = 0; c < surface_.size() && c < detail.pixels.size(); ++c) surface_[c] = eff[detail.pixels[c]];
         }
     }
 
@@ -500,9 +556,8 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         for (int i = 0; i < 17; ++i) skyColors_[i] = skyPal.palette[i];
     else {
         // Delta Force 2: a 16x257 TGA whose column 0 is a 256-step gradient
-        // (row 256 the horizon, row 1 the zenith) and row 0 the cloud colour.
-        // APPROXIMATION: sampled into OpenDF's 16 gradient steps; DF2 draws
-        // all 256 (the gradient rises 10 horizon focal / rows a screen row).
+        // (row 256 the horizon = entry 0, row 1 the zenith = entry 255) and
+        // row 0 the cloud colour; all 256 entries are drawn (0x467700).
         RgbaImage t;
         std::vector<uint8_t> raw;
         if (vfs.read(withExt(desc_.skyPalette, ".TGA"), raw) && decodeRgbaImage(raw, t) && t.height >= 257) {
@@ -512,7 +567,22 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             };
             for (int i = 0; i < 16; ++i) skyColors_[i] = px(256 - i * 16);
             skyColors_[16] = px(0);
+            std::vector<uint8_t> grad(256 * 3);
+            for (int i = 0; i < 256; ++i) {
+                const Rgb c = px(256 - i);
+                grad[size_t(i) * 3] = c.r;
+                grad[size_t(i) * 3 + 1] = c.g;
+                grad[size_t(i) * 3 + 2] = c.b;
+            }
+            texSkyGrad_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, grad.data(), false, false);
         }
+    }
+    if (gen2_ && !texSkyGrad_) {
+        // No gradient file: entry 0 everywhere.
+        const uint8_t c[3] = {skyColors_[0].r, skyColors_[0].g, skyColors_[0].b};
+        std::vector<uint8_t> grad(256 * 3);
+        for (int i = 0; i < 256 * 3; ++i) grad[size_t(i)] = c[i % 3];
+        texSkyGrad_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, grad.data(), false, false);
     }
     horizon_ = skyColors_[0];
 
@@ -621,7 +691,8 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     progTerrain_ = compileProgram(kTerrainVS, terrainFS.c_str());
     progSky_ = compileProgram(kSkyVS, skyFS.c_str());
     progWater_ = compileProgram(kWaterVS, kWaterFS);
-    if (!progTerrain_ || !progSky_ || !progWater_) return fail("shader compilation failed (see stderr)");
+    progFog_ = compileProgram(kSkyVS, kFogFS);
+    if (!progTerrain_ || !progSky_ || !progWater_ || !progFog_) return fail("shader compilation failed (see stderr)");
 
     glUseProgram(progTerrain_);
     setInt(progTerrain_, "uHeight", 0);
@@ -630,12 +701,14 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     setInt(progTerrain_, "uDetailColor", 3);
     setInt(progTerrain_, "uDetailShade", 4);
     setInt(progTerrain_, "uAlphaDetail", alphaDetail_ ? 1 : 0);
+    setInt(progTerrain_, "uDf2", gen2_ ? 1 : 0);
     setInt(progTerrain_, "uLut", 5);
     setF(progTerrain_, "uTiles", float(tiles));
     setF(progTerrain_, "uSat", desc_.saturation / 128.f);
     glUseProgram(progSky_);
     setInt(progSky_, "uLut", 0);
     setInt(progSky_, "uClouds", 1);
+    setInt(progSky_, "uGrad", 2);
     setF(progSky_, "uSat", desc_.saturation / 128.f);
     glUseProgram(progWater_);
     setInt(progWater_, "uWaterIdx", 0);
@@ -736,9 +809,14 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     if (!hasWater_) return;
     const float level = desc_.waterHeight * scale.heightScale;
     if (gen2_) {
-        // Delta Force 2: one plane at the level out to 2047 m (fog_level 0),
-        // depth-tested and writing depth; seen from below as well, then the
-        // under-water tint over the whole view (camera at or below the level).
+        // Delta Force 2: one plane at the level out to min(2^fog_level m,
+        // 2047 m) (0x4670b7..0x4670d4; 2047 m with fog off), depth-tested
+        // and writing depth; seen from below as well, then the under-water
+        // tint over the whole view (camera at or below the level). With fog
+        // the plane's own fog quad (0x467568..0x46760e, alpha clamp(depth >>
+        // (fog_level + 8))) is the same blend as the fog pass, which OpenDF
+        // applies to the water through drawFog (APPROXIMATION: one blend of
+        // the finished pixel instead of the quad's blend before the pass).
         glUseProgram(progWater_);
         glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 1);
         glUniform1i(glGetUniformLocation(progWater_, "uTint"), 0);
@@ -748,7 +826,7 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         setV3(progWater_, "uEye", eye);
         setM4(progWater_, "uViewProj", proj * view);
         setF(progWater_, "uLevel", level);
-        setF(progWater_, "uExtent", 2047.f);
+        setF(progWater_, "uExtent", fogLevel() ? std::min(fogDistance(), 2047.f) : 2047.f);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texWater_);
         glBindVertexArray(waterVao_);
@@ -840,7 +918,10 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     const float cell = scale.cellSize;
     auto rgb = [](Rgb c) { return Vec3{c.r / 255.f, c.g / 255.f, c.b / 255.f}; };
 
-    // Sky (behind everything).
+    // Sky (behind everything). Delta Force 2 with fog on draws no gradient
+    // and no clouds (0x46766e..0x4676a9): it only marks the rows as far
+    // away, and the fog pass turns them into the fog colour.
+    if (!fogLevel()) {
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glUseProgram(progSky_);
@@ -854,6 +935,35 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
         const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
         const float pitch = std::asin(std::clamp(fwd.y, -1.f, 1.f));
         setF(progSky_, "uPitchTan", std::tan(pitch));
+        if (gen2_) {
+            // DF2.EXE 0x467700: W = the view's width in the original's
+            // pixels at this focal length and FOV; focal = trunc(W/2 /
+            // tan(fov/2) + 0.5) (0x404742); the horizon row = centre +
+            // ((tan(pitch)·65536 · focal) >> 16) + 5, or centre + 0x800 at 89
+            // degrees and more, none under -45 (0x46772e..0x46779c); step s =
+            // ((((fov << 16) / W) << 16) / 0x3333 · 0x20000 >> 16) · horizon
+            // >> 16 per row (0x4677bd..0x467816).
+            GLint vp[4];
+            glGetIntegerv(GL_VIEWPORT, vp);
+            const double fpx = double(proj.m[5]) * vp[3] / 2.0;
+            const double halfFov = df2FovDeg * 3.14159265358979 / 360.0;
+            const int64_t W = std::max<int64_t>(1, std::llround(2.0 * fpx * std::tan(halfFov)));
+            const int64_t focal = int64_t(double(W) / 2.0 / std::tan(halfFov) + 0.5);
+            const double deg = pitch * 180.0 / 3.14159265358979;
+            int64_t horizonRow = vp[3] / 2;
+            if (deg >= 89.0) horizonRow += 0x800;
+            else horizonRow += ((int64_t(std::tan(double(pitch)) * 65536.0) * focal) >> 16) + 5;
+            int64_t st = (int64_t(df2FovDeg) << 16) / W;
+            st = (st << 16) / 0x3333;
+            st = (st * 0x20000) >> 16;
+            st = (st * int64_t(desc_.horizon * 65536.f)) >> 16;
+            st = std::max<int64_t>(1, st);
+            glUniform1i(glGetUniformLocation(progSky_, "uNoSky"), deg < -45.0 ? 1 : 0);
+            glUniform1i(glGetUniformLocation(progSky_, "uHorizonRow"), int(std::clamp<int64_t>(horizonRow, -0x10000, 0x10000)));
+            glUniform1i(glGetUniformLocation(progSky_, "uSkyStep"), int(std::min<int64_t>(st, 0x7fffffff)));
+            glUniform1i(glGetUniformLocation(progSky_, "uKMax"), int((int64_t(256) << 16) / st + 1));
+            glUniform4f(glGetUniformLocation(progSky_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
+        }
     }
     setF(progSky_, "uTime", float(SDL_GetTicks()) * 60.f / 1000.f);
     for (int i = 0; i < 17; ++i) {
@@ -865,10 +975,13 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     glBindTexture(GL_TEXTURE_2D, texSkyPal_);
     glActiveTexture(GL_TEXTURE0 + 1);
     glBindTexture(GL_TEXTURE_2D, texClouds_);
+    glActiveTexture(GL_TEXTURE0 + 2);
+    glBindTexture(GL_TEXTURE_2D, texSkyGrad_);
     glBindVertexArray(skyVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
+    }
 
     // Terrain around the camera; the map repeats endlessly. DF.EXE draws
     // terrain out to 40·F m (12.8 km at 640 wide, ring table 0x438404).
@@ -888,7 +1001,9 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
         glBindTexture(i == 3 || i == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D, units[i]);
     }
 
-    const float terrainDistance = 40.f * 320.f * ringScale;
+    // Delta Force 2 with fog: bands starting past 2^fog_level m are not
+    // drawn (0x4678ed..0x467905, 0x46793a..0x467956).
+    const float terrainDistance = fogLevel() ? std::min(40.f * 320.f * ringScale, fogDistance()) : 40.f * 320.f * ringScale;
     const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
     const GLint locOrigin = glGetUniformLocation(progTerrain_, "uOrigin");
     const GLint locScale = glGetUniformLocation(progTerrain_, "uChunkScale");
@@ -937,6 +1052,45 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
 
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
+}
+
+void Terrain::drawFog(const Mat4& proj) {
+    if (!fogLevel() || !progFog_) return;
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    if (!texDepth_ || depthW_ != vp[2] || depthH_ != vp[3]) {
+        if (texDepth_) glDeleteTextures(1, &texDepth_);
+        glGenTextures(1, &texDepth_);
+        glBindTexture(GL_TEXTURE_2D, texDepth_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, vp[2], vp[3], 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        depthW_ = vp[2];
+        depthH_ = vp[3];
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texDepth_);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
+    glUseProgram(progFog_);
+    setInt(progFog_, "uDepth", 0);
+    glUniform4f(glGetUniformLocation(progFog_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
+    setV3(progFog_, "uFogColor", {desc_.fogColor[0] / 255.f, desc_.fogColor[1] / 255.f, desc_.fogColor[2] / 255.f});
+    setF(progFog_, "uM10", proj.m[10]);
+    setF(progFog_, "uM14", proj.m[14]);
+    setInt(progFog_, "uLevel", fogLevel());
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBindVertexArray(skyVao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+    glUseProgram(0);
 }
 
 } // namespace df

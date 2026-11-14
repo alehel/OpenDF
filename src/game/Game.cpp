@@ -18,6 +18,7 @@
 #include "Vehicles.h"
 #include "Moves.h"
 #include "Weapons.h"
+#include "Weather.h"
 #include "World.h"
 
 #include <algorithm>
@@ -239,11 +240,30 @@ private:
         }
     }
     uint32_t df2Rng_ = 0x5FC;
+    // Delta Force 2's searchlights (`slgt`, glight 104016), Land Mines
+    // (`mine` 104054) and wall triggers (`vtrg` 101062): none is placed in a
+    // shipped mission (OPENDF_TESTDF2ITEMS places one of each to test them).
+    struct Searchlight {
+        int object = -1;
+        bool init = false, dead = false;
+        uint32_t homeYaw = 0, homePitch = 0, targetYaw = 0, targetPitch = 0;   // +0xA8 / +0xAC / +0x98 / +0xB8
+        int32_t sweep = 0, moving = 0;   // +0xB0, +0x9C
+        int speed = 0;                   // +0xB4
+        int target = -1, counter = 0, wait = 0;   // AI +0x54, +0x48, the think timer
+        float perception = 1;            // AI +0x84 (INFERRED: from the record's +0x24 as a soldier's)
+    };
+    std::vector<Searchlight> lights_;
+    void tickDf2Items();
+    void df2Blast(Vec3 at, int fragments, float heading);
+    void fragmentBurst(Vec3 at, int fragments, float heading);
+    bool df2Touch(const WorldObject& o, Vec3 feet, float height) const;
+    void mineContact(int index);
+    bool df2ItemDestroyed(int index);
     // DF2.EXE 0x415490: the big blast (kind 5, 12 m) and 200 fragments, as a
     // satchel (vehicle deaths, ibom).
     void bigBlast(Vec3 at);
     // DF2's bld2 collapse (0x4028d0): crush, then 64 steps one per 8 ticks.
-    struct Collapse { int object, step, wait, rubble, dust, smoke; };
+    struct Collapse { int object, step, wait, rubble, dust, smoke; float box[4]; };   // box: the 2 m-inset footprint, file axes
     std::vector<Collapse> collapses_;
     void startCollapse(int index);
     void tickCollapses();
@@ -320,7 +340,17 @@ private:
         bool smoke = false; float drift = 0, rise = 0, roll = 0;
         // DF2's landed canopy (`para` 0x42c570): heading, tipping 0..90°.
         bool canopy = false; float heading = 0, pitch = 0;
+        // DF2's dust clouds (move `smk2` 0x42aaa0, item 107051 SMKT_H): 16.16
+        // velocity per tick (DF2 axes x east, y north, z up), size +0x84,
+        // growth shift +0xb4, cap +0xb8, alpha +0xac and its step +0xb0, roll
+        // +0x38 and spin +0xa8, colour +0x80.
+        bool smk2 = false;
+        int32_t vel[3] = {0, 0, 0}, size = 0, shift = 0, maxSize = 0, alpha = 0, dAlpha = 0, rot = 0, spin = 0;
+        uint8_t tint[3] = {255, 255, 255};
     };
+    // DF2.EXE 0x414010 (kind 0, t 0) / 0x414220 (dust, moving outward along
+    // (dx, dz) at 1/16 m a tick) and 0x413e80 (smoke, shade t).
+    void spawnSmk2(Vec3 at, bool dust, float dx, float dz, int t);
     std::vector<Effect> effects_;
     // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
     // every 16..23 ticks, 100 puffs.
@@ -351,9 +381,13 @@ private:
     }
     void teleportTeam(int team, int value) override {
         // DF2.EXE 0x416960: the target's position and angles to every person
-        // of the team. INFERRED: a target 100 m or more above the ground puts
-        // them on a chute (DF2 copies the target's own flag 0x20, which no
-        // code was found to set; the missions drop paratroopers this way).
+        // of the team; it ORs in the target's own flag 0x20 (0x4169e2..
+        // 0x4169e8). A trace of DF2.EXE found no code that sets 0x20 on a
+        // marker (group 2): only group-3 people >= 100 m up at mission start
+        // (0x45bb3c), the teleport copy (0x4169e8) and the spawn copy
+        // (0x458155). INFERRED from the shipped missions: a target 100 m or
+        // more above the ground puts them on a chute, as the missions' drops
+        // (D03M06 150-165 m, D06M06 140/150 m, ...) only make sense with one.
         for (const auto& mo : mission_.objects) {
             if (mo.type != 6088 || (mo.raw[18] & 0xFF) != team) continue;
             if (reinterpret_cast<const uint8_t*>(mo.raw)[0x4A] != value) continue;
@@ -392,7 +426,7 @@ private:
     void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0}, int part = 0);
     // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
     // 0x12-0x16 (0x473f70, slots 7-11) of a body at `origin`.
-    void animEvent(int event, Vec3 origin, int phraseSet);
+    void animEvent(int event, Vec3 origin, int phraseSet, int team = 0);
     std::string playerMove_;
     Chr playerChr_;
     Animator playerBody_;
@@ -407,6 +441,9 @@ private:
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
     void spawnPuff(Vec3 at);
     void tickEffects();
+    // Delta Force 2's rain and snow (BMS flag 0x78 bit 3, 0x46ba90).
+    Weather weather_;
+    void drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye);
     std::mt19937 effectRng_{1998};
     void spawnImpact(const Impact& hit);
     void spawnEffect(int slot, Vec3 pos);
@@ -540,6 +577,8 @@ bool Game::loadMission(int index) {
     if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
     terrain_.waterOverride = mission_.waterOverride;
     terrain_.skyOverride = mission_.sky;
+    terrain_.fogLevelOverride = mission_.fogLevel;
+    terrain_.fogColorOverride = mission_.fogColor;
     if (!terrain_.load(vfs_, trn, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.c_str());
         return false;
@@ -549,6 +588,7 @@ bool Game::loadMission(int index) {
     if (const char* hs = std::getenv("OPENDF_HEIGHTSCALE")) terrain_.scale.heightScale = float(std::atof(hs));
     world_.terrain = &terrain_;
     world_.df2Rules = mission_.version >= 0x0F;
+    world_.fogLevel = terrain_.fogLevel();
     models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
     ai_.df2 = mission_.version >= 0x0F;
@@ -557,6 +597,20 @@ bool Game::loadMission(int index) {
     ai_.init(world_, mission_);
     ai_.hard = (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
+    lights_.clear();
+    if (world_.df2Rules)
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const WorldObject& o = world_.objects[i];
+            if (!o.item || o.item->aiFunction != "slgt") continue;
+            Searchlight l;
+            l.object = int(i);
+            if (o.missionIndex >= 0) {
+                const int32_t v = mission_.objects[size_t(o.missionIndex)].raw[0x24 / 4];
+                l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
+            }
+            if ((mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
+            lights_.push_back(l);
+        }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
     vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
@@ -602,8 +656,13 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    // Delta Force 2 (0x45bb10): a start 100 m or more up is a parachute
-    // drop, 1 m higher (INFERRED for the player's start marker, as for people).
+    // Delta Force 2: a start 100 m or more up is a parachute drop, 1 m
+    // higher. INFERRED from the shipped missions: DF2.EXE gives the chute
+    // flag 0x20 and the 1 m only to group-3 people at 100 m or more
+    // (0x45bb10..0x45bb75); the player copies the 6001 marker's 0x20
+    // (0x457fc0, 0x458143), and a trace found no code that sets it on a
+    // marker. The starts 100..160 m up (D03M04 120, D06M06 160, ...) only
+    // make sense with a chute, so OpenDF keeps the people's rule for them.
     player_.chute = mission_.version >= 0x0F && startLift >= 100.f;
     if (player_.chute) player_.feet.y += startLift + 1.f;
     {
@@ -643,6 +702,7 @@ bool Game::loadMission(int index) {
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
             arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
         }
+        weather_.start(mission_.version >= 0x0F ? mission_.weather : 0);
         if (!df2Weapons) arsenal_.init(gameText_, &exe_, &items_, lo);
         arsenal_.modelPoints = [this](const std::string& name) -> const std::vector<std::array<float, 3>>* {
             const GpuModel* m = name.empty() ? nullptr : models_.get(vfs_, name);
@@ -1019,7 +1079,7 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
     return out;
 }
 
-void Game::animEvent(int event, Vec3 origin, int phraseSet) {
+void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
     event &= 0xFF;
     // Delta Force 2 (DF2.EXE 0x43f480): 0x10 DEATH_WATER (400), 0x11 UW_IDLE
     // (804), 0x17 UW_SWIM (805).
@@ -1041,19 +1101,37 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet) {
         const Vec3 at{origin.x, water, origin.z};
         spawnEffect(2, at);
         playSound(set1 ? SoundSystem::FsWaterR : SoundSystem::FsWaterL, at);
+        // DF2.EXE 0x413975/0x413985: a +-10 m noise with the walker's team, flags 0.
+        if (mission_.version >= 0x0F) ai_.noise(origin, 10.f, team, 0);
         return;
     }
     const int surface = terrain_.surfaceAt(origin.x, origin.z);
+    if (mission_.version >= 0x0F) {
+        // DF2.EXE 0x4139ae..0x413b35: the detail tile's CAL class through the
+        // jump tables 0x413b38 / 0x413b50: 1 dirt 0x82/0x83, 2 grass
+        // 0x8b/0x8c, 3 snow 0x86/0x87, 4 rock and 6 0x82/0x83, each with a
+        // +-5 m noise; 5 sand 0x82/0x83 with +-2 m (0x413a3e); class 0 or 7+
+        // (no .CAL, unmatched names): no sound and no noise. The noise goes
+        // to 0x412840 with the walker's team and flags 0.
+        if (surface < 1 || surface > 6) return;
+        static const int a[7] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82}, b[7] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83};
+        playSound((set1 ? a : b)[surface], origin);
+        ai_.noise(origin, surface == 5 ? 2.f : 5.f, team, 0);
+        return;
+    }
     static const int ids1[7] = {0x82, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82}, ids0[7] = {0x83, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83};
     playSound((set1 ? ids1 : ids0)[std::clamp(surface, 0, 6)], origin);
 }
 
 // Pickups by touch (0x437a28 -> 0x437f60): objects with the movecb
-// attribute within 0.75 m + their model radius on both axes (APPROXIMATION:
-// DF.EXE then asks the model's collision callback). By item: mission goal
-// items are carried (sound 0x166; one at a time); the medical crate restores
-// full health (0x165); ammunition crates refill everything ("Ammo reloaded",
-// 0x164); a land mine explodes. Picked crates are removed.
+// attribute within 0.75 m + their flat radius on both horizontal axes (R =
+// model entry +0x64, copied from the LOD 0 header +0x20 by 0x4379f4: the
+// 3DI header's flat radius), then DF.EXE asks the model's collision
+// volumes. Delta Force 2 (0x4409d4 -> 0x440f80 -> 0x43fc80): see df2Touch.
+// By item: mission goal items are carried (sound 0x166; one at a time); the
+// medical crate restores full health (0x165); ammunition crates refill
+// everything ("Ammo reloaded", 0x164); a land mine explodes. Picked crates
+// are removed.
 void Game::touchPickups() {
     if (playerDead()) return;
     const Vec3 feet = player_.feet;
@@ -1063,15 +1141,18 @@ void Game::touchPickups() {
         const Vec3 at = world_.nearest(o.pos, feet);
         if (std::getenv("OPENDF_DEBUGPICK") && (ticks_ % 30) == 0)
             std::fprintf(stderr, "pickup %s at (%.1f %.1f %.1f) feet (%.1f %.1f %.1f) r %.2f\n", o.item->name.c_str(), at.x, at.y, at.z,
-                         feet.x, feet.y, feet.z, o.model->radius);
-        // 0x437a28: the mover box (+-0.75 m across, -0.75..+1.0 m up around
-        // the body origin) must overlap one of the item's collision volumes
-        // (in its own frame); an item without volumes cannot be touched.
-        const Vec3 org = world_.nearest(player_.origin(), at);
-        const float reach = 0.75f + o.model->radius;
-        if (std::abs(at.x - org.x) > reach || std::abs(at.z - org.z) > reach) continue;
-        if (o.model->collision.empty()) continue;
-        {
+                         feet.x, feet.y, feet.z, o.model->flatRadius);
+        if (world_.df2Rules) {
+            // INFERRED pose height: the player's eye height above the feet.
+            if (!df2Touch(o, feet, player_.eye().y - feet.y)) continue;
+        } else {
+            // 0x437a28: the mover box (+-0.75 m across, -0.75..+1.0 m up around
+            // the body origin) must overlap one of the item's collision volumes
+            // (in its own frame); an item without volumes cannot be touched.
+            const Vec3 org = world_.nearest(player_.origin(), at);
+            const float reach = 0.75f + o.model->flatRadius;
+            if (std::abs(at.x - org.x) > reach || std::abs(at.z - org.z) > reach) continue;
+            if (o.model->collision.empty()) continue;
             // Into the object's frame (as World.cpp's Frame: yaw only).
             const float th = kPi * 0.5f - o.heading, c = std::cos(th), sn = std::sin(th);
             const Vec3 dd = org - at;
@@ -1111,6 +1192,7 @@ void Game::touchPickups() {
             o.boxes.clear();
             break;
         case 4054:
+            if (world_.df2Rules) { mineContact(int(i)); break; }   // DF2 0x43ff93
             if (o.hp > 0) {
                 o.hp = 0;
                 o.removed = true;
@@ -1200,6 +1282,8 @@ void Game::startCollapse(int index) {
     WorldObject& o = world_.objects[size_t(index)];
     // Crush box (0x454c10): everyone (and every vehicle) whose origin is
     // within +-R across and +-H up and down of the building loses 100 hp.
+    // R, H = model entry +0x64 / +0x68 (INFERRED: the flat radius and the
+    // height, the values the files hold there).
     const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
     for (size_t j = 0; j < world_.objects.size(); ++j) {
         WorldObject& t = world_.objects[j];
@@ -1212,42 +1296,146 @@ void Game::startCollapse(int index) {
         const Vec3 p = world_.nearest(player_.origin(), o.pos);
         if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh) hurtPlayer(100, 2, o.pos);
     }
-    // First think: footprint area / perimeter from the model box (2R square,
-    // APPROXIMATION: the model's own box is not kept per axis): rubble
-    // steps clamp(area/64 + 4, 8, 48), dust 2·perimeter, smoke half the
-    // area term.
-    const float area = 4 * R * R, perim = 8 * R;
-    const int rubble = std::clamp(int(area / 64.f) + 4, 8, 48);
-    collapses_.push_back({index, 0, 0, rubble, int(2 * perim), rubble / 2});
-    // Step 0's "noise" (0x412840, +-500 m): heard by the AI (INFERRED).
-    ai_.shotFired(o.pos, 500.f, 0, -1);
+    // First think (0x402979..0x402a39): the building model's LOD 0 header
+    // box [+0x28 xmin, +0x2c xmax, +0x30 ymin, +0x34 ymax] (16.16 m, model
+    // axes): w = xmax - xmin, d = ymax - ymin; area ((w·d) >> 16) >> 16 m²,
+    // perimeter (2 (w + d)) >> 16 m; rubble steps clamp(area/64 + 4, 8, 48),
+    // dust 2·perimeter (twice that for the oil rigs 3072/3073/3102), smoke
+    // area / 2. Every step uses the box inset by 2 m (0x402a39..0x402a66).
+    const float* b = o.model ? o.model->box : nullptr;
+    const int64_t x0 = b ? int64_t(std::lround(b[0] * 65536.f)) : 0, x1 = b ? int64_t(std::lround(b[1] * 65536.f)) : 0;
+    const int64_t y0 = b ? int64_t(std::lround(b[2] * 65536.f)) : 0, y1 = b ? int64_t(std::lround(b[3] * 65536.f)) : 0;
+    const int64_t w = x1 - x0, d = y1 - y0;
+    const int area = int(((w * d) >> 16) >> 16), perim = int((2 * (w + d)) >> 16);
+    const int rubble = std::clamp((area >> 6) + 4, 8, 48);
+    int dust = 2 * perim;
+    if (o.item && (o.item->id == 103072 || o.item->id == 103073 || o.item->id == 103102)) dust *= 2;
+    Collapse c{index, 0, 0, rubble, dust, area >> 1, {}};
+    c.box[0] = float(x0) / 65536.f + 2.f;
+    c.box[1] = float(x1) / 65536.f - 2.f;
+    c.box[2] = float(y0) / 65536.f + 2.f;
+    c.box[3] = float(y1) / 65536.f - 2.f;
+    collapses_.push_back(c);
+    // Step 0 (0x412840(x, y, z, 0x1f40000, 0, 0)): a +-500 m box on all
+    // three axes with flags 0 and team 0. Relaxed soldiers inside it turn
+    // alert and face it (0x413620); the alert-state turn (0x415570) only
+    // follows gunshot boxes (flags 2), so not this one.
+    ai_.noise(o.pos, 500.f, 0, 0);
+}
+
+void Game::spawnSmk2(Vec3 at, bool dust, float dx, float dz, int t) {
+    // Nothing below the water (0x41401c / 0x413e80).
+    if (const float water = terrain_.waterLevel(); at.y <= water) return;
+    const ItemDef* item = items_.byId(107051);   // "dust cloud", graphic smkt_h, move smk2
+    const GpuModel* m = item && !item->graphic.empty() ? models_.get(vfs_, item->graphic) : nullptr;
+    if (!m || m->lods.empty()) return;
+    const auto& l = m->lods[0];
+    Effect e{m, at, 1.f, 0, 0x7fffffff, l.ticksPerFrame, l.frames};
+    e.smk2 = true;
+    // The generator is DF2's 0x41ac40, shared with the shrapnel (shrapRand).
+    if (dust) {
+        // 0x414010 kind 0: a random heading at 0x300..0x4ff a tick (replaced
+        // below by 0x414220), roll rand << 16, size (rand + 0x10000) >> 3,
+        // spin +-0x2000000, alpha 400 at -1.5 a tick, shift 5, cap 3.0.
+        (void)shrapRand();
+        (void)shrapRand();
+        e.rot = int32_t(shrapRand() << 16);
+        e.size = int32_t((shrapRand() + 0x10000) >> 3);
+        e.spin = (shrapRand() & 0x10) ? 0x2000000 : int32_t(0xfe000000);
+        e.alpha = 0x1900000;
+        e.dAlpha = -0x18000;
+        e.shift = 5;
+        e.maxSize = 0x30000;
+        // 0x414220: the horizontal velocity 1/16 m a tick along (dx, dy).
+        const float len = std::sqrt(dx * dx + dz * dz);
+        if (len > 0) {
+            e.vel[0] = int32_t(dx / len * 4096.f);
+            e.vel[1] = int32_t(-dz / len * 4096.f);
+        }
+    } else {
+        // 0x413e80: size (rand + 0x20000) >> 4, roll rand << 16, v = (1, 0,
+        // 0) raw, alpha 400 at -1.125 a tick, shift 6, cap 2.0.
+        e.size = int32_t((shrapRand() + 0x20000) >> 4);
+        e.rot = int32_t(shrapRand() << 16);
+        e.vel[0] = 1;
+        e.alpha = 0x1900000;
+        e.dAlpha = -0x12000;
+        e.shift = 6;
+        e.maxSize = 0x20000;
+    }
+    // Colour: lerp((0x73, 0x58, 0x39) -> 0, t / 256) | 1 (0x413e40), plus
+    // (rand · 17) & 0x0f0f0f (0x4141dd); then 0x411f70, a byte shuffle
+    // through 0x411ec0 (not traced: INFERRED to keep the colour).
+    const int tt = std::clamp(t, 0, 255);
+    uint32_t c = (uint32_t(0x73 - 0x73 * tt / 256) << 16) | (uint32_t(0x58 - 0x58 * tt / 256) << 8) | uint32_t(0x39 - 0x39 * tt / 256) | 1u;
+    const uint32_t r = shrapRand();
+    c += ((r << 4) + r) & 0x0f0f0f;
+    e.tint[0] = uint8_t(c >> 16);
+    e.tint[1] = uint8_t(c >> 8);
+    e.tint[2] = uint8_t(c);
+    if (std::getenv("OPENDF_DEBUGHITS")) std::fprintf(stderr, "smk2 %s size %.2f at (%.1f %.1f %.1f) frames %d tint %d %d %d\n", dust ? "dust" : "smoke", e.size / 65536.f, at.x, at.y, at.z, e.frames, e.tint[0], e.tint[1], e.tint[2]);
+    effects_.push_back(e);
+    if (effects_.size() > 0x400) effects_.erase(effects_.begin());
 }
 
 // One think per 8 ticks (buildings are visited 1/8 per tick, 0x440180).
 void Game::tickCollapses() {
-    std::uniform_real_distribution<float> u(-1.f, 1.f);
     for (auto& c : collapses_) {
         if (c.step >= 64 || --c.wait > 0) continue;
         c.wait = 8;
         WorldObject& o = world_.objects[size_t(c.object)];
-        const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
+        // The building's matrix (0x42bb00 -> 0x42b3f0): points in its frame,
+        // local z 0, so the edges turn with its heading (INFERRED: yaw only).
+        const Mat4 frame = o.matrix(o.pos);
+        auto world = [&](float x, float y) {
+            const Vec3 l{x, 0, -y};   // file x forward, y left -> OpenDF model axes
+            return Vec3{frame.at(0, 0) * l.x + frame.at(0, 2) * l.z + frame.at(0, 3), frame.at(1, 3),
+                        frame.at(2, 0) * l.x + frame.at(2, 2) * l.z + frame.at(2, 3)};
+        };
+        // rand · (hi - lo) + lo, rand 16 bits (16.16 fraction).
+        auto rnd = [&](float lo, float hi) {
+            return lo + float((int64_t(shrapRand()) * int64_t((hi - lo) * 65536.f)) >> 16) / 65536.f;
+        };
+        const float* b = c.box;
         if (c.step < c.rubble)
             for (int k = 0; k < 2; ++k) {
-                // A rubble burst on the footprint edge (odd steps the y edges):
-                // effect 0x13 and sound 0x32 through the delay queue.
-                const float t = u(effectRng_) * R, e = (k ? 1.f : -1.f) * R;
-                const Vec3 at = o.pos + ((c.step & 1) ? Vec3{t, 0, e} : Vec3{e, 0, t});
+                // Two rubble bursts on the inset edges: odd steps the x edges at
+                // a random y (0x402ab6), even steps the y edges at a random x;
+                // effect 0x13 and sound 0x32 through the delay queue (0x45e910).
+                const Vec3 at = (c.step & 1) ? world(b[k], rnd(b[2], b[3])) : world(rnd(b[0], b[1]), b[2 + k]);
                 spawnEffect(0x13, at);
                 sound_.playDelayed(0x32, at);
             }
         if (c.step > 3) {
-            // Dust clouds (smk2 0x414220) and smoke puffs (0x413e80): OpenDF's
-            // smoke puff for both (APPROXIMATION: the smk2 cloud is not drawn).
-            for (int k = 0; k < 12 && c.dust > 0; ++k, --c.dust)
-                if (k % 4 == 0) spawnPuff(o.pos + Vec3{u(effectRng_) * R, 0, u(effectRng_) * R});
-            if (c.dust <= 0)
-                for (int k = 0; k < 6 && c.smoke > 0; ++k, --c.smoke)
-                    spawnPuff(o.pos + Vec3{u(effectRng_) * R / 2, std::abs(u(effectRng_)) * Hh / 16, u(effectRng_) * R / 2});
+            // Dust (0x402c49..0x402d76): up to 12 clouds from the budget, at a
+            // random point moved onto side i & 3 (x min, x max, y min, y max),
+            // drifting outward along (point - origin) (0x414220).
+            const int n = std::min(12, c.dust);
+            c.dust -= n;
+            for (int i = 0; i < n; ++i) {
+                float x = rnd(b[0], b[1]), y = rnd(b[2], b[3]);
+                switch (i & 3) {
+                case 0: x = b[0]; break;
+                case 1: x = b[1]; break;
+                case 2: y = b[2]; break;
+                default: y = b[3]; break;
+                }
+                const Vec3 at = world(x, y);
+                spawnSmk2(at, true, at.x - o.pos.x, at.z - o.pos.z, 0);
+            }
+            // Smoke only on a step that spawned no dust (0x402d7e): up to 6
+            // puffs, a random angle, radius (rand·R >> 16) / 2, height up to
+            // H / 16, shade i + 4·step (0x402d84..0x402e6d -> 0x413e80).
+            if (n == 0) {
+                const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
+                const int k = std::min(6, c.smoke);
+                c.smoke -= k;
+                for (int i = 0; i < k; ++i) {
+                    const float a = float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+                    const float rr = rnd(0, R) * 0.5f, h = rnd(0, Hh / 16.f);
+                    spawnSmk2(o.pos + Vec3{std::cos(a) * rr, h, -std::sin(a) * rr}, false, 0, 0, i + 4 * c.step);
+                }
+            }
         }
         if (c.step == 8) world_.applyHusk(c.object);   // flags |= 8: the husk
         ++c.step;
@@ -1466,6 +1654,29 @@ void Game::tickEffects() {
             if (e.pos.y < -16.f) e.age = e.life;
             continue;
         }
+        if (e.smk2) {
+            // smk2 (0x42aaa0) each tick: pos += v; on ticks with bit 2 of the
+            // frame counter [0x6536b4] (4 of every 8): vz += 0x10, vx and vy
+            // lose >> 6, size += size >> shift up to the cap; alpha += step,
+            // gone at <= 0; roll += spin, the spin easing 0x100000 a tick
+            // toward +-0x400000 and held there (0 becomes +0x400000).
+            e.pos.x += e.vel[0] / 65536.f;
+            e.pos.z -= e.vel[1] / 65536.f;
+            e.pos.y += e.vel[2] / 65536.f;
+            if (ticks_ & 4) {
+                e.vel[2] += 0x10;
+                e.vel[0] -= e.vel[0] >> 6;
+                e.vel[1] -= e.vel[1] >> 6;
+                e.size = std::min(e.maxSize, e.size + (e.size >> e.shift));
+            }
+            e.alpha += e.dAlpha;
+            if (e.alpha <= 0) e.age = e.life;
+            e.rot = int32_t(uint32_t(e.rot) + uint32_t(e.spin));
+            if (e.spin > 0x400000) e.spin = std::max(0x400000, e.spin - 0x100000);
+            else if (e.spin < -0x400000) e.spin = std::min(-0x400000, e.spin + 0x100000);
+            else e.spin = e.spin < 0 ? -0x400000 : 0x400000;
+            continue;
+        }
         if (!e.smoke) continue;
         e.pos.x += e.drift;
         e.pos.z -= e.drift * 0.25f;
@@ -1493,6 +1704,225 @@ void Game::tickEffects() {
         }
 }
 
+// DF2.EXE 0x4524d0 -> 0x412b00, the common blast: effect 3 (0x413850),
+// blast type 1 of 10 m (0x44d460), sound 0x32 (0x45e910), a +-200 m noise
+// with flags 0 (0x412b5c), then `fragments` seeded rounds; no smoke
+// generator of its own.
+void Game::df2Blast(Vec3 at, int fragments, float heading) {
+    explode(at, 1);   // surface 1: effect 3, no smoke generator
+    ai_.noise(at, 200.f, 0, 0);
+    shrapSeed();
+    fragmentBurst(at, fragments, heading);
+}
+
+// DF2.EXE 0x440f80 (mode 2, from the person mover 0x440400): two points, the
+// feet and feet + pose height + 0.5 m, each within +-(R + 0.5 m) of the
+// object on all three axes (R = model entry +0x60, INFERRED the 3DI header
+// radius), then the model must have collision volumes and its collision
+// callback [entry+0x4c] must accept: OpenDF tests a +-0.5 m box around each
+// point against the volumes (INFERRED: the callback gets only the object).
+bool Game::df2Touch(const WorldObject& o, Vec3 feet, float height) const {
+    if (!o.model || o.model->collision.empty()) return false;
+    const Vec3 at = world_.nearest(o.pos, feet);
+    const float reach = o.model->headerRadius + 0.5f;
+    const Vec3 pts[2] = {feet, feet + Vec3{0, height + 0.5f, 0}};
+    bool near = false;
+    for (const Vec3& q : pts)
+        near = near || (std::abs(q.x - at.x) <= reach && std::abs(q.z - at.z) <= reach && std::abs(q.y - at.y) <= reach);
+    if (!near) return false;
+    const float th = kPi * 0.5f - o.heading, c = std::cos(th), sn = std::sin(th);
+    for (const Vec3& q : pts) {
+        const Vec3 dd = q - at;
+        const Vec3 l{c * dd.x - sn * dd.z, dd.y, sn * dd.x + c * dd.z};
+        for (const auto& b : o.model->collision) {
+            if (b.type != 1 && b.type != 3) continue;
+            if (!(l.x + 0.5f >= b.min[0] && l.x - 0.5f <= b.max[0] && l.z + 0.5f >= b.min[2] && l.z - 0.5f <= b.max[2] &&
+                  l.y + 0.5f >= b.min[1] && l.y - 0.5f <= b.max[1]))
+                continue;
+            if (b.type == 3 && std::hypot(l.x - b.cx, l.z - b.cz) > b.r + 0.5f) continue;
+            return true;
+        }
+    }
+    return false;
+}
+
+// A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
+// its hp is above 0, the common blast at the mine with no fragments (owned
+// by the mover), a Smoke Generator 104046 0.5 m above it (0x4531e0 ->
+// 0x4142e0), flags |= 4, hp 0, radar shape 0. The mine stays (no husk;
+// INFERRED still drawn); later contacts and rounds do nothing.
+void Game::mineContact(int index) {
+    WorldObject& o = world_.objects[size_t(index)];
+    if (o.hp <= 0 || o.wrecked || o.removed) return;
+    o.hp = 0;
+    o.wrecked = true;
+    o.radarShape = 0;
+    df2Blast(o.pos, 0, o.heading);
+    smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+}
+
+// Delta Force 2's destruction of the section-8 items (the ai functions
+// below run on hp <= 0); true if handled.
+bool Game::df2ItemDestroyed(int index) {
+    WorldObject& o = world_.objects[size_t(index)];
+    const std::string f = o.item ? o.item->aiFunction : std::string();
+    if (f == "slgt") {
+        // 0x427f30: once, flags |= 0x10C (destroyed, the husk gligtx, dead for
+        // the AI), the target yaw = the heading, the turn stopped, and the
+        // common blast 1 m above it (owner the last attacker) with no
+        // fragments. The husk stays.
+        for (auto& l : lights_)
+            if (l.object == index) l.dead = true;
+        df2Blast(o.pos + Vec3{0, 1.f, 0}, 0, o.heading);
+        return true;
+    }
+    if (f == "mine") {
+        // 0x4295f0: hit by a round (event 1) or a blast (2) to hp <= 0: flags
+        // |= 4 and the common blast at the mine (no lift), no fragments; no
+        // smoke, no husk (INFERRED still drawn), the radar shape kept.
+        df2Blast(o.pos, 0, o.heading);
+        return true;
+    }
+    if (f == "vtrg") {
+        // 0x42a980: on hp <= 0, once: the nearest group-1 "vwal crack"
+        // (item 3062) by 0x41aad0 (max + 11/32 mid + 1/4 min); within 10 m
+        // (0xA0000) its hp = 0 and flags |= 0x10C, so it turns into its husk
+        // vwalx without its own break step (gnrc 0x4297c0 sees flag 8 and
+        // idles: no effect, no "destroyed" message), then the common blast
+        // with 10 fragments at the wall's origin (owner 0). The trigger
+        // itself gets 0x10C (no husk; INFERRED still drawn).
+        int best = -1;
+        float bestD = 0;
+        for (size_t j = 0; j < world_.objects.size(); ++j) {
+            const WorldObject& w = world_.objects[j];
+            if (w.missionGroup != 1 || !w.item || w.item->id != 103062 || w.removed || !w.model) continue;
+            const Vec3 v = world_.nearest(w.pos, o.pos) - o.pos;
+            float a = std::abs(v.x), b = std::abs(v.y), c = std::abs(v.z);
+            if (a < b) std::swap(a, b);
+            if (a < c) std::swap(a, c);
+            if (b < c) std::swap(b, c);
+            const float d = a + b * 11.f / 32.f + c * 0.25f;
+            if (best < 0 || d < bestD) best = int(j), bestD = d;
+        }
+        if (best >= 0 && bestD < 10.f) {
+            WorldObject& w = world_.objects[size_t(best)];
+            w.hp = 0;
+            if (w.husk) { w.model = w.husk; w.husk = nullptr; }
+            w.wrecked = true;
+            world_.refreshBoxes(w);
+            df2Blast(w.pos, 10, w.heading);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Per tick: the searchlights' turn (move `slgt` 0x4281e0) and think (ai
+// 0x427f30), and people walking onto Land Mines (0x440400 -> 0x43fc80).
+void Game::tickDf2Items() {
+    auto toYaw = [](float heading) { return uint32_t(int64_t(std::llround(double(kPi * 0.5f - heading) / (2 * kPi) * 4294967296.0))); };
+    auto fromYaw = [](uint32_t y) { return kPi * 0.5f - float(y) / 4294967296.f * 2 * kPi; };
+    auto toAng = [](float rad) { return int32_t(int64_t(std::llround(double(rad) / (2 * kPi) * 4294967296.0))); };
+    for (auto& l : lights_) {
+        WorldObject& o = world_.objects[size_t(l.object)];
+        if (l.dead || o.wrecked || o.removed) continue;
+        uint32_t yaw = toYaw(o.heading);
+        int32_t pitch = toAng(o.pitch);
+        const int R = std::max(1, int(o.item->turnRate));   // item +0xE4 (turn_rate 20)
+        auto turn = [&]() {
+            // 0x427e40: the yaw speed (1/65536 turn a tick) rises by R >> 3
+            // while far (|d| >> 16 > 8R) and slower than R, else falls by R >> 3
+            // while above it; it snaps when closer than the speed. The pitch
+            // moves R a tick and snaps within R.
+            const int32_t d = int32_t(l.targetYaw - yaw);
+            const int ad = int(std::abs(int64_t(d)) >> 16);
+            if (ad > 8 * R && l.speed < R) l.speed += R >> 3;
+            else if (l.speed > (R >> 3)) l.speed -= R >> 3;
+            if (ad < l.speed) { yaw = l.targetYaw; l.moving = 0; }
+            else { l.moving = d > 0 ? (l.speed << 16) : -(l.speed << 16); yaw += uint32_t(l.moving); }
+            const int32_t dp = int32_t(l.targetPitch - uint32_t(pitch));
+            if (std::abs(int64_t(dp)) >> 16 <= R) pitch = int32_t(l.targetPitch);
+            else pitch += dp > 0 ? (R << 16) : -(R << 16);
+        };
+        if (l.init) {
+            turn();
+            // No target and the turn done: the sweep swings to the other side
+            // of the placed heading (+-45 degrees).
+            if (l.target == -1 && l.moving == 0) {
+                l.sweep = -l.sweep;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+        }
+        // The think (every visit when its timer runs out; group-1 objects are
+        // visited 1 tick in 8, INFERRED as for the collapses).
+        if (--l.wait <= 0) {
+            l.wait = 0x10;
+            if (!l.init) {
+                // First think: home yaw = heading | 1, home pitch, sweep
+                // 0x20000000 (45 degrees), aiming at home + 45.
+                l.init = true;
+                l.homeYaw = yaw | 1;
+                l.homePitch = uint32_t(pitch);
+                l.sweep = 0x20000000;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            } else {
+                const bool targetDead = l.target == -3 ? playerDead() : l.target >= 0 && !world_.objects[size_t(l.target)].alive();
+                if (--l.counter > 0 && l.target != -1 && !targetDead) {
+                    // Tracking: aim at the target with a +-0x200000 jitter,
+                    // the yaw within +-45 degrees of home, the pitch within
+                    // +-11.25 degrees; think 0x20.
+                    const Vec3 tp = world_.nearest(l.target == -3 ? player_.origin() : world_.objects[size_t(l.target)].pos, o.pos);
+                    const Vec3 d = tp - o.pos;
+                    const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
+                    const int32_t jy = int32_t(int32_t(shrapRand()) - 0x8000) << 6;
+                    const int32_t want = int32_t(uint32_t(int64_t(std::llround(double(std::atan2(-d.z, d.x)) / (2 * kPi) * 4294967296.0))) - l.homeYaw) + jy;
+                    l.targetYaw = l.homeYaw + uint32_t(std::clamp(want, -0x20000000, 0x20000000));
+                    const int32_t jp = int32_t(int32_t(shrapRand()) - 0x8000) << 6;
+                    const int32_t wantP = int32_t(uint32_t(toAng(std::atan2(d.y, horiz))) - l.homePitch) + jp;
+                    l.targetPitch = l.homePitch + uint32_t(std::clamp(wantP, -0x8000000, 0x8000000));
+                    l.wait = 0x20;
+                } else {
+                    // Scan (0x425c70); seen when score · perception > a 16-bit
+                    // draw: the "spotted" mark 0x418960(target team, own team)
+                    // (argument order as read), the target kept for 8 thinks.
+                    AiSystem::PlayerView pv;
+                    pv.alive = !playerDead();
+                    pv.origin = player_.origin();
+                    const int mn = moveNumber(player_.move());
+                    pv.moveNumber = mn >= 0 ? mn : 2;
+                    pv.side = kPlayerSide;
+                    pv.team = kPlayerTeam;
+                    int id = -1;
+                    Vec3 at{0, 0, 0};
+                    const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.team, pv, id, at);
+                    l.target = -1;
+                    if (id != -1 && score * l.perception * 65536.f > float(shrapRand())) {
+                        l.target = id;
+                        l.counter = 8;
+                        ai_.markSpotted(id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team, o.team);
+                    }
+                    l.wait = 0x10;
+                }
+            }
+        }
+        o.heading = fromYaw(yaw);
+        o.pitch = float(pitch) / 4294967296.f * 2 * kPi;
+    }
+    // People onto Land Mines (any person, any team; vehicles do not run the
+    // person mover). The player's own contacts go through touchPickups.
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        WorldObject& m = world_.objects[i];
+        if (!m.item || m.item->id != 104054 || m.hp <= 0 || m.wrecked || m.removed) continue;
+        for (const auto& q : world_.objects)
+            if (q.person && q.alive() && df2Touch(m, Vec3{q.pos.x, q.base, q.pos.z}, 1.7f)) {   // INFERRED pose height 1.7 m
+                mineContact(int(i));
+                break;
+            }
+    }
+}
+
 // 0x46cb64: a blast (effect 3, blast type 1, sound 0x32) and smoke
 // generator, then n shrapnel rounds (0x44d730) in two groups: yaw heading +
 // a random turn, pitch rand<<15 (0..180 degrees) for the first half and
@@ -1501,7 +1931,14 @@ void Game::tickEffects() {
 // falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
     explode(at, 0);
-    if (world_.df2Rules) shrapSeed();   // DF2 0x412b00
+    if (world_.df2Rules) {
+        shrapSeed();   // DF2 0x412b00
+        ai_.noise(at, 200.f, 0, 0);   // 0x412b5c: +-200 m, flags 0
+    }
+    fragmentBurst(at, shrapnel, heading);
+}
+
+void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
     for (int group = 0; group < 2; ++group)
         for (int k = 0; k < shrapnel / 2; ++k) {
             const uint32_t yawBits = uint32_t(int64_t(std::lround(heading / (2 * kPi) * 4294967296.0))) + (shrapRand() << 16);
@@ -1768,6 +2205,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     // Terrain rings scale with the original's focal length: F = 320 per 640
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
+    terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
     terrain_.draw(view, proj, eye, viewDistance_);
     // Delta Force 2: the water before the objects while the camera is above
     // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
@@ -1906,6 +2344,35 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             models_.draw(*e.model, 0, body.matrix(at));
             continue;
         }
+        if (e.smk2) {
+            // The efct draw 0x41f740: facing the camera (yaw camera + 0x7fffffff,
+            // pitch 0x80000000 - camera pitch), rolled by +0x38 (INFERRED: the
+            // record's third angle, as for the smoke puffs), uniform scale
+            // +0x84 (0x42bc00), frame (age / ticks per frame) % frames
+            // (0x41f7a2..0x41f7ca), in the colour +0x80 (0x445e50, the vertex
+            // colour; INFERRED to replace the material's) with alpha +0x7c: opaque while the alpha is over 255, else
+            // max(alpha >> 16, 1) / 255, so it fades out.
+            const int frame = (e.age / std::max(1, e.ticksPerFrame)) % std::max(1, e.frames);
+            Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
+            Mat4 tilt;
+            const float cp = std::asin(std::clamp(fwd.y, -1.f, 1.f)), c = std::cos(-cp), sn = std::sin(-cp);
+            tilt.at(0, 0) = c; tilt.at(0, 1) = -sn; tilt.at(1, 0) = sn; tilt.at(1, 1) = c;
+            m = m * tilt * rotateX(float(uint32_t(e.rot)) / 4294967296.f * 2 * kPi);
+            Mat4 sc;
+            sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.size / 65536.f;
+            m = m * sc;
+            const float a = e.alpha > 0xff0000 ? 1.f : float(std::max(e.alpha >> 16, 1)) / 255.f;
+            models_.setTint(e.tint[0] / 255.f, e.tint[1] / 255.f, e.tint[2] / 255.f, a, true);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+            models_.draw(*e.model, 0, m, false, false, frame);
+            models_.drawTranslucent(*e.model, 0, m, false, false, frame);
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            models_.setTint(1, 1, 1, 1);
+            continue;
+        }
         const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
         // Model +X faces the heading; the quad's normal is +X, turned to the camera.
         Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
@@ -1942,6 +2409,56 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
+    // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
+    // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
+    terrain_.drawFog(proj);
+    drawWeather(view, proj, eye);
+}
+
+// DF2.EXE 0x46b780, drawn only by the software frame (0x448930, after the
+// fog pass, so unfogged); the D3D frame 0x448980 has no call to it, so in
+// D3D mode DF2 drew no rain or snow (the simulation and the splashes still
+// ran). OpenDF draws what the software renderer showed.
+void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
+    if (!weather_.type()) return;
+    if (weather_.type() == 1) {
+        weather_.drawRain(proj * view, eye, terrain_.mapExtent(), int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()));
+        return;
+    }
+    // Snow: item 0x1b6a = 107018 "snow" (SNOW.3DI), facing the camera (yaw
+    // view+0x10 + 0x7fffffff, pitch 0x80000000 - view+0x14), at scale 2.0
+    // (0x42bc00 with 0x20000), untinted; not drawn without a model. The
+    // per-flake visibility test 0x404a20 (view, pos, 0x200) is INFERRED to
+    // be a frustum test: OpenDF skips flakes behind the camera.
+    const ItemDef* item = items_.byId(107018);
+    const GpuModel* m = item && !item->graphic.empty() ? models_.get(vfs_, item->graphic) : nullptr;
+    if (!m || m->lods.empty()) return;
+    const Vec3 fwd = viewDir();
+    const float camYaw = std::atan2(fwd.x, -fwd.z);
+    Mat4 face = rotateY(kPi * 0.5f - (camYaw + kPi));
+    {
+        Mat4 tilt;
+        const float cp = std::asin(std::clamp(fwd.y, -1.f, 1.f)), c = std::cos(-cp), sn = std::sin(-cp);
+        tilt.at(0, 0) = c; tilt.at(0, 1) = -sn; tilt.at(1, 0) = sn; tilt.at(1, 1) = c;
+        face = face * tilt;
+    }
+    Mat4 sc;
+    sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = 2.f;
+    face = face * sc;
+    SceneLighting light;
+    light.lut = terrain_.lutTexture();
+    light.saturation = terrain_.saturationFactor();
+    light.highlight = terrain_.highlight();
+    light.viewer = fwd * -1.f;
+    models_.begin(proj * view, light);
+    weather_.forEachFlake([&](Vec3 p) {
+        const Vec3 at = world_.nearest(p, eye);
+        if (dot(at - eye, fwd) < 0.1f) return;
+        const Mat4 mm = translate(at) * face;
+        models_.draw(*m, 0, mm);
+        models_.drawTranslucent(*m, 0, mm);
+    });
+    models_.end();
 }
 
 void Game::drawViewModel(const Screen& s) {
@@ -3305,12 +3822,15 @@ void Game::drawPaused(const Screen& s) {
 void Game::drawOldMessages(const Screen& s) {
     // 0x484d94: a darkened box (100, 100)-(924, 668), "Messages" centred at
     // (512, 120) in bright green, then the 16 latest lines from x 130, y 160,
-    // 30 apart, the oldest at the top (APPROXIMATION: order inferred), each
-    // in its message colour (white here).
+    // 30 apart: entry 15 - k on row k (entry 0 the newest, pushed by 0x42f400
+    // into a 40-deep ring), so the oldest of the 16 is at the top and the
+    // newest always at y 610 (0x484e01..0x484e35), each in its message
+    // colour (the ring's +0x78; white here).
     if (df2Hud_.on) {
         // DF2.EXE 0x442850: the panel box, STROVER43 centred at (512, 120) in
-        // orange, the system history's entries 15..0 (oldest first) at x 130,
-        // y 160 + 30k, each in its own colour.
+        // orange, the system history's entries 15..0 (0x41cf50 pushes the
+        // newest into entry 0) at x 130, y 160 + 30k, each in its own colour:
+        // bottom-anchored, the newest at y 610.
         df2Panel(s, 100, 100, 924, 668);
         const std::string t = df2Text("Overlays", "STROVER43", "Messages");
         hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kDf2Amber, s.text());
@@ -3751,9 +4271,10 @@ int Game::run() {
                     const WorldObject& d = world_.objects[size_t(i)];
                     const std::string f = d.item ? d.item->aiFunction : std::string();
                     if (f.rfind("gnrl", 0) == 0) continue;   // 0x4012b0: silent, no barrel, no sound
-                    if (f.rfind("smok", 0) == 0) { spawnPuff(d.pos); continue; }   // 0x402550: one dark puff
+                    if (f.rfind("smok", 0) == 0) { spawnSmk2(d.pos, false, 0, 0, 0xc0); continue; }   // 0x402550: one dark cloud (0x413e80, t 0xc0)
                     if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos); continue; }    // 0x401240 -> 0x4572d0
                     if (f.rfind("bld2", 0) == 0) { startCollapse(i); continue; }   // 0x4028d0
+                    if (df2ItemDestroyed(i)) continue;                              // slgt, mine, vtrg
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
@@ -3797,7 +4318,10 @@ int Game::run() {
                 tickEffects();
                 tickDialogs();
                 touchPickups();
-                if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); }
+                if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
+                // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
+                weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
+                              [this](Vec3 at) { spawnEffect(17, at); });
                 // DF2 fall damage (0x43f600, single player): n = trunc(vz /
                 // -10360.5) with vz in 16.16 m a tick, (1 << n) - 1 for n >= 1
                 // (the player's flag 1 skips the -1 others get).
@@ -3810,10 +4334,69 @@ int Game::run() {
                     for (size_t j = 0; j < world_.objects.size(); ++j)
                         if (world_.objects[j].item && world_.objects[j].item->aiFunction.rfind("bld2", 0) == 0) {
                             const auto& o = world_.objects[j];
-                            std::fprintf(stderr, "bld2 %s at mission (%.1f, %.1f)\n", o.item->name.c_str(), o.pos.x, -o.pos.z);
+                            std::fprintf(stderr, "bld2 %s at mission (%.1f, %.1f)\n", o.item->name.c_str(), o.missionX, o.missionY);
                             if (auto m = world_.damage(int(j), 100000, 0x7fff); !m.empty()) pushMessage(m);
                             break;
                         }
+                }
+                if (std::getenv("OPENDF_TESTDF2ITEMS") && world_.df2Rules) {
+                    // Testing (no shipped mission places these items): at tick 30
+                    // a searchlight 15 m ahead facing the player (team 99), a
+                    // Land Mine 4 m ahead, and a wall trigger with a "vwal
+                    // crack" 6 m to the right; tick 240 the mine is put under
+                    // the player's feet, tick 360 the trigger is shot to 0 hp.
+                    // Their graphics (glight, gligtx, landmine, trigger, vwcrak,
+                    // vwalx) are not on the disc either, so stand-ins are drawn:
+                    // CRATE1 for the light and the wall (CRATE9 its husk),
+                    // AMMOBOX for the mine and the trigger.
+                    auto place = [&](int id, Vec3 at, float heading) {
+                        const ItemDef* it = items_.byId(id);
+                        if (!it) return -1;
+                        const GpuModel* m = !it->graphic.empty() ? models_.get(vfs_, it->graphic) : nullptr;
+                        const bool big = id == 104016 || id == 103062;
+                        if (!m) m = models_.get(vfs_, big ? "CRATE1" : "AMMOBOX");
+                        if (!m) return -1;
+                        at.y = terrain_.heightAt(at.x, at.z);
+                        const int k = world_.spawn(it, m, at, heading);
+                        if (!it->husk.empty()) {
+                            const GpuModel* h = models_.get(vfs_, it->husk);
+                            world_.objects[size_t(k)].husk = h ? h : models_.get(vfs_, "CRATE9");
+                        }
+                        return k;
+                    };
+                    static int mine = -1, trig = -1, crack = -1, light = -1;
+                    const Vec3 fw{std::sin(player_.yaw), 0, -std::cos(player_.yaw)}, rt{std::cos(player_.yaw), 0, std::sin(player_.yaw)};
+                    if (ticks_ == 30) {
+                        if (const int k = place(104016, player_.feet + fw * 15.f, player_.yaw + kPi); k >= 0) {
+                            world_.objects[size_t(k)].team = 99;
+                            light = k;
+                            Searchlight l;
+                            l.object = k;
+                            lights_.push_back(l);
+                        }
+                        mine = place(104054, player_.feet + fw * 4.f, 0);
+                        trig = place(101062, player_.feet + rt * 6.f, 0);
+                        if ((crack = place(103062, player_.feet + rt * 8.f + fw * 2.f, player_.yaw)) >= 0) world_.objects[size_t(crack)].missionGroup = 1;
+                    }
+                    if (ticks_ == 240 && mine >= 0) {
+                        WorldObject& m = world_.objects[size_t(mine)];
+                        m.pos = {player_.feet.x, terrain_.heightAt(player_.feet.x, player_.feet.z), player_.feet.z};
+                        m.base = m.pos.y;
+                    }
+                    if (ticks_ == 360 && trig >= 0)
+                        if (auto m = world_.damage(trig, 1000, 0x7fff); !m.empty()) pushMessage(m);
+                    if (ticks_ == 420 && light >= 0)
+                        if (auto m = world_.damage(light, 1000, 0x7fff); !m.empty()) pushMessage(m);
+                    if ((ticks_ == 300 || ticks_ == 400 || ticks_ == 480) && crack >= 0)
+                        std::fprintf(stderr, "test: crack model %s wrecked %d; mine hp %d wrecked %d; light model %s wrecked %d\n",
+                                     world_.objects[size_t(crack)].model->name.c_str(), int(world_.objects[size_t(crack)].wrecked),
+                                     world_.objects[size_t(mine)].hp, int(world_.objects[size_t(mine)].wrecked),
+                                     world_.objects[size_t(light)].model->name.c_str(), int(world_.objects[size_t(light)].wrecked));
+                    if ((ticks_ % 32) == 0)
+                        for (const auto& l : lights_)
+                            std::fprintf(stderr, "light %d: heading %.1f deg pitch %.1f target %d counter %d\n", l.object,
+                                         world_.objects[size_t(l.object)].heading * 180.f / kPi, world_.objects[size_t(l.object)].pitch * 180.f / kPi,
+                                         l.target, l.counter);
                 }
                 sound_.tickDelayed();
                 arsenal_.underwaterRule = mission_.version >= 0x0F;
@@ -3868,11 +4451,11 @@ int Game::run() {
                         deadShift_ = deadShift_ + fw * r[0] + lf * r[1];
                     }
                     const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
-                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0);
+                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0, kPlayerTeam);
                 }
                 for (const auto& e : world_.takeAnimEvents()) {
                     const auto& o = world_.objects[size_t(e.object)];
-                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0);
+                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0, o.team);
                 }
                 // Ambience (0x45a5a8 dec0, 0x45a830 tree, 0x47f64c palm, 0x45a734..
                 // snd0..2): the sound (4 m up for dec0/tree/palm; trees and palms
@@ -3983,6 +4566,8 @@ int Game::run() {
             } else {
                 // DF2 draws only the command map while it is open (0x45c610).
                 if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead());
+                // The weather spawns around the last rendered frame's camera (0x46b780's end).
+                weather_.setCamera(viewEye());
                 if (df2Hud_.on && showMap_) {
                     glViewport(0, 0, dw, dh);
                 } else if (df2Hud_.on) {

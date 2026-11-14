@@ -32,6 +32,7 @@ struct GpuModel {
     float lodThreshold[4] = {0, 0, 0, 0};
     float headerRadius = 1;            // 3DI header +0x60 (LOD selection)
     float flatRadius = 0, height = 0;  // 3DI header +0x64, LOD 0 header +0x24 (blasts)
+    float box[4] = {0, 0, 0, 0};       // LOD 0 header +0x28..+0x34: xmin xmax ymin ymax, file axes
     // Material +0x12 of the model's largest LOD-0 material: OpenDF hit-tests
     // objects with boxes, not polygons, so this stands in for the hit face's
     // material when choosing the impact effect.
@@ -73,6 +74,10 @@ public:
     void drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes);
     void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, bool flash = false, int frame = 0);
     void end();
+    // Multiplies the colour and alpha of what is drawn next; `replace`: the
+    // colour instead replaces the material colour of texel-as-alpha parts
+    // (DF2's vertex colour 0x445e50). begin() resets it to (1, 1, 1, 1).
+    void setTint(float r, float g, float b, float a, bool replace = false);
     // The mission's colour variant (cleared models reload with it).
     void setVariant(int variant);
 

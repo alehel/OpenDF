@@ -138,6 +138,9 @@ public:
     // Delta Force 2's rules (DF2.EXE): explosion damage (0x44d4a0), bullet
     // damage to objects (0x44bff0). Set by the game for DF2 missions.
     bool df2Rules = false;
+    // Delta Force 2: the terrain's fog_level (0 off); nothing is seen past
+    // 2^fog_level m (0x40621d..0x406240).
+    int fogLevel = 0;
     // Swaps a destroyed object to its husk (or removes it), as damage() does
     // at once in DF1; DF2's collapsing buildings do it at step 8.
     void applyHusk(int index);

@@ -512,6 +512,8 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
     const Vec3 d = b - a;
     const float len = std::sqrt(dot(d, d));
     if (len >= 800.f) return 0;
+    // Delta Force 2 (0x406180): with fog on, not past the fog distance.
+    if (df2Rules && fogLevel > 0 && len > float(1 << fogLevel)) return 0;
     if (len < 1e-4f) return 1;
     RayHit h;
     if (raycast(a, b, h, false)) return 0;
@@ -725,6 +727,14 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         // DF2.EXE 0x4028d0: the collapse runs over 64 thinks; the husk at step 8.
         o.hp = 0;
         o.collapse = 0;
+        destroyed_.push_back(index);
+        return o.item->name + " destroyed";
+    }
+    if (df2Rules && !o.husk && (o.item->aiFunction == "mine" || o.item->aiFunction == "vtrg")) {
+        // DF2.EXE 0x4295f0 / 0x42a980: flagged destroyed (4, or 0x10C) but
+        // not removed; with no husk the model stays (INFERRED drawn as it was).
+        o.hp = 0;
+        o.wrecked = true;
         destroyed_.push_back(index);
         return o.item->name + " destroyed";
     }

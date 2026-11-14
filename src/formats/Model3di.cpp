@@ -100,6 +100,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         // v8 alpha textures: 2 bytes a texel (palette index, alpha), named at +0x0C.
         const bool alpha16 = layout.v8 && size == 2 * texels;
         if (alpha16) t.name = r.str(p + 0x0C, 16);
+        t.alpha16 = alpha16;
         t.rgba.resize(texels * 4);
         t.indices.resize(texels);
         for (size_t k = 0; k < texels; ++k) {
@@ -192,6 +193,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 const uint8_t ti = r.u8(o + 0x34 + size_t(variant));
                 if (auto it = bySequence.find(ti); ti != 0xFF && it != bySequence.end()) mt.tex = it->second;
                 else if (auto jt = byName.find(upper(r.str(o, 12))); jt != byName.end()) mt.tex = jt->second;
+            } else if (layout.v8 && (flags & 0x8000)) {
+                // v8: an alpha material without 0x0001 takes its texture by
+                // the sequence at +0x37 (DF2.EXE 0x43ebca), e.g. the SMKT_H
+                // dust-cloud frames and SNOW.3DI.
+                const uint8_t ti = r.u8(o + 0x37);
+                if (auto it = bySequence.find(ti); it != bySequence.end()) mt.tex = it->second;
             }
             // 0x0800 hidden; 0x0008 is not drawn in the hi-colour renderer;
             // 0x0080 and 0x8000 need a texture (no span for the untextured ones).
@@ -201,6 +208,11 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             // v8: 0x8000 marks the alpha textures (16-bit index + alpha):
             // lit as usual and blended by the texel's alpha (mode 3).
             mt.blend = (flags & 0x8000) ? (layout.v8 ? 3 : 2) : (flags & 0x0080) ? 1 : 0;
+            // v8 0x8000 materials on an 8-bit texture (SMKT_H, SNOW, the smoke
+            // and spark effects: a grey ramp palette i -> (i, i, i)): INFERRED
+            // drawn as v5's 0x8000, the texel as the blend weight toward the
+            // material (or vertex) colour, since the texture holds no colour.
+            if (layout.v8 && (flags & 0x8000) && mt.tex >= 0 && !m.textures[size_t(mt.tex)].alpha16) mt.blend = 2;
             mats[i] = mt;
         }
         std::vector<int> matTextures;
@@ -224,6 +236,8 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         }
         lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
         if (li == 0) m.height = r.i32(p + 0x24) / 65536.f;
+        if (li == 0)
+            for (int k = 0; k < 4; ++k) m.box[k] = r.i32(p + 0x28 + 4 * size_t(k)) / 65536.f;
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
         // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.
