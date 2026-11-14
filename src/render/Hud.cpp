@@ -147,6 +147,64 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
     return true;
 }
 
+SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
+    SheetFont f;
+    std::vector<uint8_t> data;
+    IndexedImage img;
+    if (!vfs.read(name, data) || !decodePcx(data, img)) return f;
+    const int W = img.width, H = img.height;
+    auto px = [&](int x, int y) { return img.pixels[size_t(y) * size_t(W) + size_t(x)]; };
+    std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
+    for (size_t i = 0; i < img.pixels.size(); ++i) {
+        const uint8_t v = img.pixels[i];
+        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+    }
+    int y0 = 0;
+    for (int band = 0; band < 16 && y0 < H; ++band) {
+        int y1 = y0;
+        while (y1 < H && px(0, y1) != 1) ++y1;
+        if (y1 <= y0) break;
+        if (!f.height) f.height = y1 - y0;
+        int code = band * 16;
+        for (int x = 0; x < W && code < band * 16 + 16;) {
+            auto ink = [&](int cx) {
+                for (int y = y0; y < y1; ++y) {
+                    const uint8_t v = px(cx, y);
+                    if (v >= 8 || v == 3 || v == 4) return true;
+                }
+                return false;
+            };
+            if (!ink(x)) { ++x; continue; }
+            const int start = x;
+            while (x < W && ink(x)) ++x;
+            f.glyphs[code++] = {start, y0, x - start, y1 - y0};
+        }
+        y0 = y1 + 2;
+    }
+    f.tex = makeImage(W, H, rgba);
+    f.ok = f.height > 0;
+    return f;
+}
+
+float Hud::sheetWidth(const SheetFont& f, const std::string& s, float scale) {
+    float w = 0;
+    for (unsigned char c : s) w += float(f.glyphs[c].w + 1) * scale;
+    return w;
+}
+
+float Hud::sheetText(const SheetFont& f, float x, float y, const std::string& s, Color c, float scale) {
+    if (!f.ok) return 0;
+    const float start = x;
+    for (unsigned char ch : s) {
+        const SheetFont::Glyph& g = f.glyphs[ch];
+        if (g.w > 0 && ch != ' ')
+            imageUV(f.tex.texture, x, y, float(g.w) * scale, float(g.h) * scale, float(g.x) / float(f.tex.width),
+                    float(g.y) / float(f.tex.height), float(g.x + g.w) / float(f.tex.width), float(g.y + g.h) / float(f.tex.height), c);
+        x += float(g.w + 1) * scale;
+    }
+    return x - start;
+}
+
 HudImage Hud::makeImage(int width, int height, const std::vector<uint8_t>& rgba) {
     flush();   // pending quads belong to the currently bound texture
     HudImage out;

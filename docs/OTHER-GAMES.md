@@ -233,7 +233,21 @@ First differences from DF1:
     win marking the mission done and the unlock mask kept. Not yet: the fade
     effect, the keyboard page, credits, the voice briefing, slider dragging,
     the map scroll sliders, multiplayer.
-- Not yet: DF2's command map (tabs, Map/Mission), X/Z scope zeroing, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
+  - **command map** (key C; 0x40b370): instead of the 3D view, a 640×480
+    mouse screen (scaled into the window; the background tiles continue past
+    its sides): CTILE2 background, CTILE panels with DF2_EDGE/DF2_CRNR frames
+    3 px outside, the last three chat/system lines, the tabs (Cmap
+    CMAP_MENU000-004, F_LG640, 0xff9020 / 0x603000, clickable); Map tab: the
+    radar picture at the radar's scale in (48,200)-(640,656), 100 m grid in
+    orange with white labels (columns x/100+10 as letters, rows 10 − y/100),
+    route lines, double-size blips with a black outline, waypoint names, the
+    toggle buttons (Gridlines, Names, People, Waypoints, Vehicles, Buildings:
+    END1/MIDL/END2, 0xff9020 on / 0x683000 off), the icon buttons, + / −
+    zoom, >< re-centre, right-drag pan, the DF2CURSA / DF2CROSA cursors in
+    green; Mission tab: MBBRIEF in 0xc06000. Not yet: the W waypoint tool,
+    the elevation and contour views, selecting objects, the Players, Team
+    (squad orders) and Weapons tabs.
+- Not yet: X/Z scope zeroing, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order

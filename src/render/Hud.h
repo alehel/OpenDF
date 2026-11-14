@@ -19,6 +19,17 @@ struct HudImage {
     int width = 0, height = 0;
 };
 
+// A font sheet in Delta Force 2's layout (DF2.EXE 0x4196f0): bands of 16
+// characters top-down, a band ends at the first row whose column-0 pixel is
+// 1 and the next starts two rows below; ink is pixel 3 (spacer), 4 or >= 8.
+struct SheetFont {
+    HudImage tex;
+    struct Glyph { int x = 0, y = 0, w = 0, h = 0; };
+    Glyph glyphs[256] = {};
+    int height = 0;
+    bool ok = false;
+};
+
 class Hud {
 public:
     ~Hud();
@@ -31,6 +42,11 @@ public:
     // Delta Force 2's HUD icons (weap/pos/itm/rad%i.pcx): the palette index
     // through DF2's amber ramp, for drawing with blend 5 (additive).
     HudImage loadAmberImage(Vfs& vfs, const std::string& name);
+    SheetFont loadSheetFont(Vfs& vfs, const std::string& name);
+    // Opaque glyphs (DF2.EXE 0x4198e0), y the top of the cell, scaled; returns
+    // the width; advance = glyph width + 1.
+    float sheetText(const SheetFont& f, float x, float y, const std::string& s, Color c, float scale = 1);
+    static float sheetWidth(const SheetFont& f, const std::string& s, float scale = 1);
     // A texture from RGBA pixels (nearest filtering).
     HudImage makeImage(int width, int height, const std::vector<uint8_t>& rgba);
     // DF.EXE's menu button blend (0x407e50): dst = src / 2 + dst * 3 / 4.

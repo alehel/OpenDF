@@ -369,6 +369,22 @@ private:
         return t && !t->empty() ? *t : std::string(fallback);
     }
     bool nvg_ = false;   // DF2 night vision ([0x765740], forced on for night missions)
+    // Delta Force 2's command map (DF2.EXE 0x40b370): a 640x480 mouse UI.
+    struct Df2Map {
+        bool loaded = false;
+        HudImage tile, tile2, edge, corner, end1, midl, end2, iconWay, iconDepth, iconCentre, iconContour, cursor, cross;
+        SheetFont big;
+        int tab = 0;
+        bool toggles[6] = {true, true, true, true, true, true};   // grid, names, people, waypoints, vehicles, buildings
+        float panX = 0, panZ = 0;     // metres from the player
+        int mouseX = 0, mouseY = 0;   // in the 640x480 screen
+        bool panning = false;
+        int pressFlash = -1;
+    } df2Map_;
+    void drawDf2CommandMap(const Screen& s);
+    void df2MapClick(const Screen& s, int x, int y, bool down, int button);
+    // The 640x480 screen inside the window (aspect kept, centred).
+    float df2MapK(const Screen& s) const { return std::min(s.w / 640.f, s.h / 480.f); }
     void drawDf2Bottom(const Screen& s);
     void drawDf2Top(const Screen& s);
     // A HUD.DEF point in this window: x left- or right-anchored about the
@@ -1543,7 +1559,15 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         arsenal_.setBinoculars(binoculars_);
         break;
-    case Action::BigMap: showMap_ = !showMap_; showGoals_ = false; break;
+    case Action::BigMap:
+        showMap_ = !showMap_;
+        showGoals_ = false;
+        // DF2's command map takes the mouse (its own cursor is drawn).
+        if (df2Hud_.on && captured_) {
+            SDL_SetRelativeMouseMode(showMap_ ? SDL_FALSE : SDL_TRUE);
+            SDL_ShowCursor(SDL_DISABLE);
+        }
+        break;
     case Action::MissionGoals: showGoals_ = !showGoals_; showMap_ = false; break;
     // DF.EXE 0x42ddbf: the map scale (metres per pixel) x0.9 / x1.1, 0.25..3.6.
     case Action::MapZoomIn: mapScale_ = std::max(0.25f, mapScale_ * 0.9f); break;
@@ -2134,6 +2158,12 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     hud_.begin(int(s.w), int(s.h));
 
     const float cx = s.w * 0.5f, cy = s.playY + s.playH * 0.5f, t = s.px();
+    if (showMap_ && df2Hud_.on) {
+        // DF2.EXE 0x45c610: only the command map while it is open.
+        drawDf2CommandMap(s);
+        hud_.end();
+        return;
+    }
     if (showMap_) drawCommandMap(s);
     else if (crosshair_ && df2Hud_.on) {
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
@@ -2543,6 +2573,292 @@ void Game::drawDf2Top(const Screen& s) {
     };
     history(df2Chat_, "chat_message");
     history(df2Sys_, "sys_message");
+}
+
+// Delta Force 2's command map (DF2.EXE 0x40b370, 0x40d630, 0x410f10): drawn
+// instead of the 3D view at 640x480 (here the 640x480 screen scaled into the
+// window, aspect kept); layout in the 1024x768 virtual space x 0.625 (whole
+// pixels), art 1:1 at 640.
+void Game::drawDf2CommandMap(const Screen& s) {
+    Df2Map& m = df2Map_;
+    if (!m.loaded) {
+        m.loaded = true;
+        auto pcx = [&](const char* n, bool key) { return hud_.loadImage(vfs_, n, false, key); };
+        m.tile = pcx("CTILE.PCX", false);
+        m.tile2 = pcx("CTILE2.PCX", false);
+        m.edge = pcx("DF2_EDGE.PCX", true);
+        m.corner = pcx("DF2_CRNR.PCX", true);
+        m.end1 = pcx("DF2_END1.PCX", true);
+        m.midl = pcx("DF2_MIDL.PCX", true);
+        m.end2 = pcx("DF2_END2.PCX", true);
+        m.iconWay = pcx("DF2_WAY.PCX", true);
+        m.iconDepth = pcx("DF2_DPTH.PCX", true);
+        m.iconCentre = pcx("DF2_CENT.PCX", true);
+        m.iconContour = pcx("DF2_CNTR.PCX", true);
+        // Cursors: the pixels are an alpha map blended in green.
+        auto cursor = [&](const char* n) {
+            std::vector<uint8_t> d;
+            IndexedImage img;
+            if (!vfs_.read(n, d) || !decodePcx(d, img)) return HudImage{};
+            std::vector<uint8_t> rgba(img.pixels.size() * 4, 0);
+            for (size_t i = 0; i < img.pixels.size(); ++i) {
+                rgba[i * 4 + 1] = 255;
+                rgba[i * 4 + 3] = img.pixels[i];
+            }
+            return hud_.makeImage(img.width, img.height, rgba);
+        };
+        m.cursor = cursor("DF2CURSA.PCX");
+        m.cross = cursor("DF2CROSA.PCX");
+        m.big = hud_.loadSheetFont(vfs_, "F_LG640.PCX");
+    }
+    const float k = df2MapK(s), ox = (s.w - 640.f * k) * 0.5f, oy = (s.h - 480.f * k) * 0.5f;
+    auto V = [](float v) { return std::floor(v * 0.625f); };   // virtual -> 640
+    auto X = [&](float x) { return ox + x * k; };
+    auto Y = [&](float y) { return oy + y * k; };
+    // A rectangle (640 px) tiled from screen (0, 0) with a 128x128 tile.
+    auto tiled = [&](const HudImage& t, float x0, float y0, float x1, float y1) {
+        if (!t.texture) return;
+        for (float ty = std::floor(y0 / 128.f) * 128.f; ty < y1; ty += 128.f)
+            for (float tx = std::floor(x0 / 128.f) * 128.f; tx < x1; tx += 128.f) {
+                const float a0 = std::max(x0, tx), b0 = std::max(y0, ty), a1 = std::min(x1, tx + 128.f), b1 = std::min(y1, ty + 128.f);
+                if (a1 <= a0 || b1 <= b0) continue;
+                hud_.imageUV(t.texture, X(a0), Y(b0), (a1 - a0) * k, (b1 - b0) * k, (a0 - tx) / 128.f, (b0 - ty) / 128.f, (a1 - tx) / 128.f,
+                             (b1 - ty) / 128.f);
+            }
+    };
+    // A frame of a sheet of 4 stacked frames.
+    auto frame = [&](const HudImage& im, int f, float x, float y) {
+        if (!im.texture) return;
+        const float fh = float(im.height) / 4.f;
+        hud_.imageUV(im.texture, X(x), Y(y), float(im.width) * k, fh * k, 0, float(f) * fh / float(im.height), 1, float(f + 1) * fh / float(im.height));
+    };
+    // A panel: CTILE fill, EDGE frames 0 top / 2 bottom / 3 left / 1 right in
+    // 8 px steps, CRNR 0-3 at the corners, 3 px outside the fill.
+    auto panel = [&](float vx0, float vy0, float vx1, float vy1) {
+        const float x0 = V(vx0), y0 = V(vy0), x1 = V(vx1), y1 = V(vy1);
+        tiled(m.tile, x0, y0, x1, y1);
+        const float L = x0 - 3, T = y0 - 3, R = x1 + 3, B = y1 + 3;
+        for (float x = L + 8; x < R - 8; x += 8) { frame(m.edge, 0, x, T); frame(m.edge, 2, x, B - 8); }
+        for (float y = T + 8; y < B - 8; y += 8) { frame(m.edge, 3, L, y); frame(m.edge, 1, R - 8, y); }
+        frame(m.corner, 0, L, T);
+        frame(m.corner, 1, R - 8, T);
+        frame(m.corner, 2, L, B - 8);
+        frame(m.corner, 3, R - 8, B - 8);
+    };
+    // The background over the whole window (the 640x480 tiles continued past
+    // its sides: an amenity), then the panels.
+    {
+        const HudImage& t = m.tile2;
+        if (t.texture)
+            for (float ty = -std::ceil(oy / (128.f * k)) * 128.f; Y(ty) < s.h; ty += 128.f)
+                for (float tx = -std::ceil(ox / (128.f * k)) * 128.f; X(tx) < s.w; tx += 128.f)
+                    hud_.image(t.texture, X(tx), Y(ty), 128.f * k, 128.f * k);
+    }
+    panel(32, 124, 992, 168);
+    panel(32, 184, 656, 736);
+    panel(672, 184, 992, 736);
+    panel(12, 12, 588, 100);
+    panel(600, 12, 1012, 100);
+    // Last three chat / system lines (x 44 / 632, y 24, 44, 64), own colours.
+    auto three = [&](const std::deque<Df2Line>& h, float vx) {
+        for (int row = 0; row < 3; ++row) {
+            const size_t e = size_t(2 - row);
+            if (e < h.size()) hud_.text(X(V(vx)), Y(V(24 + 20 * float(row))), h[e].text, h[e].colour, k);
+        }
+    };
+    three(df2Chat_, 44);
+    three(df2Sys_, 632);
+    // Tabs (Cmap CMAP_MENU000..004), f_LG, spread over x 25..615 at y 80.
+    std::string tabs[5];
+    float total = 0;
+    for (int i = 0; i < 5; ++i) {
+        char key[24];
+        std::snprintf(key, sizeof key, "CMAP_MENU%03d", i);
+        static const char* kDef[5] = {"Map", "Players", "Team", "Weapons", "Mission"};
+        tabs[i] = df2Text("Cmap", key, kDef[i]);
+        total += Hud::sheetWidth(m.big, tabs[i]);
+    }
+    const float gap = (590.f - total) / 5.f;
+    float tx = 25.f + gap / 2;
+    for (int i = 0; i < 5; ++i) {
+        hud_.sheetText(m.big, X(tx), Y(80), tabs[i], i == m.tab ? rgb(0xff, 0x90, 0x20) : rgb(0x60, 0x30, 0), k);
+        tx += Hud::sheetWidth(m.big, tabs[i]) + gap;
+    }
+    // A toggle text button: END1 + MIDL ... + END2, frame = state, text centred.
+    auto textButton = [&](float vx, float vy, float vw, const std::string& label, bool on, Color offC, Color onC) {
+        const float x0 = V(vx), y0 = V(vy), x1 = x0 + V(vw);
+        const int f = on ? 1 : 0;
+        frame(m.end1, f, x0, y0);
+        for (float x = x0 + 8; x < x1 - 8; x += 8) frame(m.midl, f, x, y0);
+        frame(m.end2, f, x1 - 8, y0);
+        const float w = hud_.textWidth(label, k);
+        hud_.text(X((x0 + x1) / 2) - w / 2, Y(y0 + 2), label, on ? onC : offC, k);
+    };
+    if (m.tab == 0) {
+        // Map tab: the radar renderer in (48, 200)-(640, 656), north-up,
+        // centred on the player + pan, the radar's scale shared (1.6 m a
+        // pixel at 640 by default).
+        const float x0 = X(V(48)), y0 = Y(V(200)), x1 = X(V(640)), y1 = Y(V(656));
+        const float mPerPx = 1024.f / 640.f * mapScale_ / k;
+        const Vec3 c = player_.feet + Vec3{m.panX, 0, m.panZ};
+        const float mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        hud_.clip(x0, y0, x1 - x0, y1 - y0);
+        if (const GLuint tex = terrain_.radarTexture() ? terrain_.radarTexture() : terrain_.colorTexture()) {
+            const float ext = terrain_.mapExtent(), hw = (x1 - x0) * 0.5f * mPerPx, hh = (y1 - y0) * 0.5f * mPerPx;
+            hud_.imageUV(tex, x0, y0, x1 - x0, y1 - y0, (c.x - hw) / ext, (c.z - hh) / ext, (c.x + hw) / ext, (c.z + hh) / ext);
+        }
+        const double px = player_.missionX() + m.panX, py = player_.missionY() - m.panZ;
+        auto toMap = [&](double x, double y) { return std::pair<float, float>{mx + float(x - px) / mPerPx, my - float(y - py) / mPerPx}; };
+        // Grid (0x40e...): 100 m lines in orange, labels white at the cell middle.
+        if (m.toggles[0]) {
+            const double halfW = (x1 - x0) * 0.5 * mPerPx, halfH = (y1 - y0) * 0.5 * mPerPx;
+            for (double gx = std::ceil((px - halfW) / 100) * 100; gx <= px + halfW; gx += 100) {
+                const float sx = toMap(gx, py).first;
+                hud_.rect(sx, y0, k, y1 - y0, kDf2Amber);
+                const int i = int(std::floor(gx / 100)) + 10;
+                std::string lab;
+                if (i >= 0 && i < 26) lab = std::string(1, char('A' + i));
+                else if (i >= 26) lab = std::string(1, char('@' + i / 26)) + char('A' + i % 26);
+                hud_.text(sx + 50 / mPerPx - hud_.textWidth(lab, k) / 2, y0 + k, lab, kHudWhite, k);
+            }
+            for (double gy = std::floor((py + halfH) / 100) * 100; gy >= py - halfH; gy -= 100) {
+                const float sy = toMap(px, gy).second;
+                hud_.rect(x0, sy, x1 - x0, k, kDf2Amber);
+                const int row = ((10 - int(std::floor((gy - 100) / 100))) % 100 + 100) % 100;
+                hud_.text(x0 + 2 * k, sy + 50 / mPerPx - 4 * k, std::to_string(row), kHudWhite, k);
+            }
+        }
+        const float blip = 6.f * k;
+        auto teamColour = [](int side) {
+            return side == 1 ? rgb(0x10, 0x40, 0xff) : side == 2 ? rgb(0xff, 0, 0) : side == 3 ? rgb(0xff, 0xff, 0) : side == 4 ? rgb(0xff, 0xff, 0xff) : rgb(0, 0xff, 0);
+        };
+        // Blips at double size, a black pass at +-1 pixel first (flag 0x1000).
+        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead) {
+            for (auto [dx, dy] : {std::pair{-k, 0.f}, {k, 0.f}, {0.f, -k}, {0.f, k}})
+                drawMapMarker(s, x + dx, y + dy, type, rgb(1, 1, 1), heading, dead, blip);
+            drawMapMarker(s, x, y, type, col, heading, dead, blip);
+        };
+        if (m.toggles[3])
+            for (size_t i = 0; i + 1 < route_.size(); ++i) {
+                auto [ax, ay] = toMap(route_[i].x, route_[i].y);
+                auto [bx, by] = toMap(route_[i + 1].x, route_[i + 1].y);
+                hud_.line(ax, ay, bx, by, k, kDf2Amber);
+            }
+        if (m.toggles[2] && o_.gpsIcons > 0)
+            for (const auto& o : world_.objects) {
+                if (o.missionGroup != 3 || !o.person || o.removed) continue;
+                if (o_.gpsIcons == 1 && !o.mapMarker) continue;
+                const Vec3 at = world_.nearest(o.pos, player_.feet);
+                blipAt(mx + (at.x - c.x) / mPerPx, my + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead);
+            }
+        const MissionObject* current = route_.empty() ? nullptr : route_[size_t(routeIndex_)].object;
+        for (const auto& o : mission_.objects) {
+            const int type = o.raw[19] & 0xFFFF;
+            if (!type || o.group == 3) continue;
+            const ItemDef* it = items_.byMissionType(o.type);
+            const std::string kind = it ? it->type : std::string();
+            if ((kind == "building" && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (kind == "marker" && !m.toggles[3])) continue;
+            if (&o == current && !(ticks_ & 16)) continue;
+            auto [bx, by] = toMap(o.x, o.y);
+            blipAt(bx, by, type, teamColour(int((uint32_t(o.raw[16]) >> 24) & 0xFF)), 0, false);
+        }
+        if (m.toggles[1] && m.toggles[3])
+            for (const auto& rp : route_) {
+                auto [bx, by] = toMap(rp.x, rp.y);
+                hud_.text(bx + blip, by - 4 * k, rp.name, kDf2Amber, k);
+            }
+        blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, teamColour(0), player_.yaw, false);
+        hud_.unclip();
+        // Buttons (width 152 virtual): Gridlines, Names, People, Waypoints,
+        // Vehicles, Buildings; the icon buttons and + / -.
+        static const char* kLabels[6] = {"Gridlines", "Names", "People", "Waypoints", "Vehicles", "Buildings"};
+        static const float kPos[6][2] = {{48, 668}, {48, 700}, {208, 668}, {208, 700}, {368, 668}, {368, 700}};
+        for (int i = 0; i < 6; ++i)
+            textButton(kPos[i][0], kPos[i][1], 152, kLabels[i], m.toggles[i], rgb(0x68, 0x30, 0), rgb(0xff, 0x90, 0x20));
+        auto icon = [&](const HudImage& im, float vx, float vy, bool on) {
+            const float x = V(vx), y = V(vy);
+            const bool hover = m.mouseX >= x && m.mouseX < x + 16 && m.mouseY >= y && m.mouseY < y + 16;
+            frame(im, (on ? 1 : 0) + (hover ? 2 : 0), x, y);
+        };
+        icon(m.iconWay, 528, 668, false);
+        icon(m.iconDepth, 528, 700, false);
+        icon(m.iconCentre, 568, 668, false);
+        icon(m.iconContour, 568, 700, false);
+        textButton(608, 668, 32, "+", true, rgb(0xc0, 0x60, 0), rgb(0xc0, 0x60, 0));
+        textButton(608, 700, 32, "-", true, rgb(0xc0, 0x60, 0), rgb(0xc0, 0x60, 0));
+    } else if (m.tab == 4) {
+        // Mission tab: the DF2BRIEF MBBRIEF text in (64, 216)-(608, 704),
+        // colour 0xc06000; "Game Settings" n/a in single player.
+        std::vector<uint8_t> raw;
+        static TextTable brief;
+        static bool loaded = false;
+        if (!loaded) { loaded = true; if (vfs_.read("DF2BRIEF.BIN", raw)) brief.parse(raw); }
+        const std::string cur = current_ >= 0 && current_ < int(missions_.size()) ? toUpper(missions_[size_t(current_)]) : std::string();
+        const std::string key = cur.substr(0, std::min<size_t>(6, cur.size()));
+        if (const std::string* t = brief.find("MBBRIEF", key)) {
+            float y = Y(V(216));
+            std::string line, word;
+            const float maxW = (V(608) - V(64)) * k;
+            auto emit = [&]() { hud_.text(X(V(64)), y, line, rgb(0xc0, 0x60, 0), k); y += 18.f * 0.625f * k; line.clear(); };
+            for (char ch : *t + " ") {
+                if (ch == '\r') continue;
+                if (ch == '\n') { if (!word.empty()) { line += (line.empty() ? "" : " ") + word; word.clear(); } emit(); continue; }
+                if (ch == ' ') {
+                    const std::string cand = line.empty() ? word : line + " " + word;
+                    if (hud_.textWidth(cand, k) > maxW && !line.empty()) { emit(); line = word; }
+                    else line = cand;
+                    word.clear();
+                    continue;
+                }
+                word += ch;
+            }
+            if (!line.empty()) emit();
+        }
+        hud_.text(X(V(720)), Y(V(232)), "Game Settings", kDf2Amber, k);
+        hud_.text(X(V(720)), Y(V(264)), "n/a", kDf2Amber, k);
+    }
+    // The cursor (crosshair over the map, else the arrow).
+    const bool overMap = m.tab == 0 && m.mouseX >= V(48) && m.mouseX < V(640) && m.mouseY >= V(200) && m.mouseY < V(656);
+    const HudImage& cur = overMap ? m.cross : m.cursor;
+    if (cur.texture) {
+        const float hx = overMap ? 12.f : 0.f, hy = overMap ? 11.f : 0.f;
+        hud_.image(cur.texture, X(float(m.mouseX) - hx), Y(float(m.mouseY) - hy), float(cur.width) * k, float(cur.height) * k);
+    }
+}
+
+void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
+    Df2Map& m = df2Map_;
+    auto V = [](float v) { return std::floor(v * 0.625f); };
+    if (button == 3) { m.panning = down; return; }   // right drag pans
+    if (!down || button != 1) return;
+    // Tabs (the text rectangles, y 80).
+    if (y >= 80 && y < 80 + std::max(1, m.big.height)) {
+        float total = 0;
+        std::string tabs[5];
+        for (int i = 0; i < 5; ++i) {
+            char key[24];
+            std::snprintf(key, sizeof key, "CMAP_MENU%03d", i);
+            static const char* kDef[5] = {"Map", "Players", "Team", "Weapons", "Mission"};
+            tabs[i] = df2Text("Cmap", key, kDef[i]);
+            total += Hud::sheetWidth(m.big, tabs[i]);
+        }
+        const float gap = (590.f - total) / 5.f;
+        float tx = 25.f + gap / 2;
+        for (int i = 0; i < 5; ++i) {
+            const float w = Hud::sheetWidth(m.big, tabs[i]);
+            if (x >= tx && x <= tx + w) { m.tab = i; return; }
+            tx += w + gap;
+        }
+    }
+    if (m.tab != 0) return;
+    static const float kPos[6][2] = {{48, 668}, {48, 700}, {208, 668}, {208, 700}, {368, 668}, {368, 700}};
+    for (int i = 0; i < 6; ++i)
+        if (x >= V(kPos[i][0]) && x < V(kPos[i][0]) + V(152) && y >= V(kPos[i][1]) && y < V(kPos[i][1]) + 16) { m.toggles[i] = !m.toggles[i]; return; }
+    auto in = [&](float vx, float vy, float w) { return x >= V(vx) && x < V(vx) + w && y >= V(vy) && y < V(vy) + 16; };
+    if (in(568, 668, 16)) { m.panX = m.panZ = 0; return; }                               // >< re-centres
+    if (in(608, 668, V(32))) { mapScale_ = std::max(0.25f, mapScale_ * 0.9f); return; }  // + (0x4000 min)
+    if (in(608, 700, V(32))) { mapScale_ = std::min(3.6f, mapScale_ * 1.1f); return; }   // - (0x39999 max)
+    (void)s;
 }
 
 void Game::drawBriefing(const Screen& s) {
@@ -3029,6 +3345,28 @@ int Game::run() {
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT) { running = false; quit_ = true; }
                 if (leaveMission_) running = false;
+                else if (df2Hud_.on && showMap_ && (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)) {
+                    // DF2's command map is a mouse UI: the pointer in its 640x480 screen.
+                    int dw2, dh2, ww2, wh2;
+                    SDL_GL_GetDrawableSize(win_, &dw2, &dh2);
+                    SDL_GetWindowSize(win_, &ww2, &wh2);
+                    Screen ms;
+                    ms.w = float(dw2);
+                    ms.h = float(dh2);
+                    const float k = df2MapK(ms), ox = (ms.w - 640.f * k) * 0.5f, oy = (ms.h - 480.f * k) * 0.5f;
+                    const int mx = e.type == SDL_MOUSEMOTION ? e.motion.x : e.button.x, my = e.type == SDL_MOUSEMOTION ? e.motion.y : e.button.y;
+                    const float px = float(mx) * float(dw2) / float(std::max(1, ww2)), py = float(my) * float(dh2) / float(std::max(1, wh2));
+                    const int nx = int((px - ox) / k), ny = int((py - oy) / k);
+                    if (e.type == SDL_MOUSEMOTION && df2Map_.panning) {
+                        const float mPerPx = 1024.f / 640.f * mapScale_;
+                        df2Map_.panX = std::clamp(df2Map_.panX - float(nx - df2Map_.mouseX) * mPerPx, -1024.f, 1024.f);
+                        df2Map_.panZ = std::clamp(df2Map_.panZ - float(ny - df2Map_.mouseY) * mPerPx, -1024.f, 1024.f);
+                    }
+                    df2Map_.mouseX = nx;
+                    df2Map_.mouseY = ny;
+                    if (e.type != SDL_MOUSEMOTION)
+                        df2MapClick(ms, nx, ny, e.type == SDL_MOUSEBUTTONDOWN, e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 3 : 2);
+                }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
@@ -3295,8 +3633,11 @@ int Game::run() {
                 drawViewModel(s);
                 glViewport(0, 0, dw, dh);
             } else {
-                drawWorld(view, proj, binoculars_ && !playerDead());
-                if (df2Hud_.on) {
+                // DF2 draws only the command map while it is open (0x45c610).
+                if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead());
+                if (df2Hud_.on && showMap_) {
+                    glViewport(0, 0, dw, dh);
+                } else if (df2Hud_.on) {
                     // DF2.EXE 0x45c610: the scope inset, the night vision
                     // (0x449450), then the weapon pass (0x448980).
                     drawZoomInset(s, view, fovY);
