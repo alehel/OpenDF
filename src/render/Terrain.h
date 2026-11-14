@@ -34,6 +34,9 @@ public:
 
     // World-space ground height at (x, z), bilinear, wrapping.
     float heightAt(float x, float z) const;
+    // The nearest cell's raw height, no interpolation (DF.EXE's byte map
+    // 0x68c024, e.g. for sound occlusion).
+    float cellHeight(float x, float z) const;
     float mapExtent() const { return size_ * scale.cellSize; }
     // DF.EXE [0x68bfe8]: the water level in metres, 0 when the map has none
     // (0x430d28); every water test is skipped when it is 0.

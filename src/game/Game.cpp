@@ -237,7 +237,13 @@ private:
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
     // Ambience (ai_function timers, 0x45a5a8 / 0x45a830 / sndN): objects
     // that repeat their interrupt_sound_id.
-    struct Ambient { int object; int wait; };
+    // section: the BMS group (0x436c74 visits 1 every 32 ticks, 2 every 64);
+    // slot: the record's index in its group.
+    struct Ambient { int object; int wait; int section; int slot; };
+    // The C runtime's rand (Watcom 0x49153c, never seeded: 1), which DF.EXE
+    // draws ambience waits from (shared there with ~150 other callers).
+    uint32_t crtSeed_ = 1;
+    int crtRand() { crtSeed_ = crtSeed_ * 0x41C64E6Du + 0x3039u; return int((crtSeed_ >> 16) & 0x7FFF); }
     std::vector<Ambient> ambients_;
     struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; };
     std::vector<ActiveDialog> activeDialogs_;
@@ -508,8 +514,12 @@ bool Game::loadMission(int index) {
             const auto& o = world_.objects[i];
             if (!o.item || o.item->interruptSound <= 0) continue;
             const std::string& f = o.item->aiFunction;
-            if (f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2")
-                ambients_.push_back({int(i), 64 * std::uniform_int_distribution<int>(1, 8)(effectRng_)});
+            if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2") && o.missionIndex >= 0) {
+                // First wait (0x440071): a counter mod 60, the counter going
+                // up 11 per object loaded, in file order.
+                const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
+                ambients_.push_back({int(i), (11 * o.missionIndex) % 60, mo.group, mo.indexInGroup});
+            }
         }
         if (!set.empty()) {
             if (vfs_.read(set + ".DBF", raw)) dialogs_.parse(raw);
@@ -2518,22 +2528,38 @@ int Game::run() {
                     const auto& o = world_.objects[size_t(e.object)];
                     animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0);
                 }
-                // Ambience: dec0 (towers, bridges) and trees/palms every
-                // (5..8) x 64 ticks at 4 m above the object; sound objects
-                // snd0 (20..25), snd1 (8..11), snd2 (3..4) x 64 ticks.
-                // (APPROXIMATION: the random draw within each range.)
+                // Ambience (0x45a5a8 dec0, 0x45a830 tree, 0x47f64c palm, 0x45a734..
+                // snd0..2): the sound (4 m up for dec0/tree/palm; trees and palms
+                // only while standing), then the next wait from rand x 2 (r):
+                // dec0/tree/palm ((r >> 14) + 5) << 6, snd0 ((r*6 >> 16) + 20) << 6,
+                // snd1 ((r*4 >> 16) + 8) << 6, snd2 ((r*2 >> 16) + 3) << 6. Section 0
+                // objects are visited every tick (think at wait <= 0, then
+                // wait - 1); section 1 when (tick & 31) == slot & 31 and section
+                // 2 when (tick & 63) == slot & 63, a visit taking 32 / 64 off a
+                // positive wait or else thinking (0x436c74).
                 for (auto& a : ambients_) {
-                    if (--a.wait > 0) continue;
+                    bool think = false;
+                    if (a.section == 1 || a.section == 2) {
+                        const uint32_t mask = a.section == 1 ? 31 : 63;
+                        if ((ticks_ & mask) != (uint32_t(a.slot) & mask)) continue;
+                        if (a.wait > 0) a.wait -= int(mask + 1);
+                        else think = true;
+                    } else {
+                        think = a.wait <= 0;
+                        --a.wait;
+                    }
+                    if (!think) continue;
                     const auto& o = world_.objects[size_t(a.object)];
                     const std::string& f = o.item->aiFunction;
-                    int lo = 5, hi = 8;
                     Vec3 at = o.pos;
-                    if (f == "snd0") { lo = 20; hi = 25; }
-                    else if (f == "snd1") { lo = 8; hi = 11; }
-                    else if (f == "snd2") { lo = 3; hi = 4; }
-                    else at.y += 4.f;
-                    if (o.alive()) playSound(o.item->interruptSound, at);
-                    a.wait = 64 * std::uniform_int_distribution<int>(lo, hi)(effectRng_);
+                    const bool sound = f.rfind("snd", 0) == 0;
+                    if (!sound) at.y += 4.f;
+                    if (f == "tree" && !o.alive()) { a.wait = 0x400; continue; }
+                    if (o.alive() || sound) playSound(o.item->interruptSound, at);
+                    const int r = crtRand() * 2;
+                    a.wait = f == "snd0" ? (((r * 6) >> 16) + 20) << 6 : f == "snd1" ? (((r * 4) >> 16) + 8) << 6
+                           : f == "snd2" ? (((r * 2) >> 16) + 3) << 6 : ((r >> 14) + 5) << 6;
+                    if (a.section != 1 && a.section != 2) --a.wait;   // the visit's decrement follows the think
                 }
                 // 0x449830: the damage flash fades 2 per tick.
                 damageFlash_ = damageFlash_ > 1 ? damageFlash_ - 2 : 0;

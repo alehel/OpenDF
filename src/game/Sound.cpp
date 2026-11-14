@@ -349,20 +349,25 @@ uint32_t SoundSystem::random() {
 }
 
 float SoundSystem::occlusion(Vec3 a, Vec3 b) const {
-    // 0x473358: metres of terrain above the straight line between the
-    // listener and the sound, sampled along the way (APPROXIMATION: one
-    // sample per metre of the height grid).
+    // 0x473358 (a = the sound, b = the listener): nothing under 1 m apart
+    // horizontally; else walk the longer horizontal axis (a tie: the other)
+    // from the end with the smaller coordinate in exact 1 m steps, both ends
+    // included, reading the nearest raw cell height; where the line is under
+    // the ground add the whole metres (floor) it is under.
     if (!terrain_) return 0;
     const Vec3 d = b - a;
-    const float len = std::sqrt(d.x * d.x + d.z * d.z);
-    const int steps = int(len);
-    float sum = 0;
-    for (int i = 1; i < steps; ++i) {
-        const float t = float(i) / float(steps);
-        const Vec3 p = a + d * t;
-        sum += std::max(0.f, terrain_->heightAt(p.x, p.z) - p.y);
+    if (std::abs(d.x) < 1.f && std::abs(d.z) < 1.f) return 0;
+    const bool xMajor = std::abs(d.z) < std::abs(d.x);
+    const float dm = xMajor ? d.x : d.z;
+    const Vec3 start = (xMajor ? a.x <= b.x : a.z <= b.z) ? a : b;
+    const float end = xMajor ? std::max(a.x, b.x) : std::max(a.z, b.z);
+    const Vec3 step = d * (1.f / std::abs(dm)) * (dm < 0 ? -1.f : 1.f);   // +1 m along the major axis
+    int sum = 0;
+    for (Vec3 p = start; (xMajor ? p.x : p.z) <= end; p = p + step) {
+        const float h = terrain_->cellHeight(p.x, p.z);
+        if (p.y < h) sum += int(std::floor(h - p.y));
     }
-    return sum;
+    return float(sum);
 }
 
 void SoundSystem::start(SoundDef& def, float distance, int dir, bool positional, float callerPitch) {

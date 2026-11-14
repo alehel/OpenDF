@@ -502,6 +502,14 @@ float Terrain::heightAt(float x, float z) const {
     return (a + (b - a) * tz) * scale.heightScale;
 }
 
+float Terrain::cellHeight(float x, float z) const {
+    if (size_ == 0) return 0;
+    long ix = long(std::floor(x / scale.cellSize)), iz = long(std::floor(z / scale.cellSize));
+    ix = ((ix % size_) + size_) % size_;
+    iz = ((iz % size_) + size_) % size_;
+    return float(heights_[size_t(iz) * size_ + size_t(ix)]) * scale.heightScale;
+}
+
 void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks) {
     if (!hasWater_) return;
     const float level = desc_.waterHeight * scale.heightScale;
