@@ -72,6 +72,7 @@ private:
     TerrainDesc desc_;
     int size_ = 0;
     std::vector<uint8_t> heights_;
+    bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha
 
     GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0;
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;

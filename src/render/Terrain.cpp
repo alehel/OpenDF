@@ -70,6 +70,7 @@ in vec2 vCell;
 in vec3 vWorld;
 uniform sampler2D uColor, uDetailIdx;
 uniform sampler2DArray uDetailColor, uDetailShade;
+uniform bool uAlphaDetail;
 uniform float uMapSize, uTiles, uRingScale;
 uniform vec3 uEye, uFog, uCloudCol;
 out vec4 oColor;
@@ -89,7 +90,8 @@ void main() {
         if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
         else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
         vec4 dc = texture(uDetailColor, duv);
-        if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
+        if (uAlphaDetail) col = mix(col, post(dc.rgb), dc.a);   // Delta Force 2
+        else if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
         oColor = vec4(col, 1.0);
         return;
     }
@@ -269,6 +271,7 @@ void Terrain::release() {
 
 bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     release();
+    alphaDetail_ = false;
     auto fail = [&](const std::string& msg) { if (error) *error = msg; return false; };
 
     std::vector<uint8_t> raw;
@@ -369,8 +372,27 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 128;
         }
     } else {
-        dcRgba.assign(size_t(tile) * tile * 4, 0);
-        dsRg.assign(size_t(tile) * tile * 2, 120);
+        // Delta Force 2 (DF2.EXE terrain loader): a 64-wide TGA strip of
+        // 64x64 tiles whose alpha is the blend weight over the colour map
+        // (out = colour (1 - a) + detail a); no shade strip; detail_elev as
+        // in DF1. One tile covers one map cell.
+        RgbaImage t;
+        std::vector<uint8_t> raw;
+        if (vfs.read(withExt(desc_.detailColor, ".TGA"), raw) && decodeRgbaImage(raw, t) && t.width > 0 && t.height % t.width == 0) {
+            tile = t.width;
+            tiles = t.height / tile;
+            dcRgba = t.rgba;
+            const bool haveElev = loadImage(vfs, desc_.detailElev, dD) && dD.pixels.size() == size_t(t.width) * size_t(t.height);
+            dsRg.resize(size_t(t.width) * size_t(t.height) * 2);
+            for (size_t i = 0; i < dsRg.size() / 2; ++i) {
+                dsRg[i * 2] = 128;   // neutral shade
+                dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 128;
+            }
+            alphaDetail_ = true;
+        } else {
+            dcRgba.assign(size_t(tile) * tile * 4, 0);
+            dsRg.assign(size_t(tile) * tile * 2, 120);
+        }
     }
     texDetailColor_ = makeTexArray(tile, tile, tiles, GL_RGBA8, GL_RGBA, dcRgba.data());
     texDetailShade_ = makeTexArray(tile, tile, tiles, GL_RG8, GL_RG, dsRg.data());
@@ -381,6 +403,22 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     for (int i = 0; i < 17; ++i) skyColors_[i] = {170, 200, 230};
     if (loadImage(vfs, desc_.skyPalette, skyPal) && skyPal.hasPalette)
         for (int i = 0; i < 17; ++i) skyColors_[i] = skyPal.palette[i];
+    else {
+        // Delta Force 2: a 16x257 TGA whose column 0 is a 256-step gradient
+        // (row 256 the horizon, row 1 the zenith) and row 0 the cloud colour.
+        // APPROXIMATION: sampled into OpenDF's 16 gradient steps; DF2 draws
+        // all 256 (the gradient rises 10 horizon focal / rows a screen row).
+        RgbaImage t;
+        std::vector<uint8_t> raw;
+        if (vfs.read(withExt(desc_.skyPalette, ".TGA"), raw) && decodeRgbaImage(raw, t) && t.height >= 257) {
+            auto px = [&](int row) {
+                const uint8_t* c = &t.rgba[size_t(row) * size_t(t.width) * 4];
+                return Rgb{c[0], c[1], c[2]};
+            };
+            for (int i = 0; i < 16; ++i) skyColors_[i] = px(256 - i * 16);
+            skyColors_[16] = px(0);
+        }
+    }
     horizon_ = skyColors_[0];
 
     // Gamma/filter tables (DF.EXE 0x4356c8): curve C[i] = round(sqrt(255 i) - i);
@@ -445,6 +483,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     setInt(progTerrain_, "uDetailIdx", 2);
     setInt(progTerrain_, "uDetailColor", 3);
     setInt(progTerrain_, "uDetailShade", 4);
+    setInt(progTerrain_, "uAlphaDetail", alphaDetail_ ? 1 : 0);
     setInt(progTerrain_, "uLut", 5);
     setF(progTerrain_, "uTiles", float(tiles));
     setF(progTerrain_, "uSat", desc_.saturation / 128.f);
