@@ -179,9 +179,13 @@ void main() {
 // 0x45b620 uses the same blend): f = min(255, z >> (fog_level + 8)) with z
 // the pixel's depth in 16.16 m (view depth: READ for the D3D per-vertex fog,
 // the projected vertex's z >> (fog_level + 8) clamped to 0..255 at
-// 0x460449..0x46045d; the pass itself 0x448640..0x4486a8; what the software
-// rasterizer stores per pixel in the z-buffer was not traced, so INFERRED
-// there), then out = c + (C -
+// 0x460449..0x46045d; the pass itself 0x448640..0x4486a8). The software
+// z-buffer (view +0xc64 rows) holds that same vertex depth (vertex +0x8,
+// 16.16 m; the point plot 0x45ee4f tests it) stepped linearly across the
+// screen: the spans start at span +0x14 and add +0x28 a pixel (0x484077),
+// written where nearer (unsigned). OpenDF reads the perspective-correct view
+// depth instead (APPROXIMATION: equal at the vertices and along the water's
+// rows, a little nearer inside large near triangles), then out = c + (C -
 // c)·f/256 per channel in plain byte space; drawn as fog_color with alpha
 // f/256 over the frame. Empty depth (the sky, z 0x7fffffff) gives f = 255.
 const char* kFogFS = R"(#version 330 core
@@ -816,13 +820,13 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         // Delta Force 2: one plane at the level out to min(2^fog_level m,
         // 2047 m) (0x4670b7..0x4670d4; 2047 m with fog off), depth-tested
         // and writing depth; seen from below as well, then the under-water
-        // tint over the whole view (camera at or below the level). With fog
-        // the plane's own fog quad (0x467568..0x46760e, alpha clamp(depth >>
-        // (fog_level + 8))) is the same blend as the fog pass, which OpenDF
-        // applies to the water through drawFog (APPROXIMATION: one blend of
-        // the finished pixel instead of the quad's blend before the pass; not
-        // settled: the quad's z-write and its order against the fog pass
-        // 0x4485b0 in the software frame were not traced).
+        // tint over the whole view (camera at or below the level). The
+        // software water (0x466b60) writes its depth: each span (0x485e17)
+        // has one z, the row's view depth in 16.16 m (0x466de0, up to
+        // 0x7ff0000), stored where nearer, so the fog pass 0x4485b0 fogs it
+        // like the ground (READ). The fog quad 0x467568..0x46760e belongs to
+        // the hardware water (0x4670a0.., drawn through the hw3d table
+        // [0xa7b6b0] of HW_D3D.DLL) and has no software counterpart.
         glUseProgram(progWater_);
         glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 1);
         glUniform1i(glGetUniformLocation(progWater_, "uTint"), 0);
