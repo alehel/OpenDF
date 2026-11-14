@@ -1159,7 +1159,7 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // Explosion (DF.EXE 0x44f776 terrain, 0x44f90a / 0x44fb78 object or person,
 // 0x44fc20 water; barrels 0x46cb64): effect 3 "ground exp" (4 "water exp" in
 // water), blast type 1 with radius 10 m, and on terrain a smoke generator.
-// Sound 0x32 / 0x35: not yet (no sound). The LAW out of the water is blast
+// Sound 0x32 (0x35 in the water). The LAW out of the water is blast
 // type 3 (`heavy`: objects lose 128 - 16 d).
 void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
     spawnEffect(surface == 2 ? 4 : 3, at);

@@ -914,8 +914,8 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
     if (o.removed || o.dead) return {};
     if (o.item && power < o.item->damageClass) return {};
     if (o.person) {
-        // People have ITEMS.DEF's hit points (2-4) and die at 0. Head hits
-        // (x4) need the body-part spheres of the .CHR skeleton: not yet.
+        // People have ITEMS.DEF's hit points (2-4) and die at 0 (head hits'
+        // multipliers are applied by the callers from the .CHR / .KSA spheres).
         o.hp -= amount;
         if (o.hp > 0) return {};
         o.dead = true;
