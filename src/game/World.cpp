@@ -142,16 +142,14 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.person = item->type == "person";
         o.base = o.pos.y;
         // Delta Force 2 (0x45bb10): a person 100 m or more up starts on a
-        // parachute, 1 m higher.
-        if (df2Rules && o.person && mo.z >= 100.f) {
-            o.chute = true;
-            o.base += 1.f;
-            o.pos.y += 1.f;
-        }
+        // parachute.
+        if (df2Rules && o.person && mo.z >= 100.f) o.chute = true;
         if (o.person) {
-            // Character models have their origin at the hips; stand them on their feet.
+            // DF.EXE 0x40385c / DF2.EXE 0x45bb53: a person's origin (the
+            // pelvis) starts at terrain + z + 1 m; the feet follow from the
+            // pose (set below) and gravity does the rest.
+            o.pos.y += 1.f;
             o.hip = -o.model->lods[0].min[1];
-            o.pos.y += o.hip;
             load(*item, o);
         }
         o.hp = item->hp;
@@ -167,11 +165,19 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         refreshBoxes(o);
         objects.push_back(std::move(o));
     }
-    // People stand (Standing_2HW, held on its frame 1).
+    // People stand (Standing_2HW, held on its frame 1); the feet below the
+    // origin by the pose.
     for (auto& o : objects)
-        if (o.chr && o.moves) {
-            startMove(o, 2);
+        if (o.person) {
+            const float origin = o.pos.y;
+            if (o.chr && o.moves) {
+                startMove(o, 2);
+                o.hip = 0;
+                if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) o.hip = Chr::originHeight(*f);
+            }
+            o.base = origin - o.hip;
             poseUpdate(o);
+            o.pos.y = o.base + o.hip;
         }
 }
 
@@ -281,9 +287,11 @@ Vec3 World::nearest(Vec3 p, Vec3 ref) const {
 }
 
 float World::groundHeight(Vec3 feet, float step) const {
+    if (!df2Rules) return faceGround(feet, step);   // DF.EXE 0x435dc0 (people and the player)
+    // Delta Force 2 (0x440f80): collision volumes, people excluded.
     float h = terrain->heightAt(feet.x, feet.z);
     for (const auto& o : objects) {
-        if (o.boxes.empty()) continue;
+        if (o.boxes.empty() || o.person) continue;
         Vec3 at = nearest(o.pos, feet);
         float dx = at.x - feet.x, dz = at.z - feet.z;
         if (dx * dx + dz * dz > (o.model->radius + 1) * (o.model->radius + 1)) continue;
@@ -354,14 +362,15 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
 // box, plane crossing (front to back; both ways with material 0x2), t and
 // DF.EXE's crossing-number point-in-triangle test. `visit(face, mesh, t)`
 // returns false to stop. `skipMask`: the pose slot flags that skip a mesh.
-template <class Visit>
-static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip, uint32_t skipMaterial,
-                      float maxT, Visit visit) {
+// The object's LOD 0 meshes posed by its draw routine: fn(mesh, world
+// matrix) for every mesh whose pose slot is not skipped.
+template <class Fn>
+static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, std::array<uint8_t, 64>& hitSkip, Fn fn) {
     const GpuModel& m = *o.model;
     const std::string& code = m.lodCodes[0];
     if (code == "efct" || code == "shrk" || m.hitMeshes.empty()) return;
     const size_t meshes = m.hitMeshes.size();
-    const Vec3 at = world.nearest(o.pos, a);
+    const Vec3 at = world.nearest(o.pos, ref);
     const Mat4 body = o.matrix(at);
     std::vector<Mat4> pose(meshes, Mat4{});
     auto about = [&](int hp, const Mat4& r) {
@@ -385,7 +394,44 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
     }
     for (size_t mi = 0; mi < meshes; ++mi) {
         if (mi < hitSkip.size() && hitSkip[mi]) continue;
-        const Mat4 w = body * pose[mi];
+        if (!fn(int(mi), body * pose[mi])) return;
+    }
+}
+
+// File axes (x, y, z up) of a world point in a posed mesh.
+static std::array<float, 3> toFileAxes(const Mat4& w, Vec3 p) {
+    const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
+    const Vec3 l{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
+                 w.at(0, 2) * q.x + w.at(1, 2) * q.y + w.at(2, 2) * q.z};
+    return {l.x, -l.z, l.y};
+}
+
+// DF.EXE's crossing-number point-in-triangle test on projection (ua, va).
+static bool inTriangle(const HitFace& f, float pu, float pv, int ua, int va) {
+    int c = 0;
+    bool aboveA = f.v[0][va] >= pv;
+    for (int k = 0; k < 3 && c < 2; ++k) {
+        const float* A = f.v[k];
+        const float* B = f.v[(k + 1) % 3];
+        const bool aboveB = B[va] >= pv;
+        if (aboveA != aboveB) {
+            const bool ltA = pu > A[ua], ltB = pu > B[ua];
+            if (!ltA && !ltB) ++c;
+            else if (ltA != ltB) {
+                const float x = A[ua] + (B[ua] - A[ua]) / (B[va] - A[va]) * (pv - A[va]);
+                if (x >= pu) ++c;
+            }
+        }
+        aboveA = aboveB;
+    }
+    return c == 1;
+}
+
+template <class Visit>
+static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip, uint32_t skipMaterial,
+                      float maxT, Visit visit) {
+    const GpuModel& m = *o.model;
+    forPosedMeshes(world, o, a, hitSkip, [&](int mi, const Mat4& w) {
         auto toFile = [&](Vec3 p) {
             const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
             const Vec3 l{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
@@ -395,7 +441,7 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
         const auto ls = toFile(a), le = toFile(b);
         float lo[3], hi[3];
         for (int c = 0; c < 3; ++c) lo[c] = std::min(ls[c], le[c]), hi[c] = std::max(ls[c], le[c]);
-        for (const HitFace& f : m.hitMeshes[mi]) {
+        for (const HitFace& f : m.hitMeshes[size_t(mi)]) {
             if (lo[0] > f.box[1] || hi[0] < f.box[0] || lo[1] > f.box[3] || hi[1] < f.box[2] || lo[2] > f.box[5] || hi[2] < f.box[4]) continue;
             if (f.material & skipMaterial) continue;
             const float ds = f.n[0] * ls[0] + f.n[1] * ls[1] + f.n[2] * ls[2] + f.d;
@@ -408,27 +454,36 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
             if (t > maxT) continue;
             const float h[3] = {ls[0] + (le[0] - ls[0]) * t, ls[1] + (le[1] - ls[1]) * t, ls[2] + (le[2] - ls[2]) * t};
             const int ua = f.axis == 4 ? 1 : 0, va = f.axis == 1 ? 1 : 2;
-            const float pu = h[ua], pv = h[va];
-            int c = 0;
-            bool aboveA = f.v[0][va] >= pv;
-            for (int k = 0; k < 3 && c < 2; ++k) {
-                const float* A = f.v[k];
-                const float* B = f.v[(k + 1) % 3];
-                const bool aboveB = B[va] >= pv;
-                if (aboveA != aboveB) {
-                    const bool ltA = pu > A[ua], ltB = pu > B[ua];
-                    if (!ltA && !ltB) ++c;
-                    else if (ltA != ltB) {
-                        const float x = A[ua] + (B[ua] - A[ua]) / (B[va] - A[va]) * (pv - A[va]);
-                        if (x >= pu) ++c;
-                    }
-                }
-                aboveA = aboveB;
-            }
-            if (c != 1) continue;
-            if (!visit(f, int(mi), t)) return;
+            if (!inTriangle(f, h[ua], h[va], ua, va)) continue;
+            if (!visit(f, mi, t)) return false;
         }
+        return true;
+    });
+}
+
+float World::faceGround(Vec3 feet, float step) const {
+    float best = terrain->heightAt(feet.x, feet.z);
+    for (const auto& o : objects) {
+        if (o.person || o.removed || !o.model || o.model->hitMeshes.empty()) continue;
+        const Vec3 at = nearest(o.pos, feet);
+        const float R = o.model->flatRadius;   // +0x64
+        if (std::abs(at.x - feet.x) > R || std::abs(at.z - feet.z) > R) continue;
+        forPosedMeshes(*this, o, feet, hitSkip_, [&](int mi, const Mat4& w) {
+            const auto L = toFileAxes(w, feet);
+            for (const HitFace& f : o.model->hitMeshes[size_t(mi)]) {
+                if (L[0] < f.box[0] || L[0] > f.box[1] || L[1] < f.box[2] || L[1] > f.box[3]) continue;
+                if (f.material & 0x01000000) continue;
+                if (std::abs(f.n[2]) < 0x40 / 16384.f) continue;
+                if (!inTriangle(f, L[0], L[1], 0, 1)) continue;
+                const float zf = -(f.n[0] * L[0] + f.n[1] * L[1] + f.d) / f.n[2];
+                // Back to the world: file (x, y, z) is model (x, z, -y).
+                const float wy = w.at(1, 0) * L[0] + w.at(1, 1) * zf + w.at(1, 2) * -L[1] + w.at(1, 3);
+                if (wy >= best && wy <= feet.y + step) best = wy;
+            }
+            return true;
+        });
     }
+    return best;
 }
 
 bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
@@ -794,6 +849,11 @@ void World::update(float dt) {
             }
             o.pos.y = o.base + o.hip;
         }
+    for (personClock_ += dt; personClock_ >= 1.f / 60.f; personClock_ -= 1.f / 60.f) {
+        ++personTicks_;
+        for (auto& o : objects)
+            if (o.person && !o.removed && !o.chute) personTick(o);
+    }
     for (auto& o : objects)
         if (o.dead && o.fall > 0 && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
     // People's animations: 30 ticks a second (the odd 60 Hz ticks).
@@ -808,11 +868,58 @@ void World::update(float dt) {
                 const auto& r = o.anim.rootStep();
                 const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, left{-std::cos(o.heading), 0, -std::sin(o.heading)};
                 o.pos = o.pos + fwd * r[0] + left * r[1];
-                o.base = terrain->heightAt(o.pos.x, o.pos.z) + o.lift;
             }
             poseUpdate(o);
         }
     }
+}
+
+void World::personTick(WorldObject& o) {
+    // z += vz every tick (0x436440 / 0x44095f).
+    o.base += o.vz;
+    const float water = terrain->waterLevel();
+    float g, G;
+    if (!df2Rules) {
+        // DF.EXE: AI ground pass on ticks with (tick & 3) == 3 (0x4364bf),
+        // object faces within 0.5 m above the feet; gravity 0xB20 a pass.
+        if ((personTicks_ & 3) != 3) { o.pos.y = o.base + o.hip; return; }
+        g = faceGround({o.pos.x, o.base, o.pos.z}, 0.5f);
+        G = 0xB20 / 65536.f;
+    } else {
+        // DF2.EXE: every tick; standing on an object's collision volume when
+        // the 1 m feet cube overlaps it (0x440f80, volumes as boxes:
+        // INFERRED until the v8 planes are read), else the terrain; gravity 0xA7.
+        g = groundHeight({o.pos.x, o.base, o.pos.z}, 1.f);
+        G = 0xA7 / 65536.f;
+    }
+    const float d = o.base - g;
+    const bool under = water != 0 && o.base + o.hip < water;
+    if (o.airborne) {
+        if (d < 0 || (df2Rules && d <= 0)) {
+            // DF2 landing (0x43f600, single player): n = trunc(vz / -10360.5)
+            // - 1 for everyone but the player, (1 << n) - 1 damage, kind 4.
+            if (df2Rules && o.alive()) {
+                const int n = int(-o.vz * 65536.f / 10360.5f) - 1;
+                if (n >= 1) {
+                    const int idx = int(&o - objects.data());
+                    if (auto m = damage(idx, (1 << std::min(n, 20)) - 1, 0x7fff, deathMoveNumber(true, false, 4, 0, 0)); !m.empty())
+                        landingMessages_.push_back(m);
+                }
+            }
+            o.vz = 0; o.airborne = false; o.base -= d;
+        }
+        else if (under) { o.airborne = false; o.vz = 0; }   // into the water (swimming is not modelled for the AI)
+        else o.vz -= G;
+    } else if (d < 0 || (df2Rules && d <= 0)) {
+        o.vz = 0;
+        o.base -= d;
+    } else if (under) {
+        o.vz = 0;
+    } else if (d > 0x800 / 65536.f) {
+        o.vz -= G;
+        if (d > 0.5f || o.vz > 0) o.airborne = true;
+    }
+    o.pos.y = o.base + o.hip;
 }
 
 std::vector<std::string> World::stab(Vec3 at, Vec3 attacker) {

@@ -64,6 +64,8 @@ struct WorldObject {
     float steer = 0;
     float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5
     int collapse = -1;
+    float vz = 0;                      // people: vertical speed, metres a tick (+0x44)
+    bool airborne = false;             // people: falling (DF1 +0x6D & 0x20, DF2 +0x64 & 0x2000)
     bool chute = false;                // DF2: on a parachute (person flag +0x64 & 0x20)                 // DF2 bld2: collapse step (0..64), -1 none
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
@@ -100,6 +102,13 @@ public:
     // Highest surface under (x, z) that a body whose feet are at `feetY` can
     // stand on: the terrain, or the top of a box at most `step` above the feet.
     float groundHeight(Vec3 feet, float step) const;
+    // DF.EXE 0x435dc0: the terrain, or the highest object face (LOD 0, posed,
+    // not near-vertical, not 0x01000000) under (x, z) no higher than feet +
+    // step. People are never surfaces.
+    float faceGround(Vec3 feet, float step) const;
+    // Every person every tick (DF.EXE 0x436158, DF2.EXE 0x440400): fall by
+    // gravity, land on the surface below.
+    void personTick(WorldObject& o);
 
     // Pushes a vertical cylinder (feet at `feet`) out of solid boxes.
     Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
@@ -173,6 +182,11 @@ public:
 private:
     std::vector<int> landings_;
     float chuteClock_ = 0;
+    uint32_t personTicks_ = 0;
+    float personClock_ = 0;
+public:
+    std::vector<std::string> landingMessages_;   // "... destroyed" texts from landing damage, for the game to show
+private:
     std::vector<int> destroyed_;
     std::vector<AnimEvent> animEvents_;
     std::map<std::string, Chr> chrs_;

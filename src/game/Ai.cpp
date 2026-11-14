@@ -593,8 +593,7 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 const float ext = world.extent();
                 o.pos.x -= std::floor(o.pos.x / ext) * ext;
                 o.pos.z -= std::floor(o.pos.z / ext) * ext;
-                o.base = world.groundHeight({o.pos.x, o.base, o.pos.z}, 0.5f);
-                o.pos.y = o.base + o.hip;
+                // Height: World::personTick (gravity and the ground pass).
             }
         }
         if (--p.think <= 0) {

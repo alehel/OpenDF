@@ -3763,6 +3763,8 @@ int Game::run() {
                 for (const auto& d : kDestroyed)
                     if (o.item && o.item->id - 100000 == d.first) playSound(d.second, o.pos);
             }
+            for (auto& m : world_.landingMessages_) pushMessage(m);
+            world_.landingMessages_.clear();
             for (int i : world_.takeLandings()) {
                 // 0x413d70: the canopy left where the person landed, 1800 ticks.
                 const WorldObject& o = world_.objects[size_t(i)];
