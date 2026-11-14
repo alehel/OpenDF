@@ -55,7 +55,16 @@ runs in fixed steps (frame N is always the same picture) and its frames count to
 frames (skips), `OPENDF_INTROCLICK=N` left-clicks (DF_LEAD then fades at once). `opendf kdv FILE
 [OUTDIR [EVERY]]` decodes any KDV file (also the VIEWS.PFF award videos, after `extract OUT KDV`)
 and writes every EVERY-th frame as a .ppm. Delta Force 2: `OPENDF_DEBUGVIDEO=1` prints the
-binkplay command line DF2.EXE would run at start-up.
+binkplay command line DF2.EXE would run at start-up and what the Bink player did. The DF2 intro
+(DF2INTRO.BIK) works the same way as DF1's: `opendf --game games/DF2 play intro --screenshot
+i.ppm --frames 300` shows intro frame 300 (its frames count towards `--frames`, so `--frames 1400`
+reaches Choose Soldier after the 1361-frame movie), `OPENDF_AUDIODUMP=FILE` records its sound,
+`OPENDF_INTROKEY=N` / `OPENDF_INTROCLICK=N` skip it after N frames. `opendf bink FILE [OUTDIR
+[EVERY|N,N,...]]` decodes any Bink 1 file, prints the header, keyframes, decode speed and the
+soundtrack's RMS / peak per second, and writes every EVERY-th frame (or the listed ones) as a
+.ppm and the soundtrack as OUTDIR/audio.wav; `OPENDF_BINKYUV=FILE` also writes every frame as raw
+YUV 4:2:0, for comparing with another decoder, e.g. against `ffmpeg -i F.BIK -f framemd5 -pix_fmt
+yuv420p`.
 
 More aids: `OPENDF_NOFLY=1` keeps a `--camera` start higher than 2 m
 under the physics (the player falls instead of flying), e.g. onto the

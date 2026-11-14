@@ -438,6 +438,7 @@ void Audio::mix(int16_t* out, int frames) {
             out[i] = int16_t(y * 32767.f);
         }
     }
+    if (direct_) direct_(out, frames);
     if (dump_) std::fwrite(out, sizeof(int16_t), size_t(frames) * 2, dump_);
 }
 

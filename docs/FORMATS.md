@@ -300,6 +300,7 @@ emitters. OpenDF starts the camera at the first `start, player`.
 | `.JIM` | binary | briefing-map annotations: 9-byte points (u8 kind, u16 x, u16 y, u32 n) then 16-byte names like `2-CP ALPHA`; for the M7 briefing screen |
 | `.PAL` | binary | mission map palettes |
 | `.KDV` | `xVDK` chunks | video; decoded, see "KDV video" below |
+| `.BIK` | `BIK` + revision | RAD's Bink video (DF2, Land Warrior); decoded, see "Bink video" below |
 | `.MNU`, `.BIN`, `.RC`, `.H`, `.I` | | menu system resources |
 | `.ANM`, `.CHR` | | soldier animations / character data |
 
@@ -543,3 +544,145 @@ ones that match the files.
   (0x401a27, INTRO.KDV), no `H_` or `.KDV` name other than INTRO.KDV is in
   the executable, and DF.EXE opens no VIEWS.PFF (the installer merges it
   into dfbase.pff); "medal" and "award" appear nowhere in it.
+
+## Bink video (DF2INTRO.BIK, DFLWINT.BIK)
+
+RAD Game Tools' format, not NovaLogic's: Delta Force 2 and Land Warrior
+never decode it, they run RAD's `binkplay.exe` on the file (DF2.EXE
+0x435830, docs/AUDIT.md F15). So this section describes the format, not an
+EXE trace; OpenDF's decoder is its own (`src/formats/Bink.{h,cpp}`,
+`opendf bink FILE [OUTDIR [EVERY|N,N,...]]`). Its constant tables (scan
+order, run patterns, the 16 Huffman trees, both quantiser sets, the
+block-type run lengths, the audio band edges and run lengths) were read
+out of RAD's own player: Task Force Dagger's `TFDSETUP/BINKPLAY.EXE` is
+UPX 1.20 (NRV2D) packed and unpacks to an image holding them (offsets in
+Bink.cpp); DF2's and Land Warrior's binkplay.exe are Shrinker-packed and
+were not unpacked. Revisions `c`..`k` of Bink 1 are decoded; `b` (other
+bundles and DCT, used by very early files) is not. Checked against an
+independent decoder (FFmpeg) on DF2INTRO.BIK (`f`), DFLWINT.BIK, TFD's
+INT.BIK and DFBHDT1.BIK (`i`): every frame of all four is identical byte
+for byte (Y, U, V), the RDFT soundtracks within 1 LSB and the DCT ones
+(TFD) within 1 LSB.
+
+| File | Header | Video | Audio |
+|---|---|---|---|
+| DF2 `DF2SETUP/DF2INTRO.BIK` | `BIKf` | 640×480, 1361 frames, 15 fps (90.7 s), one keyframe (frame 0) | 22050 Hz stereo RDFT (flags 0xE000) |
+| Land Warrior `DFLSETUP/DFLWINT.BIK` | `BIKi` | 640×480, 1069 frames, 15 fps (71.3 s) | 22050 Hz stereo RDFT |
+| TFD `TFDSETUP/INT.BIK` | `BIKi` | 640×480, 1476 frames, 2997/100 fps | 44100 Hz stereo DCT (0x7000) |
+
+### Container
+
+All values little-endian.
+
+| Offset | Contents |
+|---|---|
+| 0x00 | `BIK` + revision letter |
+| 0x04 | u32 file size − 8 |
+| 0x08 | u32 frame count |
+| 0x0C | u32 largest frame (bytes) |
+| 0x10 | u32 frame count again |
+| 0x14 / 0x18 | u32 width / height |
+| 0x1C / 0x20 | u32 rate / scale: frames per second = rate / scale |
+| 0x24 | u32 video flags: bit 20 an alpha plane, bit 17 grey (no chroma; INFERRED handling) |
+| 0x28 | u32 audio track count T |
+| 0x2C | T × u32 largest decoded audio packet (bytes) |
+| … | T × (u16 sample rate, u16 flags: bit 13 stereo, bit 14 16-bit, bit 12 DCT transform, else RDFT) |
+| … | T × u32 track id |
+| … | (frames + 1) × u32 frame offsets; bit 0 marks a keyframe, the frame's size is the next offset minus this one (bits 0 cleared) |
+
+A frame is, per audio track, a u32 size and that many bytes of audio
+packet, then the video packet to the frame's end. An audio packet starts
+with a u32: the bytes it decodes to (16-bit samples, all channels).
+
+### Video
+
+The bit reader takes bits least significant first (from 32-bit
+little-endian words). From revision `i` the alpha and luma planes are each
+preceded by a u32 (their size; skipped). Then the planes: alpha (if
+flagged), Y, and the two chroma planes at half size: U then V before `h`,
+V then U from `h` on. Each plane ends on a 32-bit boundary. Revision `k`
+starts each plane with a bit: set, the whole plane is one 8-bit value.
+
+A plane is 8×8 blocks (luma: (w+7)/8 × (h+7)/8; chroma: (w+15)/16 ×
+(h+15)/16 of 8×8). Its header gives the Huffman trees of nine **bundles**,
+streams of values the blocks consume in order:
+
+| # | Bundle | Values |
+|---|---|---|
+| 0 | block types | 0..9; Huffman values 12..15 repeat the previous type 4, 8, 12, 32 times; or one 4-bit type for the whole run |
+| 1 | sub-block types | the same, for the 8×8 inside a scaled block |
+| 2 | colours | bytes: high nibble from one of 16 extra trees chosen by the previous high nibble, low nibble from the bundle's tree; before `i` the byte is sign-magnitude around 128; or one colour for the run |
+| 3 | pattern | bytes from two Huffman nibbles (low first): 8 pixels of a pattern row |
+| 4, 5 | x / y offsets | −15..15 (Huffman or a 4-bit value for all, sign bit if non-zero) |
+| 6, 7 | intra / inter DC | 11-bit (intra) or 10-bit + sign (inter) start, then per group of 8 a 4-bit width and signed deltas of that width |
+| 8 | runs | 0..15 (run length − 1) |
+
+A tree is 4 bits choosing one of 16 fixed code trees (tree 0: plain 4-bit
+values), then the order of its 16 symbols: explicitly (bit 1: 3-bit count −
+1, that many 4-bit symbols, the rest in increasing order) or by 1..4 merge
+passes over 0..15 (bit 0: 2-bit depth, then one bit per output symbol
+choosing the left or right run). At the start of each row of blocks each
+bundle whose earlier values are all used up reads a new run: a count (the
+width grows with the plane width; 0 ends the bundle for the plane) and its
+values.
+
+Block types (each 8×8 unless noted; "previous" is the last frame's plane):
+
+| Type | Block |
+|---|---|
+| 0 skip | copy from the previous frame |
+| 1 scaled | a sub-block (type from bundle 1: run, intra, fill, pattern or raw) decoded at 8×8 and drawn at 16×16; its other three 8×8s carry no data (their type entries are skipped) |
+| 2 motion | copy from the previous frame at (x, y) offset |
+| 3 run | a 4-bit index into 16 pixel orders, then runs (bundle 8 + 1) each with a bit: one colour for the run, or a colour per pixel |
+| 4 residue | motion copy, then a 7-bit count and coefficients by bit planes, added modulo 256 |
+| 5 intra | DCT: DC from bundle 6, coefficients, 4-bit quantiser, IDCT |
+| 6 fill | one colour |
+| 7 inter | motion copy, then a DCT (DC from bundle 7) added modulo 256 |
+| 8 pattern | two colours and 8 pattern rows |
+| 9 raw | 64 colours |
+
+DCT coefficients are coded by bit planes from a 4-bit top plane down over
+a work list (the groups 4..23, 24..43, 44..63 and the single coefficients
+1, 2, 3); a set bit per live entry per plane says something in it is that
+large, groups split into groups of 4, coefficients become set (magnitude
+bits + sign) or wait for a later plane. Dequantising multiplies by the
+quantiser table entry (16 tables each for intra and inter, AAN prescale
+included) and shifts right 11; the IDCT is the AAN factorisation in
+integers (2896, 3784, 2217, −5352 over 2^11), columns then rows rounded by
+1/256. Inter and residue blocks are added without clamping (modulo 256):
+the encoder relies on it, e.g. a black pixel brightened by a negative
+residual. Output is YUV 4:2:0; OpenDF converts with BT.601 studio-range
+coefficients (INFERRED: binkplay's converter was not traced).
+
+### Audio
+
+Per track: frame length 2^9 (rate < 22050), 2^10 (< 44100) or 2^11
+samples; RDFT tracks code stereo as one interleaved signal (rate × 2,
+length × 2). The overlap is length/16. Band edges: Zwicker's critical bands
+(100, 200, … 15500 Hz) scaled to the length, bands up to half the
+(interleaved) rate. Quantiser i (0..95) = e^(0.15289·i) × root, root =
+2 / (√length · 32768) for RDFT, √length / 32768 for DCT.
+
+A packet is blocks, each 32-bit aligned (DCT blocks start with 2 unused
+bits), per channel: two floats (5-bit exponent, 23-bit mantissa, sign) for
+coefficients 0 and 1, an 8-bit quantiser per band, then the coefficients
+from 2 in groups: a bit (0: 8 coefficients; 1: a 4-bit index into 2, 3,
+4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 64 times 8), a 4-bit width
+(0: all zero), and per coefficient that many bits (+ sign if non-zero)
+times its band's quantiser. The transform: RDFT, an inverse real DFT with
+coefficients 0 and 1 the DC and Nyquist terms (halved) and then (cos, sin)
+pairs; DCT, a DCT-III scaled by 2/length. Each block's first length/16
+samples fade linearly from the previous block's last length/16 (which
+are held back), so a block yields length − length/16 samples, as signed
+16-bit.
+
+### Player (OpenDF)
+
+binkplay.exe is RAD's packed program and was not traced. OpenDF's
+`FrontendDf2::playBinkVideo` decodes the movie where DF2.EXE starts
+binkplay, shows each frame when due by rate / scale, centred with its
+aspect kept, and sends the sound straight to the output (not through
+DF2's mixer, which binkplay's sound never passed through). Any key or a
+mouse click skips it (INFERRED); closing the window ends it. 640×480 is
+decoded and converted at about 700 frames a second on an Apple-silicon
+Mac.

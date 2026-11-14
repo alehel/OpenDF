@@ -3,6 +3,7 @@
 #include "../audio/Audio.h"
 #include "../audio/Music.h"
 #include "../core/ExeImage.h"
+#include "../formats/Bink.h"
 #include "../formats/Image.h"
 #include "../formats/Mission.h"
 #include "../formats/Pcx.h"
@@ -23,6 +24,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <sstream>
 
@@ -241,6 +243,46 @@ struct D2FontTex { HudImage tex; std::array<Glyph, 256> glyphs{}; int height = 0
 
 enum class Screen { Soldier, Main, Campaign, Quick, Briefing, Gear, Options1, Options2, Options3, Options4, Credits, Mission, Quit };
 
+// The movie's soundtrack as binkplay plays it: its own sound output, not
+// DF2's mixer (Audio::setDirectStream). Decoded samples queue here as
+// stereo at the mixer's 22050 Hz (other rates resampled linearly, mono
+// doubled: INFERRED, the intros are 22050 Hz stereo) and are added to the
+// output as the device asks.
+class BinkSound {
+public:
+    void push(const std::vector<int16_t>& pcm, int rate, int channels) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const size_t n = pcm.size() / size_t(channels);
+        const double step = double(rate) / Audio::kRate;
+        for (; pos_ < double(n); pos_ += step) {
+            const size_t i = size_t(pos_);
+            for (int c = 0; c < 2; ++c) {
+                const int ch = std::min(c, channels - 1);
+                const double a = pcm[i * size_t(channels) + size_t(ch)];
+                const double b = i + 1 < n ? pcm[(i + 1) * size_t(channels) + size_t(ch)] : a;
+                queue_.push_back(int16_t(std::lround(a + (b - a) * (pos_ - double(i)))));
+            }
+        }
+        pos_ -= double(n);
+    }
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.clear();
+        pos_ = 0;
+    }
+    void mix(int16_t* out, int frames) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const size_t n = std::min(queue_.size(), size_t(frames) * 2);
+        for (size_t i = 0; i < n; ++i) out[i] = int16_t(std::clamp(int(out[i]) + int(queue_[i]), -32768, 32767));
+        queue_.erase(queue_.begin(), queue_.begin() + std::ptrdiff_t(n));
+    }
+
+private:
+    std::mutex mutex_;
+    std::deque<int16_t> queue_;
+    double pos_ = 0;
+};
+
 } // namespace
 
 class FrontendDf2 {
@@ -277,6 +319,8 @@ private:
     // Menus.
     void enter(Screen s);
     void playIntroMovie();   // 0x435830: DF2INTRO.BIK through binkplay.exe
+    void playBinkVideo(const std::filesystem::path& path);   // binkplay's part
+    bool introShot_ = false;   // testing: --screenshot was taken during the intro
     D2Menu* menu() { auto it = mnu_.menus.find(menuName_); return it == mnu_.menus.end() ? nullptr : &it->second; }
     D2Button* btn(const std::string& name) { return mnu_.button(name); }
     void layout(D2Button& b);
@@ -345,6 +389,8 @@ private:
     std::unique_ptr<Hud> hud_;
     Audio audio_;
     Music music_;
+    BinkSound binkSound_;
+    int frame_ = 0;   // testing: frames shown for --frames, the intro's included
     bool musicLoaded_ = false;
     DfConfig cfg_;
     std::filesystem::path saveDir_;
@@ -1767,9 +1813,107 @@ void FrontendDf2::playIntroMovie() {
     SDL_FlushEvents(SDL_KEYDOWN, SDL_MOUSEBUTTONUP);
 }
 
-void playBinkVideo(const std::filesystem::path& path) {
-    // Decoder pending a decision on Bink support: nothing is played yet.
-    (void)path;
+void FrontendDf2::playBinkVideo(const std::filesystem::path& path) {
+    // binkplay.exe is RAD's own program (packed) and was not traced; what
+    // it does here is OpenDF's: the movie decoded by formats/Bink.h, each
+    // frame shown when due by the file's rate / scale, centred with its
+    // aspect kept, its sound straight to the output. Skipping: Esc or any
+    // other key, or a mouse click, ends it (INFERRED: binkplay's own
+    // handling). Closing the window ends it and DF2.
+    BinkVideo v;
+    if (!v.open(path)) {
+        std::fprintf(stderr, "%s: %s\n", path.string().c_str(), v.error().c_str());
+        return;
+    }
+    const bool debug = std::getenv("OPENDF_DEBUGVIDEO");
+    if (debug)
+        std::fprintf(stderr, "intro: BIK%c %dx%d, %d frames at %d/%d fps, audio %d Hz x %d\n", v.revision(), v.width(), v.height(),
+                     v.frameCount(), v.rate(), v.scale(), v.audioRate(), v.audioChannels());
+    HudImage tex;
+    std::vector<uint8_t> rgba;
+    std::vector<int16_t> pcm;
+    binkSound_.clear();
+    audio_.setDirectStream([this](int16_t* out, int frames) { binkSound_.mix(out, frames); });
+    // Testing (--screenshot): a clock that moves only while the player
+    // waits, so frame N is always the same picture (and OPENDF_AUDIODUMP
+    // the same sound); OPENDF_INTROKEY=N presses a key after N shown
+    // frames, OPENDF_INTROCLICK=N clicks.
+    const bool fixed = !o_.screenshot.empty();
+    const int testKey = fixed && std::getenv("OPENDF_INTROKEY") ? std::atoi(std::getenv("OPENDF_INTROKEY")) : -1;
+    const int testClick = fixed && std::getenv("OPENDF_INTROCLICK") ? std::atoi(std::getenv("OPENDF_INTROCLICK")) : -1;
+    const Uint64 freq = SDL_GetPerformanceFrequency(), c0 = SDL_GetPerformanceCounter();
+    double virt = 0, heard = 0;
+    auto now = [&]() { return fixed ? virt : double(SDL_GetPerformanceCounter() - c0) / double(freq); };
+    auto hear = [&]() {   // OPENDF_AUDIODUMP: the sound up to the clock
+        const double t = now();
+        if (t > heard) { audio_.advance(t - heard); heard = t; }
+    };
+    const double period = double(v.scale()) / double(v.rate());
+    bool quit = false, skip = false;
+    int shown = 0, late = 0;
+    for (int n = 0;; ++n) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) quit = true;
+            else if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN) skip = true;
+        }
+        if (shown == testKey || shown == testClick) skip = true;
+        if (quit || skip) break;
+        const BinkVideo::Step st = v.next();
+        if (st != BinkVideo::Step::Frame) {
+            if (st == BinkVideo::Step::Error) std::fprintf(stderr, "%s: frame %d: %s\n", path.string().c_str(), n, v.error().c_str());
+            break;
+        }
+        // The sound decoded with the frame is queued at once: the file
+        // sends it ahead of the pictures, so the queue holds what is due
+        // later and the two stay together from the first frame on.
+        pcm.clear();
+        v.takeAudio(pcm);
+        if (v.hasAudio() && !pcm.empty()) binkSound_.push(pcm, v.audioRate(), v.audioChannels());
+        // Frame n is due n periods after the first; a late one is still
+        // shown (the decoder runs far faster than the movie's rate).
+        const double due = n * period;
+        if (fixed) virt = std::max(virt, due);
+        while (due - now() > 0.002) SDL_Delay(1);
+        if (now() - due > period) ++late;
+        hear();
+        v.toRgba(rgba);
+        hud().updateImage(tex, v.width(), v.height(), rgba);
+        int dw, dh;
+        SDL_GL_GetDrawableSize(win_, &dw, &dh);
+        const float sc = std::min(float(dw) / float(v.width()), float(dh) / float(v.height()));
+        const float w = float(v.width()) * sc, h = float(v.height()) * sc;
+        glViewport(0, 0, dw, dh);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        hud().begin(dw, dh);
+        hud().image(tex.texture, (float(dw) - w) * 0.5f, (float(dh) - h) * 0.5f, w, h);
+        hud().end();
+        ++shown;
+        if (fixed && ++frame_ >= o_.frames) {
+            std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+            if (FILE* f = std::fopen(o_.screenshot.c_str(), "wb")) {
+                std::fprintf(f, "P6 %d %d 255\n", dw, dh);
+                for (int y = dh - 1; y >= 0; --y) std::fwrite(&px[size_t(y) * size_t(dw) * 3], 1, size_t(dw) * 3, f);
+                std::fclose(f);
+            }
+            introShot_ = true;
+            break;
+        }
+        SDL_GL_SwapWindow(win_);
+    }
+    // The movie's end (or a skip) stops its sound with it.
+    binkSound_.clear();
+    audio_.setDirectStream(nullptr);
+    if (tex.texture) glDeleteTextures(1, &tex.texture);
+    if (debug) std::fprintf(stderr, "intro: %d frames shown (%d late)%s\n", shown, late, skip ? ", skipped" : quit ? ", quit" : "");
+    if (quit) {
+        SDL_Event q{};
+        q.type = SDL_QUIT;
+        SDL_PushEvent(&q);
+    }
 }
 
 int FrontendDf2::run() {
@@ -1813,6 +1957,10 @@ int FrontendDf2::run() {
     // sets the menu video mode (0x436c40), starts the music (0x43cbc0)
     // and goes on to ChooseSoldier. `play intro` is the same start, for tests.
     if ((s0.empty() || s0 == "intro") && cfg_.get("no_anim") == 0) playIntroMovie();
+    if (introShot_) {   // testing: the screenshot was a frame of the intro
+        closeWindow();
+        return 0;
+    }
     if (cfg_.get("music_volume") > 0) music_.start();
     music_.setVar(0, 0);
     Screen first = s0 == "main" ? Screen::Main : s0 == "campaign" ? Screen::Campaign : s0 == "quick" ? Screen::Quick
@@ -1821,7 +1969,6 @@ int FrontendDf2::run() {
                  : s0 == "credits" ? Screen::Credits : Screen::Soldier;
     if (first == Screen::Briefing || first == Screen::Gear) bms_ = "D03M01";
     enter(first);
-    int frame = 0;
     bool windowQuit = false;
     Uint64 last = SDL_GetPerformanceCounter();
     double clock = 0;
@@ -2054,7 +2201,7 @@ int FrontendDf2::run() {
         hud().begin(dw, dh);
         drawMenu();
         hud().end();
-        if (!o_.screenshot.empty() && ++frame >= o_.frames) {
+        if (!o_.screenshot.empty() && ++frame_ >= o_.frames) {
             std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
             glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());

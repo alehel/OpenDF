@@ -16,6 +16,7 @@
 #include "menu/FrontendDf2.h"
 #include "menu/Launcher.h"
 #include "formats/Anm.h"
+#include "formats/Bink.h"
 #include "formats/Chr.h"
 #include "formats/Kdv.h"
 #include "formats/Mission.h"
@@ -28,6 +29,7 @@
 #include "render/Terrain.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -112,7 +114,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play" || a == "launcher" || a == "kdv")) {
+                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play" || a == "launcher" || a == "kdv" || a == "bink")) {
             o.command = a;
             o.commandGiven = true;
         }
@@ -139,6 +141,7 @@ void usage() {
         "  opendf --game ROOT extract OUTDIR [EXT]            extract files (PFF2 decrypted)\n"
         "  opendf --game ROOT check                           parse every model/terrain/image\n"
         "  opendf kdv FILE [OUTDIR [EVERY]]                   decode a KDV video (every EVERY-th frame to OUTDIR)\n"
+        "  opendf bink FILE [OUTDIR [EVERY|N,N,...]]          decode a Bink video (frames to OUTDIR, audio.wav)\n"
         "  --camera X,Y,HEIGHT,YAW,PITCH  start at map metres X (east), Y (north), HEIGHT above\n"
         "                                 ground, compass YAW and PITCH in degrees\n"
         "\n"
@@ -803,6 +806,100 @@ int cmdKdv(const Options& o) {
     return 0;
 }
 
+// `bink FILE [OUTDIR [EVERY|N,N,...]]`: decodes a Bink video
+// (formats/Bink.h) and prints its header, keyframes, audio and decode
+// speed; with OUTDIR every EVERY-th frame (default 50; or the listed
+// frames) is written there as a .ppm and the first audio track as
+// audio.wav.
+int cmdBink(const Options& o) {
+    if (o.args.empty()) { std::fprintf(stderr, "bink FILE [OUTDIR [EVERY|N,N,...]]\n"); return 1; }
+    BinkVideo v;
+    if (!v.open(o.args[0])) { std::fprintf(stderr, "%s: %s\n", o.args[0].c_str(), v.error().c_str()); return 1; }
+    const fs::path out = o.args.size() > 1 ? fs::path(o.args[1]) : fs::path();
+    int every = 50;
+    std::vector<int> list;
+    if (o.args.size() > 2) {
+        if (o.args[2].find(',') != std::string::npos) {
+            for (size_t i = 0; i < o.args[2].size();) {
+                list.push_back(std::atoi(o.args[2].c_str() + i));
+                const size_t c = o.args[2].find(',', i);
+                i = c == std::string::npos ? o.args[2].size() : c + 1;
+            }
+        } else {
+            every = std::max(1, std::atoi(o.args[2].c_str()));
+        }
+    }
+    if (!out.empty()) fs::create_directories(out);
+    std::printf("BIK%c %dx%d, %d frames at %d/%d fps%s", v.revision(), v.width(), v.height(), v.frameCount(), v.rate(), v.scale(),
+                v.hasAlpha() ? ", alpha" : "");
+    if (v.hasAudio()) std::printf(", audio %d Hz %s %s", v.audioRate(), v.audioChannels() == 2 ? "stereo" : "mono", v.audioDct() ? "DCT" : "RDFT");
+    std::printf("\n");
+    std::vector<uint8_t> rgba;
+    std::vector<int16_t> pcm;
+    std::vector<int> keys;
+    double decodeSecs = 0;
+    int frames = 0;
+    BinkVideo::Step s;
+    for (;;) {
+        const auto t0 = std::chrono::steady_clock::now();
+        s = v.next();
+        if (s == BinkVideo::Step::Frame) v.toRgba(rgba);
+        decodeSecs += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        // Testing: OPENDF_BINKYUV=FILE writes every frame as raw YUV 4:2:0
+        // (for comparing with another decoder frame by frame).
+        if (const char* yuv = s == BinkVideo::Step::End ? nullptr : std::getenv("OPENDF_BINKYUV"); yuv) {
+            static std::ofstream y(yuv, std::ios::binary);
+            for (int p = 0; p < 3; ++p)
+                for (int r = 0; r < (p ? v.height() / 2 : v.height()); ++r)
+                    y.write(reinterpret_cast<const char*>(v.plane(p) + size_t(r) * size_t(v.stride(p))), p ? v.width() / 2 : v.width());
+        }
+        if (s != BinkVideo::Step::Frame) break;
+        if (v.keyframe()) keys.push_back(frames);
+        v.takeAudio(pcm);
+        const bool want = list.empty() ? frames % every == 0 : std::find(list.begin(), list.end(), frames) != list.end();
+        if (!out.empty() && want) {
+            char name[32];
+            std::snprintf(name, sizeof name, "frame%04d.ppm", frames);
+            std::ofstream f(out / name, std::ios::binary);
+            f << "P6\n" << v.width() << " " << v.height() << "\n255\n";
+            for (size_t i = 0; i < rgba.size(); i += 4) f.write(reinterpret_cast<const char*>(&rgba[i]), 3);
+        }
+        ++frames;
+    }
+    std::printf("%d frames (%.2f s), decoded at %.1f frames/s (with RGBA conversion); ended: %s\n", frames,
+                frames * double(v.scale()) / v.rate(), frames / std::max(decodeSecs, 1e-9),
+                s == BinkVideo::Step::End ? "end of file" : v.error().c_str());
+    std::printf("%zu keyframes:", keys.size());
+    for (size_t i = 0; i < keys.size() && i < 40; ++i) std::printf(" %d", keys[i]);
+    std::printf("%s\n", keys.size() > 40 ? " ..." : "");
+    if (v.hasAudio()) {
+        const int ch = v.audioChannels();
+        std::printf("audio: %zu samples per channel (%.2f s); packets reported %llu, decoded %llu\n", pcm.size() / size_t(ch),
+                    double(pcm.size() / size_t(ch)) / v.audioRate(), (unsigned long long)v.audioReported(),
+                    (unsigned long long)v.audioDecoded());
+        // RMS and peak per second, for checking.
+        const size_t per = size_t(v.audioRate()) * size_t(ch);
+        for (size_t at = 0; at < pcm.size(); at += per) {
+            double sum = 0;
+            int peak = 0;
+            const size_t e = std::min(pcm.size(), at + per);
+            for (size_t i = at; i < e; ++i) { sum += double(pcm[i]) * pcm[i]; peak = std::max(peak, std::abs(int(pcm[i]))); }
+            std::printf("  %3zus rms %6.0f peak %5d\n", at / per, std::sqrt(sum / double(e - at)), peak);
+        }
+        if (!out.empty()) {
+            std::ofstream f(out / "audio.wav", std::ios::binary);
+            auto w32 = [&](uint32_t x) { f.write(reinterpret_cast<const char*>(&x), 4); };
+            auto w16 = [&](uint16_t x) { f.write(reinterpret_cast<const char*>(&x), 2); };
+            const uint32_t bytes = uint32_t(pcm.size() * 2);
+            f.write("RIFF", 4); w32(36 + bytes); f.write("WAVEfmt ", 8); w32(16); w16(1); w16(uint16_t(ch));
+            w32(uint32_t(v.audioRate())); w32(uint32_t(v.audioRate() * ch * 2)); w16(uint16_t(ch * 2)); w16(16);
+            f.write("data", 4); w32(bytes);
+            f.write(reinterpret_cast<const char*>(pcm.data()), std::streamsize(bytes));
+        }
+    }
+    return s == BinkVideo::Step::End ? 0 : 1;
+}
+
 // `play`: the game's own front end (Delta Force 2 has its own, DF2.MNU).
 int runPlay(Vfs& vfs, const Options& o) {
     FrontendOptions f;
@@ -850,6 +947,7 @@ int main(int argc, char** argv) {
     if (!parseArgs(argc, argv, o)) { usage(); return 1; }
     if (o.command == "import") return cmdImport(o);
     if (o.command == "kdv") return cmdKdv(o);
+    if (o.command == "bink") return cmdBink(o);
     const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission" || o.command == "play" ||
                           o.command == "launcher";
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
