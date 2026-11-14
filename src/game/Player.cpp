@@ -157,13 +157,14 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     feet = feet + delta;
     feet = world.resolve(feet, kRadius, kHeight, kStep);
 
-    // Jump (0x4375de): prone, the key stands the soldier up; otherwise 4 m/s up
-    // and 1/16 m at once (not while sliding).
-    if (in.jump && !jumpHeld_) {
+    // Jump (0x4375de / 0x437730): prone, the key stands the soldier up;
+    // otherwise 4 m/s up and 1/16 m at once (not while sliding). move_jump is
+    // a held command (table 0x4df4f4 flags 5, as move_forward): no latch, so
+    // holding it jumps again on landing.
+    if (in.jump) {
         if (stance == Stance::Prone) stance = Stance::Stand;
         else if (onGround_ && !sliding_) { vy_ = kJumpSpeed; feet.y += kJumpLift; onGround_ = false; }
     }
-    jumpHeld_ = in.jump;
 
     // Ground (0x43655b..0x436a07): below ground snaps up; within 1/32 m holds;
     // higher up gravity applies, and over 0.5 m (or moving up) is airborne
@@ -300,10 +301,10 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
     if (odd) {
         // Jump (0x440cd0): not while airborne or swimming (0x22000) or on a
         // chute; crouched or prone it stands up ([0x7655dc] = 1); not while
-        // sliding; else z += 0x1000 and vz = 0x1555. (Edge-triggered here,
-        // as for DF1; INFERRED.)
-        const bool press = in.jump && !jumpHeld_;
-        jumpHeld_ = in.jump;
+        // sliding; else z += 0x1000 and vz = 0x1555. move_jump is a held
+        // command (table 0x4a5ca8 flags 0x405, as move_forward; the control
+        // bit +0x74 & 0x10000 is rebuilt each pass, 0x41b18f): no latch.
+        const bool press = in.jump;
         if (press && onGround_ && !inWater_ && !chute) {
             if (stance != Stance::Stand) stance = Stance::Stand;
             else if (!sliding_) { z += 0x1000 / 65536.f; vz_ = 0x1555 / 65536.f; }

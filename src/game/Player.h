@@ -102,7 +102,7 @@ private:
     bool inWater_ = false, swimMove_ = false;
     float originY_ = 0, eyeOffset_ = 0;
     std::vector<Spawn> spawns_;
-    bool sliding_ = false, jumpHeld_ = false;
+    bool sliding_ = false;
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)
     float vy_ = 0;
     float landingSpeed_ = 0;
