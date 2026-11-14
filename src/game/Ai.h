@@ -121,7 +121,6 @@ private:
         float homeHeading = 0;
         int weapon = 0;               // +0x64: player-table mode
         int burstLeft = 0;            // +0x6c
-        Vec3 burstDir{0, 0, 0};
         float accuracy = 100;         // rec +0x20 (%)
         float perception = 1;         // +0x74
         float flank = 45;             // +0x7c degrees

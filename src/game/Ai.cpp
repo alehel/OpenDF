@@ -84,7 +84,13 @@ void AiSystem::init(World& world, const Mission& mission) {
         people_.push_back(p);
         world.requestMove(o, idleMove(world, p));
     }
-    if (std::getenv("OPENDF_DEBUGAI")) std::fprintf(stderr, "ai: %zu soldiers\n", people_.size());
+    if (std::getenv("OPENDF_DEBUGAI")) {
+        std::fprintf(stderr, "ai: %zu soldiers\n", people_.size());
+        for (const auto& p : people_) {
+            const WorldObject& o = world.objects[size_t(p.object)];
+            std::fprintf(stderr, "  soldier %d side %d weapon %d at %.1f east %.1f north\n", p.object, o.side, p.weapon, o.pos.x, -o.pos.z);
+        }
+    }
 }
 
 AiSystem::Person* AiSystem::byObject(int object) {
@@ -306,30 +312,39 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     WorldObject& o = world.objects[size_t(p.object)];
     const ModeDef& md = shots.modeAt(p.weapon);
     if (md.type != 1) return;
-    // Muzzle (0x46ad30: the held weapon's hardpoint at the posed right
-    // hand). DF.EXE fires nothing without a weapon model or skeleton
-    // (0x46ad94). (Delta Force 2: not traced; 0.5 m ahead, 0.4 m up then.)
-    const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
-    Vec3 muzzle = o.pos + fwd * 0.5f + Vec3{0, 0.4f, 0};
-    const bool posed = this->muzzle && this->muzzle(p.object, o.weaponMode, muzzle);
-    if (!posed && !shots.df2()) return;
+    // Muzzle (DF.EXE 0x46ad30, DF2.EXE 0x414f20, the same routine): the held
+    // weapon's hardpoint (mode +0x90 / +0x30) at the posed right hand. Both
+    // fire nothing without a mode, a held-weapon model or a skeleton
+    // (0x46ad94 / 0x414f6b..0x414f7b).
+    Vec3 muzzle;
+    if (!this->muzzle || !this->muzzle(p.object, o.weaponMode, muzzle)) return;
     if (std::getenv("OPENDF_DEBUGMUZZLE"))
         std::fprintf(stderr, "muzzle %d mode %d off (%.2f %.2f %.2f) heading %.0f\n", p.object, o.weaponMode, muzzle.x - o.pos.x, muzzle.y - o.pos.y,
                      muzzle.z - o.pos.z, o.heading * 57.3f);
-    Vec3 dir;
+    // Aim (DF.EXE 0x46b838, DF2.EXE 0x415de0, the same formula). Two draws
+    // r = 2 rnd - 0x10000 come first in both branches (0x415edb / 0x415ee7).
+    auto r = [&]() { return float(int(rnd()) - 0x8000) / 32768.f; };
+    const float r1 = r(), r2 = r();
+    const float turnUnit = 2 * kPi / 4294967296.f;
+    float yaw, pitch;
     if (followUp) {
-        dir = p.burstDir;   // the burst keeps the first round's aim
+        // Burst follow-ups (counter +0x6c / +0x7c set): the body's heading and
+        // pitch plus r1 >> 3 and r2 >> 5 (+-0x2000 / +-0x800 of 2^32), for this
+        // round only (0x415f37..0x415f65).
+        yaw = o.heading + r1 * 0x2000 * turnUnit;
+        pitch = o.aimPitch + r2 * 0x800 * turnUnit;
     } else {
-        // 0x46b838: aim at the last known position; error x errMul: 5 unseen,
-        // else 16 - seconds of sight, down to the target move's aim factor.
-        // DF.EXE measures it from the body origin, the horizontal distance
-        // in whole metres (0x46b838); DF2 not traced: from the muzzle.
-        const Vec3 from = shots.df2() ? muzzle : o.pos;
-        const Vec3 aim = world.nearest(p.lastKnown, from) - from;
-        float yaw = std::atan2(aim.x, -aim.z);
-        const float flat = shots.df2() ? std::sqrt(aim.x * aim.x + aim.z * aim.z)
-                                       : std::floor(std::sqrt(std::floor(aim.x) * std::floor(aim.x) + std::floor(aim.z) * std::floor(aim.z)));
-        float pitch = std::atan2(aim.y, flat);
+        // At the target's own origin while it is in sight (flag 0x80:
+        // 0x46b963 / 0x415e11), else at the last known position with errMul 5;
+        // from the body origin, the horizontal distance in whole metres
+        // (isqrt((dx >> 16)^2 + (dy >> 16)^2) << 16, 0x46b8a4 / 0x415eb4).
+        // Error x errMul: 16 - seconds of sight, down to the target move's aim
+        // factor.
+        const Vec3 at = (p.flags & 0x80) ? targetPos(world, p, player) : p.lastKnown;
+        const Vec3 aim = world.nearest(at, o.pos) - o.pos;
+        yaw = std::atan2(aim.x, -aim.z);
+        const float flat = std::floor(std::sqrt(std::floor(aim.x) * std::floor(aim.x) + std::floor(aim.z) * std::floor(aim.z)));
+        pitch = std::atan2(aim.y, flat);
         int move = 2;
         if (p.target == -3) move = player.moveNumber;
         else if (p.target >= 0) move = world.objects[size_t(p.target)].moveNumber;
@@ -337,22 +352,24 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         const float seen = std::min(float(p.seen), (16.f - f) * 62.f);
         const float errMul = (p.flags & 0x80) ? std::max(f, 16.f - seen / 62.f) : 5.f;
         const float unit = float(int(65536.f * 100.f / p.accuracy) * 30 >> 16);
-        const float spread = unit * errMul * 65536.f / 4294967296.f * 2 * kPi / ((hard && o.side == 2) ? 4.f : 1.f);
-        auto r = [&]() { return float(int(rnd()) - 0x8000) / 32768.f; };
-        yaw += r() * spread;
-        pitch += r() * spread / 4.f;
-        // The gun's own spread (0x46af90).
-        const GunDef& g = shots.gunAt(md.gun);
-        if (g.accuracy > 1) {
-            const float dev = 30.f * 0x8000 / 4294967296.f * 2 * kPi * float(g.accuracy - 1);
+        const float spread = unit * errMul * 65536.f * turnUnit / ((hard && o.side == 2) ? 4.f : 1.f);
+        yaw += r1 * spread;
+        pitch += r2 * spread / 4.f;
+        // The aimed heading and pitch (error included) stay on the soldier
+        // (+0x30 / +0x34; DF2 0x415f85).
+        o.heading = yaw;
+        o.aimPitch = pitch;
+    }
+    // The gun's own spread, per round (0x46af90 / 0x414ad0).
+    {
+        const GunDef& gs = shots.gunAt(md.gun);
+        if (gs.accuracy > 1) {
+            const float dev = 30.f * 0x8000 * turnUnit * float(gs.accuracy - 1);
             yaw += r() * dev;
             pitch += r() * dev;
         }
-        dir = {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
-        p.burstDir = dir;
-        // The aimed heading and pitch (error included) stay on the soldier (+0x30 / +0x34).
-        if (!shots.df2()) { o.heading = yaw; o.aimPitch = pitch; }
     }
+    const Vec3 dir{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
     const GunDef& g = shots.gunAt(md.gun);
     Projectile pr;
     pr.pos = muzzle;
@@ -489,9 +506,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     const Vec3 tp = world.nearest(targetPos(world, p, player), o.pos);
     if (p.losTimer > 0xba) {
         p.losTimer = 0;
-        // 0x459a9f..0x459aad: from 1 m above the origin to the target's
-        // origin; any visible result (DF2 not traced: 0.5 m above it).
-        if (sightLine(world, eye, df2 ? tp + Vec3{0, 0.5f, 0} : tp, p.object, p.target) >= 1) {
+        // DF.EXE 0x459a9f..0x459aad, DF2.EXE 0x401732..0x40175c: from 1 m
+        // above the origin to the target's origin; any result >= 1 is seen.
+        if (sightLine(world, eye, tp, p.object, p.target) >= 1) {
             p.flags |= 0x80;
             p.lastKnown = tp;
             p.unseen = 0;
