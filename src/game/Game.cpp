@@ -628,6 +628,13 @@ private:
     }
     bool paused_ = false;                 // [0xc70ac4] (0x42df53)
     bool oldMessages_ = false;            // [0x66f974]
+    // "End Mission? (Y/N)": DF.EXE [0x66f95c], DF2.EXE [0x65362c]. Opened by
+    // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
+    // Escape or Pause; Y leaves the mission. The game keeps running.
+    bool quitBox_ = false;
+    bool quitFreedMouse_ = false;
+    int flashFrame_ = 0;                  // first-person flash meshes' frame (drawViewModel)         // (OpenDF) the box released the mouse
+    void closeQuitBox();
     bool friendlyTags_ = false;           // [0x66f978]
     int letterbox_ = 1;                   // lbsize (0x404650): 1 or 2 eighths of the height per band
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
@@ -650,6 +657,7 @@ private:
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
     void drawPaused(const Screen& s);
+    void drawQuitBox(const Screen& s);
     void drawBinoculars(const Screen& s);
     bool captured_ = true;
 };
@@ -958,6 +966,8 @@ bool Game::loadMission(int index) {
     scriptClock_ = 0;
     missionResult_ = -1;
     missionTime_ = 0;
+    // DF.EXE 0x403b13 / 0x404ba0, DF2.EXE 0x45d8f1: the box is shut at mission start.
+    quitBox_ = false;
     messages_.clear();
     // DF2: the waypoint pool is cleared at mission load (0x403520); the
     // HUD waypoint and the elevation view at mission start (0x447810/0x447816).
@@ -2319,9 +2329,39 @@ void Game::endMission(int winnerSide) {
     if (missionResult_ < 0) missionResult_ = winnerSide;
 }
 
+void Game::closeQuitBox() {
+    quitBox_ = false;
+    if (quitFreedMouse_) {   // (OpenDF) take the mouse back
+        quitFreedMouse_ = false;
+        captured_ = true;
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+    }
+}
+
 void Game::handleKey(const SDL_KeyboardEvent& k) {
     const bool shift = (k.keysym.mod & KMOD_SHIFT) != 0;
-    if (missionResult_ >= 0) {
+    if (quitBox_) {
+        // The key handler runs before the game's commands (DF.EXE 0x42ea59 ->
+        // 0x42e8f4, DF2.EXE 0x41d000). With the box open, Y runs command 3
+        // "exit" (DF.EXE 0x42e91a -> 0x42e40e: [0x66f9a8] = 1, the mission
+        // loop ends into the Post Menu, as Enter on the end panel), N shuts
+        // the box. DF.EXE compares the virtual keys 'Y' / 'N'; DF2.EXE the
+        // first characters of DF2GAME.BIN Misc STRMISC09 / STRMISC10
+        // ([0xa75380] / [0xa75384], default 'Y' / 'N', 0x41c76b). Any other
+        // key is not taken: it goes on to the commands (Escape, Pause), and
+        // the end panel's Enter / Space (0x42e964) are not reached.
+        auto keyOf = [&](const char* key, char def) {
+            const std::string t = df2Hud_.on ? df2Text("Misc", key, "") : std::string();
+            return t.empty() ? def : char(std::toupper(static_cast<unsigned char>(t[0])));
+        };
+        const SDL_Keycode sym = k.keysym.sym;
+        const int c = sym >= 'a' && sym <= 'z' ? int(sym - 'a' + 'A') : int(sym);
+        if (c == keyOf("STRMISC09", 'Y')) {
+            leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
+            return;
+        }
+        if (c == keyOf("STRMISC10", 'N')) { closeQuitBox(); return; }
+    } else if (missionResult_ >= 0) {
         // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
         if (k.keysym.sym == SDLK_RETURN || k.keysym.sym == SDLK_KP_ENTER) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
@@ -2352,17 +2392,21 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     if (paused_ && act != Action::Pause && act != Action::Escape) return;
     switch (act) {
     case Action::Escape:
-        // Esc closes the first overlay open (0x42e964): pause, old messages,
-        // map / goals; else (OpenDF) frees the mouse or quits.
+        // Esc closes the first overlay open (DF.EXE 0x42e1c1: pause, old
+        // messages, the End Mission box, briefing, ...; DF2.EXE 0x41b52a:
+        // pause, old messages, the box, [0x7655fc], the command map); with
+        // none open it opens "End Mission? (Y/N)" (0x42e548 / 0x41b5d1).
         if (paused_) { paused_ = false; break; }
+        if (oldMessages_) { oldMessages_ = false; break; }
+        if (quitBox_) { closeQuitBox(); break; }
         // DF2 0x41b59d: with [0x7655fc] set (F9 / F10), Escape only clears it.
         if (df2Hud_.on && df2KeyFlag_) { df2KeyFlag_ = false; break; }
-        if (oldMessages_) { oldMessages_ = false; break; }
         if (briefingShown_) { briefingShown_ = false; break; }
         if (helpShown_) { helpShown_ = false; break; }
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
-        if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
-        else leaveMission_ = true;   // (OpenDF) leave the mission
+        quitBox_ = true;
+        // (OpenDF) the box frees the mouse; N / Escape take it back.
+        if (captured_) { captured_ = false; quitFreedMouse_ = true; SDL_SetRelativeMouseMode(SDL_FALSE); }
         break;
     case Action::Stand: player_.stance = Stance::Stand; break;
     case Action::Crouch: player_.stance = Stance::Crouch; break;
@@ -2399,7 +2443,8 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (df2Elevation_) df2KeyFlag_ = !df2KeyFlag_;
         else { df2KeyFlag_ = true; df2Elevation_ = true; }
         break;
-    case Action::Pause: paused_ = !paused_; break;
+    // Pause shuts the End Mission box and toggles (DF.EXE 0x42df53, DF2.EXE 0x41b6c8).
+    case Action::Pause: closeQuitBox(); paused_ = !paused_; break;
     case Action::Drop: if (!playerDead()) dropCarried(); break;
     case Action::Briefing: briefingShown_ = !briefingShown_; break;
     case Action::Help: helpShown_ = !helpShown_; break;
@@ -2775,9 +2820,14 @@ void Game::drawViewModel(const Screen& s) {
         light.saturation = terrain_.saturationFactor();
         light.highlight = terrain_.highlight();
     }
+    // The flash meshes' animation frame (DF.EXE [0x933980] -> [0xb7a874],
+    // DF2.EXE [0x4d2990] -> [0x765a04]): stepped 1, 2, 0, ... each time a
+    // flash mesh is drawn; mesh 0 at frame 0.
+    const int flash = arsenal_.flash();
+    if (flash) flashFrame_ = (flashFrame_ + 1) % 3;
     models_.begin(proj, light);
-    models_.draw(*m, 0, model, true, arsenal_.flash() > 0);
-    models_.drawTranslucent(*m, 0, model, true, arsenal_.flash() > 0);
+    models_.draw(*m, 0, model, true, flash, flashFrame_);
+    models_.drawTranslucent(*m, 0, model, true, flash, flashFrame_);
     models_.end();
 }
 
@@ -3243,7 +3293,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     }
 
     if (showGoals_) drawGoals(s);
-    if (missionResult_ >= 0) drawMissionEnd(s);
+    // The end panel is not drawn while the End Mission box is open (DF.EXE
+    // 0x48309b, DF2.EXE 0x441660).
+    if (missionResult_ >= 0 && !quitBox_) drawMissionEnd(s);
     // 0x482f02: dead, until the mission is over: "You Are Dead" centred at
     // x 512, top + 0x14 (as the end panel), in the message colour
     // ([0x66f948]: colour table entry [0x66fa48], white by default).
@@ -3274,6 +3326,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
+    if (quitBox_) drawQuitBox(s);
 
     if (df2Hud_.on) {
         drawDf2Strips(s);
@@ -4933,6 +4986,24 @@ void Game::drawPaused(const Screen& s) {
     const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     const char* t = "Game Paused";
+    hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+void Game::drawQuitBox(const Screen& s) {
+    // DF.EXE 0x4831c8: the Game Paused box, a darkened box (shade level 10)
+    // from (310, 330) to (714, 438), and "End Mission? (Y/N)" (0x4c05d8)
+    // centred at (512, 380) in green (0x66f938).
+    if (df2Hud_.on) {
+        // DF2.EXE 0x442250: the panel box (310, 330)-(714, 438) and
+        // Overlays STROVER5 centred at (512, 380) in green ([0x653608]).
+        df2Panel(s, 310, 330, 714, 438);
+        const std::string t = df2Text("Overlays", "STROVER5", "End Mission? (Y/N)");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+        return;
+    }
+    const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    const char* t = "End Mission? (Y/N)";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
 }
 
