@@ -1960,27 +1960,31 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         const float zx = s.cx(160), zy = cy, r = s.y(100);
         hud_.ring(zx, zy, r, t, kHudBright);
         const float in = r * 0.25f, out = r * 0.5f;
-        hud_.rect(zx - out, zy, out - in, t, kHudBright);
-        hud_.rect(zx + in, zy, out - in, t, kHudBright);
-        hud_.rect(zx, zy - out, t, out - in, kHudBright);
-        hud_.rect(zx, zy + in, t, out - in, kHudBright);
+        if (arsenal_.mode().type != 10) {   // the laser view has no ticks (0x450cf7 is the other branch)
+            hud_.rect(zx - out, zy, out - in, t, kHudBright);
+            hud_.rect(zx + in, zy, out - in, t, kHudBright);
+            hud_.rect(zx, zy - out, t, out - in, kHudBright);
+            hud_.rect(zx, zy + in, t, out - in, kHudBright);
+        }
         const float range = rangeToAim();
         char buf[32];
         if (arsenal_.mode().type == 10) {
-            // Laser designator (0x4508be..0x450b4c): a diamond reticle,
-            // "Range: %3im" / "Range: 1km+", and "Laser Active" or a blinking
-            // "No Target" (APPROXIMATION: their positions and the reticle's size).
-            const float d = r * 0.1f;
+            // Laser designator (0x4508be..0x450b4c): an axis-aligned diamond of
+            // r/8; "Range: %3im" / "Range: 1km+" centred at (770, 450) and
+            // "Laser Active" or a blinking "No Target" (tick bit 0x10) centred
+            // at (770, 300) in the 1024x768 layout.
+            const float d = r / 8.f;
             hud_.line(zx - d, zy, zx, zy - d, t, kHudBright);
             hud_.line(zx, zy - d, zx + d, zy, t, kHudBright);
             hud_.line(zx + d, zy, zx, zy + d, t, kHudBright);
             hud_.line(zx, zy + d, zx - d, zy, t, kHudBright);
             if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
             else std::snprintf(buf, sizeof buf, "Range: %3im", int(range));
-            hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
+            hud_.text(s.vx(770) - hud_.textWidth(buf, s.text()) / 2, s.vy(450), buf, kHudBright, s.text());
             const bool target = range >= 0 && range <= 999;
+            const char* status = target ? "Laser Active" : "No Target";
             if (target || (ticks_ & 0x10))
-                hud_.text(s.cx(180), s.y(325.f), target ? "Laser Active" : "No Target", kHudBright, s.text());
+                hud_.text(s.vx(770) - hud_.textWidth(status, s.text()) / 2, s.vy(300), status, kHudBright, s.text());
         } else {
             if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "1km+");
             else if (range < 1) std::snprintf(buf, sizeof buf, "1m-");
