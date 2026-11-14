@@ -5990,6 +5990,8 @@ int Game::run() {
                 char title[200];
                 std::snprintf(title, sizeof title, "OpenDF - %s - %.0f fps", mission_.title.c_str(), fpsFrames / fpsTimer);
                 SDL_SetWindowTitle(win_, title);
+                // Testing: OPENDF_FPSLOG=1 also prints the rate to stderr.
+                if (std::getenv("OPENDF_FPSLOG")) std::fprintf(stderr, "fps %.1f tick %u\n", fpsFrames / fpsTimer, ticks_);
                 fpsFrames = 0;
                 fpsTimer = 0;
             }

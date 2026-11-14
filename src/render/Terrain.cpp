@@ -34,9 +34,9 @@ vec3 post(vec3 c) {
 
 const char* kTerrainVS = R"(#version 330 core
 layout(location = 0) in vec3 aPos;          // chunk-local cell x, cell y, skirt flag
+layout(location = 1) in vec2 aOrigin;       // per instance: the chunk's first cell
 uniform sampler2D uHeight, uDetailIdx;
 uniform sampler2DArray uDetailShade;        // r: shade, g: detail elevation
-uniform vec2 uOrigin;
 uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale, uTiles, uRingScale, uBumps;
 uniform vec3 uEye;
 uniform mat4 uViewProj;
@@ -47,7 +47,7 @@ float elev(vec2 c) {
     return texelFetch(uHeight, ivec2(m), 0).r * uHScale;   // elevation steps
 }
 void main() {
-    vec2 c = uOrigin + aPos.xy * uChunkScale;
+    vec2 c = aOrigin + aPos.xy * uChunkScale;
     // Bilinear between the corner elevations (fine meshes sit between cells).
     vec2 f = fract(c), b = floor(c);
     float h = mix(mix(elev(b), elev(b + vec2(1, 0)), f.x), mix(elev(b + vec2(0, 1)), elev(b + vec2(1, 1)), f.x), f.y);
@@ -337,7 +337,8 @@ void Terrain::release() {
     if (skyVao_) glDeleteVertexArrays(1, &skyVao_);
     if (waterVao_) glDeleteVertexArrays(1, &waterVao_);
     if (waterVbo_) glDeleteBuffers(1, &waterVbo_);
-    skyVao_ = waterVao_ = waterVbo_ = 0;
+    if (instVbo_) glDeleteBuffers(1, &instVbo_);
+    skyVao_ = waterVao_ = waterVbo_ = instVbo_ = 0;
     for (GLuint p : {progTerrain_, progSky_, progWater_, progFog_}) if (p) glDeleteProgram(p);
     progTerrain_ = progSky_ = progWater_ = progFog_ = 0;
 }
@@ -776,6 +777,17 @@ Terrain::Mesh Terrain::makeGrid(int res) {
 void Terrain::buildMeshes() {
     const int res[5] = {64, 32, 16, 8, 256};   // 4: 1/4 m, for the detail bumps around the camera
     for (int i = 0; i < 5; ++i) lods_[i] = makeGrid(res[i]);
+    // (OpenDF) One instance buffer of chunk origins for every LOD: the
+    // chunks of a LOD go in one instanced draw (draw calls are what cost).
+    glGenBuffers(1, &instVbo_);
+    glBindBuffer(GL_ARRAY_BUFFER, instVbo_);
+    for (auto& m : lods_) {
+        glBindVertexArray(m.vao);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+        glVertexAttribDivisor(1, 1);
+    }
+    glBindVertexArray(0);
 
     glGenVertexArrays(1, &skyVao_);
     const float quad[] = {-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1};
@@ -1015,21 +1027,41 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     // drawn (0x4678ed..0x467905, 0x46793a..0x467956).
     const float terrainDistance = fogLevel() ? std::min(40.f * 320.f * ringScale, fogDistance()) : 40.f * 320.f * ringScale;
     const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
-    const GLint locOrigin = glGetUniformLocation(progTerrain_, "uOrigin");
     const GLint locScale = glGetUniformLocation(progTerrain_, "uChunkScale");
     const GLint locBumps = glGetUniformLocation(progTerrain_, "uBumps");
     const float chunkWorld = kChunkCells * cell, blockCells = kChunkCells * 8.f, blockWorld = blockCells * cell;
     const int bx = int(std::floor(eye.x / blockWorld)), bz = int(std::floor(eye.z / blockWorld));
+    // (OpenDF) The view's four side planes (rows 3 +- 0, 3 +- 1 of proj ·
+    // view): chunks wholly outside are not drawn. Only a speed-up: what is
+    // drawn on screen is unchanged. It matters in the scope view, whose
+    // rings reach out with its focal length while its view is narrow.
+    float planes[4][4];
+    for (int p = 0; p < 4; ++p) {
+        const int row = p / 2;
+        const float sgn = (p & 1) ? -1.f : 1.f;
+        float len = 0;
+        for (int c = 0; c < 4; ++c) {
+            planes[p][c] = viewProj.at(3, c) + sgn * viewProj.at(row, c);
+            if (c < 3) len += planes[p][c] * planes[p][c];
+        }
+        len = std::sqrt(len);
+        if (len > 0) for (float& v : planes[p]) v /= len;
+    }
+    const float midY = 128.f * scale.heightScale;
     auto visible = [&](float cx, float cz, float size) {
         const float radius = size * 0.75f + 256.f * scale.heightScale;
         const Vec3 d{cx - eye.x, 0, cz - eye.z};
         const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
         if (horiz > terrainDistance + radius) return -1.f;
         if (d.x * fwd.x + d.z * fwd.z < -radius) return -1.f;
+        for (const auto& pl : planes)
+            if (pl[0] * cx + pl[1] * midY + pl[2] * cz + pl[3] < -radius) return -1.f;
         return horiz;
     };
+    // Chunk origins per batch: near LODs 0..4 (scale 1, bumps), then far
+    // LODs 1..3 (scale 8, no bumps), each drawn as one instanced call.
+    std::vector<float> batch[8];
     // Near: 64-cell chunks within two 512-cell blocks of the camera's block.
-    glUniform1f(locScale, 1.f);
     for (int zb = bz - 2; zb <= bz + 2; ++zb)
         for (int xb = bx - 2; xb <= bx + 2; ++xb)
             for (int cz = zb * 8; cz < zb * 8 + 8; ++cz)
@@ -1038,14 +1070,9 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
                     if (horiz < 0) continue;
                     const bool fine = horiz < 100.f * ringScale + chunkWorld;
                     const int lod = fine ? 4 : horiz < 160 ? 0 : horiz < 400 ? 1 : horiz < 800 ? 2 : 3;
-                    glUniform1f(locBumps, 1.f);
-                    glUniform2f(locOrigin, float(cx * kChunkCells), float(cz * kChunkCells));
-                    glBindVertexArray(lods_[lod].vao);
-                    glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
+                    batch[lod].insert(batch[lod].end(), {float(cx * kChunkCells), float(cz * kChunkCells)});
                 }
     // Far: whole 512-cell blocks as one coarse chunk each.
-    glUniform1f(locScale, 8.f);
-    glUniform1f(locBumps, 0.f);
     const int reach = int(std::ceil(terrainDistance / blockWorld)) + 1;
     for (int zb = bz - reach; zb <= bz + reach; ++zb)
         for (int xb = bx - reach; xb <= bx + reach; ++xb) {
@@ -1055,11 +1082,28 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             // Sample spacing like the original's far rings: 16 m to 3.2 km,
             // 32 m to 6.4 km, 64 m beyond (scaled).
             const int lod = horiz < 3200 * ringScale ? 1 : horiz < 6400 * ringScale ? 2 : 3;
-            glUniform2f(locOrigin, float(xb) * blockCells, float(zb) * blockCells);
-            glBindVertexArray(lods_[lod].vao);
-            glDrawElements(GL_TRIANGLES, lods_[lod].count, GL_UNSIGNED_INT, nullptr);
+            batch[4 + lod].insert(batch[4 + lod].end(), {float(xb) * blockCells, float(zb) * blockCells});
         }
 
+    // One upload into a fresh buffer store (no wait for the GPU still
+    // reading the last view's origins).
+    std::vector<float>& all = instData_;
+    all.clear();
+    for (const auto& bt : batch) all.insert(all.end(), bt.begin(), bt.end());
+    glBindBuffer(GL_ARRAY_BUFFER, instVbo_);
+    glBufferData(GL_ARRAY_BUFFER, std::ptrdiff_t(all.size() * sizeof(float)), all.data(), GL_STREAM_DRAW);
+    size_t offset = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (batch[i].empty()) continue;
+        const bool far = i >= 5;
+        const Mesh& m = lods_[far ? i - 4 : i];
+        glUniform1f(locScale, far ? 8.f : 1.f);
+        glUniform1f(locBumps, far ? 0.f : 1.f);
+        glBindVertexArray(m.vao);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), reinterpret_cast<const void*>(offset * sizeof(float)));
+        glDrawElementsInstanced(GL_TRIANGLES, m.count, GL_UNSIGNED_INT, nullptr, GLsizei(batch[i].size() / 2));
+        offset += batch[i].size();
+    }
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
 }

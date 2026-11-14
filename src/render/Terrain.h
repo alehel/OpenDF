@@ -112,7 +112,8 @@ private:
     GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0, progFog_ = 0;
     GLuint texSkyGrad_ = 0, texDepth_ = 0;   // DF2: the 256-step sky gradient; the depth copy for the fog pass
     int depthW_ = 0, depthH_ = 0;
-    GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0;
+    GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0, instVbo_ = 0;
+    std::vector<float> instData_;   // the chunk origins of the last draw
     Mesh lods_[5];
     Rgb horizon_{170, 200, 230};
     Rgb skyColors_[17];
