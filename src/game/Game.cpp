@@ -12,6 +12,7 @@
 #include "Player.h"
 #include "Script.h"
 #include "Sound.h"
+#include "KeyMap.h"
 #include "Ai.h"
 #include "Vehicles.h"
 #include "Moves.h"
@@ -2066,15 +2067,42 @@ void Game::drawHelp(const Screen& s) {
     // 0x48232c: darkened box (7, 98)-(1023, 666); labels (DFMENU.BIN HELP*)
     // and keys in two columns, rows 25 apart from y 115, bright green: left
     // labels at x 40 / keys at 200, right at 540 / 770 (0x4822f4 draws at
-    // x + 20, y + 100). Key names: the bound keys' names (APPROXIMATION:
-    // SDL's names; DF.EXE uses Windows' key names).
+    // x + 20, y + 100). Key texts from the soldier's bindings (0x4816a0).
     const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     auto label = [&](const char* key) {
         const std::string* t = menuText_.find("GroupMainMenu", key);
         return t ? *t : std::string(key);
     };
-    auto keyOf = [&](Action a) { return controls_.describe(a); };
+    // 0x48151c: a binding's text: the key's name (0x421ff0), then
+    // ", Mouse n" for a mouse button (even with no key). The soldier's
+    // bindings, else DF.EXE's defaults.
+    auto bindingText = [&](const char* game) {
+        uint32_t vk = 0, mouse = 0;
+        bool found = false;
+        for (const auto& [n, key] : o_.bindings)
+            if (n == game) { vk = key & 0xFFFF; const uint32_t m = key >> 16; mouse = m == 1 ? 1 : m == 2 ? 2 : m == 0x10 ? 3 : 0; found = true; break; }
+        if (!found)
+            for (const auto& r : kKeyRows)
+                if (std::string(r.game) == game) { vk = r.vk; mouse = r.mouse; break; }
+        std::string t = vkName(vk, [&](const char* k) { return label(k); });
+        if (mouse) t += ", " + label(mouse == 1 ? "KBDMOUSELEFT" : mouse == 2 ? "KBDMOUSERIGHT" : "KBDMOUSEMIDDLE");
+        return t;
+    };
+    auto keyOf = [&](Action a) {
+        static const std::pair<Action, const char*> names[] = {
+            {Action::MoveForward, "move_forward"}, {Action::MoveBack, "move_back"}, {Action::SlideLeft, "slide_left"},
+            {Action::SlideRight, "slide_right"}, {Action::Crouch, "Crouch"}, {Action::Stand, "Stand"}, {Action::Prone, "Prone"},
+            {Action::Jump, "move_jump"}, {Action::NoRun, "NoRun"}, {Action::Binoculars, "Binoculars"}, {Action::Briefing, "briefing"},
+            {Action::OldMessages, "OldMessages"}, {Action::ShowFriendly, "ShowFriendly"}, {Action::MissionGoals, "MissionGoals"},
+            {Action::Fire, "attack_1"}, {Action::Scope, "scope"}, {Action::MapZoomIn, "zoomin"}, {Action::MapZoomOut, "zoomout"},
+            {Action::NextWaypoint, "NextWaypoint"}, {Action::BigMap, "BigMap"}, {Action::Weapon0, "weapon0"}, {Action::Weapon1, "weapon1"},
+            {Action::Weapon2, "weapon2"}, {Action::Weapon3, "weapon3"}, {Action::Weapon4, "weapon4"}, {Action::Weapon5, "weapon5"},
+            {Action::Weapon6, "weapon6"}, {Action::Weapon7, "weapon7"}, {Action::Weapon8, "weapon8"}, {Action::Weapon9, "weapon9"}};
+        for (const auto& [act, n] : names)
+            if (act == a) return bindingText(n);
+        return controls_.describe(a);
+    };
     auto put = [&](float lx, float kx, float y, const std::string& l, const std::string& k) {
         hud_.text(s.vx(lx + 20), s.vy(y + 100), l, kHudBright, s.text());
         hud_.text(s.vx(kx + 20), s.vy(y + 100), k, kHudBright, s.text());
@@ -2082,15 +2110,15 @@ void Game::drawHelp(const Screen& s) {
     struct Row { const char* label; std::string key; };
     const std::vector<Row> left = {
         {"HELPLOOKAROUND", label("HELPMOUSE")},
-        {"HELPMOVE", keyOf(Action::MoveForward) + ", " + keyOf(Action::MoveBack) + ", " + keyOf(Action::SlideLeft) + ", " +
-                         keyOf(Action::SlideRight)},
+        {"HELPMOVE", keyOf(Action::SlideLeft) + ", " + keyOf(Action::SlideRight) + ", " + keyOf(Action::MoveForward) + ", " +
+                         keyOf(Action::MoveBack)},
         {"HELPCROUCH", keyOf(Action::Crouch)}, {"HELPSTAND", keyOf(Action::Stand)}, {"HELPGOPRONE", keyOf(Action::Prone)},
         {"HELPJUMP", keyOf(Action::Jump)}, {"HELPWALK", keyOf(Action::NoRun)}, {nullptr, ""},
-        {"HELPEXITGAME", label("HELPESC")}, {"HELPBINOCULARS", keyOf(Action::Binoculars)}, {"HELPTALK", "T (Y)"},
-        {"HELPRESOLUTION", "V"}, {"HELPFOCAMERA", label("HELPF9")}, {"HELPCYCLEFO", "Tab"}, {"HELPFIRSTPERSON", label("HELPF2")},
+        {"HELPEXITGAME", label("HELPESC")}, {"HELPBINOCULARS", keyOf(Action::Binoculars)}, {"HELPTALK", bindingText("talk") + " (" + bindingText("stalk") + ")"},
+        {"HELPRESOLUTION", bindingText("resolution")}, {"HELPFOCAMERA", label("HELPF9")}, {"HELPCYCLEFO", bindingText("tab")}, {"HELPFIRSTPERSON", label("HELPF2")},
         {"HELPTHIRDPERSON", label("HELPF5F6F7")}, {"HELPBRIEFINGS", keyOf(Action::Briefing)},
         {"HELPRECENT", keyOf(Action::OldMessages)}, {"HELPFRIENDLYTAGS", keyOf(Action::ShowFriendly)},
-        {"HELPGOALS", keyOf(Action::MissionGoals)}, {"HELPTURBO", "H"}, {"HELPNEXTFLAG", "Q"},
+        {"HELPGOALS", keyOf(Action::MissionGoals)}, {"HELPTURBO", bindingText("Turbo")}, {"HELPNEXTFLAG", bindingText("NextFlag")},
     };
     float y = 15;
     for (const auto& r : left) {
@@ -2109,9 +2137,9 @@ void Game::drawHelp(const Screen& s) {
         put(520, 750, y, md->name, keyOf(slotKeys[slot]));
         y += 25;
     }
-    put(520, 750, y, label("HELPFIRE"), keyOf(Action::Fire) + ", " + label("KBDMOUSELEFT"));
+    put(520, 750, y, label("HELPFIRE"), keyOf(Action::Fire));
     y += 25;
-    put(520, 750, y, label("HELPSCOPE"), keyOf(Action::Scope) + ", " + label("KBDMOUSERIGHT"));
+    put(520, 750, y, label("HELPSCOPE"), keyOf(Action::Scope));
     y += 75;
     put(520, 750, y, label("HELPTERRAINMAP"), label("HELPF10"));
     y += 25;
