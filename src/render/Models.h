@@ -70,12 +70,14 @@ public:
 
     void begin(const Mat4& viewProj, const SceneLighting& light);
     // Opaque and colour-keyed parts; call drawTranslucent afterwards for blended ones.
-    // `weapon`: a first-person weapon, whose fullbright muzzle-flash parts are
-    // drawn only while `flash` is set. `frame`: animated materials' frame.
-    void draw(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, bool flash = false, int frame = 0);
+    // `weapon`: a first-person weapon (DF.EXE 0x44abd0, DF2.EXE 0x44a223):
+    // mesh 0 always, the muzzle-flash meshes 1 and 2 only when bit 0 / bit 1
+    // of `flash` is set, no others; `frame` (animated materials) applies to
+    // the flash meshes. Otherwise `frame` is the whole model's frame.
+    void draw(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, int flash = 0, int frame = 0);
     // A posed person: each mesh drawn with model x meshes[mesh].
     void drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes);
-    void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, bool flash = false, int frame = 0);
+    void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, int flash = 0, int frame = 0);
     void end();
     // Multiplies the colour and alpha of what is drawn next; `replace`: the
     // colour instead replaces the material colour of texel-as-alpha parts
@@ -92,7 +94,7 @@ public:
     static int chooseLod(const GpuModel& m, float depth, float focal, bool person);
 
 private:
-    void drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, bool flash, int frame,
+    void drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, int flash, int frame,
                      const std::vector<Mat4>* meshes = nullptr);
     void release();
     GLuint prog_ = 0, identityLut_ = 0;

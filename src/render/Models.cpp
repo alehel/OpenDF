@@ -304,7 +304,7 @@ void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
     glActiveTexture(GL_TEXTURE0);
 }
 
-void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, bool flash,
+void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, bool translucent, bool weapon, int flash,
                                 int frame, const std::vector<Mat4>* meshes) {
     if (m.lods.empty() || lod < 0) return;
     const auto& l = m.lods[std::clamp(lod, 0, int(m.lods.size()) - 1)];
@@ -316,8 +316,12 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
             const Mat4 mm = b.mesh >= 0 && b.mesh < int(meshes->size()) ? model * (*meshes)[size_t(b.mesh)] : model;
             glUniformMatrix4fv(locModel_, 1, GL_FALSE, mm.m);
         }
-        // First-person weapons: the fullbright muzzle-flash parts only while firing.
-        if (weapon && b.fullbright >= 0 && !flash) continue;
+        // First-person weapons: mesh 0, plus flash mesh 1 / 2 in the frames
+        // after a shot whose ammo has +0x30 bit 0x2 / 0x4 (DF.EXE 0x44ac91 /
+        // 0x44aceb, DF2.EXE 0x44a290 / 0x44a2db; the model's other meshes
+        // are never drawn).
+        if (weapon && b.mesh != 0 && !(b.mesh <= 2 && (flash & (1 << (b.mesh - 1))))) continue;
+        const int bFrame = weapon && b.mesh == 0 ? 0 : frame;
         if (b.doubleSided) glDisable(GL_CULL_FACE);
         else glEnable(GL_CULL_FACE);
         if (b.flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)
@@ -332,8 +336,8 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         // Animated materials (flag 0x4000): material base + frame is used
         // instead (DF.EXE 0x46f72f); here, its texture.
         int texture = b.texture;
-        if ((b.flags & 0x4000) && frame > 0 && b.material + frame < int(l.materialTextures.size()))
-            texture = l.materialTextures[size_t(b.material + frame)];
+        if ((b.flags & 0x4000) && bFrame > 0 && b.material + bFrame < int(l.materialTextures.size()))
+            texture = l.materialTextures[size_t(b.material + bFrame)];
         const bool textured = texture >= 0 && texture < int(m.textures.size());
         glUniform1i(locTextured_, textured);
         glUniform3f(locColor_, b.color[0], b.color[1], b.color[2]);
@@ -349,21 +353,21 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
     glDisable(GL_CULL_FACE);
 }
 
-void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model, bool weapon, bool flash, int frame) {
+void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame) {
     drawBatches(m, lod, model, false, weapon, flash, frame);
 }
 
 void ModelRenderer::drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes) {
-    drawBatches(m, lod, model, false, false, false, 0, &meshes);
+    drawBatches(m, lod, model, false, false, 0, 0, &meshes);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    drawBatches(m, lod, model, true, false, false, 0, &meshes);
+    drawBatches(m, lod, model, true, false, 0, 0, &meshes);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 }
 
-void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon, bool flash, int frame) {
+void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame) {
     // Translucent faces test depth but do not write it, in submission order.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

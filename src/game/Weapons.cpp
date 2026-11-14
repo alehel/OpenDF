@@ -602,7 +602,6 @@ void Arsenal::fire(Player& player) {
         kick_[0] = -0x800 / 65536.f;
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = 0x400 / 65536.f * std::cos(r);
-        flashTimer_ = kTick;   // the flash mesh shows for about one frame (0x4045f9)
     } else if (md.type == 2) {
         // 0x44a184: 0x4000 back, added to the kick still settling; the
         // +-0x400 circle and 0x4000 down (DF2.EXE the same).
@@ -712,6 +711,12 @@ void Arsenal::fire(Player& player) {
         }
     } else if (g.sounds[0] > 0) {
         sounds_.push_back({g.sounds[0], origin, true});
+    }
+    // Then the flash meshes (DF.EXE 0x44d635, DF2.EXE 0x44a9be): ammo +0x30
+    // bit 0x2 mesh 1, bit 0x4 mesh 2 (the M203's grenades: 0x5).
+    if (const int fm = ((g.flags & 0x2) ? 1 : 0) | ((g.flags & 0x4) ? 2 : 0)) {
+        flashMeshes_ = fm;
+        flashTimer_ = kTick;   // shows for about one frame
     }
     // A launcher loads its next round at once, with the load sound (0x44a290).
     if (md.type == 2) sound(1);

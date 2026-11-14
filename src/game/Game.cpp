@@ -632,7 +632,8 @@ private:
     // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
     // Escape or Pause; Y leaves the mission. The game keeps running.
     bool quitBox_ = false;
-    bool quitFreedMouse_ = false;         // (OpenDF) the box released the mouse
+    bool quitFreedMouse_ = false;
+    int flashFrame_ = 0;                  // first-person flash meshes' frame (drawViewModel)         // (OpenDF) the box released the mouse
     void closeQuitBox();
     bool friendlyTags_ = false;           // [0x66f978]
     int letterbox_ = 1;                   // lbsize (0x404650): 1 or 2 eighths of the height per band
@@ -2819,9 +2820,14 @@ void Game::drawViewModel(const Screen& s) {
         light.saturation = terrain_.saturationFactor();
         light.highlight = terrain_.highlight();
     }
+    // The flash meshes' animation frame (DF.EXE [0x933980] -> [0xb7a874],
+    // DF2.EXE [0x4d2990] -> [0x765a04]): stepped 1, 2, 0, ... each time a
+    // flash mesh is drawn; mesh 0 at frame 0.
+    const int flash = arsenal_.flash();
+    if (flash) flashFrame_ = (flashFrame_ + 1) % 3;
     models_.begin(proj, light);
-    models_.draw(*m, 0, model, true, arsenal_.flash() > 0);
-    models_.drawTranslucent(*m, 0, model, true, arsenal_.flash() > 0);
+    models_.draw(*m, 0, model, true, flash, flashFrame_);
+    models_.drawTranslucent(*m, 0, model, true, flash, flashFrame_);
     models_.end();
 }
 

@@ -257,7 +257,11 @@ public:
     // The binoculars leave the scope flag as it is (its only writer is the
     // toggle, 0x44b498 / 0x447b30).
     void setBinoculars(bool on) { binoculars_ = on; }
-    float flash() const { return flashTimer_; }
+    // The flash meshes to show (bit 0 mesh 1, bit 1 mesh 2): the object
+    // flags a shot sets (DF.EXE 0x44d635 +0x6d 0x08/0x10, DF2.EXE 0x44a9be
+    // +0x64 0x800/0x1000 from ammo +0x30 bits 0x2/0x4), cleared after the
+    // frame is drawn (0x4045f9 / 0x45c520): here for one tick.
+    int flash() const { return flashTimer_ > 0 ? flashMeshes_ : 0; }
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     // Rounds not fired by the player's weapon (shrapnel); they hit and do
     // damage like any other.
@@ -309,6 +313,7 @@ private:
     uint64_t debugTick_ = 0;   // ticks run (OPENDF_DEBUGWEAPON)
     int zoomLevel_ = 0;
     float flashTimer_ = 0;
+    int flashMeshes_ = 0;
     float kick_[3] = {0, 0, 0};
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
