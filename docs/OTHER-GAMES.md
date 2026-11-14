@@ -283,11 +283,13 @@ First differences from DF1:
   run. Still open, by area:
   - *unverified guesses* (INFERRED, listed above): ammo-display kinds by
     DF1's type numbers, radar shapes from record +0x4C, rounds under water,
-    the player's parachute start, teleported paratroopers' chutes, the
-    undud M203 rule (DF1's), bld2's square footprint;
+    the player's parachute start, teleported paratroopers' chutes,
+    bld2's square footprint;
   - *approximations*: the sky gradient's row rate (16 steps), the smk2 dust
     cloud drawn as a smoke puff, CAL classes per tile line;
-  - *not yet*: fall damage; shrapnel counts per explosion; the delay
+  - *done since*: the player's fall damage (0x43f600), the M203 arming
+    (the same 8 ticks as DF1);
+  - *not yet*: shrapnel counts per explosion; the delay
     grenade's bounce; fog_level / fog_color (unused on the disc); the
     command map's W/D/contour tools and Players/Team/Weapons tabs (squad
     orders); the front end's keyboard page, credits, voice briefing, fades

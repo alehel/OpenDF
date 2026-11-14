@@ -3666,6 +3666,13 @@ int Game::run() {
                 tickDialogs();
                 touchPickups();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); }
+                // DF2 fall damage (0x43f600, single player): n = trunc(vz /
+                // -10360.5) with vz in 16.16 m a tick, (1 << n) - 1 for n >= 1
+                // (the player's flag 1 skips the -1 others get).
+                if (const float vy = player_.takeLanding(); mission_.version >= 0x0F && vy < 0) {
+                    const int n = int(-vy / 60.f * 65536.f / 10360.5f);
+                    if (n >= 1) hurtPlayer((1 << std::min(n, 20)) - 1, 0, player_.feet);
+                }
                 if (static bool once = false; !once && std::getenv("OPENDF_TESTBLD2") && ticks_ > 30) {
                     once = true;
                     for (size_t j = 0; j < world_.objects.size(); ++j)

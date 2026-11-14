@@ -64,6 +64,8 @@ public:
     // The move being played (an .ANM name), for the body's animation.
     const std::string& move() const { return move_; }
     float speed() const { return speed_; }
+    // The vertical speed (m/s, down negative) of the last landing; 0 after read.
+    float takeLanding() { const float v = landingSpeed_; landingSpeed_ = 0; return v; }
 
 private:
     void updateInWater(float dt, const PlayerInput& in, const World& world, float water);
@@ -78,6 +80,7 @@ private:
     bool sliding_ = false, jumpHeld_ = false;
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)
     float vy_ = 0;
+    float landingSpeed_ = 0;
     bool onGround_ = true, moving_ = false;
     float speed_ = 0;
     int wrapX_ = 0, wrapZ_ = 0;

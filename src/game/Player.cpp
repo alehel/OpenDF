@@ -182,7 +182,7 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         vy_ -= kGravity * dt;
         feet.y += vy_ * dt;
         d = feet.y - world.groundHeight(feet, kStep);
-        if (d < 0) { feet.y -= d; vy_ = 0; onGround_ = true; }
+        if (d < 0) { feet.y -= d; landingSpeed_ = vy_; vy_ = 0; onGround_ = true; }
     }
 
     // Into the water (0x436577 airborne, 0x43697d walking): once the level is
