@@ -3889,9 +3889,13 @@ void Game::df2MapEnter(int tab) {
 
 // The name prompt's keys (chat input 0x41d320): Enter calls the callback
 // 0x411890 (a non-empty name goes to the selected item-6089 object, +0x54);
-// Escape closes it (INFERRED: 0x41d320 sends characters 0..0x1b, Esc and
-// Enter included, through the jump table 0x41d6ac / 0x41d698, whose Esc
-// entry was not decoded).
+// Escape closes it: 0x41d320 sends characters 0..0x1b through the byte
+// table 0x41d6ac and the jump table 0x41d698 (READ): 8 Backspace drops the
+// last character, 13 Enter stores the line (5-line history 0xa78b00) and
+// calls the callback with it, 27 Escape (0x41d669) calls the callback with
+// NULL (0x411890 then does nothing) and resets the prompt (0x41cfd0); code 0
+// goes to the special keys and every other control character is appended
+// like a letter (OpenDF's text input only delivers printable ones).
 void Game::df2MapKey(const SDL_KeyboardEvent& k) {
     Df2Map& m = df2Map_;
     switch (k.keysym.sym) {
