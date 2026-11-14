@@ -97,10 +97,15 @@ First differences from DF1:
   - **sounds** from `DF2.PWF` (DF1's PWF2 format) with DF2's table (0x4B85A8,
     1024 id slots), whole 16-bit WAV samples (DF2 fixed DF1's low-byte bug);
   - **terrain detail**: a 64-wide TGA strip of 64×64 tiles blended by their
-    alpha, one tile a map cell; the **sky gradient** from column 0 of the TGA
-    sky palette (sampled to 16 steps: APPROXIMATION); **surfaces** from the
-    `char_data` .CAL (DT/GS/SW/RK/CT/SD → dirt/grass/snow/rock/sand; the
-    tile's own line, not DF2.EXE's permuted table: APPROXIMATION);
+    alpha, one tile a map cell; the **sky gradient**: all 256 entries of
+    column 0 of the TGA sky palette, not interpolated, screen row k above the
+    horizon row taking entry (k·s) >> 16 with s = 10·fov·horizon/width per
+    row (0x467700); **surfaces** only from the `char_data` .CAL (DT/GS/SW/
+    RK/CT/SD → dirt/grass/snow/rock/sand; the TRN `type` lines are ignored,
+    0x465e5b), read through DF2.EXE's renumbering bug, class(o) =
+    cal[remap[remap[o]]] (0x4643a0, 0x466668), copied as the player hears it;
+    no .CAL or unmatched names: class 0, silent footsteps (0x4139ae; ±5 m AI
+    noise per step, ±2 m on sand, ±10 m in water);
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
     body pre-test and nearest-along-the-ray rule are DF1's;
@@ -133,9 +138,26 @@ First differences from DF1:
     replaces the TRN's clouds, gradient, sky height, horizon, gamma,
     saturation and filter when both names are set (0x4654b6); clouds blend
     toward the cloud colour (gradient row 0) by density/256 (0x4679b0); the
-    sky is not colour-graded. APPROXIMATION still: the 256-step gradient is
-    sampled to 16 steps with DF1's row rate (DF2's rate uses camera field
-    +0x4c, not traced);
+    sky is not colour-graded; the gradient rows as described above (view
+    +0x4c is the FOV in degrees, 22 with the binoculars);
+  - **fog** (used on the disc: D03M07 and D06M17 fog_level 5, DM_S21 and
+    KH_S22 7, TDM_D31 7 in 0x646464): BMS flag 0x78 bit 1 → fog_level +0x8C,
+    bit 2 → fog_color +0x90 (0x45d6df; TRN keys `fog_level` / `fog_color`,
+    default 192,192,192). D = 2^fog_level m: no sky or clouds, the ground cut
+    at D, every pixel blended c + (C − c)·min(255, depth·256/D)/256 after the
+    objects (the software frame's pass 0x4485b0; INFERRED: depth = view
+    depth), the water plane out to min(D, 2047 m), soldiers see no farther
+    than D (0x406180). DF2 has no ring fog on its far terrain;
+  - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
+    D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
+    born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
+    falling 0x5000, snow 1 falling 0x800), drifting with the full wind
+    velocity, effect 17 where they reach the water level (0x46baa0); rain
+    a 1-pixel streak 0.5 m up and half a tick of wind back in (106,126,154)
+    at 100/255, snow SNOW.3DI at scale 2 facing the camera, both after the
+    fog (0x46b780). DF2's D3D frame never called the drawing, so with a
+    3D card the original showed none; OpenDF draws what its software
+    renderer showed;
   - **air** (0x4587f0): +1 a tick while the player's origin is 0.5 m or more
     under the water; surfacing with more than 60 resets it (AIR_SUCK 801);
     gags (802) at 2304/2496/2688; over 2880 (48 s) the player drowns at once;
@@ -220,7 +242,8 @@ First differences from DF1:
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
-    pause (STROVER7), the message log (the system history 15..0, own colours),
+    pause (STROVER7), the message log (the system history 15..0, entry 0 the
+    newest, bottom-anchored, own colours),
     the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
     header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
     as spelt), binocular texts in orange at the view's centre − 15; the
@@ -338,14 +361,31 @@ First differences from DF1:
     bld2 buildings (their sound as dec0's; destroyed: everyone and every
     vehicle within the model's ±flat radius / ±height loses 100 hp, then 64
     steps one per 8 ticks: two rubble bursts a step (effect 0x13 = item 7030,
-    sound 0x32 delayed) for clamp(area/64 + 4, 8, 48) steps, dust and smoke
-    from step 4, the husk at step 8, a ±500 m noise for the AI; 0x4028d0);
+    sound 0x32 delayed) for clamp(area/64 + 4, 8, 48) steps on the edges
+    of the model's LOD-0 header box inset 2 m and turned with the building,
+    from step 4 up to 12 smk2 dust clouds a step (2·perimeter in all)
+    drifting outward, then smoke clouds (area/2) on steps without dust, the
+    husk at step 8, a ±500 m flags-0 noise that alerts relaxed soldiers;
+    0x4028d0); smk2 clouds are SMKT_H billboards growing, rolling and fading
+    (0x42aaa0, efct draw 0x41f740), their colour INFERRED to replace the
+    material's; v8 alpha materials without flag 1 take the texture at +0x37
+    (0x43ebca) and 8-bit grey textures on them are INFERRED drawn as
+    texel-as-alpha;
     gnrl breaks silently (0x4012b0); smok one puff (0x402550); ibom the kind-5
     blast with 200 fragments (0x401240 → 0x4572d0); DF2's effect table (0x414500:
     DF1's 16 plus 17 rain, 18 snow, 19 gex5, 20 boomd, 21/22 parachutes,
-    23-27). APPROXIMATION: the footprint is the flat-radius square, and the
-    smk2 dust cloud is drawn as OpenDF's smoke puff. `OPENDF_TESTBLD2=1`
-    destroys a mission's first bld2 at tick 30 (testing).
+    23-27). `OPENDF_TESTBLD2=1` destroys a mission's first bld2 at tick 30
+    (testing). The searchlight `slgt` (sweeps ±45° about its placed heading,
+    spots within 22.5° and 1000 m, tracks for 8 thinks, the husk and a
+    blast 1 m up when shot; 0x427f30, 0x4281e0, 0x425c70), Land Mine (`mine`
+    0x4295f0 when shot or blasted; any person stepping on it, 0x43fc80: a
+    blast and a smoke generator 0.5 m up) and wall trigger (`vtrg`
+    0x42a980: the nearest "vwal crack" within 10 m turns into its husk, a
+    blast with 10 fragments) are in; no shipped mission places them and their
+    models are not on the disc: `OPENDF_TESTDF2ITEMS=1` places one of each
+    with stand-in models (testing). Pickups: two points (feet, feet + pose
+    height + 0.5 m) within ±(0.5 m + R) on all axes, then the volumes
+    (0x440f80; INFERRED R = the header radius and the volume box);
   - **vehicles** (by ITEMS.DEF move_function): herc flies level at its
     start height and keeps moving when shot down (0x42c240); boat floats on
     four samples clamped to the water, dies in five big blasts and sinks
@@ -355,7 +395,10 @@ First differences from DF1:
     rock ±1.4° every 32 m (0x42c440, coupling 0x45bd1f); DF2's veh0 eases its
     steer by at most 0.18° a tick (0x41efa1);
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up
-    (and, INFERRED, the player's start marker) descend 0x2222 a tick under
+    (and, INFERRED from the missions, the player's start marker and
+    teleport targets that high: the trace found no code that sets the chute
+    flag on markers, but starts like D06M06's 160 m only make sense with
+    one) descend 0x2222 a tick under
     `parachut` (PFoil items) or `pararnd`; landing leaves the canopy, which
     tips over and sinks for 1800 ticks (`para` 0x42c570). Script action 18
     (teleport, 0x41955c) moves the team (`teleportTeam`).
@@ -379,16 +422,17 @@ First differences from DF1:
     shapes (signed byte +0x4C, live positions, 0x403590 / 0x421510), rounds
     under water, the player item by id (0x4128d0: 105300..105309; ghillie /
     LAR V only change the drawn model, 0x415410);
-  - *approximations*: the sky gradient's row rate (16 steps), the smk2 dust
-    cloud drawn as a smoke puff, CAL classes per tile line;
+  - *also INFERRED*: the fog pass's depth unit, DF2's pickup radius and
+    volume box, the smk2 colour;
+  - *approximations*: the water's own fog quad folded into the fog pass;
   - *done since*: the player's fall damage (0x43f600), the M203 arming
     (the same 8 ticks as DF1);
   - *done since*: the delay grenade's slide and fuse, the command map's
     Team tab with squad orders, its W waypoint tool, elevation / contour
     views, Players and Weapons tabs and selection panel, the front end's keyboard page, credits,
     voice briefing, slider dragging and screen timing;
-  - *not yet*: fog_level / fog_color (unused on the disc); multiplayer (out
-    of scope).
+  - *not yet*: bld2's per-mesh fireball clouds (0x42abc0, steps 3..11);
+    multiplayer (out of scope).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
     differences, READ): fire also needs under 128 m at night, no parachute,
     no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more

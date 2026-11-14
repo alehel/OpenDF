@@ -197,6 +197,45 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
     return best;
 }
 
+// The searchlight's scan (DF2.EXE 0x425c70 over the 256 soldier slots):
+// skip team 0, the light's own team and the dead; the target's yaw from the
+// light's current heading and its pitch from the light's pitch must both be
+// within 0x10/256 turn (22.5 degrees); distance under 1000 m; the sight line
+// 0x406180 gives 1..2. score = (100 / d) · (16 - |dyaw|) / 16 (dyaw in 1/256
+// turns) · move visibility · 6 if it fired lately · 2 unless its flag 1 is
+// set (INFERRED: flag 1 marks the player, as in the fall damage 0x43f600);
+// the factor meanings are INFERRED. Returns the best score, 0 if none.
+float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
+                          int& bestId, Vec3& bestPos) const {
+    float best = 0;
+    bestId = -1;
+    auto consider = [&](int id, Vec3 pos, int tteam, int move, bool fired, bool isPlayer) {
+        if (tteam == 0 || tteam == team) return;
+        const Vec3 tp = world.nearest(pos, at);
+        const Vec3 d = tp - at;
+        const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
+        const uint32_t ty = uint32_t(int64_t(std::llround(double(std::atan2(-d.z, d.x)) / (2 * kPi) * 4294967296.0)));
+        const int32_t tpi = int32_t(int64_t(std::llround(double(std::atan2(d.y, horiz)) / (2 * kPi) * 4294967296.0)));
+        const int dyaw = std::abs(int32_t(ty - yaw)) >> 24, dpitch = std::abs(int32_t(uint32_t(tpi) - uint32_t(pitch))) >> 24;
+        if (dyaw > 0x10 || dpitch > 0x10) return;
+        const float dist = len3(d);
+        if (dist >= 1000.f || dist < 0.01f) return;
+        if (const int r = world.sight(at, tp, self, id); r < 1 || r > 2) return;
+        float score = (100.f / dist) * float(16 - dyaw) / 16.f * moveVisibility(move) * (fired ? 6.f : 1.f) * (isPlayer ? 1.f : 2.f);
+        if (score > best) best = score, bestId = id, bestPos = tp;
+    };
+    if (player.alive) consider(-3, player.origin, player.team, player.moveNumber, playerFired_, true);
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& o = world.objects[i];
+        if (!o.person || !o.alive() || int(i) == self) continue;
+        const Person* q = nullptr;
+        for (const auto& x : people_)
+            if (x.object == int(i)) q = &x;
+        consider(int(i), o.pos, o.team, o.moveNumber, q && q->fired, false);
+    }
+    return best;
+}
+
 bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
@@ -359,8 +398,8 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
 
     if (p.target == -1) {
         if (p.alert != 2) {
-            // Hearing (0x46c2c4): inside any noise box -> alert, face it
-            // (DF2: not with ai flag 0x1000, deaf).
+            // Hearing (0x46c2c4; DF2 0x413620): inside any noise box -> alert,
+            // face it (DF2: not with ai flag 0x1000, deaf; no bark).
             for (const auto& n : noise_) {
                 if (df2 && (p.flags & 0x1000)) break;
                 const Vec3 c = world.nearest(n.at, o.pos);
@@ -369,7 +408,7 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                     p.alert = 2;
                     alertTeam(o.team);
                     o.heading = headingTo(o.pos, c);
-                    bark(world, p, sound, 2);
+                    if (!df2) bark(world, p, sound, 2);   // DF2's 0x413620 does not bark
                     break;
                 }
             }

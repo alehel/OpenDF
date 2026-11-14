@@ -167,6 +167,8 @@ public:
     // DF2: the mission's wind, per tick in metres along x (east) and z
     // (DF2.EXE 0x46bbf0; projectiles are dragged toward it, 0x44c2f0).
     void setWind(float kph, float degrees);
+    int64_t windX() const { return windX_; }   // 16.16 m a tick, east
+    int64_t windZ() const { return windZ_; }   // 16.16 m a tick, OpenDF z (= -north)
     // DF2: body gear worn (type 31 Armor, 32 Ghillie, 33 LAR V), 0 none.
     int bodyGear() const { return gear_; }
     // DF2 scope zeroing (keys X / Z, 0x445ff0): the setting of the primary

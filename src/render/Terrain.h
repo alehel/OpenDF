@@ -49,7 +49,9 @@ public:
     GLuint lutTexture() const { return texSkyPal_; }
     // Surface at (x, z): 1 dirt, 2 grass, 3 snow, 4 cement, 5 sand, 6 packed
     // dirt, 0 none; each colour-map palette colour is matched to the nearest
-    // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects).
+    // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects). Delta
+    // Force 2: the .CAL class of the cell's detail tile (1 dirt, 2 grass,
+    // 3 snow, 4 rock/concrete, 5 sand; 0 none), DF2.EXE 0x4139ae / 0x413b93.
     int surfaceAt(float x, float z) const;
     // Water, after everything else is drawn (DF.EXE 0x43bfd8); `ticks` drives the waves.
     void drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks);
@@ -70,6 +72,21 @@ public:
     // word +0x88, in TRN water_height units); -1 none. Set before load().
     int waterOverride = -1;
     SkyOverride skyOverride;   // Delta Force 2: the mission's sky block; set before load()
+    // Delta Force 2: the mission's fog_level / fog_color (BMS flag 0x78 bits
+    // 1 / 2, applied after the terrain loads, 0x45d6df); -1 none. Set before load().
+    int fogLevelOverride = -1;
+    long long fogColorOverride = -1;
+    // Delta Force 2 fog (DF2.EXE 0x464500 getter): the distance D = 2^fog_level
+    // m, 0 when fog is off (always 0 on Delta Force terrains).
+    int fogLevel() const { return gen2_ && desc_.fogLevel > 0 && desc_.fogLevel < 16 ? desc_.fogLevel : 0; }
+    float fogDistance() const { return fogLevel() ? float(1 << fogLevel()) : 0.f; }
+    // The per-pixel fog pass of DF2.EXE's software frame (0x4485b0): every
+    // pixel of the current viewport blended toward fog_color by its depth.
+    // Call after the terrain, water, objects and effects, before rain/snow.
+    void drawFog(const Mat4& proj);
+    // Delta Force 2's horizontal field of view in degrees (view+0x4c: 90, the
+    // binoculars 22), for the sky gradient's step per row (0x4677bd).
+    float df2FovDeg = 90.f;
     // Delta Force 2 water (DF2.EXE 0x4670a0/0x466b60): drawn before the
     // objects while the camera is above it, after them below it.
     bool df2Water() const { return gen2_ && hasWater_; }
@@ -92,7 +109,9 @@ private:
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
     GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0, texWaterGrad_ = 0, texScene_ = 0;
     int sceneW_ = 0, sceneH_ = 0;
-    GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0;
+    GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0, progFog_ = 0;
+    GLuint texSkyGrad_ = 0, texDepth_ = 0;   // DF2: the 256-step sky gradient; the depth copy for the fog pass
+    int depthW_ = 0, depthH_ = 0;
     GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0;
     Mesh lods_[5];
     Rgb horizon_{170, 200, 230};

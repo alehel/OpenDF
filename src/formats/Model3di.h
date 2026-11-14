@@ -15,6 +15,7 @@ struct Model3diTexture {
     int width = 0, height = 0;
     uint8_t sequence = 0;            // what materials refer to
     bool indexZeroTransparent = false;
+    bool alpha16 = false;            // v8: 16-bit texels (index, alpha)
     std::vector<uint8_t> rgba;       // width*height*4, decoded
     std::vector<uint8_t> indices;    // the raw 8-bit texels (used as alpha by 0x8000 materials)
 };
@@ -105,6 +106,9 @@ struct Model3di {
     float radius = 1;                // header +0x60, metres
     float flatRadius = 0;            // header +0x64: LOD 0's largest horizontal vertex radius (blasts, collision reach)
     float height = 0;                // LOD 0 header +0x24: zmax - zmin (model +0x68 at load, 0x43f383)
+    // LOD 0 header +0x28..+0x34: xmin, xmax, ymin, ymax in metres, file axes
+    // (x forward, y left); DF2's bld2 footprint (0x402979).
+    float box[4] = {0, 0, 0, 0};
     std::vector<Model3diTexture> textures;
     std::vector<ModelLod> lods;
 };

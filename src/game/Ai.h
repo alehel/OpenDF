@@ -61,6 +61,23 @@ public:
     // metres for side `side`, and the shooter counts as firing (x6 to be
     // seen) until the flags are cleared (every 0x1f0 ticks).
     void shotFired(Vec3 at, float range, int side, int object);
+    // Any other noise (DF2.EXE 0x412840 with flags 0: footsteps, a building
+    // collapsing): a box of +-r on all three axes; heard by relaxed soldiers
+    // (0x413620, any team, any flags), not turned toward by alert ones
+    // (0x415570 wants flags & 2). `team` is the noise's team (+4), which no
+    // reader checks. Does not mark anyone as firing.
+    void noise(Vec3 at, float r, int team, int flags) {
+        if (noise_.size() < 200) noise_.push_back({at, r, team, flags});
+    }
+    // Delta Force 2's searchlight scan (0x425c70); yaw and pitch are DF2
+    // binary angles (yaw anticlockwise from east). See Ai.cpp.
+    float lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
+                    int& bestId, Vec3& bestPos) const;
+    // 0x418960(a, b): sets bit b of row a of the "spotted" table that the
+    // script condition 1 (team a spotted team b) reads.
+    void markSpotted(int a, int b) {
+        if (a >= 0 && a < 64 && b >= 0 && b < 64) spotted_[size_t(a)] |= 1ull << b;
+    }
     // Called when someone is hurt (0x44f218): an AI victim becomes alert.
     void hurt(World& world, int object);
 
