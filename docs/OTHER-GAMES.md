@@ -149,9 +149,17 @@ First differences from DF1:
     then a 50 % tint with palette entry 255 over the view. No water when the
     PCX fails to load (RIPPLE3 is not on the disc: DMDG3 and DMS2 are dry).
     `water_palette` and `water_opacity` are ignored, as in DF2.EXE.
-- Not yet: DF2's swimming (vertical speed damped ×0.8 a tick in water,
-  0x440b2b; the player now walks on the bottom), DF2's mission-end panel and
-  menus, the new layer flag
+  - **swimming**: DF2.EXE's water physics (0x440b2b, 0x4404dc, 0x43f690)
+    are DF1's (no gravity, ×0.8 vertical damping, hanging at depth or on the
+    bottom, swimming along the view, the 0.4 m rise cap, eye 0.3 m), so the
+    shared player code serves both. Comparing them showed a DF1 error, fixed
+    for both: in water a tick moves the whole per-frame step, on land half,
+    so swimming is 2v·cos(pitch) and v·sin(pitch) (AUDIT X9). DF2 only:
+    shots from a muzzle under the water fire just the knife and the
+    underwater pistol/rifle, others play their +0x2C sound (0x414ad0); the
+    animation events 0x10/0x11/0x17 play DEATH_WATER/UW_IDLE/UW_SWIM
+    (0x43f480).
+- Not yet: DF2's mission-end panel and menus, the new layer flag
   0x80 (random-then-sequential variants), the speed-of-sound delay for distant
   sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),
   fog keys, the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1

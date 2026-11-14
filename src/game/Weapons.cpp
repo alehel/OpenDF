@@ -492,6 +492,17 @@ void Arsenal::fire(Player& player) {
         }
         origin = player.eye() + fwd * f - right * l + up * u;
     }
+    // Delta Force 2 (DF2.EXE 0x414ad0): a muzzle under the water fires only
+    // the knife (1) and the underwater pistol (0x27) and rifle (0x28/0x29);
+    // anything else just plays its gun +0x2C sound (INFERRED: the dry-fire
+    // click; the round is still used, also INFERRED).
+    if (underwaterRule && waterLevel != 0 && origin.y < waterLevel) {
+        const int m = slots_[size_t(current_)];
+        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29) {
+            if (g.sounds[3] > 0) sounds_.push_back({g.sounds[3], player.origin(), false});
+            return;
+        }
+    }
     // Speed: velocity · 65536 / 62 per tick (0x44d450).
     Projectile p;
     p.pos = origin;

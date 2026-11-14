@@ -841,6 +841,12 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
 
 void Game::animEvent(int event, Vec3 origin, int phraseSet) {
     event &= 0xFF;
+    // Delta Force 2 (DF2.EXE 0x43f480): 0x10 DEATH_WATER (400), 0x11 UW_IDLE
+    // (804), 0x17 UW_SWIM (805).
+    if (mission_.version >= 0x0F && (event == 0x10 || event == 0x11 || event == 0x17)) {
+        playSound(event == 0x10 ? 400 : event == 0x11 ? 804 : 805, origin);
+        return;
+    }
     if (event >= 0x12 && event <= 0x16) {
         sound_.voice(phraseSet, 7 + event - 0x12, origin);
         return;
@@ -2932,6 +2938,8 @@ int Game::run() {
                 tickDialogs();
                 touchPickups();
                 if (mission_.version >= 0x0F) tickAir();
+                arsenal_.underwaterRule = mission_.version >= 0x0F;
+                arsenal_.waterLevel = terrain_.waterLevel();
                 tickCharges();
                 // The player as a target: animated hit spheres (0x44dca4).
                 world_.playerBody.present = !playerDead();

@@ -182,6 +182,9 @@ public:
     // The first-person model's points (LOD 0 vertices in file order) by
     // graphic name, for the muzzle (player table +0x90); null if unknown.
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
+    // Delta Force 2's rule for shots from under the water (set by the game).
+    bool underwaterRule = false;
+    float waterLevel = 0;
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
     // Knife strikes since the last call: the point 0.5 m along the view
     // from the body origin (0x42ca8c), for blast kind 2.

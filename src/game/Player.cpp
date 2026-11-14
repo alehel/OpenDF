@@ -197,7 +197,11 @@ float Player::landOrigin() const {
 // DF.EXE in water: the move is Swimming while the forward key is held,
 // otherwise Floating (0x43752e, before any stance). No gravity: vertical
 // speed decays x0.8 per tick (0x436912). Swimming moves along the heading
-// and view pitch, vertically at half rate, and does not rise once the
+// and view pitch: on land a tick moves half the move's per-frame distance
+// (`sar 1` at 0x436653), in water the whole of it horizontally (0x436251,
+// no halving) and half vertically (0x436289), i.e. 2·v·cos(pitch) and
+// v·sin(pitch) for a move of v m/s on land (DF2.EXE 0x4404dc is the same);
+// it does not rise once the
 // origin is within 0.4 m of the surface (0x43621a / 0x43628f). The bottom
 // holds the body up (lowest contact point of the pose); the water is left
 // when the origin is above the level (0x4368ee).
@@ -216,8 +220,8 @@ void Player::updateInWater(float dt, const PlayerInput& in, const World& world, 
     if (swimMove_) {
         const AnimMove* m = moves ? moves->find("Swimming") : nullptr;
         speed_ = m ? m->velocity : 2.0f;
-        horiz = Vec3{std::sin(yaw), 0, -std::cos(yaw)} * (speed_ * std::cos(pitch));
-        vert = speed_ * std::sin(pitch) * 0.5f;
+        horiz = Vec3{std::sin(yaw), 0, -std::cos(yaw)} * (2.f * speed_ * std::cos(pitch));
+        vert = speed_ * std::sin(pitch);
         if (vert > 0 && originY_ + kSwimDepth > water) vert = 0;
     }
     Vec3 f{feet.x + horiz.x * dt, originY_ - poseOrigin, feet.z + horiz.z * dt};
