@@ -4,7 +4,7 @@ A cross-platform (Windows / macOS / Linux) reimplementation of the engine of
 NovaLogic's **Delta Force** (1998). It contains no game data. It reads the files
 from your own copy of the CD.
 
-![Assaulting the radio station in Delta Force mission C03M03](docs/screenshot-df1-radio-station.png)
+![A desert town and its surroundings in Delta Force mission C03M03](docs/screenshot-df1-vista.png)
 
 ## Status
 
@@ -131,6 +131,8 @@ with mouse + WASD:
 | Command map (zoom in / out) / goals | C (- / =) / G |
 | Crosshair / gun on-off | F3 / F4 (original keys) |
 | Debug flight / next mission | N / Tab |
+
+![Assaulting the radio station in Delta Force mission C03M03](docs/screenshot-df1-radio-station.png)
 
 ![Through the M40's scope in C03M03](docs/screenshot-df1-scope.png)
 
