@@ -71,7 +71,16 @@ struct WorldObject {
     int collapse = -1;
     float vz = 0;                      // people: vertical speed, metres a tick (+0x44)
     bool airborne = false;             // people: falling (DF1 +0x6D & 0x20, DF2 +0x64 & 0x2000)
-    bool chute = false;                // DF2: on a parachute (person flag +0x64 & 0x20)                 // DF2 bld2: collapse step (0..64), -1 none
+    bool chute = false;                // DF2: on a parachute (person flag +0x64 & 0x20)
+    bool swimming = false;             // people: in the water (DF1 +0x6E & 2, DF2 +0x64 & 0x20000)
+    float swimDz = 0;                  // people: the swim move's vertical step this tick (0x436289 / 0x440567)
+    // Delta Force 2 person flags set by the volume push-out (0x440f80) each
+    // tick: +0x64 & 0x400000 (a type-4 ladder volume, for movers that may
+    // climb) and & 0x1000000 (a type-6 volume: an armory area).
+    bool ladder = false, armory = false;
+    bool climbs = false;               // DF2: AI block +0x34 & 0x400 (BMS record +0xC & 0x1000): may use ladders
+    int platform = -1;                 // DF2 +0xF8: the object stood on (-1 none)
+    std::vector<int> neighbours;       // DF2 +0xFC/+0x100: objects near enough to touch (0x43f2b0)
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
@@ -115,8 +124,36 @@ public:
     // gravity, land on the surface below.
     void personTick(WorldObject& o);
 
-    // Pushes a vertical cylinder (feet at `feet`) out of solid boxes.
+    // Pushes a vertical cylinder (feet at `feet`) out of solid boxes (DF.EXE
+    // 0x437a28). Under Delta Force 2's rules it does nothing: DF2 has no
+    // mover box, people are pushed out of the volumes in personTick.
     Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
+
+    // Delta Force 2 collision volumes (DF2.EXE 0x440f80): `count` cubes of
+    // half-size halves[k] centred on pts[k] against object `n`'s LOD 0 plane
+    // volumes. True if a point is inside a volume of type other than 4 / 6;
+    // `push` (world axes) is then the summed least-negative plane distance
+    // times its normal; flags 1 a type-4 volume, 4 a type-6 volume.
+    bool df2Overlap(const WorldObject& n, const Vec3* pts, const float* halves, int count, Vec3& push, uint32_t& flags) const;
+    // DF2.EXE 0x43f2b0: the objects (groups 0 and 1, not removed) within the
+    // mover's margin (item type 1 vehicle 20 m, 3 person / 6 object 10 m,
+    // others none) of `at`: |dx|, |dy| <= model +0x64 + margin, |dz| <=
+    // model +0x60 + margin.
+    std::vector<int> df2Neighbours(Vec3 at, float margin, int self = -1) const;
+    // The person push-out of the DF2 person move (0x440984..0x440af1): the
+    // 0.5 m cubes at the origin and 0.5 m above the feet (feet = origin +
+    // feetOffset), against each neighbour; moves `origin`.
+    struct Df2Contact { bool onObject = false; int platform = -1; bool ladder = false, armory = false; std::vector<int> touched; };
+    Df2Contact df2PushOut(Vec3& origin, float feetOffset, const std::vector<int>& neighbours, bool mayClimb) const;
+    // DF2.EXE 0x43fb80: the terrain, or the highest volume top a 1/256 m
+    // point at `p` overlaps, no higher than p + step (items placed by
+    // 0x4520d6 with step 0x4000).
+    float df2Surface(Vec3 p, float step, const std::vector<int>& neighbours) const;
+    // DF2: the horizontal step of a person's move this tick and its swim
+    // dz (land: velocity / 60 along the heading, 0x440596; swimming:
+    // velocity / 30 x cos(pitch) and dz = velocity / 60 x sin(pitch), not
+    // upward within 0.4 m of the surface, 0x4404dc; DF.EXE 0x43621a the same).
+    Vec3 personStep(WorldObject& o, float velocity) const;
 
     // First thing hit on the segment a→b (terrain or object box, or the
     // player's hit spheres: object -3); `objects` false tests the terrain
@@ -151,6 +188,9 @@ public:
     void applyHusk(int index);
     // DF2: people who landed from a parachute this tick (for the canopy).
     std::vector<int> takeLandings() { std::vector<int> out; out.swap(landings_); return out; }
+    // People who fell into the water this tick (effect 4 and sound 0x8A at
+    // the surface: DF.EXE 0x4365a2, DF2.EXE 0x440bb6).
+    std::vector<Vec3> takeSplashes() { std::vector<Vec3> out; out.swap(splashes_); return out; }
     // Knife (blast kind 2, 0x44ffd0, radius 1 m): every living person whose
     // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
     // whatever the armour; no line of sight; among objects only the piranha
@@ -189,7 +229,10 @@ public:
 
 private:
     std::vector<int> landings_;
-    float chuteClock_ = 0;
+    std::vector<Vec3> splashes_;
+    uint32_t listTicks_ = 0x40;        // DF2 [0x9e2e60]: neighbour lists rebuilt when it reaches 0x40
+    void personTickDf1(WorldObject& o);
+    void personTickDf2(WorldObject& o);
     uint32_t personTicks_ = 0;
     float personClock_ = 0;
 public:

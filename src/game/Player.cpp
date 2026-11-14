@@ -63,16 +63,9 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
 
     const float water = world.terrain->waterLevel();
-    if (chute && !fly) {
-        // DF2.EXE 0x440b2b: -0x2222 a tick while above the ground and the
-        // water (no steering traced); landing leaves the canopy (spawn 21).
-        feet.y -= 0x2222 / 65536.f * 60.f * dt;
-        const float ground = world.groundHeight(feet, kStep);
-        if (feet.y <= ground || (water != 0 && feet.y + landOrigin() < water)) {
-            feet.y = std::max(feet.y, ground);
-            chute = false;
-            spawns_.push_back({-1, feet});   // the canopy (the game spawns it)
-        }
+    if (world.df2Rules && !fly) {
+        // Delta Force 2: its own person move, on the 60 Hz ticks.
+        for (df2Clock_ += dt; df2Clock_ >= 1.f / 60.f; df2Clock_ -= 1.f / 60.f) tickDf2(in, world);
         wrap(world.extent());
         return;
     }
@@ -261,6 +254,211 @@ void Player::updateInWater(float dt, const PlayerInput& in, const World& world, 
         vy_ = 0;
     }
     wrap(world.extent());
+}
+
+void Player::enterWater(float z) {
+    inWater_ = true;
+    swimMove_ = false;
+    originY_ = z;
+    eyeOffset_ = eyeHeight_ - landOrigin();
+    onGround_ = true;
+    sliding_ = false;
+}
+
+void Player::leaveWater(float z) {
+    // The standing pose's origin is higher, so the feet go down by the
+    // difference and the eye eases from where it was.
+    const float eyeY = z + eyeOffset_;
+    inWater_ = false;
+    swimMove_ = false;
+    feet.y = z - landOrigin();
+    eyeHeight_ = eyeY - feet.y;
+}
+
+// One tick of DF2.EXE's person move for the player (READ unless marked):
+// the jump key 0x440cd0 and the move chooser 0x43f690 on odd ticks (the
+// motion they give is stored and repeated on even ticks, 0x440858), then
+// 0x440400: x, y += the step; z += vz + dz; the volume push-out (0x440984);
+// the ground (terrain, or d = 0 standing on an object) and the state table
+// (parachute, airborne, swimming, sliding, normal) with gravity 0xA7.
+void Player::tickDf2(const PlayerInput& in, const World& world) {
+    const float water = world.terrain->waterLevel();
+    const bool odd = (++df2Ticks_ & 1) != 0;
+    const Vec3 flatFwd{std::sin(yaw), 0, -std::cos(yaw)};
+    float z = inWater_ ? originY_ : feet.y + landOrigin();   // obj +0x2C, the origin
+    constexpr float G = 0xA7 / 65536.f;
+    if (inWater_) eyeOffset_ = kWaterEye + (eyeOffset_ - kWaterEye) * 0.9f;   // 0x4461e7
+
+    if (odd) {
+        // Jump (0x440cd0): not while airborne or swimming (0x22000) or on a
+        // chute; crouched or prone it stands up ([0x7655dc] = 1); not while
+        // sliding; else z += 0x1000 and vz = 0x1555. (Edge-triggered here,
+        // as for DF1; INFERRED.)
+        const bool press = in.jump && !jumpHeld_;
+        jumpHeld_ = in.jump;
+        if (press && onGround_ && !inWater_ && !chute) {
+            if (stance != Stance::Stand) stance = Stance::Stand;
+            else if (!sliding_) { z += 0x1000 / 65536.f; vz_ = 0x1555 / 65536.f; }
+        }
+
+        // The move chooser (0x43f690) and its motion (0x4404c8..0x4406ca).
+        Vec3 step{0, 0, 0};
+        float dz = 0;
+        speed_ = 0;
+        const bool below = water != 0 && z < water;   // 0x43f6fb
+        const int dir = moving_ ? moveDirection(in.forward, in.strafe) : 0;
+        if (chute) {
+            // 150 Parachute (0x43f704); its motion is replaced below.
+            move_ = "Parachute";
+            poseOrigin_ = landOrigin();
+        } else if (below) {
+            // 141 Swimming with a speed and direction 0, else 140 Floating.
+            swimMove_ = moving_ && dir == 0;
+            moving_ = swimMove_;
+            move_ = swimMove_ ? "Swimming" : "Floating";
+            poseOrigin_ = swimMove_ ? swimOrigin : floatOrigin;
+        } else if (ladder_ && moving_) {
+            // On a ladder (0x43f951 walk, 0x43fa42 run; jump tables 0x43fb40 /
+            // 0x43fb60): z moves at once by direction: forward +0x800 (run
+            // +0x1000) Ladder_Up, back the same down Ladder_Down, left /
+            // right Ladder_Left / Ladder_Right, the diagonals half the climb.
+            static const int climb[8] = {2, 1, 0, -1, -2, -1, 0, 1};
+            static const char* name[8] = {"Ladder_Up", "Ladder_Left", "Ladder_Left", "Ladder_Left", "Ladder_Down",
+                                          "Ladder_Right", "Ladder_Right", "Ladder_Right"};
+            z += float(climb[dir]) * (in.walk ? 0x400 : 0x800) / 65536.f;
+            move_ = name[dir];
+            poseOrigin_ = landOrigin();
+        } else {
+            // Land moves, as DF.EXE's controller (see update).
+            if (moving_) {
+                move_ = stance == Stance::Prone ? "Crawling_CR" + std::to_string(dir)
+                                                : std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) +
+                                                      (in.shooting ? "_S" : "") + (oneHanded ? "_1HW" : "_2HW");
+            } else {
+                const char* base = stance == Stance::Prone ? "Prone" : stance == Stance::Crouch ? "Crouched" : "Standing";
+                move_ = std::string(base) + (in.shooting && stance == Stance::Stand ? "_S" : "") + (oneHanded ? "_1HW" : "_2HW");
+            }
+            poseOrigin_ = landOrigin();
+        }
+        // The move's velocity v (ANM m/s / 30 a frame) along heading + its
+        // direction (move table +0, 0x4ab758: Running/Walking N -> N, the
+        // ladder moves 0/4/1/7, Swimming 0).
+        const AnimMove* m = moves && !moves->empty() ? moves->find(move_) : nullptr;
+        const float vel = m ? m->velocity : 0.f;
+        speed_ = vel;
+        int moveDir = 0;
+        if (move_.rfind("Ladder_", 0) == 0) moveDir = move_ == "Ladder_Down" ? 4 : move_ == "Ladder_Left" ? 1 : move_ == "Ladder_Right" ? 7 : 0;
+        else if (!below && moving_) moveDir = dir;
+        const float a = yaw - float(moveDir) * 3.14159265f / 4.f;
+        const Vec3 along{std::sin(a), 0, -std::cos(a)};
+        const float v = vel / 30.f;
+        if (inWater_) {
+            // 0x4404dc: v cos(pitch) horizontally, v sin(pitch) / 2 up, not
+            // upward once the origin is within 0.4 m of the surface.
+            step = along * (v * std::cos(pitch));
+            dz = v * std::sin(pitch) * 0.5f;
+            if (dz > 0 && z + kSwimDepth > water) dz = 0;
+        } else {
+            step = along * (v * 0.5f);   // 0x440596: half a frame a tick
+        }
+        if (chute) {
+            // 0x440651: PFoil glides 0x4000 a tick along the heading (+ the
+            // Parachute move's direction 0); without PFoil no motion.
+            step = pfoil ? flatFwd * (0x4000 / 65536.f) : Vec3{0, 0, 0};
+            dz = 0;
+        } else if (!onGround_) {
+            step = step_;   // airborne: the stored take-off step (0x44082a)
+        } else if (!inWater_ && !ladder_) {
+            // Slopes (0x4406e8, gradient 0x464ba0; DF.EXE's constants): a
+            // slide starts at 1.3 on either axis, stops under 0.7 on both,
+            // and moves -gradient x 0x1999 a tick; uphill steeper than 0.7
+            // along the move forces the walking moves (flag 0x80000).
+            const float h0x = world.terrain->heightAt(feet.x - 0.5f, feet.z), h1x = world.terrain->heightAt(feet.x + 0.5f, feet.z);
+            const float h0z = world.terrain->heightAt(feet.x, feet.z - 0.5f), h1z = world.terrain->heightAt(feet.x, feet.z + 0.5f);
+            const float gx = h1x - h0x, gz = h1z - h0z;
+            if (sliding_) {
+                if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
+                else step = Vec3{-gx, 0, -gz} * (0x1999 / 65536.f);
+            } else if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) {
+                sliding_ = true;
+            } else if (moving_ && stance != Stance::Prone && gx * along.x + gz * along.z > kSlideStop && moves) {
+                const std::string walk = "Walking" + std::to_string(dir) + (oneHanded ? "_1HW" : "_2HW");
+                if (const AnimMove* w = moves->find(walk); w && w->velocity < vel) {
+                    speed_ = w->velocity;
+                    step = along * (w->velocity / 60.f);
+                }
+            }
+        }
+        step_ = step;
+        stepDz_ = dz;
+    }
+
+    // Movement (0x440947..0x44096f); +0x64 &= ~0x01400000.
+    feet.x += step_.x;
+    feet.z += step_.z;
+    z += vz_ + stepDz_;
+    ladder_ = armory_ = false;
+
+    // Push-out (0x440984): the neighbour list is rebuilt every 0x41 ticks
+    // (0x440180), the player's margin is a person's 10 m.
+    if (listTicks_ >= 0x40) { listTicks_ = 0; neighbours_ = world.df2Neighbours({feet.x, z, feet.z}, 10.f); }
+    else ++listTicks_;
+    bool onObject = false;
+    if (!neighbours_.empty()) {
+        Vec3 origin{feet.x, z, feet.z};
+        const World::Df2Contact c = world.df2PushOut(origin, -poseOrigin_, neighbours_, true);   // the player: +0x64 & 1
+        feet.x = origin.x;
+        feet.z = origin.z;
+        z = origin.y;
+        onObject = c.onObject;
+        if (c.ladder) { onGround_ = true; ladder_ = true; }   // 0x440abf: not airborne, 0x400000
+        armory_ = c.armory;
+    }
+
+    // Ground and the state table (0x440af6..0x440c9e).
+    const float feetY = z - poseOrigin_;
+    const float d = onObject ? 0.f : feetY - world.terrain->heightAt(feet.x, feet.z);
+    const bool below = water != 0 && z < water;
+    if (chute) {
+        if (d > 0 && !below) vz_ = -0x2222 / 65536.f;
+        else { chute = false; spawns_.push_back({-1, {feet.x, feetY, feet.z}}); }   // the canopy (0x413d70)
+    } else if (!onGround_) {
+        if (d <= 0) {
+            landingSpeed_ = vz_ * 60.f;   // 0x43f600 (fall damage, by the game)
+            z -= d;
+            vz_ = 0;
+            onGround_ = true;
+        } else if (below) {
+            // 0x440b9b: effect 4 at the surface; sound 0x8A is not in DF2's
+            // sound data (silent).
+            spawns_.push_back({4, {feet.x, water, feet.z}});
+            enterWater(z);
+        } else {
+            vz_ -= G;
+        }
+    } else if (inWater_) {
+        if (z > water) leaveWater(z);
+        else if (d < 0) { z -= d; vz_ = 0; }
+        else vz_ = vz_ * float(0xCCCC) / 65536.f;
+    } else if (sliding_) {
+        if (d < 0) z -= d;
+        vz_ -= G;
+    } else if (d <= 0) {
+        vz_ = 0;
+        z -= d;
+    } else if (below) {
+        enterWater(z);
+        vz_ -= G;
+    } else if (d > kGlue && !ladder_) {
+        vz_ -= G;
+        if (d > kAirborne || vz_ > 0) onGround_ = false;
+    }
+    if (inWater_) {
+        originY_ = z;
+        feet.y = z - poseOrigin_;
+    } else {
+        feet.y = z - landOrigin();
+    }
 }
 
 void Player::wrap(float ext) {

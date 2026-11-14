@@ -41,3 +41,12 @@ click, `k NAME` key by SDL name; 640×480 screen coordinates; with `--screenshot
 per frame). Example, remapping STRAFE LEFT to K on the Keyboard page:
 `OPENDF_FE2EVENTS="30 c 325 130; 40 k K" opendf --game games/DF2 play keyboard --screenshot k.ppm --frames 20`
 (this saves the soldier file, so keep a copy of `df2plyrs.sav`).
+
+More aids: `OPENDF_NOFLY=1` keeps a `--camera` start higher than 2 m
+under the physics (the player falls instead of flying), e.g. onto the
+C03M03 radio-station roof with `--camera 392,-560,8,90,-20`;
+`tests/input/c03m03-crate.txt` (with `--camera 381,-563.5,0,90,0`) jumps onto
+a crate. `OPENDF_DEBUGPLAYER` also prints the surface under the feet, CHUTE,
+ARMORY (DF2 type-6 volume) and LADDER, and whether Request Weapons was
+accepted. `OPENDF_DEBUGSWIM=1` prints people entering and leaving the water;
+`OPENDF_DEBUGOBJ=1` lists the mission's objects with their positions.

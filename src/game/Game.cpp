@@ -416,7 +416,7 @@ private:
                 o.pos.z = at.z;
                 o.heading = mo.heading * kPi / 180.f;
                 o.base = terrain_.heightAt(at.x, at.z) + mo.z;
-                o.chute = mo.z >= 100.f;
+                if (mo.z >= 100.f) o.chute = true;   // ORed in (0x4169e8), never cleared; vz is kept
                 o.pos.y = o.base + o.hip;
             }
             break;
@@ -811,6 +811,9 @@ bool Game::loadMission(int index) {
     {
         const ItemDef* soldier = items_.byId(mission_.version >= 0x0F ? playerItem_ : kItemPlayerSoldier);
         playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
+        // DF2.EXE 0x440651: the chute glides with the item's PFoil (0x400);
+        // every player item (player01..) has it in DF2's ITEMS.DEF.
+        player_.pfoil = !soldier || (soldier->attrib & 0x400);
         // Player Health: Easy (0x469c02); DF2 has no such option (health is
         // the ITEMS.DEF hp as it is, DF2.EXE 0x412a0a).
         if ((o_.attributes & 0x100) && mission_.version < 0x0F) playerHp_ *= 4;
@@ -1337,7 +1340,17 @@ void Game::weaponEvent(const WeaponEvent& e) {
         const float ext = world_.extent();
         at.x -= std::floor(at.x / ext) * ext;
         at.z -= std::floor(at.z / ext) * ext;
-        at.y = world_.groundHeight({at.x, player_.feet.y + 0.25f, at.z}, 0.25f);
+        if (world_.df2Rules) {
+            // DF2.EXE 0x4520d6 (the host's create): the new object's own
+            // neighbour list (0x43f2b0: an "object" item, 10 m; other types
+            // none) and z = 0x43fb80(obj, pos, 0x4000): the terrain or a
+            // volume top within 0.25 m above. INFERRED: the sent z is the
+            // player's feet height.
+            const float margin = item->type == "vehicle" ? 20.f : item->type == "object" || item->type == "person" ? 10.f : 0.f;
+            at.y = world_.df2Surface(at, 0x4000 / 65536.f, world_.df2Neighbours(at, margin));
+        } else {
+            at.y = world_.groundHeight({at.x, player_.feet.y + 0.25f, at.z}, 0.25f);
+        }
         const int obj = world_.spawn(item, m, at, e.heading);
         charges_.push_back({obj, e.item, -1});
         playSound(e.item == 4020 ? 0x79 : 0x78, at);
@@ -3787,18 +3800,27 @@ std::string Game::df2TypeName(int type) const {
 }
 
 // Request Weapons (0x411800 -> message 0x55): the server side (0x45a6e0)
-// accepts only when the player's object has +0x64 & 0x1000000, set by the
-// ground pass (0x440acf) on a contact whose attribute has bit 2 (an armory
-// area, INFERRED meaning), or in the multiplayer start window (0 in single
-// player). INFERRED: single player delivers its own message 0x55, as the
-// spec recommends. OpenDF does not track that contact attribute yet, so the
-// request is refused (nothing happens) unless OPENDF_REARM is set (testing).
+// accepts only when the player's object has +0x64 & 0x1000000, or in the
+// multiplayer start window [0x655cd0] (0 in single player). The flag is
+// cleared every tick and set by the volume push-out (0x440acf) while the
+// player overlaps a type-6 collision volume: an armory area (AMMODUMP,
+// KHUFU and TAVERN are the shipped models that have one). INFERRED: single
+// player delivers its own message 0x55. Refused, nothing happens and no
+// message is shown (0x45a6fb jumps to the end). OPENDF_REARM accepts
+// anywhere (testing).
 void Game::df2RequestWeapons() {
     Df2Map& m = df2Map_;
-    if (!std::getenv("OPENDF_REARM")) return;
-    // 0x458190 applies the loadout; the client writes +0xb6..+0xba, re-equips
-    // (0x447e20), shows STRCLI10 "Weapons Updated", plays sound 0x164 and
-    // re-runs the tab's enter (0x40a5d9).
+    const bool accepted = player_.armory() || std::getenv("OPENDF_REARM");
+    if (std::getenv("OPENDF_DEBUGPLAYER")) std::fprintf(stderr, "Request Weapons: %s\n", accepted ? "accepted" : "refused (not in an armory volume)");
+    if (!accepted) return;
+    // 0x458190 applies the loadout: each requested type only if its menu
+    // category fits the slot (2 sidearm, 3 primary, 4 secondary 1, 4/5
+    // secondary 2, 6 grenade; else 0), then every slot's magazines from the
+    // type table (+0x84/+0x88/+0x8c); 0x456f10 refills the ammunition pools
+    // from them (clips x rounds, +1 with a round chambered), as at the
+    // mission start: Arsenal::initDf2 does both. The client writes
+    // +0xb6..+0xba, re-equips (0x447e20), shows STRCLI10 "Weapons Updated",
+    // plays sound 0x164 and re-runs the tab's enter (0x40a5d9).
     df2Loadout_.primary = m.request[0];
     df2Loadout_.secondary = m.request[1];
     df2Loadout_.gear = m.request[2];
@@ -5047,7 +5069,8 @@ int Game::run() {
             player_.feet.y = world_.groundHeight(player_.feet, 0.45f) + o_.camera[2];
             player_.yaw = o_.camera[3] * kPi / 180.f;
             player_.pitch = o_.camera[4] * kPi / 180.f;
-            player_.fly = o_.camera[2] > 2;
+            // OPENDF_NOFLY: a high --camera start falls under the physics (tests).
+            player_.fly = o_.camera[2] > 2 && !std::getenv("OPENDF_NOFLY");
         }
         if (o_.weapon >= 0) arsenal_.select(o_.weapon);
         if (o_.stance >= 0) player_.stance = Stance(std::clamp(o_.stance, 0, 2));
@@ -5168,10 +5191,11 @@ int Game::run() {
             player_.update(dt, in, world_);
             if (std::getenv("OPENDF_DEBUGPLAYER") && (ticks_ % 30) == 0) {
                 const Vec3 f = player_.feet, e = player_.eye();
-                std::fprintf(stderr, "t %.1f hp %d mission (%.1f, %.1f) feet %.2f ground %.2f eye %.2f water %.2f %s speed %.1f\n", ticks_ / 60.f, playerHp_,
-                             player_.missionX(), player_.missionY(), f.y, terrain_.heightAt(f.x, f.z), e.y,
-                             terrain_.waterLevel(), player_.swimming() ? "SWIM" : player_.inWater() ? "FLOAT" : "land",
-                             player_.speed());
+                std::fprintf(stderr, "t %.1f hp %d mission (%.1f, %.1f) feet %.2f ground %.2f surface %.2f eye %.2f water %.2f %s speed %.1f%s%s%s\n", ticks_ / 60.f,
+                             playerHp_, player_.missionX(), player_.missionY(), f.y, terrain_.heightAt(f.x, f.z),
+                             world_.groundHeight(f, 0.5f), e.y, terrain_.waterLevel(),
+                             player_.swimming() ? "SWIM" : player_.inWater() ? "FLOAT" : "land", player_.speed(),
+                             player_.chute ? " CHUTE" : "", player_.armory() ? " ARMORY" : "", player_.onLadder() ? " LADDER" : "");
             }
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
@@ -5223,6 +5247,12 @@ int Game::run() {
             }
             for (auto& m : world_.landingMessages_) pushMessage(m);
             world_.landingMessages_.clear();
+            // Falling into the water (DF.EXE 0x4365a2, DF2.EXE 0x440bb6):
+            // effect 4 "water exp" and sound 0x8A (FS_WATER_SLOSH) at the surface.
+            for (const Vec3& at : world_.takeSplashes()) {
+                spawnEffect(4, at);
+                playSound(0x8A, at);
+            }
             for (int i : world_.takeLandings()) {
                 // 0x413d70: the canopy left where the person landed, 1800 ticks.
                 const WorldObject& o = world_.objects[size_t(i)];
