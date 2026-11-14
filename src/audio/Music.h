@@ -26,6 +26,8 @@ public:
     void stop();                   // 0x404c90
     void setVar(int n, int value); // 0x4b8570
     void setVolume(int v) { master_ = v; }   // cd_volume, 0..255
+    // DF.EXE's integer units for Audio's DF mixer: (pcm − 128) · ((V >> 1) >> shift).
+    void setIntegerUnits(bool on) { integer_ = on; }
     // Once per menu frame (0x4b8490 from the menu loop 0x406bf8): queues
     // at most one block while fewer than 13 are queued, or, when the stem
     // is fully read, runs one script tick to pick the next.
@@ -57,6 +59,7 @@ private:
     std::vector<Block> queue_;     // the ring (16 slots, at most 13 queued)
     uint32_t played_ = 0;          // frames played of queue_.front()
     int master_ = 255;
+    bool integer_ = false;
     bool debug_ = false;          // OPENDF_DEBUGMUSIC: print each PLAY
     std::mutex mutex_;
 };

@@ -43,6 +43,7 @@ struct GameOptions {
     // Until the soldier screens exist: the name shown in the bottom bar (the
     // original shows the soldier's name, e.g. "ROK").
     std::string soldierName;
+    bool mixerHook = true;               // DF1: the mixer's mode-3 hook (on from start-up until a mission has ended)
     bool female = false;                 // the soldier's face is a female one (profile +0x640 >= 8)
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.

@@ -514,7 +514,19 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
     if (len >= 800.f) return 0;
     if (len < 1e-4f) return 1;
     RayHit h;
-    if (raycast(a, b, h, false)) return 0;
+    if (!df2Rules) {
+        // DF.EXE's terrain march 0x433190: every 1/16 m, a point below the
+        // ground (strictly) blocks. (Its coarse 1 m skip over the max map is
+        // conservative; the 1 m step-back it does when the coarse cell at
+        // the start is not below it only re-tests points behind the start,
+        // left out: INFERRED to change nothing in practice.)
+        const int n = int(len * 16.f);
+        const Vec3 step = d * (1.f / 16.f / len);
+        for (int i = 1; i <= n; ++i) {
+            const Vec3 p = a + step * float(i);
+            if (terrain->heightAt(p.x, p.z) > p.y) return 0;
+        }
+    } else if (raycast(a, b, h, false)) return 0;
     const Vec3 mid = a + d * 0.5f;
     int extra = 0;
     for (size_t i = 0; i < objects.size(); ++i) {

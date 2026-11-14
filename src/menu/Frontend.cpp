@@ -262,6 +262,7 @@ private:
     int briefLine_ = 0, briefTotal_ = 0, briefVisible_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
+    bool missionPlayed_ = false;   // a mission has ended this run (the mixer hook is off since)
     int quitCode_ = 0;
     uint32_t options_ = 0;   // df.cfg attributes (Enemy AI 0x80, Player Health 0x100, ...)
     int gpsIcons_ = 1;
@@ -595,8 +596,8 @@ void Frontend::sound(const char* wav, int volume) {
     // Menu sounds play at fx_volume (0x404d04, 0x407124).
     volume = volume * std::clamp(cfg_.get("fx_volume"), 0, 255) / 255;
     if (const SoundClip* c = audio_.clip(vfs_, wav)) {
-        const float g = float(volume) / 255.f * 0.5f;
-        audio_.play(c, g, g);
+        // Direction 0's pan (kPan[0]: 63 left, 64 right) at that volume.
+        audio_.play(c, 63.f * float(volume) / (127.f * 255.f), 64.f * float(volume) / (127.f * 255.f));
     }
 }
 
@@ -1251,8 +1252,7 @@ void Frontend::tickCredits() {
                 // 0x41a220: volume = arg * fx_volume / 255, at most 255.
                 const int vol = std::min(255, int(std::lround(c.arg * std::clamp(cfg_.get("fx_volume"), 0, 255) / 255.0)));
                 if (const SoundClip* clip = audio_.clip(vfs_, upperCase(c.text))) {
-                    const float g = float(vol) / 255.f * 0.5f;
-                    audio_.play(clip, g, g);
+                    audio_.play(clip, 63.f * float(vol) / (127.f * 255.f), 64.f * float(vol) / (127.f * 255.f));
                 }
             } else if (c.type == 2) {
                 creditPause_ = c.arg;
@@ -1612,9 +1612,20 @@ void Frontend::event(MnuButton& b, int ev) {
                 if (r > cfg_.get("max_res")) r = 0;
                 cfg_.set("game_res", r);
             } else {
-                // 0x40b7b4: steps through the renderers DF.EXE found
-                // (0x4f5140); OpenDF offers all three.
-                cfg_.set("renderer", (cfg_.get("renderer") + (left ? 2 : 1)) % 3);
+            {
+                // 0x40b7b4 over the availability table 0x4f5140, set once to
+                // {1, 1, 0} (0x40161a): 256 <-> 16 Million, never 3Dfx.
+                static const int kAvail[3] = {1, 1, 0};
+                const int d = left ? -1 : 1;
+                int n = cfg_.get("renderer") + d;
+                for (int guard = 0; guard < 4; ++guard) {
+                    if (n > 2) n = 0;
+                    if (n < 0) n = 2;
+                    if (kAvail[n]) break;
+                    n += d;
+                }
+                cfg_.set("renderer", n);
+            }
             }
             refreshSettings();
         } else if (ev == 2 || ev == 7) b.drawstate = 1;
@@ -1916,13 +1927,25 @@ void Frontend::ownerDraw(MnuButton& b) {
         return;
     }
     if (cb == "MNU_LO_CURRENTLOADOUT") {
-        // APPROXIMATION: the layout of the current-gear box.
-        blit(image(b.image), float(b.x), float(b.y), 0, 0, 180, 109, false);
-        const std::string* h = menuText_.find("GroupMainMenu", "LOCURRENTLOADOUT");
-        drawText("LCD10", float(b.x + 8), float(b.y + 8), h ? *h : "Current Gear", green);
-        drawText("LCD10", float(b.x + 8), float(b.y + 30), kPrimary[loSel_[0]].name, green);
-        drawText("LCD10", float(b.x + 8), float(b.y + 50), kSecondary[loSel_[1]].name, green);
-        drawText("LCD10", float(b.x + 8), float(b.y + 70), kSidearm[loSel_[2]].name, green);
+        // 0x4204f4: the button's image, then at absolute positions the
+        // heading in AVA12WG WhiteGreen (160,255,160), the three choices'
+        // name keys (the text key without "TXT": LOM4M203 ...) in the
+        // button's font LCD10, 0x00CC00, and the fixed laser and grenade
+        // lines in 0x00AA00.
+        const HudImage im = image(b.image);
+        blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), false);
+        auto txt = [&](const std::string& k, const char* fallback) {
+            const std::string* t = menuText_.find("GroupMainMenu", k);
+            return t ? *t : std::string(fallback);
+        };
+        auto nameKey = [](const GearEntry& e) { std::string k = e.text; if (k.size() > 3) k.resize(k.size() - 3); return k; };
+        const std::string font = b.font.empty() ? "LCD10" : b.font;
+        drawText("AVA12WG", 374, 298, txt("LOCURRENTLOADOUT", "Current Gear"), 0xFFA0FFA0);
+        drawText(font, 374, 323, txt(nameKey(kPrimary[loSel_[0]]), kPrimary[loSel_[0]].name), 0xFF00CC00);
+        drawText(font, 374, 335, txt(nameKey(kSecondary[loSel_[1]]), kSecondary[loSel_[1]].name), 0xFF00CC00);
+        drawText(font, 374, 347, txt(nameKey(kSidearm[loSel_[2]]), kSidearm[loSel_[2]].name), 0xFF00CC00);
+        drawText(font, 374, 359, txt("LOLASER", "Laser Designator"), 0xFF00AA00);
+        drawText(font, 374, 371, txt("LOFGREN", "Fragmentation Grenade"), 0xFF00AA00);
         return;
     }
 }
@@ -2000,6 +2023,10 @@ int Frontend::run() {
     options_ = uint32_t(cfg_.get("attributes"));
     gpsIcons_ = std::clamp(cfg_.get("gpsicon"), 0, 2);
     music_.setVolume(std::clamp(cfg_.get("cd_volume"), 0, 255));
+    // DF.EXE's integer mixer, with the mode-3 hook set at start-up
+    // (0x4014a5) and reset when a mission ends (0x40491b / 0x473162).
+    music_.setIntegerUnits(true);
+    audio_.setDfMixer(true, !missionPlayed_);
     audio_.openDevice();
     // DF.EXE opens DFMUSIC.SBF from its own folder (0x4b81b0).
     if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
@@ -2153,7 +2180,10 @@ int Frontend::run() {
                 }
                 uint32_t flags = uint32_t(prof().get(0x70 + camp_ * 0x44));
                 outcome_ = MissionOutcome{};
+                g.mixerHook = !missionPlayed_;
                 runGame(vfs_, g, &outcome_, &flags);
+                missionPlayed_ = true;
+                audio_.setDfMixer(true, false);
                 if (outcome_.quit) break;
                 // 0x40e5d4: a win marks the mission done, kills add up; the
                 // flags are kept only on a win.

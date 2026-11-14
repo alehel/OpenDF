@@ -554,6 +554,17 @@ bool Game::loadMission(int index) {
     ai_.df2 = mission_.version >= 0x0F;
     ai_.night = (mission_.lightFlags & 0x10) != 0;
     ai_.playerGear = o_.df2Gear;
+    // Squad members off (attributes 0x200; DF.EXE 0x402a38, before the AI
+    // lists): every object of the four "Squad Member" items (105002, 105038,
+    // 105048, 105049) is deleted. (Delta Force 2: not traced; its team-mates
+    // are taken out by side.)
+    if (o_.attributes & 0x200)
+        for (auto& o : world_.objects) {
+            const int id = o.item ? o.item->id - 100000 : 0;
+            const bool squad = mission_.version >= 0x0F ? (o.person && o.side == kPlayerSide && o.missionGroup == 3)
+                                                        : (id == 5002 || id == 5038 || id == 5048 || id == 5049);
+            if (squad) { o.removed = true; o.boxes.clear(); }
+        }
     ai_.init(world_, mission_);
     ai_.hard = (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
@@ -685,11 +696,6 @@ bool Game::loadMission(int index) {
     if (!(o_.attributes & 0x800))
         for (auto& o : world_.objects)
             if (o.item && (o.item->attrib & 0x20)) o.removed = true;
-    // Squad members off (0x200): the player's team-mates are taken out
-    // (APPROXIMATION: what DF.EXE does with them is not traced).
-    if (o_.attributes & 0x200)
-        for (auto& o : world_.objects)
-            if (o.person && o.side == kPlayerSide && o.missionGroup == 3) { o.removed = true; o.boxes.clear(); }
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
     charges_.clear();
@@ -3608,6 +3614,8 @@ int Game::run() {
                 if (world_.objects[i].side == 2 && world_.objects[i].missionGroup == 3) world_.damage(int(i), 1000);
 
         captured_ = !scripted;
+        // Delta Force: DF.EXE's integer mixer (DF2's is not checked).
+        if (mission_.version < 0x0F) audio_.setDfMixer(true, o_.mixerHook);
         if (!o_.record.empty()) {
             audioOut_ = std::fopen((o_.record + ".pcm").c_str(), "wb");
         } else if (!hidden && !audio_.openDevice()) {

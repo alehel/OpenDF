@@ -200,7 +200,9 @@ void Music::mix(float* out, int frames) {
     int done = 0;
     while (done < frames && !queue_.empty()) {
         const Block& b = queue_.front();
-        const float gl = vol / float(1 << std::min(b.shiftL, 15)), gr = vol / float(1 << std::min(b.shiftR, 15));
+        const int V = std::clamp(master_, 0, 255);
+        const float gl = integer_ ? float((V >> 1) >> std::min(b.shiftL, 31)) : vol / float(1 << std::min(b.shiftL, 15));
+        const float gr = integer_ ? float((V >> 1) >> std::min(b.shiftR, 31)) : vol / float(1 << std::min(b.shiftR, 15));
         while (done < frames && played_ < b.frames) {
             const size_t at = b.at + size_t(played_) * 2;
             out[size_t(done) * 2] += float(int(sbf_[at]) - 128) * gl;

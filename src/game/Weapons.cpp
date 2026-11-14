@@ -483,13 +483,26 @@ void Arsenal::select(int slot) {
     reloadTicks_ = 0;
     cooldown_ = 0;
     burstLeft_ = 0;
-    if (mode().type == 1) {
-        // An empty magazine starts reloading. (APPROXIMATION: a round is
-        // chambered from a non-empty magazine, as 0x449f58 would.)
+    const int type = mode().type;
+    if (!df2_) {
+        // DF.EXE 0x44aa74 (table 0x44aa48): a gun with an empty magazine
+        // starts the reload (0x44a004); its chamber is not looked at, so a gun
+        // put away mid-cooldown comes back unchambered. Launchers, satchels,
+        // claymores and grenades (2, 7, 9, 11) with an empty chamber and
+        // spares: the cooldown with the load sound +0x24 (0x44a290 /
+        // 0x44a4c0). Types 6, 8, 10: nothing.
+        if (type == 1) { if (magRef() == 0) startReload(); }
+        else if ((type == 2 || type == 7 || type == 9 || type == 11) && !chambered() && sparesRef() > 0) {
+            cooldown_ = mode().cooldown;
+            sound(1);
+        }
+    } else if (type == 1) {
+        // Delta Force 2 (its select is not traced; DF1's behaviour before
+        // 0x44aa74 was read): an empty magazine starts reloading, a non-empty
+        // one chambers a round.
         if (!chambered() && magRef() > 0) { chamberedRef() = 1; --magRef(); }
         if (!chambered() && magRef() == 0) startReload();
     } else if (!chambered()) {
-        // Launchers and grenades load the next round after the cooldown (0x44a290 / 0x44a4c0).
         cooldown_ = mode().cooldown;
     }
 }
@@ -585,15 +598,16 @@ void Arsenal::fire(Player& player) {
         kick_[2] = 0x400 / 65536.f * std::cos(r);
         flashTimer_ = kTick;   // the flash mesh shows for about one frame (0x4045f9)
     } else if (md.type == 2) {
-        // 0x44a120: 0x4000 back and a random drop of up to 0x4000
-        // (APPROXIMATION: the random term's range is inferred).
-        kick_[0] = -0x4000 / 65536.f;
-        kick_[1] = 0;
-        kick_[2] = -0x4000 / 65536.f * unit(rng_);
-    } else {
-        // 0x44a36c: 0x1000 back, 0x400 sideways and 0x2000 down.
+        // 0x44a184: 0x4000 back, added to the kick still settling; the
+        // +-0x400 circle and 0x4000 down (DF2.EXE the same).
         const float r = turn(rng_);
-        kick_[0] = -0x1000 / 65536.f;
+        kick_[0] -= 0x4000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x4000) / 65536.f;
+    } else {
+        // 0x44a36c: 0x1000 back (subtracted, 0x44a49b), 0x400 sideways and 0x2000 down.
+        const float r = turn(rng_);
+        kick_[0] -= 0x1000 / 65536.f;
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
     }
@@ -638,8 +652,9 @@ void Arsenal::fire(Player& player) {
     }
     // Delta Force 2 (DF2.EXE 0x414ad0): a muzzle under the water fires only
     // the knife (1) and the underwater pistol (0x27) and rifle (0x28/0x29);
-    // anything else just plays its gun +0x2C sound (INFERRED: the dry-fire
-    // click; the round is still used, also INFERRED).
+    // anything else plays its gun +0x2C sound (the same field 0x447070 plays
+    // as the dry click) at the shooter and fires nothing; the caller still
+    // uses the round, kicks and starts the cooldown (0x44718a..0x44725c).
     if (underwaterRule && waterLevel != 0 && origin.y < waterLevel) {
         const int m = slots_[size_t(current_)];
         if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29) {
@@ -718,15 +733,24 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
         magRef() = gun().magazine;
         messages.push_back("Ammo reloaded");   // DF.EXE's own message
         sounds_.push_back({-0x164, {0, 0, 0}});   // PU_AMMO, 2D (0x42b587); negative id = 2D
-        // APPROXIMATION (inferred): an empty chamber is loaded from it.
-        if (!chambered() && magRef() > 0) { chamberedRef() = 1; --magRef(); }
+        if (!df2_) {
+            // 0x44a10b: an empty chamber -> 0x449ed0(0): unless a cooldown is
+            // running, the cooldown starts with the chamber sound +0x24; the
+            // round goes in when it ends (0x449f58).
+            if (!chambered() && cooldown_ <= 0) { cooldown_ = mode().cooldown; sound(1); }
+        } else if (!chambered() && magRef() > 0) {
+            chamberedRef() = 1;   // Delta Force 2: not traced; loaded at once
+            --magRef();
+        }
     }
     bool shot = false;
     if (cooldown_ > 0 && --cooldown_ == 0) {
         if (md.type == 1) {
             // 0x449f58: the next round from the magazine; an empty magazine
             // starts the reload.
-            if (magRef() > 0) { chamberedRef() = 1; --magRef(); sound(1); }   // chamber sound +0x24 (0x449f48)
+            // DF.EXE plays no sound here (the chamber sound belongs to
+            // 0x449ed0(0) after a reload); DF2 not traced, it keeps it.
+            if (magRef() > 0) { chamberedRef() = 1; --magRef(); if (df2_) sound(1); }
             if (magRef() == 0) startReload();
             // A burst goes on by itself (0x44988e); full auto refires while
             // the trigger is held, but not with the binoculars up ([0x93367c], 0x449ff1).
@@ -752,7 +776,9 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     if (pressed_) {
         pressed_ = false;
         // The binoculars block the trigger (0x44a947).
-        if (!shot && cooldown_ <= 0 && reloadTicks_ == 0 && !binoculars_) {
+        // DF.EXE's fire command (0x44a920) has no reload gate: a chambered
+        // round fires during a reload (DF2 not traced: kept gated).
+        if (!shot && cooldown_ <= 0 && (!df2_ || reloadTicks_ == 0) && !binoculars_) {
             if (md.type == 8 || md.type == 10) {
                 fire(player);   // the detonator and the designator need no round
             } else if (!chambered() && md.type != 1 && md.type != 6) {
@@ -761,9 +787,13 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 fire(player);
                 if (md.burst) burstLeft_ = 2;   // 0x46af90: three rounds in all
             } else if (md.type == 1) {
-                burstLeft_ = 0;                 // dry fire (0x449e1d), sound +0x2C (0x449e03)
+                // Dry fire (0x449dd8): the click +0x2C, the trigger flag cleared
+                // (0x449e1d) and a silent cooldown (0x449ed0(1)); its end
+                // chambers a round or starts the reload (0x449f58).
+                burstLeft_ = 0;
                 sound(3);
-                startReload();
+                if (df2_) startReload();
+                else cooldown_ = md.cooldown;
             }
         }
     }

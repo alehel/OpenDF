@@ -131,8 +131,71 @@ void Audio::stopAll() {
     voices_.clear();
 }
 
+namespace {
+// DF.EXE's per-voice multiply (0x4992dc, tables 0x4973c0 / 0x497280): the
+// gain's shift class and a 64-entry multiplier table (M[29] = 28 is DF's).
+int dfContrib(int g, int s) {
+    static const int M[64] = {-27, -27, -27, -27, -27, -27, -25, -25, -24, -23, -21, -21, -20, -19, -18, -17,
+                              -16, -15, -13, -13, -12, -11, -10, -9,  -8,  -7,  -6,  -5,  -4,  -3,  -2,  -1,
+                              0,   1,   2,   3,   4,   5,   6,   7,   8,   9,   10,  11,  12,  13,  14,  15,
+                              16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  28,  30,  31};
+    const int a = g < 0 ? -g : g;
+    const int cl = g == -128 ? 0 : a >= 64 ? 1 : a >= 32 ? 2 : a >= 16 ? 3 : a >= 8 ? 4 : a >= 4 ? 5 : 6;
+    const int idx = (g * (1 << cl)) >> 3;   // arithmetic
+    const int p = s * M[std::clamp(idx, -32, 31) + 32];
+    return cl <= 3 ? p * (1 << (3 - cl)) : p >> (cl - 3);
+}
+} // namespace
+
 void Audio::mix(int16_t* out, int frames) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (dfMixer_) {
+        iscratch_.assign(size_t(frames) * 2, 0);
+        for (auto& v : voices_) {
+            const auto& smp = v.clip->samples;
+            const uint64_t end = uint64_t(smp.size()) << 32;
+            // The float gains are pan · vol / (127 · 255): pan · vol back, then DF's integer.
+            auto gi = [](float f) { const long pv = std::lround(double(f) * 127.0 * 255.0); return int(std::clamp<long>((pv * 255) >> 16, -128, 127)); };
+            const int gL = gi(v.left), gR = gi(v.right);
+            for (int i = 0; i < frames; ++i) {
+                if (v.pos >= end) {
+                    if (!v.loop) break;
+                    v.pos %= end;
+                }
+                const int sv = smp[size_t(v.pos >> 32)] >> 8;   // the 8-bit sample, byte − 0x80
+                iscratch_[size_t(i) * 2] += dfContrib(gL, sv);
+                iscratch_[size_t(i) * 2 + 1] += dfContrib(gR, sv);
+                v.pos += v.step;
+            }
+        }
+        if (stream_) {
+            scratch_.assign(size_t(frames) * 2, 0.f);
+            stream_(scratch_.data(), frames);   // in DF's integer units
+            for (size_t i = 0; i < scratch_.size(); ++i) iscratch_[i] += int32_t(std::lround(scratch_[i]));
+        }
+        voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
+                                     [](const Voice& v) { return !v.loop && v.pos >= (uint64_t(v.clip->samples.size()) << 32); }),
+                      voices_.end());
+        for (int i = 0; i < frames; ++i) {
+            int32_t L = (iprev_[0] >> 2) + iscratch_[size_t(i) * 2], R = (iprev_[1] >> 2) + iscratch_[size_t(i) * 2 + 1];
+            if (hook_) {
+                // Mode 3 (0x4a965b): the last 32 L+R sums, sum >> 8 added to both.
+                const int32_t x = L + R;
+                ringSum_ += x - ring_[size_t(ringAt_)];
+                ring_[size_t(ringAt_)] = x;
+                ringAt_ = (ringAt_ + 1) & 31;
+                L += ringSum_ >> 8;
+                R += ringSum_ >> 8;
+            }
+            L = std::clamp(L, -0x7fff, 0x7fff);
+            R = std::clamp(R, -0x7fff, 0x7fff);
+            iprev_[0] = L;
+            iprev_[1] = R;
+            out[size_t(i) * 2] = int16_t(L);
+            out[size_t(i) * 2 + 1] = int16_t(R);
+        }
+        return;
+    }
     scratch_.assign(size_t(frames) * 2, 0.f);
     for (auto& v : voices_) {
         const auto& s = v.clip->samples;

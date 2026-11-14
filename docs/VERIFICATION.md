@@ -102,10 +102,10 @@ when DF.EXE is missing or a different version.
 |---|---|---|
 | Menu layout, fonts, buttons, screen flow, settings pages, credits, briefing map, transitions | Original | DF.MNU, DFMENU.BIN; see AUDIT F1-F12 |
 | Menu music: stems, script, variables, stem timing | Original | DFMUSIC.SBF, DFMUSIC.BIN, DF.EXE VM 0x4ab5ce; see AUDIT F4 |
-| Menu music loudness against sound effects | Original | DF.EXE's mixer (0x4a99b0, 0x497f9c): 22050 Hz 16-bit stereo; a voice adds q(gain)·(byte − 0x80), gain = (pan·vol·255) >> 16 (62 centred at full volume); music adds (pcm − 128)·((V >> 1) >> shift) (127 at full volume); each output sample starts from the previous one >> 2; clamp. Music : centred SFX = 127 : 62, as OpenDF; OpenDF's level halved and the feedback added to match. (Not done: the 5-significant-bit gain rounding, and the startup L+R hook of mode 3, whose activity in the menus is INFERRED) |
+| Menu music loudness against sound effects | Original | DF.EXE's integer mixer, as OpenDF's DF1 mixer (`Audio::setDfMixer`): voice gain g = (pan·vol·255) >> 16 (0x4a99b0), each sample added as DF's rounding table gives it (shift class and the 64-entry multiplier table, 0x4992dc / 0x4973c0 / 0x497280; M[29] = 28 is DF's); music (pcm − 128)·((V >> 1) >> shift) (0x497fe0); per frame y = clamp(y[n−1] >> 2 + Σ, ±0x7fff) (0x497fda); the mode-3 hook from start-up (0x4014a5 → 0x4a965b: the last 32 L+R sums, sum >> 8 added to both) until the first mission ends (0x40491b / 0x473162). Menu sounds use direction 0's pan (63 left, 64 right) |
 | Settings and df.cfg | Original | see AUDIT F5, F6 |
-| Renderer choices on the Colors row | APPROXIMATION | DF.EXE steps through the renderers it detected (0x4f5140); OpenDF offers all three |
-| Flip Mouse direction | Original | 0x42eba1: mouse x > 0 queues command 0x9e and x < 0 0x9d (the game table's turn_right_abs/turn_left_abs, ids 0x9f/0x9e: command = id − 1, INFERRED from the pairing); y is negated unless flipmouse is set, then > 0 queues 0x9b (look_up_abs) and < 0 0x9c (look_dn_abs). With DirectInput's y growing toward the player, pushing the mouse forward looks up by default and down with Flip Mouse, as OpenDF does |
+| Renderer choices on the Colors row | Original | the availability table 0x4f5140 is set once to {1, 1, 0} (0x40161a), so 0x40b7b4 steps 256 ↔ 16 Million on any machine; OpenDF draws with one renderer whatever the setting |
+| Flip Mouse direction | Original | 0x42eba1: mouse x > 0 queues 0x9e turn_right_abs and x < 0 0x9d turn_left_abs, the command table's own ids (0x4df4f4); y is negated unless flipmouse is set, then > 0 queues 0x9b look_up_abs and < 0 0x9c look_dn_abs. With DirectInput's y growing toward the player, pushing the mouse forward looks up by default and down with Flip Mouse, as OpenDF does |
 
 ## Not yet implemented, so not checkable
 
@@ -113,4 +113,4 @@ Multiplayer (screens, network).
 
 | Item | Status | Source |
 |---|---|---|
-| Rounds against objects (vehicles, buildings, props) | Original | see AUDIT X21; AI sight lines and movement still use the collision volumes (movement: as DF.EXE 0x437a28; AI sight: not traced) |
+| Rounds against objects (vehicles, buildings, props) | Original | see AUDIT X21; AI sight lines and movement still use the collision volumes (movement: as DF.EXE 0x437a28; AI sight: faces as DF.EXE 0x45be04 (terrain marched every 1/16 m as 0x433190, object faces, never people, the water term)) |

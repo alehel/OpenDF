@@ -39,7 +39,7 @@ void AiSystem::init(World& world, const Mission& mission) {
     int stagger = 0;
     for (size_t i = 0; i < world.objects.size(); ++i) {
         WorldObject& o = world.objects[i];
-        if (!o.person || !o.item || o.item->aiFunction != "org1" || o.missionIndex < 0) continue;
+        if (!o.person || !o.item || o.item->aiFunction != "org1" || o.missionIndex < 0 || o.removed) continue;
         const MissionObject& mo = mission.objects[size_t(o.missionIndex)];
         const auto* rec = reinterpret_cast<const uint8_t*>(mo.raw);
         auto u16 = [&](int off) { return int(rec[off] | rec[off + 1] << 8); };
@@ -266,11 +266,13 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     WorldObject& o = world.objects[size_t(p.object)];
     const ModeDef& md = shots.modeAt(p.weapon);
     if (md.type != 1) return;
-    // Muzzle (0x46ad30: the held weapon at the right hand). APPROXIMATION:
-    // 0.5 m ahead of the body origin, 0.4 m up.
+    // Muzzle (0x46ad30: the held weapon's hardpoint at the posed right
+    // hand). DF.EXE fires nothing without a weapon model or skeleton
+    // (0x46ad94). (Delta Force 2: not traced; 0.5 m ahead, 0.4 m up then.)
     const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
     Vec3 muzzle = o.pos + fwd * 0.5f + Vec3{0, 0.4f, 0};
-    if (this->muzzle) this->muzzle(p.object, o.weaponMode, muzzle);
+    const bool posed = this->muzzle && this->muzzle(p.object, o.weaponMode, muzzle);
+    if (!posed && !shots.df2()) return;
     if (std::getenv("OPENDF_DEBUGMUZZLE"))
         std::fprintf(stderr, "muzzle %d mode %d off (%.2f %.2f %.2f) heading %.0f\n", p.object, o.weaponMode, muzzle.x - o.pos.x, muzzle.y - o.pos.y,
                      muzzle.z - o.pos.z, o.heading * 57.3f);
@@ -280,9 +282,14 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     } else {
         // 0x46b838: aim at the last known position; error x errMul: 5 unseen,
         // else 16 - seconds of sight, down to the target move's aim factor.
-        const Vec3 aim = world.nearest(p.lastKnown, muzzle) - muzzle;
+        // DF.EXE measures it from the body origin, the horizontal distance
+        // in whole metres (0x46b838); DF2 not traced: from the muzzle.
+        const Vec3 from = shots.df2() ? muzzle : o.pos;
+        const Vec3 aim = world.nearest(p.lastKnown, from) - from;
         float yaw = std::atan2(aim.x, -aim.z);
-        float pitch = std::atan2(aim.y, std::sqrt(aim.x * aim.x + aim.z * aim.z));
+        const float flat = shots.df2() ? std::sqrt(aim.x * aim.x + aim.z * aim.z)
+                                       : std::floor(std::sqrt(std::floor(aim.x) * std::floor(aim.x) + std::floor(aim.z) * std::floor(aim.z)));
+        float pitch = std::atan2(aim.y, flat);
         int move = 2;
         if (p.target == -3) move = player.moveNumber;
         else if (p.target >= 0) move = world.objects[size_t(p.target)].moveNumber;
@@ -303,6 +310,8 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         }
         dir = {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
         p.burstDir = dir;
+        // The aimed heading and pitch (error included) stay on the soldier (+0x30 / +0x34).
+        if (!shots.df2()) { o.heading = yaw; o.aimPitch = pitch; }
     }
     const GunDef& g = shots.gunAt(md.gun);
     Projectile pr;
@@ -440,7 +449,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     const Vec3 tp = world.nearest(targetPos(world, p, player), o.pos);
     if (p.losTimer > 0xba) {
         p.losTimer = 0;
-        if (sightLine(world, eye, tp + Vec3{0, 0.5f, 0}, p.object, p.target) >= 1) {   // 0x459aad: any visible result
+        // 0x459a9f..0x459aad: from 1 m above the origin to the target's
+        // origin; any visible result (DF2 not traced: 0.5 m above it).
+        if (sightLine(world, eye, df2 ? tp + Vec3{0, 0.5f, 0} : tp, p.object, p.target) >= 1) {
             p.flags |= 0x80;
             p.lastKnown = tp;
             p.unseen = 0;
