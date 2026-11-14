@@ -809,6 +809,28 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     hitSomething = true;
                 }
             }
+            // DF2's delay grenade (flag 0x1000, 0x44ae50): it never goes off on
+            // impact; on an object's face it slides off, v -= n·(v·n)·1.07 then
+            // × 0.85; on anything else it stops there.
+            if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object != -2) {
+                const Vec3 dir = normalize(b.vel);
+                b.pos = hit.point - dir * (0x4000 / 65536.f);
+                if (hit.object >= 0 && !world.objects[size_t(hit.object)].person) {
+                    const float d = dot(b.vel, hit.normal);
+                    b.vel = (b.vel - hit.normal * (d * float(0x111EB) / 65536.f)) * (float(0xD999) / 65536.f);
+                } else {
+                    b.vel = {0, 0, 0};
+                }
+                ++b.age;
+                if (b.lifetime - b.age <= 10) {
+                    Impact im{b.pos, -1, -1};
+                    im.explosive = true;
+                    im.flags = b.flags;
+                    impacts_.push_back(im);
+                    b.age = b.lifetime;
+                }
+                continue;
+            }
             if (hitSomething) {
                 const Vec3 dir = normalize(b.vel);
                 Impact im{hit.point - dir * 0.25f, hit.object, hit.part};
@@ -947,6 +969,14 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 if (under && !(b.flags & 0x1000) && std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f) b.age = b.lifetime;
             } else if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
             ++b.age;
+            // The delay grenade explodes (type 1) once its lifetime is 10 or less.
+            if (df2_ && (b.flags & 0x1000) && b.lifetime - b.age <= 10 && b.age < b.lifetime) {
+                Impact im{b.pos, -1, -1};
+                im.explosive = true;
+                im.flags = b.flags;
+                impacts_.push_back(im);
+                b.age = b.lifetime;
+            }
             if (b.pos.y < -1.f) b.age = b.lifetime;
         }
     }

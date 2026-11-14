@@ -29,6 +29,11 @@ public:
     // "Enemy AI: Hard" (0x66fa88 bit 0x80): side 2 sees twice as well and
     // aims four times tighter.
     bool hard = false;
+    // Delta Force 2's org1 (0x4015f0, DF1's recompiled; docs/OTHER-GAMES.md):
+    // set by the game for DF2 missions, with the night flag and the
+    // player's body gear (32 = ghillie suit).
+    bool df2 = false, night = false;
+    int playerGear = 0;
     // The muzzle of a soldier's weapon (0x46ad9c): set by the game, which
     // poses the body; when unset, 0.5 m ahead and 0.4 m above the origin.
     std::function<bool(int object, int mode, Vec3& at)> muzzle;
@@ -45,7 +50,7 @@ public:
     // sight, the target's move visibility and x6 if it fired lately; before
     // perception and the relaxed quarter. Returns the score, 0 if none.
     float bestTarget(const World& world, int self, Vec3 eye, float heading, int side, float half, const PlayerView& player,
-                     int& id, Vec3& at) const;
+                     int& id, Vec3& at, bool everyone = false) const;
     // 0x45be04: <= 0 blocked, else 1 + see-through faces (World::sight).
     int sightLine(const World& world, Vec3 a, Vec3 b, int self, int target) const { return world.sight(a, b, self, target); }
     // One 60 Hz tick: people move (their move's speed along their heading)
@@ -101,6 +106,10 @@ private:
         int delay = 1;                // the delay that was set (added to the timers, 0x459800)
         bool fired = false;           // obj+0x6c bit 0x4000
         int lastHp = 0;
+        // Delta Force 2 (block moved +0x10; new fields):
+        int unseenLimit = 60 * 62;    // +0xA8: BMS +0x54 x 62 (default 60 s)
+        float nearestPlayer = 0;      // +0xAC: distance to the player at the last successful scan
+        int order = 0;                // +0xBB: 1 hold fire, 2 cover me, 3 hold position (command map)
     };
     struct Noise { Vec3 at; float r; int side; int flags; };
 

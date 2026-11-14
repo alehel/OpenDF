@@ -420,7 +420,7 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
     }
 }
 
-bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material) const {
+bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
     bool found = false;
     testFaces(*this, o, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
         // Ties: a later face wins among objects, not over the terrain.
@@ -428,6 +428,7 @@ bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool hav
         best = t;
         mesh = mi;
         material = f.material;
+        if (normal) *normal = {f.n[0], f.n[2], -f.n[1]};   // file axes (x, y, z up) -> OpenDF model axes
         found = true;
         return true;
     });
@@ -599,7 +600,12 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
             float best = hit.t;
             int mesh = -1;
             uint32_t material = 0;
-            if (roundHit(o, a, b, best, found && hit.object >= 0 && !this->objects[size_t(hit.object)].person, mesh, material)) {
+            Vec3 n{0, 1, 0};
+            if (roundHit(o, a, b, best, found && hit.object >= 0 && !this->objects[size_t(hit.object)].person, mesh, material, &n)) {
+                // The face normal into world axes (the object's rotation).
+                const Mat4 m = o.matrix(o.pos);
+                hit.normal = normalize(Vec3{m.at(0, 0) * n.x + m.at(0, 1) * n.y + m.at(0, 2) * n.z, m.at(1, 0) * n.x + m.at(1, 1) * n.y + m.at(1, 2) * n.z,
+                                            m.at(2, 0) * n.x + m.at(2, 1) * n.y + m.at(2, 2) * n.z});
                 hit.t = best;
                 hit.object = int(i);
                 hit.part = -1;

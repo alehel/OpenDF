@@ -293,13 +293,29 @@ First differences from DF1:
     grenade's bounce; fog_level / fog_color (unused on the disc); the
     command map's W/D/contour tools and Players/Team/Weapons tabs (squad
     orders); the front end's keyboard page, credits, voice briefing, fades
-    and slider dragging; multiplayer (out of scope); AI behaviour beyond
-    DF1's (DF2's AI routines were not traced: soldiers think as in DF1, but
-    fire through DF2's tables: the BMS weapon byte's table is the same at
-    DF2.EXE file offset 0xc88c8, and every shooter uses DF2's modes, ammo,
-    drag and energy damage, 0x414ad0; vehicle guns mode 53, 0x41fac0). The
-    player is DF2's `player01` (105300, hp 8) or, by name, its snow, night,
-    female, LAR V and ghillie variants (INFERRED choice).
+    and slider dragging; multiplayer (out of scope); multiplayer (out of scope); the command map's squad orders (the AI
+    honours +0xBB, but nothing sets it yet); the death-move table's DF2
+    numbering (DF1's names are used).
+  - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
+    differences, READ): fire also needs under 128 m at night, no parachute,
+    no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more
+    than 0x40 ticks of continuous sight (0x401a8f); the scan interval by
+    the player's distance at the last successful scan (62 / 124 / 372, or
+    248 when alert, 0x4015f0); the ghillie suit hides a crouched or prone
+    player who has not fired beyond 50 m and halves visibility within
+    (0x415a69); BMS flag bits 0x800/0x1000/0x2000/0x4000 → attack everyone
+    / (movement) / avoid water over 0.25 m / deaf; flag 1 blocks
+    acquisition; script properties 16-19 set or clear them and 2/3/4/14/15
+    can clear; night lowers perception 0.15; alert soldiers no longer turn
+    while idle; silent soldiers never radio; DF1's water probe only with the
+    avoid-water bit; any order holds position. Enemies fire through DF2's
+    tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
+    vehicle guns mode 53. The player is DF2's `player01` (105300, hp 8) or
+    its snow, night, female, LAR V and ghillie variants by name (INFERRED
+    choice);
+  - **delay grenade** (0x44ae50): no impact fuse; it slides off object
+    faces (v −= n·(v·n)·1.07, × 0.85), stops on other surfaces, and goes
+    off (type 1) with 10 ticks of its 444 − rand(127) left.
 
 ## Suggested order
 

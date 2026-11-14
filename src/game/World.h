@@ -76,6 +76,7 @@ struct RayHit {
     int part = -1;        // people: body part hit (2 = head), from the .CHR hit spheres
     int mesh = -1;        // objects hit by a round: the mesh
     uint32_t material = 0;   // objects hit by a round: the face's material flags (0x10000.. impact class)
+    Vec3 normal{0, 1, 0};    // objects hit by a round: the face's normal, world axes
     Vec3 point;
 };
 
@@ -178,7 +179,7 @@ private:
     // buffer in DF.EXE, so routines that set only some slots (tire) keep
     // the others from the previous object posed.
     mutable std::array<uint8_t, 64> hitSkip_{};
-    bool roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material) const;
+    bool roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal = nullptr) const;
 };
 
 } // namespace df

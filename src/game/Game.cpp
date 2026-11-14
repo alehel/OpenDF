@@ -517,6 +517,9 @@ bool Game::loadMission(int index) {
     world_.df2Rules = mission_.version >= 0x0F;
     models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
+    ai_.df2 = mission_.version >= 0x0F;
+    ai_.night = (mission_.lightFlags & 0x10) != 0;
+    ai_.playerGear = o_.df2Gear;
     ai_.init(world_, mission_);
     ai_.hard = (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
