@@ -1603,6 +1603,54 @@ int FrontendDf2::run() {
         if (!o_.screenshot.empty()) clock = 0.016 * 4;
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
+            // Testing: OPENDF_FE2EVENTS="TICK OP ARGS; ..." pushes real SDL
+            // events (OP m = move to x y, c = left click at x y, r = right
+            // click, k = key by SDL name) in 640x480 screen coordinates.
+            if (const char* ev = std::getenv("OPENDF_FE2EVENTS")) {
+                std::istringstream all(ev);
+                std::string item;
+                while (std::getline(all, item, ';')) {
+                    std::istringstream in(item);
+                    uint64_t at = 0;
+                    std::string op;
+                    if (!(in >> at >> op) || at != ticks_) continue;
+                    auto toWin = [&](float x, float y, int& wx, int& wy) {
+                        int ww, wh, dw, dh;
+                        SDL_GetWindowSize(win_, &ww, &wh);
+                        SDL_GL_GetDrawableSize(win_, &dw, &dh);
+                        wx = int((offX_ + x * scale_) * float(ww) / float(std::max(1, dw)));
+                        wy = int((offY_ + y * scale_) * float(wh) / float(std::max(1, dh)));
+                    };
+                    if (op == "m" || op == "c" || op == "r") {
+                        float x = 0, y = 0;
+                        in >> x >> y;
+                        int wx, wy;
+                        toWin(x, y, wx, wy);
+                        SDL_Event m{};
+                        m.type = SDL_MOUSEMOTION;
+                        m.motion.x = wx;
+                        m.motion.y = wy;
+                        SDL_PushEvent(&m);
+                        if (op != "m")
+                            for (Uint32 t : {Uint32(SDL_MOUSEBUTTONDOWN), Uint32(SDL_MOUSEBUTTONUP)}) {
+                                SDL_Event b{};
+                                b.type = t;
+                                b.button.button = op == "c" ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+                                b.button.x = wx;
+                                b.button.y = wy;
+                                SDL_PushEvent(&b);
+                            }
+                    } else if (op == "k") {
+                        std::string name;
+                        std::getline(in >> std::ws, name);
+                        SDL_Event k{};
+                        k.type = SDL_KEYDOWN;
+                        k.key.keysym.scancode = SDL_GetScancodeFromName(name.c_str());
+                        k.key.keysym.sym = SDL_GetKeyFromScancode(k.key.keysym.scancode);
+                        SDL_PushEvent(&k);
+                    }
+                }
+            }
             if (stageTicks_ > 0) --stageTicks_;
             if (leaveTicks_ > 0) --leaveTicks_;
             // Teletype boxes (0x43d040 / 0x43d110): one character a tick; while
