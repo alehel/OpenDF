@@ -13,6 +13,7 @@
 #include "World.h"
 
 #include <array>
+#include <functional>
 #include <cstdint>
 #include <map>
 #include <random>
@@ -28,6 +29,9 @@ public:
     // "Enemy AI: Hard" (0x66fa88 bit 0x80): side 2 sees twice as well and
     // aims four times tighter.
     bool hard = false;
+    // The muzzle of a soldier's weapon (0x46ad9c): set by the game, which
+    // poses the body; when unset, 0.5 m ahead and 0.4 m above the origin.
+    std::function<bool(int object, int mode, Vec3& at)> muzzle;
 
     // The player as others see it.
     struct PlayerView {

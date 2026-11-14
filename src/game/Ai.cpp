@@ -248,7 +248,11 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     // Muzzle (0x46ad30: the held weapon at the right hand). APPROXIMATION:
     // 0.5 m ahead of the body origin, 0.4 m up.
     const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
-    const Vec3 muzzle = o.pos + fwd * 0.5f + Vec3{0, 0.4f, 0};
+    Vec3 muzzle = o.pos + fwd * 0.5f + Vec3{0, 0.4f, 0};
+    if (this->muzzle) this->muzzle(p.object, o.weaponMode, muzzle);
+    if (std::getenv("OPENDF_DEBUGMUZZLE"))
+        std::fprintf(stderr, "muzzle %d mode %d off (%.2f %.2f %.2f) heading %.0f\n", p.object, o.weaponMode, muzzle.x - o.pos.x, muzzle.y - o.pos.y,
+                     muzzle.z - o.pos.z, o.heading * 57.3f);
     Vec3 dir;
     if (followUp) {
         dir = p.burstDir;   // the burst keeps the first round's aim
@@ -545,10 +549,10 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
             if (mv && mv->velocity > 0) {
                 const Vec3 f{std::sin(o.heading), 0, -std::cos(o.heading)};
                 Vec3 next = o.pos + f * (mv->velocity / 60.f);
-                // Keep out of solid objects (APPROXIMATION: the player's
-                // collision cylinder).
+                // Kept out of collision volumes like the player (0x437a28:
+                // the same +-0.75 m mover box), on odd ticks only (0x436cbe).
                 Vec3 feet{next.x, o.base, next.z};
-                feet = world.resolve(feet, 0.4f, 1.75f, 0.5f);
+                if (ticks_ & 1) feet = world.resolve(feet, 0.75f, 1.75f, 0.5f);
                 o.pos.x = feet.x;
                 o.pos.z = feet.z;
                 const float ext = world.extent();

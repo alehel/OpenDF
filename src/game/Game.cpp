@@ -66,6 +66,21 @@ constexpr float kTopBar = 60, kBottomBar = 60, kTopDivider = 350, kBottomDivider
 // choice, which keeps the weapon where it is).
 const float kOriginalFovY = 2.f * std::atan(1.f / (640.f / 360.f));
 
+// The held weapon's fixed turn (0x44d3c0 -> 0x46df64): T * Rz(-30) *
+// Ry(-65) * Rx(-30) in DF axes, here in OpenDF's (x, z, -y).
+static const Mat4& heldWeaponOffset() {
+    static const Mat4 offset = [] {
+        const ChrMatrix c = Chr::partRotation({30.f / 360.f, -65.f / 360.f, 30.f / 360.f});
+        Mat4 r;
+        const int map[3] = {0, 2, 1};
+        const float sign[3] = {1, 1, -1};
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) r.at(i, j) = sign[i] * sign[j] * c.m[map[i]][map[j]];
+        return r;
+    }();
+    return offset;
+}
+
 struct Message { std::string text; float age; };
 
 
@@ -394,6 +409,27 @@ bool Game::loadMission(int index) {
     vehicles_.init(world_, mission_);
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
+    // AI rounds leave from the weapon (0x46ad9c): the body (no pitch) x the
+    // posed right hand (mesh 7) x the held-weapon turn x the mode's
+    // hardpoint (+0x90) of its third-person item's model.
+    ai_.muzzle = [this](int object, int mode, Vec3& at) {
+        const WorldObject& o = world_.objects[size_t(object)];
+        if (!o.chr || !o.model || o.anim.angles().empty()) return false;
+        const int item = modeThirdPersonItem(mode);
+        const ItemDef* wi = item > 0 ? items_.byId(100000 + item) : nullptr;
+        const GpuModel* wm = wi && !wi->graphic.empty() ? models_.get(vfs_, wi->graphic) : nullptr;
+        const int hp = modeInfo(mode).muzzleVertex;
+        if (!wm || hp < 0 || hp >= int(wm->points.size()) || o.model->lods.empty() || o.model->lods[0].meshPivot.size() <= 7) return false;
+        const auto pose = personPose(*o.model, 0, *o.chr, o.anim.angles(), o.aimPitch);
+        if (pose.size() <= 7) return false;
+        const auto& pv = o.model->lods[0].meshPivot[7];
+        const Mat4 m = o.matrix(o.pos) * pose[7] * translate({pv[0], pv[1], pv[2]}) * heldWeaponOffset();
+        const auto& q = wm->points[size_t(hp)];
+        at = {m.at(0, 0) * q[0] + m.at(0, 1) * q[1] + m.at(0, 2) * q[2] + m.at(0, 3),
+              m.at(1, 0) * q[0] + m.at(1, 1) * q[1] + m.at(1, 2) * q[2] + m.at(1, 3),
+              m.at(2, 0) * q[0] + m.at(2, 1) * q[1] + m.at(2, 2) * q[2] + m.at(2, 3)};
+        return true;
+    };
 
     player_ = Player{};
     player_.moves = &playerMoves_;
@@ -1482,15 +1518,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             if (const int item = modeThirdPersonItem(v.o->weaponMode); item > 0 && pose.size() > 7 && !v.o->dead)
                 if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
                     if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty()) {
-                        static const Mat4 offset = [] {
-                            const ChrMatrix c = Chr::partRotation({30.f / 360.f, -65.f / 360.f, 30.f / 360.f});
-                            Mat4 r;
-                            const int map[3] = {0, 2, 1};
-                            const float sign[3] = {1, 1, -1};
-                            for (int i = 0; i < 3; ++i)
-                                for (int j = 0; j < 3; ++j) r.at(i, j) = sign[i] * sign[j] * c.m[map[i]][map[j]];
-                            return r;
-                        }();
+                        const Mat4& offset = heldWeaponOffset();
                         const auto& l = v.o->model->lods[size_t(std::clamp(v.lod, 0, int(v.o->model->lods.size()) - 1))];
                         const auto& pv = l.meshPivot[7];
                         const Mat4 hand = pose[7] * translate({pv[0], pv[1], pv[2]});
