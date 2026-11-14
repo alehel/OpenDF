@@ -2148,24 +2148,38 @@ void Game::drawOldMessages(const Screen& s) {
 }
 
 void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
-    // 0x44c574: the names of visible soldiers on the player's team, centred
-    // 25 above their projected position, clipped to x 60..964 and the view
-    // (top + 5 .. bottom - 30); colour by side: 0 green, 1 blue, 2 red.
-    // (APPROXIMATION: the name is the ITEMS.DEF item name.)
+    // 0x44c72c / 0x44c574: soldiers on the player's side (no alive check)
+    // named in the campaign's "People Names" as NAMEID<record +4> (no name,
+    // no tag); at the origin raised by 1 m on screen, then 25 up; centred,
+    // clipped to x 60..964 and the view (top + 5 .. bottom - 30); colour by
+    // side: 1 blue, 2 red, else green.
     const Vec3 eye = viewEye();
     for (const auto& o : world_.objects) {
-        if (!o.person || !o.alive() || o.team != kPlayerTeam || !o.item) continue;
+        if (!o.person || o.side != kPlayerSide || o.missionIndex < 0) continue;
+        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
+        if (nameId == 0) continue;
+        char key[24];
+        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
+        const std::string* name = campText_.find("People Names", key);
+        if (!name || name->empty()) continue;
         const Vec3 at = world_.nearest(o.pos, eye);
-        Mat4 vp = viewProj;
-        const float cx = vp.at(0, 0) * at.x + vp.at(0, 1) * at.y + vp.at(0, 2) * at.z + vp.at(0, 3);
-        const float cy = vp.at(1, 0) * at.x + vp.at(1, 1) * at.y + vp.at(1, 2) * at.z + vp.at(1, 3);
-        const float cw = vp.at(3, 0) * at.x + vp.at(3, 1) * at.y + vp.at(3, 2) * at.z + vp.at(3, 3);
-        if (cw <= 0.1f) continue;
-        const float px = (cx / cw * 0.5f + 0.5f) * s.w;
-        const float py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH - s.vy(25);
+        if (std::getenv("OPENDF_DEBUGTAG")) std::fprintf(stderr, "tag %s at (%.1f %.1f %.1f) eye (%.1f %.1f %.1f)\n", name->c_str(), at.x, at.y, at.z, eye.x, eye.y, eye.z);
+        auto project = [&](Vec3 p, float& px, float& py) {
+            const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
+            const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
+            const float cw = viewProj.at(3, 0) * p.x + viewProj.at(3, 1) * p.y + viewProj.at(3, 2) * p.z + viewProj.at(3, 3);
+            if (cw <= 0.1f) return false;
+            px = (cx / cw * 0.5f + 0.5f) * s.w;
+            py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH;
+            return true;
+        };
+        float px, py, ux, uy;
+        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) continue;
+        if (py - uy <= 0.5f) continue;   // 1 m must be more than half a pixel
+        py = uy - s.vy(25);
         if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) continue;
         const Color c = o.side == 1 ? kHudBlue : o.side == 2 ? kHudRed : kHudPureGreen;
-        hud_.text(px - hud_.textWidth(o.item->name, s.text()) / 2, py, o.item->name, c, s.text());
+        hud_.text(px - hud_.textWidth(*name, s.text()) / 2, py, *name, c, s.text());
     }
 }
 
