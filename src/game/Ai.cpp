@@ -120,15 +120,6 @@ bool AiSystem::targetAlive(const World& world, const Person& p, const PlayerView
     return p.target >= 0 && world.objects[size_t(p.target)].alive();
 }
 
-bool AiSystem::lineOfSight(const World& world, Vec3 a, Vec3 b, int self) const {
-    // 0x45be04: blocked at 800 m; terrain, then objects; people do not
-    // block. (APPROXIMATION: objects block by their collision boxes; DF.EXE
-    // tests their polygons and lets one foliage face through.)
-    const Vec3 v = world.nearest(b, a) - a;
-    if (len3(v) >= 800.f) return false;
-    RayHit hit;
-    return !world.raycast(a, a + v, hit, true, self, false);
-}
 
 void AiSystem::shotFired(Vec3 at, float range, int side, int object) {
     // 0x46c228: a box of +-r at the shot (up to 200), flags 2 = a gunshot.
@@ -171,7 +162,8 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
         const float d = len3(tp - eye);
         if (d >= 1000.f || d < 0.01f) return;
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  in fov, d %.1f\n", d);
-        if (!lineOfSight(world, eye, tp, selfId)) return;
+        // Visible: 1 or 2, i.e. at most one see-through face (0x46a804).
+        if (const int r = sightLine(world, eye, tp, selfId, id); r < 1 || r > 2) return;
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  visible\n");
         float score = (half - std::abs(diff)) / half * (100.f / d) * moveVisibility(move) * (fired ? 6.f : 1.f);
         if (score > best) best = score, bestId = id, bestPos = tp;
@@ -346,9 +338,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             }
             // A dead friend within 50 m in sight alerts (bark 1, ATTACK).
             if (p.alert != 2)
-                for (const auto& q : world.objects)
-                    if (q.person && q.dead && q.side == o.side && octagonal(q.pos, o.pos) < 50.f &&
-                        lineOfSight(world, eye, q.pos, p.object)) {
+                for (size_t qi = 0; qi < world.objects.size(); ++qi)
+                    if (const auto& q = world.objects[qi]; q.person && q.dead && q.side == o.side && octagonal(q.pos, o.pos) < 50.f &&
+                        sightLine(world, o.pos, q.pos, p.object, int(qi)) >= 1 && sightLine(world, o.pos, q.pos, p.object, int(qi)) <= 2) {
                         p.alert = 2;
                         alertTeam(o.team);
                         bark(world, p, sound, 1);
@@ -417,7 +409,7 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     const Vec3 tp = world.nearest(targetPos(world, p, player), o.pos);
     if (p.losTimer > 0xba) {
         p.losTimer = 0;
-        if (lineOfSight(world, eye, tp + Vec3{0, 0.5f, 0}, p.object)) {
+        if (sightLine(world, eye, tp + Vec3{0, 0.5f, 0}, p.object, p.target) >= 1) {   // 0x459aad: any visible result
             p.flags |= 0x80;
             p.lastKnown = tp;
             p.unseen = 0;

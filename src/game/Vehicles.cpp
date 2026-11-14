@@ -329,7 +329,7 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         v.losTimer += 8;
         if (v.losTimer > 0xBA) {
             v.losTimer = 0;
-            v.seen = ai.lineOfSight(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object);
+            v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
         }
         if (v.seen) {
             if (!targetAlive(world, v.gunTarget)) v.deadSeen = true;

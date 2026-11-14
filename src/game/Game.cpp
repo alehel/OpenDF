@@ -759,8 +759,25 @@ void Game::touchPickups() {
         if (std::getenv("OPENDF_DEBUGPICK") && (ticks_ % 30) == 0)
             std::fprintf(stderr, "pickup %s at (%.1f %.1f %.1f) feet (%.1f %.1f %.1f) r %.2f\n", o.item->name.c_str(), at.x, at.y, at.z,
                          feet.x, feet.y, feet.z, o.model->radius);
+        // 0x437a28: the mover box (+-0.75 m across, -0.75..+1.0 m up around
+        // the body origin) must overlap one of the item's collision volumes
+        // (in its own frame); an item without volumes cannot be touched.
+        const Vec3 org = world_.nearest(player_.origin(), at);
         const float reach = 0.75f + o.model->radius;
-        if (std::abs(at.x - feet.x) > reach || std::abs(at.z - feet.z) > reach || std::abs(at.y - feet.y) > 3.f) continue;
+        if (std::abs(at.x - org.x) > reach || std::abs(at.z - org.z) > reach) continue;
+        if (o.model->collision.empty()) continue;
+        {
+            // Into the object's frame (as World.cpp's Frame: yaw only).
+            const float th = kPi * 0.5f - o.heading, c = std::cos(th), sn = std::sin(th);
+            const Vec3 dd = org - at;
+            const Vec3 l{c * dd.x - sn * dd.z, dd.y, sn * dd.x + c * dd.z};
+            bool touch = false;
+            for (const auto& b : o.model->collision)
+                if (l.x + 0.75f >= b.min[0] && l.x - 0.75f <= b.max[0] && l.z + 0.75f >= b.min[2] && l.z - 0.75f <= b.max[2] &&
+                    l.y + 1.0f >= b.min[1] && l.y - 0.75f <= b.max[1])
+                    touch = true;
+            if (!touch) continue;
+        }
         const int id = o.item->id - 100000;
         switch (id) {
         case 4008: case 4018: case 4021: case 4034: case 4038: case 4077:

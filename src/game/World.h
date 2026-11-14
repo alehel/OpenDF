@@ -102,6 +102,8 @@ public:
     // `rounds`: objects are tested as DF.EXE tests a round (0x44e918):
     // their LOD 0 faces in the pose of their draw routine, not the boxes.
     bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true, bool rounds = false) const;
+    // DF.EXE's sight line 0x45be04: <= 0 blocked, else 1 + see-through faces.
+    int sight(Vec3 a, Vec3 b, int looker, int target) const;
 
     // The player as a target for others' rounds: body origin, heading and
     // the .CHR hit spheres of the current pose (set by the game each tick).

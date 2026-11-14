@@ -83,6 +83,8 @@ Mat4 WorldObject::matrix(Vec3 at) const {
 void World::refreshBoxes(WorldObject& o) const {
     o.boxes.clear();
     if (o.removed || o.dead || !o.model) return;
+    if (std::getenv("OPENDF_DEBUGBOX") && o.item)
+        std::fprintf(stderr, "boxes %s: %zu volumes\n", o.item->name.c_str(), o.model->collision.size());
     if (!o.model->collision.empty()) {
         o.boxes = o.model->collision;
         return;
@@ -251,24 +253,17 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
             for (const auto& b : o.boxes) {
                 float bottom = at.y + b.min[1], top = at.y + b.max[1];
                 if (feet.y + step >= top || feet.y + height <= bottom) continue;  // can step onto it / passes under
+                // 0x437a28: the mover is a square of +-radius in the
+                // object's frame; an overlap is pushed out along the axis
+                // needing the smaller push (x on a tie), toward the side
+                // away from the box centre.
                 Vec3 l = f.toLocal(feet);
-                float cx = std::clamp(l.x, b.min[0], b.max[0]);
-                float cz = std::clamp(l.z, b.min[2], b.max[2]);
-                float ox = l.x - cx, oz = l.z - cz;
-                float d2 = ox * ox + oz * oz;
-                if (d2 >= radius * radius) continue;
-                float px, pz;
-                if (d2 > 1e-8f) {
-                    float d = std::sqrt(d2);
-                    px = ox / d * (radius - d);
-                    pz = oz / d * (radius - d);
-                } else {
-                    // Centre inside the box: leave by the nearest face.
-                    float e[4] = {l.x - b.min[0], b.max[0] - l.x, l.z - b.min[2], b.max[2] - l.z};
-                    int k = int(std::min_element(e, e + 4) - e);
-                    px = k == 0 ? -(e[0] + radius) : k == 1 ? (e[1] + radius) : 0;
-                    pz = k == 2 ? -(e[2] + radius) : k == 3 ? (e[3] + radius) : 0;
-                }
+                if (l.x + radius < b.min[0] || l.x - radius > b.max[0] || l.z + radius < b.min[2] || l.z - radius > b.max[2]) continue;
+                const float cx = (b.min[0] + b.max[0]) * 0.5f, cz = (b.min[2] + b.max[2]) * 0.5f;
+                const float qx = l.x < cx ? b.min[0] - (l.x + radius) : b.max[0] - (l.x - radius);
+                const float qz = l.z < cz ? b.min[2] - (l.z + radius) : b.max[2] - (l.z - radius);
+                float px = 0, pz = 0;
+                if (std::abs(qz) >= std::abs(qx)) px = qx; else pz = qz;
                 // Back to world: inverse of toLocal's rotation.
                 feet.x += f.c * px + f.s * pz;
                 feet.z += -f.s * px + f.c * pz;
@@ -287,12 +282,19 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
 // 0x01000000 let rounds through, the plane crossing from the front (both
 // ways with material flag 0x2), t = |ds| / (|ds| + |de|), kept if <= the
 // best so far, then the point in the triangle on the face's projection.
-bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material) const {
+// Shared by rounds and sight lines: the object's LOD 0 meshes posed by its
+// draw routine, the segment taken into each mesh (file axes), each face's
+// box, plane crossing (front to back; both ways with material 0x2), t and
+// DF.EXE's crossing-number point-in-triangle test. `visit(face, mesh, t)`
+// returns false to stop. `skipMask`: the pose slot flags that skip a mesh.
+template <class Visit>
+static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip, uint32_t skipMaterial,
+                      float maxT, Visit visit) {
     const GpuModel& m = *o.model;
     const std::string& code = m.lodCodes[0];
-    if (code == "efct" || code == "shrk" || m.hitMeshes.empty()) return false;
+    if (code == "efct" || code == "shrk" || m.hitMeshes.empty()) return;
     const size_t meshes = m.hitMeshes.size();
-    const Vec3 at = nearest(o.pos, a);
+    const Vec3 at = world.nearest(o.pos, a);
     const Mat4 body = o.matrix(at);
     std::vector<Mat4> pose(meshes, Mat4{});
     auto about = [&](int hp, const Mat4& r) {
@@ -300,24 +302,22 @@ bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool hav
         return translate({p[0], p[1], p[2]}) * r * translate({-p[0], -p[1], -p[2]});
     };
     if (code == "helo") {
-        for (size_t i = 0; i < meshes && i < hitSkip_.size(); ++i) hitSkip_[i] = 0;
+        for (size_t i = 0; i < meshes && i < hitSkip.size(); ++i) hitSkip[i] = 0;
         const bool fast = o.rotorSpeed >= float(0x0C000000);
         for (int i : fast ? std::array<int, 2>{2, 4} : std::array<int, 2>{3, 5})
-            if (i < int(hitSkip_.size())) hitSkip_[size_t(i)] = 1;
+            if (i < int(hitSkip.size())) hitSkip[size_t(i)] = 1;
     } else if (code == "tire") {
-        hitSkip_[1] = 1;   // the shadow; slots 0, 2, 3 keep their flags (0x4807e0)
+        hitSkip[1] = 1;   // the shadow; slots 0, 2, 3 keep their flags (0x4807e0)
         if (m.points.size() >= 3) {
             const Mat4 steer = rotateY(-o.steer);
             if (meshes > 2) pose[2] = about(2, steer);
             if (meshes > 3) pose[3] = about(1, steer);
         }
     } else {
-        for (size_t i = 0; i < meshes && i < hitSkip_.size(); ++i) hitSkip_[i] = 0;
+        for (size_t i = 0; i < meshes && i < hitSkip.size(); ++i) hitSkip[i] = 0;
     }
-    bool found = false;
     for (size_t mi = 0; mi < meshes; ++mi) {
-        if (mi < hitSkip_.size() && hitSkip_[mi]) continue;
-        // World -> mesh space (rigid: transpose the rotation), then file axes.
+        if (mi < hitSkip.size() && hitSkip[mi]) continue;
         const Mat4 w = body * pose[mi];
         auto toFile = [&](Vec3 p) {
             const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
@@ -330,17 +330,16 @@ bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool hav
         for (int c = 0; c < 3; ++c) lo[c] = std::min(ls[c], le[c]), hi[c] = std::max(ls[c], le[c]);
         for (const HitFace& f : m.hitMeshes[mi]) {
             if (lo[0] > f.box[1] || hi[0] < f.box[0] || lo[1] > f.box[3] || hi[1] < f.box[2] || lo[2] > f.box[5] || hi[2] < f.box[4]) continue;
-            if (f.material & 0x01000000) continue;
+            if (f.material & skipMaterial) continue;
             const float ds = f.n[0] * ls[0] + f.n[1] * ls[1] + f.n[2] * ls[2] + f.d;
             const float de = f.n[0] * le[0] + f.n[1] * le[1] + f.n[2] * le[2] + f.d;
             if (f.material & 0x2) { if ((ds > 0 && de > 0) || (ds <= 0 && de <= 0)) continue; }
             else if (!(ds > 0 && de <= 0)) continue;
             const float sum = std::abs(ds) + std::abs(de);
             if (sum <= 0) continue;
-            const float t = std::abs(ds) / sum;   // fraction of the segment
-            if (haveObject || found ? t > best : t >= best) continue;   // ties: objects over each other, not over terrain
+            const float t = std::abs(ds) / sum;
+            if (t > maxT) continue;
             const float h[3] = {ls[0] + (le[0] - ls[0]) * t, ls[1] + (le[1] - ls[1]) * t, ls[2] + (le[2] - ls[2]) * t};
-            // 0x45ade0: crossing number toward +u on the face's projection.
             const int ua = f.axis == 4 ? 1 : 0, va = f.axis == 1 ? 1 : 2;
             const float pu = h[ua], pv = h[va];
             int c = 0;
@@ -360,13 +359,67 @@ bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool hav
                 aboveA = aboveB;
             }
             if (c != 1) continue;
-            best = t;
-            mesh = int(mi);
-            material = f.material;
-            found = true;
+            if (!visit(f, int(mi), t)) return;
         }
     }
+}
+
+bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material) const {
+    bool found = false;
+    testFaces(*this, o, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
+        // Ties: a later face wins among objects, not over the terrain.
+        if (haveObject || found ? t > best : t >= best) return true;
+        best = t;
+        mesh = mi;
+        material = f.material;
+        found = true;
+        return true;
+    });
     return found;
+}
+
+// Sight lines (0x45be04): 800 m at most; the terrain; then objects' faces
+// as rounds see them (0x45b6e0) but every object (no hidden skip), the
+// intact model, faces with material 0x800 skipped, and a face with a
+// 0x868C material bit (translucent, keyed, ...) counted as see-through
+// while any other blocks; people never block; +1 when either end is at or
+// below a water level. Result: <= 0 blocked, else 1 + see-through count.
+int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
+    b = nearest(b, a);
+    const Vec3 d = b - a;
+    const float len = std::sqrt(dot(d, d));
+    if (len >= 800.f) return 0;
+    if (len < 1e-4f) return 1;
+    RayHit h;
+    if (raycast(a, b, h, false)) return 0;
+    const Vec3 mid = a + d * 0.5f;
+    int extra = 0;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        const WorldObject& o = objects[i];
+        if (int(i) == looker || int(i) == target || o.person || !o.model || o.removed) continue;
+        const Vec3 at = nearest(o.pos, mid);
+        const float R = o.model->headerRadius;
+        if (at.x < std::min(a.x, b.x) - R || at.x > std::max(a.x, b.x) + R || at.y < std::min(a.y, b.y) - R ||
+            at.y > std::max(a.y, b.y) + R || at.z < std::min(a.z, b.z) - R || at.z > std::max(a.z, b.z) + R)
+            continue;
+        const Vec3 dir = d * (1.f / len);
+        const Vec3 c = a + dir * dot(at - a, dir);
+        const Vec3 off = c - at;
+        float x = std::abs(off.x), y = std::abs(off.y), z = std::abs(off.z);
+        if (x < y) std::swap(x, y);
+        if (x < z) std::swap(x, z);
+        if (y < z) std::swap(y, z);
+        if (x + y * 11.f / 32.f + z * 0.25f > R) continue;
+        bool blocked = false;
+        testFaces(*this, o, a, b, hitSkip_, 0x800, 2.f, [&](const HitFace& f, int, float) {
+            if (f.material & 0x868C) { ++extra; return true; }
+            blocked = true;
+            return false;
+        });
+        if (blocked) return 0;
+    }
+    if (const float w = terrain->waterLevel(); w != 0 && (a.y <= w || b.y <= w)) ++extra;
+    return 1 + extra;
 }
 
 bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool people, bool rounds) const {

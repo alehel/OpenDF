@@ -42,8 +42,8 @@ public:
     // perception and the relaxed quarter. Returns the score, 0 if none.
     float bestTarget(const World& world, int self, Vec3 eye, float heading, int side, float half, const PlayerView& player,
                      int& id, Vec3& at) const;
-    // 0x45be04 (see Ai.cpp).
-    bool lineOfSight(const World& world, Vec3 a, Vec3 b, int self) const;
+    // 0x45be04: <= 0 blocked, else 1 + see-through faces (World::sight).
+    int sightLine(const World& world, Vec3 a, Vec3 b, int self, int target) const { return world.sight(a, b, self, target); }
     // One 60 Hz tick: people move (their move's speed along their heading)
     // and think when their timer runs out.
     void tick(World& world, Arsenal& shots, SoundSystem& sound, const PlayerView& player);
