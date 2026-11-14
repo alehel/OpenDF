@@ -538,6 +538,22 @@ private:
         bool dButton = false;         // the D button's state (= [0x765600] when the Map tab is entered)
         bool contours = false;        // 0xbd0588 (BSS: starts 0, never reset)
         int scrollPlayers = 0, scrollTeam = 0;   // [0xbd0594], [0xbd0598]
+        int barWidget = 0, barAnchorY = 0, barCount = 0;   // 0x40c040's widget, [0xbcc488], [0xbcc490]
+        // A list's scroll-bar record (0x40c3f0) and its thumb (0x40c710) in
+        // 640 px: track x0..x1, ty0 (+0x14 = y0 + 16 - 1), ty1 (+0x1c = y1 - 16).
+        struct Bar { int x0, x1, ty0, ty1, top, bottom; };
+        static Bar bar(float vx, float vy0, float vy1, int pos, int page) {
+            auto V = [](float v) { return int(std::floor(v * 0.625f)); };
+            Bar b{};
+            b.x0 = V(vx);
+            b.x1 = b.x0 + 16;
+            b.ty0 = V(vy0) + 16 - 1;
+            b.ty1 = V(vy1) - 16;
+            const int L = b.ty1 - (b.ty0 + 3);
+            b.top = pos * L / 64 + b.ty0 + 3;
+            b.bottom = std::min((pos + page) * L / 64 + b.ty0 + 3, b.ty1);
+            return b;
+        }
         int current[5] = {}, request[5] = {};    // Weapons tab: 0xbec6c0, 0xbe72a0
         int wbtnY[5] = {252, 348, 444, 540, 636};  // its < > buttons' y (virtual)
         // Blips drawn this frame (0x4226c0 records them; 0x422640 picks).
@@ -3917,6 +3933,64 @@ void Game::df2MapFrame() {
         }
     }
     ++m.frame;
+    // The scroll bars of the Players (page 16) and Team (page 14) lists: the
+    // widget pass 0x40c040 each frame finds the widget under the mouse; a new
+    // one takes the mouse as the drag anchor ([0xbcc488]) and resets the hold
+    // counter; the same one with the button down calls its callback 0x40c8c0
+    // with the counter, then counts up (released: back to 0). 0x40c8c0: the
+    // arrows and page zones act on counts 0 and >= 10 (0x40c8ee), the thumb on
+    // every one. Up arrow: pos - 1 while > min; down: pos + 1 while pos + page
+    // < max; page-up zone: pos - page, at least 0; page-down: pos + page, at
+    // most max - page, at least 0; thumb: pos + (max - min)·dy / L for the
+    // mouse's dy from the anchor (clamped the same way), and the anchor moves
+    // with the thumb's top (0x40ca13..0x40ca2e).
+    if (m.tab == 1 || m.tab == 2) {
+        const float vy1 = m.tab == 1 ? 672 : 616;
+        const int page = m.tab == 1 ? 16 : 14;
+        int& pos = m.tab == 1 ? m.scrollPlayers : m.scrollTeam;
+        const Df2Map::Bar r = Df2Map::bar(608, 216, vy1, pos, page);
+        const int mx = m.mouseX, my = m.mouseY;
+        int w = 0;   // 1 up, 2 page up, 3 thumb, 4 page down, 5 down (the last match of 0x40c040 wins)
+        auto inside = [&](int x0, int y0, int x1, int y1) { return mx >= x0 && mx <= x1 && my >= y0 && my <= y1; };
+        // The zone widgets (0x40c710): x0 + 1 .. x1 - 2; page-up ty0 + 3 .. top,
+        // thumb top .. bottom, page-down bottom .. ty1; arrows 16 x 16.
+        if (inside(r.x0, int(V(216)), r.x0 + 16, int(V(216)) + 16)) w = 1;
+        if (inside(r.x0 + 1, r.ty0 + 3, r.x1 - 2, r.top)) w = 2;
+        if (inside(r.x0 + 1, r.top, r.x1 - 2, r.bottom)) w = 3;
+        if (inside(r.x0 + 1, r.bottom, r.x1 - 2, r.ty1)) w = 4;
+        if (inside(r.x0, int(V(vy1)) - 16, r.x0 + 16, int(V(vy1)))) w = 5;
+        if (w != m.barWidget) {
+            m.barWidget = w;
+            m.barAnchorY = my;
+            m.barCount = 0;
+        } else if (w && m.leftHeld) {
+            const int c = m.barCount++;
+            const int mn = 0, mxv = 64, L = r.ty1 - (r.ty0 + 3);
+            if (w == 3) {
+                const int dy = my - m.barAnchorY;
+                if (dy != 0 && L > 0) {
+                    pos += (mxv - mn) * dy / L;
+                    if (dy > 0 && pos + page > mxv) pos = mxv - page;
+                    if (pos < 0) pos = 0;
+                    const int oldTop = r.top;
+                    m.barAnchorY += Df2Map::bar(608, 216, vy1, pos, page).top - oldTop;
+                }
+            } else if (c <= 0 || c >= 10) {
+                if (w == 1 && pos > mn) --pos;
+                if (w == 5 && pos + page < mxv) ++pos;
+                if (w == 2) pos = std::max(0, pos - page);
+                if (w == 4) {
+                    pos += page;
+                    if (pos + page > mxv) pos = mxv - page;
+                    if (pos < 0) pos = 0;
+                }
+            }
+        } else if (!m.leftHeld) {
+            m.barCount = 0;
+        }
+    } else {
+        m.barWidget = 0;
+    }
     if (m.tab == 0 && m.leftHeld) {
         auto in = [&](float vx, float vy, float w) { return m.mouseX >= V(vx) && m.mouseX < V(vx) + w && m.mouseY >= V(vy) && m.mouseY < V(vy) + 16; };
         if (in(608, 668, V(32))) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);   // + (0x4000 min)
@@ -4105,17 +4179,30 @@ void Game::drawDf2CommandMap(const Screen& s) {
         hud_.text(X(x + 1), Y(y + 1), t, cBlack, k);
         hud_.text(X(x), Y(y), t, c, k);
     };
-    // A list's scroll bar (0x40c660): the BT09 / BT10 arrows at its ends
-    // (INFERRED placement: the creator 0x40c3f0 was not read). 0x40c7d0 (bar
-    // record table 0xbd39c0, stride 0x4c: x0 +0x10, y0 +0x14, x1 +0x18, y1
-    // +0x1c, min +0x20, max +0x24, page +0x28, pos +0x2c) draws the outline
-    // 0x450560(x0, y0+2, x1-1, y1+1, 0xc06000) and the thumb 0x4505e0(x0+1,
-    // top, x1-2, bottom, 0xc06000, 0x683000), L = y1 - (y0+3), top = (pos -
-    // min)·L/(max - min) + y0 + 3, bottom = (pos - min + page)·L/(max - min) +
-    // y0 + 3 clamped to y1. Not drawn by OpenDF yet.
-    auto scrollBar = [&](float vx, float vy0, float vy1) {
+    // A list's scroll bar (creator 0x40c660 -> 0x40c3f0, drawn by 0x40c7d0).
+    // The up arrow (DF2_BT09) at (x, y0), the down arrow (BT10) at (x, y1 -
+    // its height); the track record (+0x10..+0x1c) is (x, y0 + 16 - 1) -
+    // (x + 16, y1 - 16) (the arrows are 16 wide, 64 / 4 = 16 high: 0x40ce50
+    // stores h >> 2). 0x40c7d0: the outline 0x450560 (x0, ty0 + 2)-(x1 - 1,
+    // ty1 + 1) and the thumb 0x4505e0 (x0 + 1, top)-(x1 - 2, bottom) in
+    // 0xc06000 filled 0x683000, L = ty1 - (ty0 + 3), top = (pos - min)·L /
+    // (max - min) + ty0 + 3, bottom = (pos - min + page)·L / (max - min) +
+    // ty0 + 3 clamped to ty1 (integer division). Both lists: min 0, max 64.
+    auto scrollBar = [&](float vx, float vy0, float vy1, int pos, int page) {
         icon(m.bt09, V(vx), V(vy0), false);
         icon(m.bt10, V(vx), V(vy1) - 16, false);
+        const Df2Map::Bar r = Df2Map::bar(vx, vy0, vy1, pos, page);
+        const Color c0 = rgb(0xc0, 0x60, 0), c1 = rgb(0x68, 0x30, 0);
+        auto outline = [&](int x0, int y0, int x1, int y1, Color c) {   // 0x450560: four lines, ends inclusive
+            hud_.rect(X(float(x0)), Y(float(y0)), float(x1 - x0 + 1) * k, k, c);
+            hud_.rect(X(float(x0)), Y(float(y1)), float(x1 - x0 + 1) * k, k, c);
+            hud_.rect(X(float(x0)), Y(float(y0)), k, float(y1 - y0 + 1) * k, c);
+            hud_.rect(X(float(x1)), Y(float(y0)), k, float(y1 - y0 + 1) * k, c);
+        };
+        outline(r.x0, r.ty0 + 2, r.x1 - 1, r.ty1 + 1, c0);
+        // 0x4505e0: fill rows top + 1 .. bottom - 1 in the fill colour, then the outline.
+        if (r.bottom - r.top > 1) hud_.rect(X(float(r.x0 + 1)), Y(float(r.top + 1)), float(r.x1 - 2 - (r.x0 + 1) + 1) * k, float(r.bottom - r.top - 1) * k, c1);
+        outline(r.x0 + 1, r.top, r.x1 - 2, r.bottom, c0);
     };
     // The selected object's panel (0x40e190 at (684, 200)): f_sml 0xc06000,
     // headings at x 704, values at 724.
@@ -4313,7 +4400,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
             const float x = V(float(std::atoi(kHead[i][2])));
             hud_.text(X(i == 0 ? x : x) - (i == 0 ? 0 : hud_.textWidth(t, k) / 2), Y(V(196)), t, cHead, k);
         }
-        scrollBar(608, 216, 672);
+        scrollBar(608, 216, 672, m.scrollPlayers, 16);
         const int rows = 1 - m.scrollPlayers;   // the player only
         for (int r = 0; r < std::min(rows, 16); ++r) {
             const float x0 = V(80), y0 = V(224 + 28 * float(r));
@@ -4343,7 +4430,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
         std::snprintf(hdr, sizeof hdr, "%s/%s/%s", df2Text("Cmap", "CMAP_HEADING_NAME", "Name").c_str(),
                       df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan").c_str(), df2Text("Cmap", "CMAP_HEADING_WEAPON", "Weapon").c_str());
         hud_.text(X(V(344)) - hud_.textWidth(hdr, k) / 2, Y(V(196)), hdr, cHead, k);
-        scrollBar(608, 216, 616);
+        scrollBar(608, 216, 616, m.scrollTeam, 14);
         float row = 224;
         int n = 0;
         auto line = [&](Df2Sel id, const std::string& name, const std::string& plan, const std::string& weapon) {
@@ -4513,25 +4600,13 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
         for (size_t i = 0; i < b.size(); ++i)
             if (in(688, 696 - 32 * float(i), V(280))) { df2Action(b[i].second); return; }
     }
-    // Scroll bar arrows (callback 0x40c8c0): up (+0x34) pos - 1 while above
-    // min, down (+0x44) pos + 1 while pos + page < max (READ). Not yet in
-    // OpenDF: the page zones (+0x38 / +0x40, +-page clamped), the thumb drag
-    // (+0x3c, mouse delta · range / length) and the hold repeat after 10
-    // (0x40c8ee).
-    auto arrows = [&](float vy0, float vy1, int& pos, int maxPos) {
-        if (x >= V(608) && x <= V(608) + 16 && y >= V(vy0) && y <= V(vy0) + 16) { pos = std::max(0, pos - 1); return true; }
-        if (x >= V(608) && x <= V(608) + 16 && y >= V(vy1) - 16 && y <= V(vy1)) { pos = std::min(maxPos, pos + 1); return true; }
-        return false;
-    };
     if (m.tab == 1) {
-        if (arrows(216, 672, m.scrollPlayers, 64 - 16)) return;
         // Row click (0x40b80a): row 0 is the player while not scrolled away.
         const float w = hud_.textWidth(df2SelName(Df2Sel{1, 0}), 1);
         if (m.scrollPlayers == 0 && x >= V(80) && x <= V(82) + w && y >= V(224) && y < V(252)) df2Select(Df2Sel{1, 0});
         return;
     }
     if (m.tab == 2) {
-        if (arrows(216, 616, m.scrollTeam, 64 - 14)) return;
         // Team tab: pick a row (the player first), or give an order.
         if (y >= V(224) && y < V(616) && x >= V(80) && x < V(600)) {
             const int r = int((float(y) - V(224)) / V(28) + 0.0001f) + m.scrollTeam;
