@@ -16,7 +16,7 @@ uint32_t Music::u32(size_t at) const {
     return v;
 }
 
-bool Music::load(Vfs& vfs, const std::filesystem::path& sbfPath) {
+bool Music::load(Vfs& vfs, const std::filesystem::path& sbfPath, const char* script) {
     std::ifstream f(sbfPath, std::ios::binary);
     if (!f) return false;
     sbf_.assign(std::istreambuf_iterator<char>(f), {});
@@ -30,7 +30,7 @@ bool Music::load(Vfs& vfs, const std::filesystem::path& sbfPath) {
         stems_.push_back({std::string(reinterpret_cast<const char*>(&sbf_[table + 32 * i]), strnlen(reinterpret_cast<const char*>(&sbf_[table + 32 * i]), 16)),
                           s32(table + 32 * i + 16), s32(table + 32 * i + 20), std::max<uint32_t>(16, s32(table + 32 * i + 24))});
     debug_ = std::getenv("OPENDF_DEBUGMUSIC") != nullptr;
-    if (!vfs.read("DFMUSIC.BIN", script_) || script_.size() < 0x30 || std::memcmp(script_.data(), "SCR0", 4) != 0) return false;
+    if (!vfs.read(script, script_) || script_.size() < 0x30 || std::memcmp(script_.data(), "SCR0", 4) != 0) return false;
     // SCR0: +0xC offset of the track table; track header "MU00": +0x24
     // state table, +0x28 state count, +0x2C default state (track-relative).
     track_ = u32(u32(0xC));

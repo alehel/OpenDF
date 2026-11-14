@@ -40,6 +40,7 @@ add_executable(opendf
   src/formats/Rtxt.cpp
   src/formats/Trn.cpp
   src/menu/Frontend.cpp
+  src/menu/FrontendDf2.cpp
   src/menu/Mnu.cpp
   src/game/Ai.cpp
   src/game/Config.cpp

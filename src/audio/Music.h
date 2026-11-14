@@ -20,7 +20,8 @@ class Vfs;
 class Music {
 public:
     // `sbf`: the stems file on disk; the script from the game data.
-    bool load(Vfs& vfs, const std::filesystem::path& sbf);
+    // `script`: DFMUSIC.BIN (Delta Force 2: DF2MUSIC.BIN, the same SCR0 scheme).
+    bool load(Vfs& vfs, const std::filesystem::path& sbf, const char* script = "DFMUSIC.BIN");
     void start();                  // 0x404cc4 (all variables 0, state Begin)
     void stop();                   // 0x404c90
     void setVar(int n, int value); // 0x4b8570

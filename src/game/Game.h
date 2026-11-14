@@ -36,6 +36,9 @@ struct GameOptions {
     // the original has M4/M203 + Ammo (DF.EXE 0x40ee14).
     // Change Gear choices (loadoutRow names): primary, kit, sidearm.
     std::string primary = "M4", secondary = "Ammo", sidearm = ".45";
+    // Delta Force 2's Change Gear (soldier record +0x2b8..+0x2c8): weapon
+    // types; -1 = take the names above.
+    int df2Sidearm = -1, df2Primary = -1, df2Secondary = -1, df2Gear = 0, df2Grenade = 26;
     // Until the soldier screens exist: the name shown in the bottom bar (the
     // original shows the soldier's name, e.g. "ROK").
     std::string soldierName;

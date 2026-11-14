@@ -214,7 +214,26 @@ First differences from DF1:
     night vision (key N, on at the start of night missions: 0x44781e) as an
     ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
     scope image green ×4 at night. DF2 has no "Player Health: Easy".
-- Not yet: DF2's command map (tabs, Map/Mission), X/Z scope zeroing, DF2's menus, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
+  - **front end** (`opendf --game games/DF2 play`; src/menu/FrontendDf2.cpp;
+    DF2.EXE states 0x45ec40): DF2.MNU parsed as 0x42e460 does ([SOUNDS]
+    [ARGBS] [FONTS] [IMAGES] [MENUS] [BUTTONS], strtok fields, attribute
+    letters, z-order lists, button sizes), DF2.BIN `MENU` texts, 640×480
+    screens scaled to the window (amenity), 4-frame button strips, the menu
+    fonts (bands ending at a column-0 marker row), mm_Rect outlines 0xCA4409;
+    Choose Soldier (df2plyrs.sav 'FPBC' v10, 5 × 0x6E8: name, face, arm patch,
+    stats; "Blackhawk" when empty; name editing), Main Menu (help texts
+    teletyped; NovaWorld, Multiplayer and Update disabled), Campaigns (C03/C05,
+    regions, the 28 missions with the header +0x7C unlock rule, done marks,
+    titles under the dots, CABRIEF), Quick Missions (D06*, TITLE, QMBRIEF,
+    pictures), Mission Briefing (MBBRIEF, the terrain JPG ×4 with numbered
+    waypoints), Change Gear (categories 3/4/2/4+5, grenades 26/37, the
+    mission's header defaults +0x94..+0x97), Settings pages 1 and 3 (df2.cfg,
+    sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
+    mission back to Campaigns / Quick Missions (no debriefing in DF2), the
+    win marking the mission done and the unlock mask kept. Not yet: the fade
+    effect, the keyboard page, credits, the voice briefing, slider dragging,
+    the map scroll sliders, multiplayer.
+- Not yet: DF2's command map (tabs, Map/Mission), X/Z scope zeroing, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order

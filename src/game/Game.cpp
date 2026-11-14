@@ -512,9 +512,11 @@ bool Game::loadMission(int index) {
                     if (u == t.first) return t.second;
                 return def;
             };
-            d2.primary = typeOf(o_.primary, 9);
-            d2.secondary = typeOf(o_.secondary, 1);
-            d2.sidearm = typeOf(o_.sidearm, 6);
+            d2.primary = o_.df2Primary >= 0 ? o_.df2Primary : typeOf(o_.primary, 9);
+            d2.secondary = o_.df2Secondary >= 0 ? o_.df2Secondary : typeOf(o_.secondary, 1);
+            d2.sidearm = o_.df2Sidearm >= 0 ? o_.df2Sidearm : typeOf(o_.sidearm, 6);
+            d2.gear = o_.df2Gear;
+            d2.grenade = o_.df2Grenade;
             std::vector<std::string> hudGuns;
             for (int m = 0; m < 57; ++m) {
                 char key[16];

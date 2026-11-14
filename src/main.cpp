@@ -13,6 +13,7 @@
 #include "core/Pff.h"
 #include "game/Game.h"
 #include "menu/Frontend.h"
+#include "menu/FrontendDf2.h"
 #include "formats/Anm.h"
 #include "formats/Chr.h"
 #include "formats/Mission.h"
@@ -808,7 +809,8 @@ int main(int argc, char** argv) {
             if (!o.args.empty()) f.startScreen = o.args[0];
             f.screenshot = o.screenshot;
             f.frames = std::max(1, o.frames);
-            rc = runFrontend(vfs, f);
+            // Delta Force 2 has its own front end (DF2.MNU).
+            rc = vfs.exists("DF2.MNU") ? runFrontendDf2(vfs, f) : runFrontend(vfs, f);
         }
         else if (o.command == "check") rc = cmdCheck(vfs);
         else rc = cmdView(vfs, o);
