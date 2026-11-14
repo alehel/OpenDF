@@ -694,7 +694,10 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
                 if (!heavy) continue;
                 d *= 2;
             }
-            const int amount = d < 4 ? 4 : d < 8 ? 2 : 1;
+            // DF2.EXE 0x44d4a0: base 8 (type 5, the 12 m charge: 32), full under
+            // 4 m, half under 8 m, a quarter beyond.
+            const int base = radius > 11.f ? 32 : 8;
+            const int amount = df2Rules ? (d < 4 ? base : d < 8 ? base / 2 : base / 4) : d < 4 ? 4 : d < 8 ? 2 : 1;
             // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8).
             const int type = (d >= 4 && d < 8 && (std::rand() & 3) == 0) ? 3 : 2;
             std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at));
@@ -718,6 +721,16 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             if (d > radius) continue;
         }
         int amount = heavy ? int(128 - 16 * d) : int(32 - 4 * d);
+        if (df2Rules) {
+            // DF2.EXE 0x44d4a0: type 5 (12 m) 512 - 16 d, type 3 128 - 16 d,
+            // type 1 32 - 4 d; blast class 3 / 2 / 0, +1 inside the object's
+            // box, must reach the item's third hp value (def+0x9c).
+            const bool five = radius > 11.f;
+            amount = five ? int(512 - 16 * d) : heavy ? int(128 - 16 * d) : int(32 - 4 * d);
+            int cls = five ? 3 : heavy ? 2 : 0;
+            if (d <= 0.f) ++cls;
+            if (o.item && cls < o.item->hp3) continue;
+        }
         if (sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0) {
             if (!heavy) continue;
             amount >>= 1;

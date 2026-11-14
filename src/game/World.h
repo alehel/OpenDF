@@ -122,6 +122,9 @@ public:
     // terrain does not block the way; objects max(0, 32 - 4 d), or
     // 128 - 16 d for heavy blasts; armour is not checked.
     std::vector<std::string> blast(Vec3 at, float radius, bool heavy);
+    // Delta Force 2's rules (DF2.EXE): explosion damage (0x44d4a0), bullet
+    // damage to objects (0x44bff0). Set by the game for DF2 missions.
+    bool df2Rules = false;
     // Knife (blast kind 2, 0x44ffd0, radius 1 m): every living person whose
     // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
     // whatever the armour; no line of sight; among objects only the piranha

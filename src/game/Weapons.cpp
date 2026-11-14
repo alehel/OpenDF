@@ -828,10 +828,38 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 // Delta Force 2 (0x44bff0): people take the round's energy,
                 // max(1, E / 25), x8 on the head (part 2).
                 if (df2_ && (hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person))) {
-                    const int dmg = df2Damage(b) * (hit.part == 2 ? 8 : 1);
-                    if (hit.object == -3) playerHits_.push_back({dmg, hit.part, b.from});
+                    int dmg = df2Damage(b);
+                    // Kevlar (0x44bdd0): on the player wearing Armor (type 31),
+                    // parts 0 and 1, the round first spends 75·(n + 1) of its
+                    // energy (n: the soldier's second hp value); nothing left,
+                    // no damage. (DF2.EXE checks every soldier's body slot;
+                    // OpenDF gives armour only to the player.)
+                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1) {
+                        const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
+                                      vz = int64_t(b.vel.z * kTick * 65536.f);
+                        const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
+                        const int64_t left = e - int64_t(0x4b0000) * (playerArmourClass + 1);
+                        dmg = left <= 0 ? 0 : left <= 0x190000 ? 1 : int(left / 0x190000);
+                    }
+                    dmg *= hit.part == 2 ? 8 : 1;
+                    if (hit.object == -3) { if (dmg > 0) playerHits_.push_back({dmg, hit.part, b.from}); }
                     else
                         world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                } else if (df2_ && hit.object >= 0) {
+                    // Objects (0x44bff0): an item whose second hp value is below
+                    // 0 stops the round unharmed; buildings take nothing;
+                    // vehicles only rockets (flag 0x40: 64) and shells and
+                    // impact grenades (0x11: 16); the rest max(1, E/25). (The
+                    // rounds' penetration by surface material is not in OpenDF:
+                    // a round stops at the first object.)
+                    const WorldObject& target = world.objects[size_t(hit.object)];
+                    const ItemDef* it = target.item;
+                    int dmg = 0;
+                    if (it && it->damageClass >= 0 && it->type != "building") {
+                        if (it->type == "vehicle") dmg = (b.flags & 0x40) ? 64 : (b.flags & 0x11) ? 16 : 0;
+                        else dmg = df2Damage(b);
+                    }
+                    if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
                 } else
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.

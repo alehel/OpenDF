@@ -445,6 +445,7 @@ bool Game::loadMission(int index) {
     // Testing: OPENDF_HEIGHTSCALE overrides metres per elevation step.
     if (const char* hs = std::getenv("OPENDF_HEIGHTSCALE")) terrain_.scale.heightScale = float(std::atof(hs));
     world_.terrain = &terrain_;
+    world_.df2Rules = mission_.version >= 0x0F;
     models_.setVariant(mission_.colorVariant);
     world_.build(vfs_, models_, items_, mission_);
     ai_.init(world_, mission_);
@@ -522,6 +523,7 @@ bool Game::loadMission(int index) {
                 hudGuns.push_back(t ? *t : std::string());
             }
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
+            if (const ItemDef* soldier = items_.byId(kItemPlayerSoldier)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
             arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
         }
@@ -835,7 +837,15 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
         // Blast deaths (0x44fda8): type 2 under 4 m; 4-8 m type 3 one time in
         // four, else 2; farther type 2.
         const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
-        if (d <= radius + 1.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
+        if (mission_.version >= 0x0F) {
+            // DF2.EXE 0x44d4a0: base 8 (32 for the 12 m charge), full under
+            // 4 m, half under 8 m, a quarter beyond; blocked sight cancels
+            // type 1 and doubles the distance for the others.
+            const int base = radius > 11.f ? 32 : 8;
+            const float dd = blocked ? 2 * d : d;
+            if (d <= radius + 1.f && (!blocked || heavy))
+                hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
+        } else if (d <= radius + 1.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
     }
     if (surface == 0) smokeGens_.push_back({at, 0, 0});
 }

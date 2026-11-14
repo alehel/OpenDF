@@ -207,6 +207,7 @@ public:
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
     // Delta Force 2's rule for shots from under the water (set by the game).
     bool underwaterRule = false;
+    int playerArmourClass = 0;   // DF2: the player's second hp value (Kevlar's n)
     float waterLevel = 0;
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
     // Knife strikes since the last call: the point 0.5 m along the view

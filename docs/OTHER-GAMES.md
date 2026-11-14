@@ -190,7 +190,17 @@ First differences from DF1:
     12 pellets within ±5.625°; the Barrett's 1/32 m push. INFERRED: bullets
     carry on under the water and splash where they cross it. Not yet: Kevlar
     (75·(n+1) energy), people's health scale, objects' damage, explosions,
-    scope zeroing (X/Z), DF2's loadout screen.
+    scope zeroing (X/Z), DF2's loadout screen. Since then: Kevlar for the
+    player (Armor: a round first spends 75·(n+1) energy on parts 0/1,
+    0x44bdd0); people's health is the ITEMS.DEF hp unscaled (0x412a0a);
+    objects (0x44bff0): items with a negative second hp value stop rounds
+    unharmed, buildings take nothing, vehicles only rockets (64) and
+    shells/impact grenades (16), others max(1, E/25); explosions (0x44d4a0):
+    people base 8 (32 for the 12 m charge) full/half/quarter by 4 m/8 m,
+    objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
+    that must reach the item's third hp value. Not yet: rounds penetrating
+    objects by surface material, shrapnel counts, the delay grenade's bounce,
+    the M203 dud within 8 ticks (DF1's arming rule is used), fall damage.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
