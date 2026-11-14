@@ -205,6 +205,24 @@ float Hud::sheetText(const SheetFont& f, float x, float y, const std::string& s,
     return x - start;
 }
 
+void Hud::updateImage(HudImage& img, int width, int height, const std::vector<uint8_t>& rgba) {
+    if (!img.texture || img.width != width || img.height != height) {
+        if (img.texture) {
+            flush();
+            images_.erase(std::remove(images_.begin(), images_.end(), img.texture), images_.end());
+            glDeleteTextures(1, &img.texture);
+            texture_ = 0;
+        }
+        img = makeImage(width, height, rgba);
+        return;
+    }
+    flush();   // pending quads may use the old pixels
+    glBindTexture(GL_TEXTURE_2D, img.texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    texture_ = 0;
+}
+
 HudImage Hud::makeImage(int width, int height, const std::vector<uint8_t>& rgba) {
     flush();   // pending quads belong to the currently bound texture
     HudImage out;
