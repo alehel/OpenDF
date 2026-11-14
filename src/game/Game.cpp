@@ -2320,9 +2320,17 @@ void Game::drawDf2Bottom(const Screen& s) {
         for (int i = 0; i < 5; ++i) hud_.text(X(keys[i]), Y(keys[i]), lines[i], kDf2Amber, ts);
     }
 
-    // Extras (0x441b20): the player's name; the wind (extra2) waits for
-    // DF2's wind; extra3/4 are multiplayer only, extra5 is empty.
+    // Extras (0x441b20): the player's name; the wind, "Wind: %s, %ikph" with
+    // the direction ((deg + 22) % 360) / 45 as N..NW, or "Wind: None";
+    // extra3/4 are multiplayer only, extra5 is empty.
     hud_.text(X("extra1"), Y("extra1"), o_.soldierName, kDf2Amber, ts);
+    {
+        static const char* kDir[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+        char wind[48];
+        if (mission_.windKph == 0) std::snprintf(wind, sizeof wind, "Wind: None");
+        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((mission_.windDeg + 22) % 360 + 360) % 360 / 45], mission_.windKph);
+        hud_.text(X("extra2"), Y("extra2"), wind, kDf2Amber, ts);
+    }
 
     hud_.setBlend(5);
     // Stance (0x442bc0): POS%i 3 frames prone, crouched, standing.

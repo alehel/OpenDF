@@ -121,8 +121,14 @@ First differences from DF1:
     panel, the halves stay at the window's sides and that panel stretches;
     HUD.DEF points follow their half. INFERRED: the weapon's ammo kind uses
     DF1's weapon type numbers; radar objects use record +0x4C as their
-    shape. Not yet: the wind line, the breath bar, the radar's water blend and
-    nearest-texel sampling.
+    shape. Not yet: the breath bar, the radar's water blend and
+    nearest-texel sampling;
+  - **wind**: fixed for the mission from the BMS header (+0xE8 kph, +0xEC
+    degrees it blows from; DF2.EXE 0x45d3f8), shown as `Wind: SW, 3kph` /
+    `Wind: None`. The `sp_wind` option (default/none/random) only applies in
+    multiplayer. Not yet: its only physical effect, DF2's projectile drag
+    toward the wind velocity (0x44c2f0, per-ammo drag bands; DF1 has no
+    drag), and rain/snow drifting with it.
 - Not yet: the new layer flag
   0x80 (random-then-sequential variants), the speed-of-sound delay for distant
   sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),

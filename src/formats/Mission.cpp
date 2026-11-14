@@ -120,6 +120,10 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         m.terrain = cstr(d, 0x44, 0x10);
         m.dialogue = cstr(d, 0x54, 0x10);
         m.lightFlags = (u32(d, 0x78) & 0x100000) ? 0x10 : 0;
+        // Wind for the whole mission (DF2.EXE 0x45d3f8 -> 0x46bbf0): speed
+        // kph at +0xE8, the direction it blows from in degrees at +0xEC.
+        m.windKph = int(u32(d, 0xE8));
+        m.windDeg = int(u32(d, 0xEC));
     } else {
         m.title = cstr(d, 0x04, 0x28);
         m.author = cstr(d, 0x2C, 0x28);
