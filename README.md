@@ -4,7 +4,7 @@ A cross-platform (Windows / macOS / Linux) reimplementation of the engine of
 NovaLogic's **Delta Force** (1998). It contains no game data. It reads the files
 from your own copy of the CD.
 
-![Jungle terrain DFG1 in the OpenDF viewer](docs/screenshot-jungle.png)
+![Assaulting the radio station in Delta Force mission C03M03](docs/screenshot-df1-radio-station.png)
 
 ## Status
 
@@ -132,17 +132,25 @@ with mouse + WASD:
 | Crosshair / gun on-off | F3 / F4 (original keys) |
 | Debug flight / next mission | N / Tab |
 
-![Firefight at the radio station in C03M03](docs/screenshot-firefight.png)
+![Through the M40's scope in C03M03](docs/screenshot-df1-scope.png)
 
-![Through the M40's scope](docs/screenshot-scope.png)
+![A helicopter at the airfield in Delta Force mission C04M06](docs/screenshot-df1-helicopter.png)
+
+![Delta Force 2 with its own HUD: D03M01 in Antarctica](docs/screenshot-df2-snow.png)
+
+![A Black Hawk in Delta Force 2 mission D03M10](docs/screenshot-df2-blackhawk.png)
+
+![Delta Force 2's command map](docs/screenshot-df2-command-map.png)
+
+![Delta Force 2's campaign screen](docs/screenshot-df2-campaign.png)
 
 Model viewer controls: drag to orbit, mouse wheel to zoom, **Tab / Shift+Tab** for
 the next / previous model, **PageUp / PageDown** to jump 10, **L** to cycle the
 level of detail. The title bar shows the size in metres.
 
-![Rope bridge across a gorge in multiplayer map C08M61](docs/screenshot-mission-bridge.png)
+![The model viewer](docs/screenshot-models.png)
 
-![Ruins on their levelled pad in mission C03M03](docs/screenshot-mission-ruins.png)
+![Ruins in Delta Force mission C03M03](docs/screenshot-df1-ruins.png)
 
 ## Legal
 
