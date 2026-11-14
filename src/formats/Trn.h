@@ -15,6 +15,7 @@ struct TerrainColorType {
 struct TerrainDesc {
     std::string name, creator;
     std::string colorMap, elevMap, detailMap;
+    std::string charData;   // Delta Force 2: char_data, a .CAL surface class per detail tile
     std::string detailColor, detailElev, detailShade;
     std::string skyMap, skyPalette;
     std::string waterMap, waterPalette;

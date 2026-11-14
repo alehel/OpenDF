@@ -352,6 +352,31 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         detail.pixels.assign(size_t(size_) * size_, 0);
     }
     texDetailIdx_ = makeTex2D(size_, size_, GL_R8, GL_RED, detail.pixels.data(), false, false);
+    // Delta Force 2: surfaces from the char_data .CAL, one `name,value` line
+    // per detail tile (DF2.EXE 0x466290): DT dirt 1, GS grass 2, SW snow 3,
+    // RK/CT rock/concrete 4, SD sand 5 (classes 1..5 are OpenDF's surfaces;
+    // RD road 8, MD mud 9, IE ice 10, QS 11 and other names: no effect).
+    // APPROXIMATION: the tile's own line is used; DF2.EXE permutes the
+    // table after loading (0x466686) and reads it through the new indices.
+    if (trueColor && !desc_.charData.empty()) {
+        std::vector<uint8_t> raw;
+        if (vfs.read(withExt(desc_.charData, ".CAL"), raw)) {
+            std::array<uint8_t, 256> cls{};
+            size_t i = 0;
+            std::string text(raw.begin(), raw.end()), line;
+            for (size_t p = 0; p <= text.size() && i < 256; ++p) {
+                if (p < text.size() && text[p] != '\n' && text[p] != '\r') { line += text[p]; continue; }
+                if (line.empty()) continue;
+                std::string name = line.substr(0, line.find(','));
+                for (auto& ch : name) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+                const std::string pre = name.substr(0, 2);
+                const bool digit = name.size() == 3 && name[2] >= '1' && name[2] <= '3';
+                cls[i++] = !digit ? 0 : pre == "DT" ? 1 : pre == "GS" ? 2 : pre == "SW" ? 3 : (pre == "RK" || pre == "CT") ? 4 : pre == "SD" ? 5 : 0;
+                line.clear();
+            }
+            for (size_t c = 0; c < surface_.size() && c < detail.pixels.size(); ++c) surface_[c] = cls[detail.pixels[c]];
+        }
+    }
 
     // Detail tiles: a WxH strip of square WxW tiles stacked vertically.
     IndexedImage dC, dS, dD;

@@ -80,12 +80,26 @@ First differences from DF1:
     with `s = rol(rol(s,11)+s,4) ^ 1` from 0x01234567 (DF2.EXE 0x4614f0),
     undone in `Vfs::read`.
   - Terrain colour maps as JPEG (libjpeg, optional at build time) or TGA.
-- `opendf --game games/DF2 mission KH_DS21` loads and draws (terrain, objects,
-  HUD) with DF1's rules and built-in tables. Not yet: DF2's detail textures
-  (TGA tile strips), sky (TGA palette), `CAL` surface data, `KSA` animations,
-  sounds (no SNIPER.PWF: DF2's banks differ), the new ITEMS.DEF attribute bits
-  (NoTool 0x100, Snap 0x200, PFoil 0x400, Train 0x800, S&D 0x1000, NoCTool
-  0x2000), and everything DF1 reads from DF.EXE (DF2.EXE has other addresses).
+- `opendf --game games/DF2 mission D03M01` (or any `DxxMyy`) loads and plays
+  with DF1's rules and built-in tables, now with:
+  - **soldier animations** from `PLAYER01.KSA` (DF2.EXE 0x41e5e0): 255
+    animations of 88-byte frames (15 part angles, pose extents, feet height,
+    root motion, event), next-animation/frame continuation, no interpolation;
+    posed about the model's mesh pivots with DF2's rotation Rz(a0)Ry(a1)Rx(a2)
+    (0x449df0);
+  - **sounds** from `DF2.PWF` (DF1's PWF2 format) with DF2's table (0x4B85A8,
+    1024 id slots), whole 16-bit WAV samples (DF2 fixed DF1's low-byte bug);
+  - **terrain detail**: a 64-wide TGA strip of 64×64 tiles blended by their
+    alpha, one tile a map cell; the **sky gradient** from column 0 of the TGA
+    sky palette (sampled to 16 steps: APPROXIMATION); **surfaces** from the
+    `char_data` .CAL (DT/GS/SW/RK/CT/SD → dirt/grass/snow/rock/sand; the
+    tile's own line, not DF2.EXE's permuted table: APPROXIMATION).
+- Not yet: DF2's per-mesh hit spheres for soldiers (KSA has no skeleton: DF2
+  uses one sphere per mesh, radius mesh +0x64, 0x44b2f0), the new layer flag
+  0x80 (random-then-sequential variants), the speed-of-sound delay for distant
+  sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),
+  fog keys, the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
+  reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order
 

@@ -37,6 +37,7 @@ bool parseTrn(const std::string& text, TerrainDesc& d) {
         else if (key == "color_map") d.colorMap = val;
         else if (key == "elev_map") d.elevMap = val;
         else if (key == "detail_map") d.detailMap = val;
+        else if (key == "char_data") d.charData = val;
         else if (key == "detail_color") d.detailColor = val;
         else if (key == "detail_elev") d.detailElev = val;
         else if (key == "detail_shade") d.detailShade = val;
