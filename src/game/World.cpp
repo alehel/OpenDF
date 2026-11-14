@@ -158,7 +158,8 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.missionGroup = mo.group;
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
-        o.mapMarker = (mo.raw[19] & 0xFFFF) != 0;
+        o.radarShape = int(int8_t(mo.raw[19] & 0xFF));
+        o.mapMarker = df2Rules ? o.radarShape != 0 : (mo.raw[19] & 0xFFFF) != 0;
 
         o.missionX = mo.x;
         o.missionY = mo.y;
@@ -245,17 +246,27 @@ void World::poseUpdate(WorldObject& o) {
     }
 }
 
+int World::deathMoveNumber(bool df2, bool underWater, int kind, int part, int dir) {
+    if (underWater) return 0xFE;   // Death_Water
+    // Neither game clamps the part; DF2's numbers (170 + 4 part + dir, 230 +
+    // dir, 235, 210, 234) name the same moves as DF1's below.
+    if (kind == 1) return 0xBE + std::max(0, part) * 4 + dir;
+    if (kind == 2) return 0xFA + dir;
+    if (kind == 3) return 0xFF;
+    if (df2 && kind == 4) return 0xBE + 10 * 4;   // Death_B_P11DF (0x415130 case 4: 0xD2)
+    if (df2 && kind == 5) return 0xFE;            // Death_Water (case 5: 0xEA)
+    if (df2) return dir;                          // other kinds return dir
+    return 0xFF;   // DF.EXE returns an undefined value for other kinds (never called with them)
+}
+
 int World::deathMove(int index, int type, int part, Vec3 from) const {
     const WorldObject& o = objects[size_t(index)];
     const float water = terrain->waterLevel();
-    if (water != 0 && water >= o.pos.y) return 0xFE;
     const Vec3 v = nearest(from, o.pos) - o.pos;
     float rel = std::atan2(v.x, -v.z) - o.heading;           // clockwise from the victim's facing
     rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;     // -pi..pi
     const int dir = std::abs(rel) <= kPi / 4 ? 0 : std::abs(rel) >= 3 * kPi / 4 ? 2 : rel < 0 ? 1 : 3;
-    if (type == 1) return 0xBE + std::clamp(part, 0, 14) * 4 + dir;
-    if (type == 2) return 0xFA + dir;
-    return 0xFF;
+    return deathMoveNumber(df2Rules, water != 0 && water >= o.pos.y, type, part, dir);
 }
 
 Vec3 World::nearest(Vec3 p, Vec3 ref) const {

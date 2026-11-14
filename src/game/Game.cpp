@@ -208,6 +208,37 @@ private:
     void tickCharges();
     void blowCharge(Charge& c);
     void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
+    // Shrapnel's random numbers: DF.EXE rand()*2 (0x435db4; its seed call
+    // 0x435dbc is a bare ret); DF2.EXE 0x41ac40 (x = rol(x,11) + x, x =
+    // rol(x,4) ^ 1, 16 bits), reseeded to 0x5FC by every burst (0x41ac30).
+    uint32_t shrapRand() {
+        if (!world_.df2Rules) return uint32_t(std::uniform_int_distribution<int>(0, 0x7fff)(effectRng_) * 2);
+        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+        df2Rng_ = rol(df2Rng_, 11) + df2Rng_;
+        df2Rng_ = rol(df2Rng_, 4) ^ 1;
+        return df2Rng_ & 0xFFFF;
+    }
+    void shrapSeed() { df2Rng_ = 0x5FC; }
+    // Delta Force 2's radar and command-map shapes (0x421510): objects whose
+    // obj+0x6E (signed byte record +0x4C) is non-zero, soldiers aside, at
+    // their live positions (removed ones skipped); records with no world
+    // object (markers) at their BMS positions.
+    struct Df2Shape { const MissionObject* mission; const WorldObject* world; int shape, side; };
+    template <class F> void forDf2Shapes(F&& f) const {
+        std::vector<const WorldObject*> live(mission_.objects.size(), nullptr);
+        for (const auto& o : world_.objects)
+            if (o.missionIndex >= 0 && size_t(o.missionIndex) < live.size()) live[size_t(o.missionIndex)] = &o;
+        for (size_t i = 0; i < mission_.objects.size(); ++i) {
+            const MissionObject& mo = mission_.objects[i];
+            if (mo.group == 3) continue;
+            const WorldObject* w = live[i];
+            if (w && w->removed) continue;
+            const int shape = w ? w->radarShape : int(int8_t(mo.raw[19] & 0xFF));
+            if (!shape) continue;
+            f(Df2Shape{&mo, w, shape, int(int8_t((uint32_t(mo.raw[16]) >> 24) & 0xFF))});
+        }
+    }
+    uint32_t df2Rng_ = 0x5FC;
     // DF2.EXE 0x415490: the big blast (kind 5, 12 m) and 200 fragments, as a
     // satchel (vehicle deaths, ibom).
     void bigBlast(Vec3 at);
@@ -347,6 +378,7 @@ private:
     int playerHp_ = 4;                    // character word +0x74
     // The player's item (0x469ae0): male/female x normal/snow x day/night.
     int playerItem_ = kItemPlayerSoldier;
+    int playerModelItem_ = 0;             // DF2: the gear's model item (0 = the player item's)
     // Dead: the body slides with the death move's root motion from where it
     // fell (0x436158), at the yaw of death; the orbit camera's pivot and base
     // yaw follow it smoothed (0x481184: 1/16 and 1/32 per tick).
@@ -491,16 +523,16 @@ bool Game::loadMission(int index) {
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
         static const int kItems[2][2][2] = {{{5003, 5004}, {5044, 5045}}, {{5010, 5011}, {5046, 5047}}};
         playerItem_ = 100000 + kItems[snow][night][o_.female ? 1 : 0];
+        playerModelItem_ = 0;
         if (mission_.version >= 0x0F) {
-            // Delta Force 2: its player items by name (INFERRED from the
-            // names; DF2.EXE's choice is not traced): LAR V / ghillie gear,
-            // snow, night, female ("player F ...", "playerF1").
-            const std::string f = o_.female ? "player F " : "player ";
-            std::string n = o_.df2Gear == 33 ? f + "Lar V" : o_.df2Gear == 32 ? f + "Ghuilli"
-                          : snow && night ? f + "Snow Night" : snow ? f + "Snow" : night ? f + "Night" : (o_.female ? "playerF1" : "player01");
-            const ItemDef* d = items_.byName(n);
-            if (!d) d = items_.byName("player01");
-            if (d) playerItem_ = d->id;
+            // Delta Force 2 (0x4128d0): by id, the same snow/night tests.
+            static const int kDf2[2][2][2] = {{{5300, 5302}, {5306, 5307}}, {{5304, 5305}, {5308, 5309}}};
+            playerItem_ = 100000 + kDf2[snow][night][o_.female ? 1 : 0];
+            // Gear only changes the drawn model (0x415410): ghillie (32)
+            // 105310/105311, LAR V (33) 105312/105313; it beats snow/night.
+            if (o_.df2Gear == 32) playerModelItem_ = o_.female ? 105311 : 105310;
+            else if (o_.df2Gear == 33) playerModelItem_ = o_.female ? 105313 : 105312;
+            if (!items_.byId(playerModelItem_)) playerModelItem_ = 0;
         }
         if (!items_.byId(playerItem_)) playerItem_ = kItemPlayerSoldier;
     }
@@ -1094,8 +1126,7 @@ void Game::touchPickups() {
 // One shrapnel round (0x44d730): speed ((rand*2) | 0x100) * factor >> 6 in
 // 16.16 m per tick; flags 0x20, 400 ticks, power 1, falloff 64.
 void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor) {
-    std::uniform_int_distribution<int> r(0, 0x7fff);
-    const float speed = float(((r(effectRng_) * 2) | 0x100) * speedFactor >> 6) / 65536.f * 60.f;
+    const float speed = float(int((shrapRand() | 0x100) * uint32_t(speedFactor)) >> 6) / 65536.f * 60.f;
     Projectile p;
     p.pos = at;
     p.from = at;
@@ -1105,6 +1136,7 @@ void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor) {
     p.power = 1;
     p.falloff = 0x40;
     p.flags = 0x20;
+    if (world_.df2Rules) p.gun = 31;   // DF2 0x44ac70: ammo 31 (100 grains; water drag)
     arsenal_.addProjectile(p);
 }
 
@@ -1153,12 +1185,15 @@ void Game::weaponEvent(const WeaponEvent& e) {
 // A placed charge goes off (0x447d28 -> 0x46cdfc satchel: blast type 5,
 // radius 12, 200 shrapnel all round and upward; 0x447cac -> 0x46cc90
 // claymore: blast type 1 and a fan of 160 pieces).
+// Delta Force 2 (0x4572d0 -> 0x415490): 0.2 m higher, seeded.
 void Game::bigBlast(Vec3 at) {
+    if (world_.df2Rules) { at.y += 0x3333 / 65536.f; shrapSeed(); }
     explode(at, 0, true, 12.f);
-    std::uniform_int_distribution<int> r(0, 0x7fff);
-    for (int k = 0; k < 200; ++k)
-        shrapnel(at, float(uint32_t(r(effectRng_) * 2) << 16) / 4294967296.f * 2 * kPi,
-                 float(uint32_t(r(effectRng_) * 2) << 14) / 4294967296.f * 2 * kPi, 0x1E);
+    for (int k = 0; k < 200; ++k) {
+        const float yaw = float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+        const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
+        shrapnel(at, yaw, pitch, 0x1E);
+    }
 }
 
 void Game::startCollapse(int index) {
@@ -1225,12 +1260,12 @@ void Game::blowCharge(Charge& c) {
     o.removed = true;
     o.boxes.clear();
     const Vec3 at = o.pos + Vec3{0, 0.2f, 0};
-    std::uniform_int_distribution<int> r(0, 0x7fff);
     if (c.item == 4020) {
+        if (world_.df2Rules) shrapSeed();
         explode(at, 0, true, 12.f);
         for (int k = 0; k < 200; ++k) {
-            const float yaw = o.heading + float(uint32_t(r(effectRng_) * 2) << 16) / 4294967296.f * 2 * kPi;
-            const float pitch = float(uint32_t(r(effectRng_) * 2) << 14) / 4294967296.f * 2 * kPi;
+            const float yaw = o.heading + float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+            const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
             shrapnel(at, yaw, pitch, 0x1E);
         }
     } else {
@@ -1292,12 +1327,11 @@ void Game::tickCharges() {
             if (len > 1.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
         }
         if (--st.timer == 0) {
-            const Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0.1f, st.target.z};
-            explode(at, 0, true, 12.f);
-            std::uniform_int_distribution<int> r(0, 0x7fff);
-            for (int k = 0; k < 200; ++k)
-                shrapnel(at, float(uint32_t(r(effectRng_) * 2) << 16) / 4294967296.f * 2 * kPi,
-                         float(uint32_t(r(effectRng_) * 2) << 14) / 4294967296.f * 2 * kPi, 0x1E);
+            // DF2 0x458a56: ground + 0x1999; below the water, water + 0x4000;
+            // then the big blast (+0.2 m, 0x4572d0).
+            Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0x1999 / 65536.f, st.target.z};
+            if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
+            bigBlast(at);
         }
     }
     strikes_.erase(std::remove_if(strikes_.begin(), strikes_.end(), [](const Strike& s) { return s.timer <= 0; }), strikes_.end());
@@ -1335,7 +1369,7 @@ void Game::tickAir() {
         if (air_ == 2304 || air_ == 2496 || air_ == 2688) playSound(802, at);
         if (air_ > 2880) {
             const int flash = damageFlash_;
-            hurtPlayer(playerHp_, 0, at);
+            hurtPlayer(playerHp_, 5, at);   // kind 5: drowning (0x458899)
             damageFlash_ = flash;
         }
     } else if (air_ > 60) {
@@ -1354,15 +1388,11 @@ void Game::hurtPlayer(int amount, int deathType, Vec3 from, int part) {
     if (!playerDead() || playerChr_.partCount() == 0) return;
     // 0x45a234: the death move (0x46c920), as for any character.
     const float water = terrain_.waterLevel();
-    int move;
-    if (water != 0 && water >= player_.origin().y) move = 0xFE;
-    else {
-        const Vec3 v = world_.nearest(from, player_.feet) - player_.feet;
-        float rel = std::atan2(v.x, -v.z) - player_.yaw;
-        rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
-        const int dir = std::abs(rel) <= kPi / 4 ? 0 : std::abs(rel) >= 3 * kPi / 4 ? 2 : rel < 0 ? 1 : 3;
-        move = deathType == 1 ? 0xBE + std::clamp(part, 0, 14) * 4 + dir : deathType == 2 ? 0xFA + dir : 0xFF;
-    }
+    const Vec3 v = world_.nearest(from, player_.feet) - player_.feet;
+    float rel = std::atan2(v.x, -v.z) - player_.yaw;
+    rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
+    const int dir = std::abs(rel) <= kPi / 4 ? 0 : std::abs(rel) >= 3 * kPi / 4 ? 2 : rel < 0 ? 1 : 3;
+    const int move = World::deathMoveNumber(world_.df2Rules, water != 0 && water >= player_.origin().y, deathType, part, dir);
     const char* name = moveName(move);
     const AnimMove* mv = name ? playerMoves_.find(name) : nullptr;
     if (!mv) mv = playerMoves_.find("Death_B_P01DF");
@@ -1471,24 +1501,14 @@ void Game::tickEffects() {
 // falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
     explode(at, 0);
-    std::uniform_int_distribution<int> r(0, 0x7fff);
+    if (world_.df2Rules) shrapSeed();   // DF2 0x412b00
     for (int group = 0; group < 2; ++group)
         for (int k = 0; k < shrapnel / 2; ++k) {
-            const uint32_t yawBits = uint32_t(std::lround(heading / (2 * kPi) * 4294967296.0)) + (uint32_t(r(effectRng_) * 2) << 16);
-            const uint32_t pitchBits = uint32_t(r(effectRng_) * 2) << (group ? 16 : 15);
+            const uint32_t yawBits = uint32_t(int64_t(std::lround(heading / (2 * kPi) * 4294967296.0))) + (shrapRand() << 16);
+            const uint32_t pitchBits = shrapRand() << (group ? 16 : 15);
             const float yaw = float(yawBits) / 4294967296.f * 2 * kPi;
             const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
-            const float speed = float(((r(effectRng_) * 2) | 0x100) * 20 >> 6) / 65536.f * 60.f;   // m/s
-            Projectile p;
-            p.pos = at;
-            p.from = at;
-            p.shooter = -1;
-            p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
-            p.lifetime = 0x190;
-            p.power = 1;
-            p.falloff = 0x40;
-            p.flags = 0x20;
-            arsenal_.addProjectile(p);
+            this->shrapnel(at, yaw, pitch, 20);
         }
 }
 
@@ -1865,7 +1885,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920).
     if (playerDead() && !playerBody_.angles().empty())
-        if (const ItemDef* it = items_.byId(playerItem_); it && !it->graphic.empty())
+        if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
                 body.model = bm;
@@ -2594,16 +2614,19 @@ void Game::drawDf2Bottom(const Screen& s) {
                 drawMapMarker(s, mcx + (at.x - c.x) / mPerPx, mcy + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead,
                               blip);
             }
-        // Objects with a radar shape (record +0x4C, INFERRED to be DF2's
-        // obj+0x6e); the current waypoint blinks.
+        // Objects with a radar shape (obj+0x6E, 0x421d2f): at their live
+        // positions; the current waypoint blinks.
         const MissionObject* current = route_.empty() ? nullptr : route_[size_t(routeIndex_)].object;
-        for (const auto& o : mission_.objects) {
-            const int type = o.raw[19] & 0xFFFF;
-            if (!type || o.group == 3) continue;
-            if (&o == current && !(ticks_ & 16)) continue;
-            auto [bx, by] = toRadar(o.x, o.y);
-            drawMapMarker(s, bx, by, type, teamColour(int((uint32_t(o.raw[16]) >> 24) & 0xFF)), 0, false, blip);
-        }
+        forDf2Shapes([&](const Df2Shape& d) {
+            if (d.mission == current && !(ticks_ & 16)) return;
+            float bx, by;
+            if (d.world) {
+                const Vec3 at = world_.nearest(d.world->pos, c);
+                bx = mcx + (at.x - c.x) / mPerPx;
+                by = mcy + (at.z - c.z) / mPerPx;
+            } else std::tie(bx, by) = toRadar(d.mission->x, d.mission->y);
+            drawMapMarker(s, bx, by, d.shape, teamColour(d.side), 0, false, blip);
+        });
         // The player: shape 5 in its team colour (green).
         drawMapMarker(s, mcx, mcy, 5, teamColour(0), player_.yaw, false, blip);
         hud_.unclip();
@@ -2631,7 +2654,8 @@ void Game::drawDf2Bottom(const Screen& s) {
         frameOf(df2Hud_.weap, 22, kWeapFrame[mode], X("gun_icon"), Y("gun_icon"));
     hud_.setBlend(0);
     const ModeDef& md = arsenal_.mode();
-    const int kind = md.type;   // the weapon record's kind (+0x0C); DF1's numbering (INFERRED same)
+    // DF2.EXE 0x447400 / 0x443110: the weapon record's own kind (+0x0C).
+    const int kind = md.type;
     const int clips = arsenal_.spares(), rounds = arsenal_.rounds(), cap = arsenal_.gun().magazine;
     const bool chamber = arsenal_.chambered();
     bool showRounds = false, showChamber = false, clipText = false, ok = true;
@@ -2642,8 +2666,10 @@ void Game::drawDf2Bottom(const Screen& s) {
     case 6: showChamber = true; ok = !arsenal_.firing() && (clips || chamber); break;
     case 7: case 9: showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;
     case 10: clipText = true; ok = fireMissions_ > 0; break;
-    case 11: showChamber = clipText = true; break;
-    default: break;
+    case 11: showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;   // 0x447584[10] = 0x447521
+    // Binoculars: red unless they are up (a *_BIN move: 104, 114, 5).
+    case 12: ok = binoculars_; break;
+    default: if (kind > 12) showRounds = showChamber = clipText = true; break;
     }
     std::string name = arsenal_.modeName();
     char key[16];
@@ -2926,16 +2952,19 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 blipAt(mx + (at.x - c.x) / mPerPx, my + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead);
             }
         const MissionObject* current = route_.empty() ? nullptr : route_[size_t(routeIndex_)].object;
-        for (const auto& o : mission_.objects) {
-            const int type = o.raw[19] & 0xFFFF;
-            if (!type || o.group == 3) continue;
-            const ItemDef* it = items_.byMissionType(o.type);
+        forDf2Shapes([&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
             const std::string kind = it ? it->type : std::string();
-            if ((kind == "building" && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (kind == "marker" && !m.toggles[3])) continue;
-            if (&o == current && !(ticks_ & 16)) continue;
-            auto [bx, by] = toMap(o.x, o.y);
-            blipAt(bx, by, type, teamColour(int((uint32_t(o.raw[16]) >> 24) & 0xFF)), 0, false);
-        }
+            if ((kind == "building" && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (kind == "marker" && !m.toggles[3])) return;
+            if (d.mission == current && !(ticks_ & 16)) return;
+            float bx, by;
+            if (d.world) {
+                const Vec3 at = world_.nearest(d.world->pos, player_.feet);
+                bx = mx + (at.x - c.x) / mPerPx;
+                by = my + (at.z - c.z) / mPerPx;
+            } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
+            blipAt(bx, by, d.shape, teamColour(d.side), 0, false);
+        });
         if (m.toggles[1] && m.toggles[3])
             for (const auto& rp : route_) {
                 auto [bx, by] = toMap(rp.x, rp.y);
@@ -3772,7 +3801,7 @@ int Game::run() {
                 // (the player's flag 1 skips the -1 others get).
                 if (const float vy = player_.takeLanding(); mission_.version >= 0x0F && vy < 0) {
                     const int n = int(-vy / 60.f * 65536.f / 10360.5f);
-                    if (n >= 1) hurtPlayer((1 << std::min(n, 20)) - 1, 0, player_.feet);
+                    if (n >= 1) hurtPlayer((1 << std::min(n, 20)) - 1, 4, player_.feet);   // kind 4 (0x43f645)
                 }
                 if (static bool once = false; !once && std::getenv("OPENDF_TESTBLD2") && ticks_ > 30) {
                     once = true;
@@ -3794,7 +3823,7 @@ int Game::run() {
                 world_.playerBody.heading = player_.yaw;
                 if (!playerBody_.angles().empty()) {
                     if (!playerChr_.ksa()) world_.playerBody.spheres = playerChr_.spheres(playerBody_.angles());
-                    else if (const ItemDef* it = items_.byId(playerItem_); it && !it->graphic.empty())
+                    else if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
                         if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty())
                             world_.playerBody.spheres = World::ksaSpheres(*bm, playerChr_, playerBody_.angles(), 0.f);
                 }

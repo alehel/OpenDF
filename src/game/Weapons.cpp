@@ -774,27 +774,60 @@ void Arsenal::moveProjectiles(float dt, World& world) {
     // the nearest hit stops it (no penetration); otherwise move, gravity
     // 0xb2 per tick² (not the LAW), age one tick; gone after its lifetime in
     // ticks or below -1 m.
+    // The death move's direction: DF.EXE from the shooter; DF2.EXE 0x44c063
+    // from the round's reversed velocity.
+    auto hitFrom = [&](const Projectile& p, const RayHit& h) { return df2_ ? h.point - p.vel : p.from; };
     for (auto& b : bullets_) {
         int passes = 0;   // DF2: up to 20 hits in a tick (penetration)
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
             bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter, true, true);
+            // DF2 0x44c391: a round under the water slower than 0x4000 a tick
+            // (grenades excepted) is spent after this tick's trace.
+            bool spent = false;
+            if (const float w = world.terrain->waterLevel(); df2_ && w != 0 && b.pos.y < w && !(b.flags & 0x1000))
+                spent = std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f;
+            Vec3 stopAt{};
+            bool stopped = false;   // DF2: the tick ends at the water
             // Water (0x44f0e4, tested after terrain and objects; the nearest
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
             // ends there (0x44fc20): nothing travels under water.
             if (const float w = world.terrain->waterLevel(); w != 0 && df2_) {
-                // Delta Force 2: rounds go on under the water (drag rises with
-                // depth); crossing the surface from above splashes there
-                // (INFERRED from 0x44bd40 being one hit type among others and
-                // the under-water speed cut below; the hit code is not traced).
-                if (b.pos.y > w && next.y <= w) {
-                    const float t = (b.pos.y - w) / (b.pos.y - next.y);
-                    if (!hitSomething || t < hit.t) {
-                        Impact im{b.pos + (next - b.pos) * t, -2, -1};
+                // Delta Force 2 (0x44bd40, hit type 4 of 0x44c2f0, the nearest
+                // wins): crossing down at (z0 - w)/|uz|; rising, at the negative
+                // distance -(w - z0)/uz, which always wins; under water, no
+                // test. Handler 0x44cee5: the point 0x4000 back along the path;
+                // explosives (0x851) blast (type 1, effect 4) or, an M203 within
+                // 8 ticks, splash; other rounds splash (effect 2, sound 0x3B)
+                // and the tick ends 0x6000 further on (0.125 m past the surface),
+                // velocity kept (a delay grenade's zeroed). So rounds go on
+                // under the water and never come back out.
+                const Vec3 seg = next - b.pos;
+                const float len = std::sqrt(dot(seg, seg));
+                const bool down = b.pos.y > w && next.y < w, up = b.pos.y < w && next.y > w;
+                if (len > 0 && (down || up)) {
+                    const Vec3 u = seg * (1.f / len);
+                    const float d = down ? (b.pos.y - w) / std::abs(u.y) : -(w - b.pos.y) / u.y;
+                    if (up || !hitSomething || d < hit.t * len) {
+                        const Vec3 at = b.pos + u * (d - 0x4000 / 65536.f);
+                        if (b.flags & 0x851) {
+                            Impact im{at, -2, -1};
+                            im.explosive = true;
+                            im.armed = !(b.age <= 8 && !(b.flags & 0x50));
+                            im.flags = b.flags;
+                            impacts_.push_back(im);
+                            b.age = b.lifetime;
+                            break;
+                        }
+                        Impact im{at, -2, -1};
                         im.flags = b.flags;
                         impacts_.push_back(im);
+                        stopAt = at + u * (0x6000 / 65536.f);
+                        stopped = true;
+                        hitSomething = false;
+                        if (b.flags & 0x1000) b.vel = {0, 0, 0};
                     }
                 }
             } else if (const float w = world.terrain->waterLevel(); w != 0) {
@@ -873,7 +906,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     dmg *= hit.part == 2 ? 8 : 1;
                     if (hit.object == -3) { if (dmg > 0) playerHits_.push_back({dmg, hit.part, b.from}); }
                     else
-                        world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                        world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
                 } else if (df2_ && hit.object >= 0) {
                     // Objects (0x44bff0): an item whose second hp value is below
                     // 0 stops the round unharmed; buildings take nothing;
@@ -888,7 +921,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         if (it->type == "vehicle") dmg = (b.flags & 0x40) ? 64 : (b.flags & 0x11) ? 16 : 0;
                         else dmg = df2Damage(b);
                     }
-                    if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                    if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
                     // Penetration (0x44c2f0 -> 0x44bdd0): the face's material
                     // costs 100 (Flesh item, checked first), metal 200, wood 90,
                     // stone 500, bush 10, armour 2000, canvas 5, 0x10000000 10;
@@ -933,7 +966,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     WorldObject& target = world.objects[size_t(hit.object)];
                     const int before = target.hp;
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
-                                 world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                                 world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
                     // Helicopters (0x47cc36): a hit on the tail rotor (mesh 3/4) or
                     // mesh 6 gives 1 hp back. (DF.EXE also counts tail hits toward a
                     // tail-rotor failure, 0x47d0bc, not in OpenDF.)
@@ -956,17 +989,16 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
                     sounds_.push_back({0x41, b.pos + d * t});
             }
-            b.pos = next;
+            b.pos = stopped ? stopAt : next;
             if (df2_) {
                 // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
                 // for a delay grenade under the water), then drag toward the
-                // wind; under the water a round slower than 0x4000 a tick
-                // (15.5 m/s) is spent (grenades excepted).
+                // wind (the water's coefficient below the surface).
                 const float w = world.terrain->waterLevel();
                 const bool under = w != 0 && b.pos.y <= w;
                 if (!(b.flags & 0x40)) b.vel.y -= ((b.flags & 0x1000) && under ? 0x14 : 0xa7) * 60.f / 65536.f * 60.f * kTick;
                 df2Drag(b, w);
-                if (under && !(b.flags & 0x1000) && std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f) b.age = b.lifetime;
+                if (spent) b.age = b.lifetime;
             } else if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
             ++b.age;
             // The delay grenade explodes (type 1) once its lifetime is 10 or less.

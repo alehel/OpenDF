@@ -37,6 +37,7 @@ struct WorldObject {
     // position in mission coordinates.
     int missionGroup = -1, team = 0, side = 0;
     bool mapMarker = false;            // record +0x4C nonzero: shown on the command map
+    int radarShape = 0;                // Delta Force 2: obj+0x6E = signed byte record +0x4C (0x403590)
     double missionX = 0, missionY = 0;
     bool alive() const { return !dead && !removed && !wrecked; }
     // People: the .CHR hit spheres of their current pose (standing until
@@ -149,6 +150,10 @@ public:
     // 3 0xFF. Direction: where the attacker is, 0 front, 1 left, 2 back,
     // 3 right of the victim.
     int deathMove(int index, int type, int part, Vec3 from) const;
+    // The death move number (DF1 numbering, played by name) for kind 1
+    // round/knife (part, dir), 2 blast, 3 fire, and Delta Force 2's 4 (fall /
+    // contact) and 5 (drowning); DF.EXE 0x46c920, DF2.EXE 0x415130.
+    static int deathMoveNumber(bool df2, bool underWater, int kind, int part, int dir);
     // Starts a person's move by DF.EXE number; false if their .ANM lacks it.
     bool startMove(WorldObject& o, int number);
     // Keeps a person in a move (obj+0x7c vs +0x80): starts it if it changed.
