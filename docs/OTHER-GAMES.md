@@ -192,8 +192,13 @@ First differences from DF1:
     wind by the ammo's speed band and the curve (×(1 + depth/10) under water,
     at most 0.5 a tick), rounds under the water spent below 15.5 m/s; people
     take max(1, |v|²·M / 25) (×8 head, 0x44bf40/0x44bff0); the MasterKey's
-    12 pellets within ±5.625°; the Barrett's 1/32 m push. INFERRED: bullets
-    carry on under the water and splash where they cross it. Not yet: Kevlar
+    12 pellets within ±5.625°; the Barrett's 1/32 m push. Water (0x44bd40,
+    hit type 4, handled at 0x44cee5): a round crossing the surface splashes
+    (effect 2, sound 0x3B) and its tick ends 0.125 m below it, velocity kept,
+    so rounds go on under the water (and a rising one is pushed back down);
+    explosives blast there (type 1, effect 4) or, an M203 within 8 ticks,
+    splash. The death move's direction comes from the round's reversed
+    velocity (0x44c063). Not yet: Kevlar
     (75·(n+1) energy), people's health scale, objects' damage, explosions,
     scope zeroing (X/Z), DF2's loadout screen. Since then: Kevlar for the
     player (Armor: a round first spends 75·(n+1) energy on parts 0/1,
@@ -205,8 +210,13 @@ First differences from DF1:
     objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
     that must reach the item's third hp value. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
-    hits a tick). Not yet: shrapnel counts (the delay grenade, the M203
-    arming and fall damage are covered below).
+    hits a tick). Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
+    and speeds, but fragments are ammo 31 and DF2's random generator 0x41ac40
+    is reseeded to 0x5FC by every burst (DF1's seed call is empty), so each
+    burst has the same pattern about its heading; big blasts 0.2 m up, the
+    fire-mission shell kept above the water. Death moves (0x415130): DF1's
+    names, plus kind 4 (falls: Death_B_P11DF) and 5 (drowning: Death_Water),
+    no part clamp; soldiers landing hard take (1 << n) − 1 (0x43f600).
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
@@ -319,10 +329,14 @@ First differences from DF1:
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:
-  - *unverified guesses* (INFERRED, listed above): ammo-display kinds by
-    DF1's type numbers, radar shapes from record +0x4C, rounds under water,
-    the player's parachute start, teleported paratroopers' chutes,
-    bld2's square footprint;
+  - *unverified guesses* (INFERRED, listed above): the player's parachute
+    start and teleported paratroopers' chutes (no setter found in DF2.EXE;
+    the missions' 100 m+ drops only make sense with them);
+  - *settled since*: the ammo display's kinds (DF2's own record +0x0C, with
+    grenades red while firing or empty and binoculars red unless up), radar
+    shapes (signed byte +0x4C, live positions, 0x403590 / 0x421510), rounds
+    under water, the player item by id (0x4128d0: 105300..105309; ghillie /
+    LAR V only change the drawn model, 0x415410);
   - *approximations*: the sky gradient's row rate (16 steps), the smk2 dust
     cloud drawn as a smoke puff, CAL classes per tile line;
   - *done since*: the player's fall damage (0x43f600), the M203 arming
@@ -330,10 +344,9 @@ First differences from DF1:
   - *done since*: the delay grenade's slide and fuse, the command map's
     Team tab with squad orders, the front end's keyboard page, credits,
     voice briefing, slider dragging and screen timing;
-  - *not yet*: shrapnel counts per explosion; fog_level / fog_color (unused
-    on the disc); the command map's W/D/contour tools and Players/Weapons
-    tabs (multiplayer-oriented); multiplayer (out of scope); the death-move
-    table's DF2 numbering (DF1's names are used).
+  - *not yet*: fog_level / fog_color (unused on the disc); the command
+    map's W/D/contour tools and Players/Weapons tabs; multiplayer (out of
+    scope).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
     differences, READ): fire also needs under 128 m at night, no parachute,
     no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more
@@ -349,8 +362,8 @@ First differences from DF1:
     avoid-water bit; any order holds position. Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
     vehicle guns mode 53. The player is DF2's `player01` (105300, hp 8) or
-    its snow, night, female, LAR V and ghillie variants by name (INFERRED
-    choice);
+    its snow, night and female variants by id (0x4128d0), the ghillie and
+    LAR V models drawn in their place (0x415410);
   - **delay grenade** (0x44ae50): no impact fuse; it slides off object
     faces (v −= n·(v·n)·1.07, × 0.85), stops on other surfaces, and goes
     off (type 1) with 10 ticks of its 444 − rand(127) left.
