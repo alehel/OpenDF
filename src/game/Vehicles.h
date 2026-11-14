@@ -6,6 +6,7 @@
 #pragma once
 
 #include "../formats/Mission.h"
+#include "Ai.h"
 #include "Weapons.h"
 #include "World.h"
 
@@ -21,9 +22,10 @@ class AiSystem;
 class VehicleSystem {
 public:
     void init(World& world, const Mission& mission);
-    struct Target { bool alive; Vec3 at; int side; };
     // One 60 Hz tick. `player` is the player as a target for door guns.
-    void tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem& sound, const Target& player);
+    void tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem& sound, const AiSystem::PlayerView& player);
+    // A smoke puff (0x480aac) at a point: a damaged tail rotor.
+    std::function<void(Vec3 at)> smoke;
     // A vehicle was destroyed: blast with shrapnel (0x46cb64 with n pieces)
     // at a point and heading (set by the game).
     std::function<void(Vec3 at, int shrapnel, float heading)> detonate;
@@ -59,20 +61,30 @@ private:
         bool hasHome = false;
         float bank = 0, yawRate = 0;
         float floorHeight = 0;
-        int gunTarget = -1;       // world object, -3 the player
-        Vec3 gunAcquired{0, 0, 0};
+        int gunTarget = -1;       // ai+0x44: world object, -3 the player
+        Vec3 lastKnown{0, 0, 0};  // ai+0x48: aimed and fired at
+        Vec3 acquiredAt{0, 0, 0}; // obj+0xBC: own position when the target was taken
+        bool seen = false, deadSeen = false;   // ai+0x24 0x80 / 0x40
+        int losTimer = 0, giveUp = 0;          // ai+0x40, ai+0x38 (thinks)
+        float perception = 1, fovHalf = 0;     // ai+0x74, ai+0x98 (radians)
+        int alert = 0;                         // ai+0x9C
         // Door gun relative to the body in DF.EXE's sense (radians; yaw
         // anticlockwise from the nose, pitch up +): current +0xC4/+0xC8 and
         // target +0xCC/+0xD0.
         float gunYaw = 0, gunPitch = 0, bias = 0;
         float gunTgtYaw = 0, gunTgtPitch = 0;
         bool gunInit = false;
-        int burst = 0, pause = 0, wait = 0, fireTimer = 0, cooldown = 0;
+        int burst = 0, pause = 0;  // ai+0x6C, ai+0x90
         int lastHp = 0;
     };
     void drive(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
-    void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound, const Target& player);
+    void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound);
+    void heloTargeting(World& world, AiSystem& ai, Vehicle& v);
+    Vec3 gunPoint(const World& world, const Vehicle& v) const;
+    Vec3 targetPosition(const World& world, int t) const;
+    bool targetAlive(const World& world, int t) const;
+    AiSystem::PlayerView player_;
     bool pathStep(World& world, AiSystem& ai, Vehicle& v);
     uint32_t rnd() { return uint32_t(rng_() & 0x7fff) * 2; }
 

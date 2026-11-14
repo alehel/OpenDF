@@ -656,8 +656,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // mesh 6 gives 1 hp back. (DF.EXE also counts tail hits toward a
                     // tail-rotor failure, 0x47d0bc, not in OpenDF.)
                     if (target.model && target.model->lodCodes[0] == "helo" && (hit.mesh == 3 || hit.mesh == 4 || hit.mesh == 6) &&
-                        target.hp < before && !target.dead)
+                        target.hp < before && !target.dead) {
                         ++target.hp;
+                        if (hit.mesh != 6) ++target.tailHits;   // +0xD4 (mesh 6: +0xD8, never read)
+                    }
                 }
                 b.age = b.lifetime;
                 break;

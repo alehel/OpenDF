@@ -156,15 +156,13 @@ void AiSystem::bark(World& world, const Person& p, SoundSystem& sound, int slot)
 // Target score (0x46a804): field of view, 100 m / distance, line of sight,
 // the target's move visibility, x6 if it fired lately; the best score x
 // perception (>> 2 when relaxed) against a random draw.
-bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
-    const WorldObject& self = world.objects[size_t(p.object)];
-    const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
-    const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
+float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float heading, int side, float half, const PlayerView& player,
+                           int& bestId, Vec3& bestPos) const {
     float best = 0;
-    int bestId = -1;
-    Vec3 bestPos{0, 0, 0};
+    bestId = -1;
+    struct { float heading; int side; } self{heading, side};
     auto consider = [&](int id, Vec3 at, int side, int move, bool fired) {
-        if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "scan %d side %d cand %d side %d\n", p.object, self.side, id, side);
+        if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "scan %d side %d cand %d side %d\n", selfId, self.side, id, side);
         if (side == 0 || side == self.side) return;
         const Vec3 tp = world.nearest(at, eye);
         float diff = headingTo(eye, tp) - self.heading;
@@ -173,7 +171,7 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
         const float d = len3(tp - eye);
         if (d >= 1000.f || d < 0.01f) return;
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  in fov, d %.1f\n", d);
-        if (!lineOfSight(world, eye, tp, p.object)) return;
+        if (!lineOfSight(world, eye, tp, selfId)) return;
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  visible\n");
         float score = (half - std::abs(diff)) / half * (100.f / d) * moveVisibility(move) * (fired ? 6.f : 1.f);
         if (score > best) best = score, bestId = id, bestPos = tp;
@@ -181,14 +179,24 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
     if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_);
     for (size_t i = 0; i < world.objects.size(); ++i) {
         const WorldObject& o = world.objects[i];
-        if (!o.person || !o.alive() || int(i) == p.object) continue;
+        if (!o.person || !o.alive() || int(i) == selfId) continue;
         const Person* q = nullptr;
         for (const auto& x : people_)
             if (x.object == int(i)) q = &x;
         consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired);
     }
+    return best;
+}
+
+bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
+    const WorldObject& self = world.objects[size_t(p.object)];
+    const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
+    const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
+    int bestId = -1;
+    Vec3 bestPos{0, 0, 0};
+    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos);
     float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
-    if (p.alert != 2) score *= 0.25f;
+    if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
     if (bestId == -1 || float(rnd()) >= score * 65536.f) return false;
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d (team %d) spots %d at %.0f m, score %.3f\n", p.object, self.team, bestId, len3(bestPos - eye), score);

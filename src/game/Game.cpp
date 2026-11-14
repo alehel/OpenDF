@@ -371,6 +371,7 @@ bool Game::loadMission(int index) {
     ai_.hard = (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
+    vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
 
     player_ = Player{};
     player_.moves = &playerMoves_;
@@ -2426,7 +2427,7 @@ int Game::run() {
                     pv.side = kPlayerSide;
                     pv.team = kPlayerTeam;
                     ai_.tick(world_, arsenal_, sound_, pv);
-                    vehicles_.tick(world_, ai_, arsenal_, sound_, {pv.alive, pv.origin, pv.side});
+                    vehicles_.tick(world_, ai_, arsenal_, sound_, pv);
                 }
                 // plyr (0x45a27c): every 64 ticks the route's points count as
                 // reached for the player's side.

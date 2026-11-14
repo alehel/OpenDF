@@ -36,6 +36,14 @@ public:
         int moveNumber = 2;     // DF move number (visibility / aim factors)
         int side = 1, team = 1;
     };
+    // The target scan 0x46a804 (soldiers and helicopters): the best enemy by
+    // field of view (half angle `half`, radians), 100 / distance, line of
+    // sight, the target's move visibility and x6 if it fired lately; before
+    // perception and the relaxed quarter. Returns the score, 0 if none.
+    float bestTarget(const World& world, int self, Vec3 eye, float heading, int side, float half, const PlayerView& player,
+                     int& id, Vec3& at) const;
+    // 0x45be04 (see Ai.cpp).
+    bool lineOfSight(const World& world, Vec3 a, Vec3 b, int self) const;
     // One 60 Hz tick: people move (their move's speed along their heading)
     // and think when their timer runs out.
     void tick(World& world, Arsenal& shots, SoundSystem& sound, const PlayerView& player);
@@ -95,7 +103,6 @@ private:
     void think(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player);
     void patrol(World& world, Person& p);
     bool scan(World& world, Person& p, const PlayerView& player);
-    bool lineOfSight(const World& world, Vec3 a, Vec3 b, int self) const;
     Vec3 targetPos(const World& world, const Person& p, const PlayerView& player) const;
     bool targetAlive(const World& world, const Person& p, const PlayerView& player) const;
     void fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player, bool followUp);
