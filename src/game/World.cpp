@@ -642,6 +642,19 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
     if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
     if (o.hp > 0) return {};
+    if (df2Rules && o.item->aiFunction == "bld2") {
+        // DF2.EXE 0x4028d0: the collapse runs over 64 thinks; the husk at step 8.
+        o.hp = 0;
+        o.collapse = 0;
+        destroyed_.push_back(index);
+        return o.item->name + " destroyed";
+    }
+    applyHusk(index);
+    return o.item->name + " destroyed";
+}
+
+void World::applyHusk(int index) {
+    WorldObject& o = objects[size_t(index)];
     if (o.husk) {
         o.model = o.husk;
         o.husk = nullptr;
@@ -650,11 +663,10 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.removed = true;
     }
     o.hp = 0;
-    destroyed_.push_back(index);
+    if (o.collapse < 0) destroyed_.push_back(index);
     // An explosive barrel goes off 10 ticks after it is destroyed (0x45a3c0).
     if (o.item->aiFunction == "brrl" && o.detonate < 0) o.detonate = 10;
     refreshBoxes(o);
-    return o.item->name + " destroyed";
 }
 
 // Blasts (0x45019a..0x450492), distances by DF.EXE's approximate length

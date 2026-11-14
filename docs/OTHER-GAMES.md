@@ -247,6 +247,19 @@ First differences from DF1:
     green; Mission tab: MBBRIEF in 0xc06000. Not yet: the W waypoint tool,
     the elevation and contour views, selecting objects, the Players, Team
     (squad orders) and Weapons tabs.
+  - **item behaviours** (DF2.EXE ai table 0x4a4030): snd3 ambient markers
+    (acceleration·64 + rand·axle_dist·64 ticks, at the marker, 0x402730);
+    bld2 buildings (their sound as dec0's; destroyed: everyone and every
+    vehicle within the model's ±flat radius / ±height loses 100 hp, then 64
+    steps one per 8 ticks: two rubble bursts a step (effect 0x13 = item 7030,
+    sound 0x32 delayed) for clamp(area/64 + 4, 8, 48) steps, dust and smoke
+    from step 4, the husk at step 8, a ±500 m noise for the AI; 0x4028d0);
+    gnrl breaks silently (0x4012b0); smok one puff (0x402550); ibom the kind-5
+    blast with 200 fragments (0x401240 → 0x4572d0); DF2's effect table (0x414500:
+    DF1's 16 plus 17 rain, 18 snow, 19 gex5, 20 boomd, 21/22 parachutes,
+    23-27). APPROXIMATION: the footprint is the flat-radius square, and the
+    smk2 dust cloud is drawn as OpenDF's smoke puff. `OPENDF_TESTBLD2=1`
+    destroys a mission's first bld2 at tick 30 (testing).
 - Not yet: X/Z scope zeroing, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 

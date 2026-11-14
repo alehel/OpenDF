@@ -62,6 +62,7 @@ struct WorldObject {
     float rotorSpeed = 0;
     float steer = 0;
     float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5
+    int collapse = -1;                 // DF2 bld2: collapse step (0..64), -1 none
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
@@ -125,6 +126,9 @@ public:
     // Delta Force 2's rules (DF2.EXE): explosion damage (0x44d4a0), bullet
     // damage to objects (0x44bff0). Set by the game for DF2 missions.
     bool df2Rules = false;
+    // Swaps a destroyed object to its husk (or removes it), as damage() does
+    // at once in DF1; DF2's collapsing buildings do it at step 8.
+    void applyHusk(int index);
     // Knife (blast kind 2, 0x44ffd0, radius 1 m): every living person whose
     // body origin is within 2 m (radius + 1 m) of `at` loses 8 hit points,
     // whatever the armour; no line of sight; among objects only the piranha

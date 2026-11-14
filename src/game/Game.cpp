@@ -208,6 +208,14 @@ private:
     void tickCharges();
     void blowCharge(Charge& c);
     void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
+    // DF2.EXE 0x415490: the big blast (kind 5, 12 m) and 200 fragments, as a
+    // satchel (vehicle deaths, ibom).
+    void bigBlast(Vec3 at);
+    // DF2's bld2 collapse (0x4028d0): crush, then 64 steps one per 8 ticks.
+    struct Collapse { int object, step, wait, rubble, dust, smoke; };
+    std::vector<Collapse> collapses_;
+    void startCollapse(int index);
+    void tickCollapses();
     int carried_ = -1;                    // the object the player carries (+0x90)
     bool leaveMission_ = false, quit_ = false;
 public:
@@ -596,6 +604,7 @@ bool Game::loadMission(int index) {
     briefingShown_ = helpShown_ = false;
     charges_.clear();
     strikes_.clear();
+    collapses_.clear();
     fireMissions_ = mission_.fireMissions;
     laserWindow_ = 0;
     {
@@ -649,7 +658,10 @@ bool Game::loadMission(int index) {
             const auto& o = world_.objects[i];
             if (!o.item || o.item->interruptSound <= 0) continue;
             const std::string& f = o.item->aiFunction;
-            if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2") && o.missionIndex >= 0) {
+            // Delta Force 2 adds snd3 (random ambient markers, 0x402730) and
+            // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0).
+            if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
+                o.missionIndex >= 0) {
                 // First wait (0x440071): a counter mod 60, the counter going
                 // up 11 per object loaded, in file order.
                 const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
@@ -816,9 +828,13 @@ void Game::useHudMode(int modeW) {
 
 // Effect slots (DF.EXE table 0xab3400) -> ITEMS.DEF items.
 void Game::spawnEffect(int slot, Vec3 pos) {
-    static const int kItems[17] = {0, 107016, 107015, 107013, 107014, 107001, 107002, 107003, 107004,
-                                   107005, 107006, 107007, 107008, 107009, 107010, 107011, 107012};
-    if (slot < 1 || slot > 16) return;
+    static const int kItems[28] = {0, 107016, 107015, 107013, 107014, 107001, 107002, 107003, 107004,
+                                   107005, 107006, 107007, 107008, 107009, 107010, 107011, 107012,
+                                   // Delta Force 2 (table 0xbb8b20, built at 0x414500): 17 rain poink,
+                                   // 18 snow, 19 gex5, 20 boomd, 21 parachut, 22 pararnd, 23-27.
+                                   107017, 107018, 107030, 107023, 107037, 107038, 107044, 105311, 105310, 105313, 105312};
+    const int count = mission_.version >= 0x0F ? 27 : 16;
+    if (slot < 1 || slot > count) return;
     const ItemDef* item = items_.byId(kItems[slot]);
     if (!item || item->graphic.empty()) return;
     const GpuModel* m = models_.get(vfs_, item->graphic);
@@ -1079,6 +1095,73 @@ void Game::weaponEvent(const WeaponEvent& e) {
 // A placed charge goes off (0x447d28 -> 0x46cdfc satchel: blast type 5,
 // radius 12, 200 shrapnel all round and upward; 0x447cac -> 0x46cc90
 // claymore: blast type 1 and a fan of 160 pieces).
+void Game::bigBlast(Vec3 at) {
+    explode(at, 0, true, 12.f);
+    std::uniform_int_distribution<int> r(0, 0x7fff);
+    for (int k = 0; k < 200; ++k)
+        shrapnel(at, float(uint32_t(r(effectRng_) * 2) << 16) / 4294967296.f * 2 * kPi,
+                 float(uint32_t(r(effectRng_) * 2) << 14) / 4294967296.f * 2 * kPi, 0x1E);
+}
+
+void Game::startCollapse(int index) {
+    WorldObject& o = world_.objects[size_t(index)];
+    // Crush box (0x454c10): everyone (and every vehicle) whose origin is
+    // within +-R across and +-H up and down of the building loses 100 hp.
+    const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
+    for (size_t j = 0; j < world_.objects.size(); ++j) {
+        WorldObject& t = world_.objects[j];
+        if (int(j) == index || !t.alive() || !(t.person || (t.item && t.item->type == "vehicle"))) continue;
+        const Vec3 p = world_.nearest(t.pos, o.pos);
+        if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh)
+            if (auto m = world_.damage(int(j), 100, 0x7fff, world_.deathMove(int(j), 2, 0, o.pos)); !m.empty()) pushMessage(m);
+    }
+    {
+        const Vec3 p = world_.nearest(player_.origin(), o.pos);
+        if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh) hurtPlayer(100, 2, o.pos);
+    }
+    // First think: footprint area / perimeter from the model box (2R square,
+    // APPROXIMATION: the model's own box is not kept per axis): rubble
+    // steps clamp(area/64 + 4, 8, 48), dust 2·perimeter, smoke half the
+    // area term.
+    const float area = 4 * R * R, perim = 8 * R;
+    const int rubble = std::clamp(int(area / 64.f) + 4, 8, 48);
+    collapses_.push_back({index, 0, 0, rubble, int(2 * perim), rubble / 2});
+    // Step 0's "noise" (0x412840, +-500 m): heard by the AI (INFERRED).
+    ai_.shotFired(o.pos, 500.f, 0, -1);
+}
+
+// One think per 8 ticks (buildings are visited 1/8 per tick, 0x440180).
+void Game::tickCollapses() {
+    std::uniform_real_distribution<float> u(-1.f, 1.f);
+    for (auto& c : collapses_) {
+        if (c.step >= 64 || --c.wait > 0) continue;
+        c.wait = 8;
+        WorldObject& o = world_.objects[size_t(c.object)];
+        const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
+        if (c.step < c.rubble)
+            for (int k = 0; k < 2; ++k) {
+                // A rubble burst on the footprint edge (odd steps the y edges):
+                // effect 0x13 and sound 0x32 through the delay queue.
+                const float t = u(effectRng_) * R, e = (k ? 1.f : -1.f) * R;
+                const Vec3 at = o.pos + ((c.step & 1) ? Vec3{t, 0, e} : Vec3{e, 0, t});
+                spawnEffect(0x13, at);
+                sound_.playDelayed(0x32, at);
+            }
+        if (c.step > 3) {
+            // Dust clouds (smk2 0x414220) and smoke puffs (0x413e80): OpenDF's
+            // smoke puff for both (APPROXIMATION: the smk2 cloud is not drawn).
+            for (int k = 0; k < 12 && c.dust > 0; ++k, --c.dust)
+                if (k % 4 == 0) spawnPuff(o.pos + Vec3{u(effectRng_) * R, 0, u(effectRng_) * R});
+            if (c.dust <= 0)
+                for (int k = 0; k < 6 && c.smoke > 0; ++k, --c.smoke)
+                    spawnPuff(o.pos + Vec3{u(effectRng_) * R / 2, std::abs(u(effectRng_)) * Hh / 16, u(effectRng_) * R / 2});
+        }
+        if (c.step == 8) world_.applyHusk(c.object);   // flags |= 8: the husk
+        ++c.step;
+    }
+    collapses_.erase(std::remove_if(collapses_.begin(), collapses_.end(), [](const Collapse& c) { return c.step >= 64; }), collapses_.end());
+}
+
 void Game::blowCharge(Charge& c) {
     WorldObject& o = world_.objects[size_t(c.object)];
     o.removed = true;
@@ -3455,6 +3538,15 @@ int Game::run() {
                 }
             }
             for (int i : world_.takeDestroyed()) {
+                if (mission_.version >= 0x0F) {
+                    // Delta Force 2's new ai_functions on destruction.
+                    const WorldObject& d = world_.objects[size_t(i)];
+                    const std::string f = d.item ? d.item->aiFunction : std::string();
+                    if (f.rfind("gnrl", 0) == 0) continue;   // 0x4012b0: silent, no barrel, no sound
+                    if (f.rfind("smok", 0) == 0) { spawnPuff(d.pos); continue; }   // 0x402550: one dark puff
+                    if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos); continue; }    // 0x401240 -> 0x4572d0
+                    if (f.rfind("bld2", 0) == 0) { startCollapse(i); continue; }   // 0x4028d0
+                }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
                     {1001, 0x135}, {1002, 0x136}, {1039, 0x137}, {1040, 0x138}, {1041, 0x13F}, {1042, 0x145}, {1044, 0x146},
@@ -3471,7 +3563,17 @@ int Game::run() {
                 tickEffects();
                 tickDialogs();
                 touchPickups();
-                if (mission_.version >= 0x0F) tickAir();
+                if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); }
+                if (static bool once = false; !once && std::getenv("OPENDF_TESTBLD2") && ticks_ > 30) {
+                    once = true;
+                    for (size_t j = 0; j < world_.objects.size(); ++j)
+                        if (world_.objects[j].item && world_.objects[j].item->aiFunction.rfind("bld2", 0) == 0) {
+                            const auto& o = world_.objects[j];
+                            std::fprintf(stderr, "bld2 %s at mission (%.1f, %.1f)\n", o.item->name.c_str(), o.pos.x, -o.pos.z);
+                            if (auto m = world_.damage(int(j), 100000, 0x7fff); !m.empty()) pushMessage(m);
+                            break;
+                        }
+                }
                 sound_.tickDelayed();
                 arsenal_.underwaterRule = mission_.version >= 0x0F;
                 arsenal_.waterLevel = terrain_.waterLevel();
@@ -3555,13 +3657,17 @@ int Game::run() {
                     const auto& o = world_.objects[size_t(a.object)];
                     const std::string& f = o.item->aiFunction;
                     Vec3 at = o.pos;
-                    const bool sound = f.rfind("snd", 0) == 0;
+                    const bool sound = f.rfind("snd", 0) == 0;   // snd0..3: at the marker itself
                     if (!sound) at.y += 4.f;
                     if (f == "tree" && !o.alive()) { a.wait = 0x400; continue; }
                     if (o.alive() || sound) playSound(o.item->interruptSound, at);
                     const int r = crtRand() * 2;
                     a.wait = f == "snd0" ? (((r * 6) >> 16) + 20) << 6 : f == "snd1" ? (((r * 4) >> 16) + 8) << 6
                            : f == "snd2" ? (((r * 2) >> 16) + 3) << 6 : ((r >> 14) + 5) << 6;
+                    // snd3 (0x402730): acceleration·64 + rand·axle_dist·64 ticks
+                    // ((rand · (axle << 16)) >> 26 + (acc << 10) >> 4).
+                    if (f == "snd3")
+                        a.wait = int((int64_t(r & 0xFFFF) * int64_t(o.item->axleDist * 65536.f)) >> 26) + int(o.item->acceleration * 64.f);
                     if (a.section != 1 && a.section != 2) --a.wait;   // the visit's decrement follows the think
                 }
                 // 0x449830: the damage flash fades 2 per tick.
