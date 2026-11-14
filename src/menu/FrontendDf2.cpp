@@ -1946,6 +1946,7 @@ int FrontendDf2::run() {
     // the mode-3 hook set at start-up (0x420919: 0x4712b0(3, 1)) and reset
     // when the menus close for the Game Loop (0x42f420 -> 0x4712e0).
     music_.setIntegerUnits(true);
+    music_.setDf2(true);   // DF2.EXE's VM (switch 0x35) and engine (fades, 0x46bfd0)
     audio_.setDfMixer(true, true);
     audio_.setDfGame(2);   // DF2.EXE's WAV conversion (0x4711a0) and mixer (0x48e028)
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
