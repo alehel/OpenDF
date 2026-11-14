@@ -24,6 +24,7 @@ const ActionName kNames[] = {
     {Action::ShowFriendly, "ShowFriendly"}, {Action::LetterBox, "lbsize"}, {Action::Drop, "Drop"},
     {Action::Briefing, "briefing"}, {Action::Help, "help"},
     {Action::ScopeInc, "scopeinc"}, {Action::ScopeDec, "scopedec"}, {Action::NightVision, "NVG"},
+    {Action::MapTerrain, "mapterrain"}, {Action::MapElevation, "mapelevation"},
     {Action::Escape, "escape"},
 };
 

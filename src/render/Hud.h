@@ -49,6 +49,8 @@ public:
     static float sheetWidth(const SheetFont& f, const std::string& s, float scale = 1);
     // A texture from RGBA pixels (nearest filtering).
     HudImage makeImage(int width, int height, const std::vector<uint8_t>& rgba);
+    // Replaces an image's pixels (made by makeImage, or empty: made now).
+    void updateImage(HudImage& img, int width, int height, const std::vector<uint8_t>& rgba);
     // DF.EXE's menu button blend (0x407e50): dst = src / 2 + dst * 3 / 4.
     void setTranslucent(bool on);
     // Menu blends: 0 normal alpha, 1 src/2 + 3/4 dst (buttons), 2 src/2 +

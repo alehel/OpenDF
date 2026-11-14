@@ -22,6 +22,9 @@ enum class Action {
     Binoculars, Pause, OldMessages, ShowFriendly, LetterBox, Drop, Briefing, Help,
     // Delta Force 2: scope zeroing (X / Z) and night vision (N).
     ScopeInc, ScopeDec, NightVision,
+    // Delta Force 2: the map's elevation view (F9 mapterrain / F10
+    // mapelevation, actions 362 / 363).
+    MapTerrain, MapElevation,
     Count
 };
 

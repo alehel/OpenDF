@@ -286,8 +286,43 @@ First differences from DF1:
     clicking them on the map (0x422640); a teammate's four orders (Cmap
     CMAP_BTN_NOORDER/HPHF/HPCM/HP) set the AI byte +0xBB and answer with
     STRMISC34..37 in green (0x4113b0 -> 0x403380); the player's plans are
-    shown (multiplayer only). Not yet: the W waypoint tool, the elevation
-    and contour views, the Players and Weapons tabs (multiplayer-oriented).
+    shown (multiplayer only). All five tabs show in single player. One
+    selection ([0xbcb424]) is shared by Map picks (the nearest blip drawn
+    last frame within 1000 px², 0x422640), Players rows and Team rows; the
+    selected blip blinks (outline its colour halved, colour | 0x808080 while
+    (frame + 8) & 0x20). The selected-object panel at (684,200) (0x40e190:
+    Selected/name/team/grid/Plan/Weapons for the player and squad;
+    Waypoint/Building/Vehicle with name and grid 0x422d60) and its action
+    buttons from (688,696) upward (0x40dd50: Bozo Filter and Send Message to
+    as no-ops, Set as my Waypoint, Delete, Rename) on the Map, Players and
+    Team tabs. The W tool (0x411250, one-shot; the W button made with state 0
+    on every Map visit; the white DF2WCURA cursor anywhere on the Map tab):
+    a click on the map makes a player waypoint "WP" (item 6089, 128-slot pool
+    0xd34dc0 cleared at mission load; full: nothing made) at the clicked
+    ground point, selects it and opens the "Type in a name" prompt (16
+    chars, the darkened box 0x4422b0); held left drags waypoints, mission
+    ones too (x/y only). Pool waypoints show on the map and the HUD radar as
+    green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
+    (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
+    list; W returns to the list at entry 1, 0x446700; a deleted one shows NO
+    WAYPOINT). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
+    Escape clears first): the green ramp 0x4aecdc, also on the HUD radar, no
+    water blend; contours ({{{, map only): 0x00ff00 where H >> 12 changes
+    from the previous pixel of the row or the pixel south. The Players tab
+    (the player alone in single player: number, name, red brackets when
+    selected; headings; scroll bar arrows). The Weapons tab (0x40fbe0):
+    current and requested loadout with WEAP640 pictures by type (0x4434e0),
+    < > cycling through types the slot's category mask allows (0x4a4c88),
+    the button rows' quirk (empty slots share a row); Request Weapons
+    applies only on armory ground (+0x64 & 0x1000000), which OpenDF does not
+    track yet, so it does nothing (INFERRED; OPENDF_REARM forces it for
+    testing). + / − zoom every frame while held, route lines with the black
+    ±1 px outline, the Mission tab's CMAP_SETTINGS title. Not done: the
+    scroll-bar thumb (not traced), the Players/Team rows staying clickable
+    on the Map tab (READ quirk), and the multiplayer parts (send-to lists,
+    Make Permanent, voice buttons, received waypoints, the start countdown).
+    Testing: OPENDF_CMAPTAB opens a tab, OPENDF_CMAPTEST scripts map clicks,
+    keys and typing.
   - **item behaviours** (DF2.EXE ai table 0x4a4030): snd3 ambient markers
     (acceleration·64 + rand·axle_dist·64 ticks, at the marker, 0x402730);
     bld2 buildings (their sound as dec0's; destroyed: everyone and every
@@ -328,11 +363,11 @@ First differences from DF1:
   - *done since*: the player's fall damage (0x43f600), the M203 arming
     (the same 8 ticks as DF1);
   - *done since*: the delay grenade's slide and fuse, the command map's
-    Team tab with squad orders, the front end's keyboard page, credits,
+    Team tab with squad orders, its W waypoint tool, elevation / contour
+    views, Players and Weapons tabs and selection panel, the front end's keyboard page, credits,
     voice briefing, slider dragging and screen timing;
   - *not yet*: shrapnel counts per explosion; fog_level / fog_color (unused
-    on the disc); the command map's W/D/contour tools and Players/Weapons
-    tabs (multiplayer-oriented); multiplayer (out of scope); the death-move
+    on the disc); multiplayer (out of scope); the death-move
     table's DF2 numbering (DF1's names are used).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
     differences, READ): fire also needs under 128 m at night, no parachute,
