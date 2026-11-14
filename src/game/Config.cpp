@@ -39,6 +39,39 @@ DfConfig::DfConfig() {
     for (const D& d : kDefaults) entries_.push_back({d.section, d.key, d.text, d.value, {}});
 }
 
+DfConfig DfConfig::df2() {
+    DfConfig c;
+    c.entries_.clear();
+    struct D { const char* section; const char* key; int value; const char* str; };
+    // Write order 0x436cd0; defaults 0x436ab0 (df2_menus.md §4).
+    static const D kDf2[] = {
+        {"DISPLAY", "video_type", 1, nullptr}, {"DISPLAY", "game_res", 4, nullptr}, {"DISPLAY", "no_anim", 0, nullptr},
+        {"DISPLAY", "window_size", 1, nullptr}, {"DISPLAY", "music_volume", 255, nullptr}, {"DISPLAY", "gamma", 128, nullptr},
+        {"DISPLAY", "turbo", 0, nullptr},
+        {"CONTROLS", "crosshairs", 1, nullptr}, {"CONTROLS", "showgun", 1, nullptr}, {"CONTROLS", "picinpic", 0, nullptr},
+        {"MULTIPLAYER", "login_password", 0, ""}, {"MULTIPLAYER", "game_password", 0, ""},
+        {"MULTIPLAYER", "squad_password", 0, ""}, {"MULTIPLAYER", "game_name", 0, ""},
+        {"MULTIPLAYER", "phone_number", 0, ""}, {"MULTIPLAYER", "internet_address", 0, "0.0.0.0"},
+        {"MULTIPLAYER", "mp_service", 4, nullptr}, {"MULTIPLAYER", "mp_gametype", 0, nullptr},
+        {"MULTIPLAYER", "maxplayers", 16, nullptr}, {"MULTIPLAYER", "dedicated", 0, nullptr},
+        {"MULTIPLAYER", "com_port", 0, nullptr}, {"MULTIPLAYER", "baud_rate", 0, nullptr},
+        {"MULTIPLAYER", "max_team_lives", 100, nullptr}, {"MULTIPLAYER", "max_kills", 20, nullptr},
+        {"MULTIPLAYER", "team_req", 1, nullptr}, {"MULTIPLAYER", "attributes", 2, nullptr},
+        {"MULTIPLAYER", "startdelay", 0, nullptr}, {"MULTIPLAYER", "destroybuild", 0, nullptr},
+        {"MULTIPLAYER", "deathmes", 1, nullptr}, {"MULTIPLAYER", "replay", 0, nullptr},
+        {"MULTIPLAYER", "time_limit", 30, nullptr}, {"MULTIPLAYER", "koth_limit", 5, nullptr},
+        {"MULTIPLAYER", "timeout", 0, nullptr}, {"MULTIPLAYER", "mp_numteams", 2, nullptr},
+        {"MULTIPLAYER", "gpsicon", 1, nullptr}, {"MULTIPLAYER", "sp_wind", 0, nullptr},
+        {"MULTIPLAYER", "showtags", 0, nullptr}, {"MULTIPLAYER", "contest", 0, nullptr},
+        {"MAP", "map_infrared", 1, nullptr}, {"MAP", "map_iff", 1, nullptr}, {"MAP", "map_AWAC", 1, nullptr},
+        {"SYSTEM", "preempt_pff", 0, nullptr}, {"SYSTEM", "whichbrowser", 0, nullptr}, {"SYSTEM", "country", 0, ""},
+        {"SYSTEM", "red_password", 0, ""}, {"SYSTEM", "blue_password", 0, ""}, {"SYSTEM", "yellow_password", 0, ""},
+        {"SYSTEM", "violet_password", 0, ""}, {"SYSTEM", "mp_verbose", 1, nullptr},
+    };
+    for (const D& d : kDf2) c.entries_.push_back({d.section, d.key, d.str != nullptr, d.value, d.str ? d.str : ""});
+    return c;
+}
+
 DfConfig::Entry* DfConfig::find(const std::string& key) {
     const std::string k = toUpper(key);
     for (Entry& e : entries_)

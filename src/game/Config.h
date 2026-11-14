@@ -12,6 +12,9 @@ namespace df {
 class DfConfig {
 public:
     DfConfig();
+    // Delta Force 2's df2.cfg: DF2.EXE's keys, defaults (0x436ab0) and
+    // write order (0x436cd0).
+    static DfConfig df2();
     bool load(const std::filesystem::path& file);
     bool save(const std::filesystem::path& file) const;
     int get(const std::string& key) const;

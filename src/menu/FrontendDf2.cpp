@@ -354,22 +354,35 @@ private:
     float scale_ = 1, offX_ = 0, offY_ = 0;
     int mouseX_ = 0, mouseY_ = 0;
     std::string hover_, pressed_, dragging_;
+    // 0x439c00: the music volume [0x4cdfbc]: rising from 0 starts the music
+    // (0x43cbc0), 0 stops it (0x43cc10), otherwise the new volume (0x46c170).
+    void setMusicVolume(int v) {
+        const int old = cfg_.get("music_volume");
+        if (v == old) return;
+        cfg_.set("music_volume", v);
+        if (old == 0) { music_.setVolume(std::clamp(v, 0, 255)); music_.start(); }
+        else if (v == 0) music_.stop();
+        else music_.setVolume(std::clamp(v, 0, 255));
+    }
+    // Event 0xA: a slider's new value is written where it belongs.
+    void sliderChanged(D2Button& b) {
+        if (b.name == "but_opt1_mssl") soldier().set(0x5b0, b.p2);
+        else if (b.name == "but_opt1_sfsl") soldier().set(0x5b8, b.p2);
+        else if (b.name == "but_opt1_dvsl") soldier().set(0x5c0, b.p2);
+        else if (b.name == "but_opt1_mvsl") setMusicVolume(b.p2);
+        else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
+        else if (b.name == "but_opt2_vsl") { b.p2 = std::min(b.p2, b.p1 - 1); refreshKeys(); }   // opt2_ScrollTo 0x43a6b0
+        else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
+        else if (b.name == "but_mb_mpvsl") mapY_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 323.f);
+        else if (b.name == "but_mb_mphsl") mapX_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 279.f);
+    }
     void dragTo(D2Button& b) {
         // 0x42f150: value = (mouse - pos - knob/2) / length · range, clamped.
         const HudImage im = image(b.image);
         const float len = float(std::max(1, b.p3));
         const float m = b.type == 2 ? float(mouseX_ - b.x - im.width / 2) : float(mouseY_ - b.y - im.height / 2);
         b.p2 = std::clamp(int(m / len * float(b.p1)), 0, b.p1);
-        // Event 0xA: the settings sliders write their values.
-        if (b.name == "but_opt1_mssl") soldier().set(0x5b0, b.p2);
-        else if (b.name == "but_opt1_sfsl") soldier().set(0x5b8, b.p2);
-        else if (b.name == "but_opt1_dvsl") soldier().set(0x5c0, b.p2);
-        else if (b.name == "but_opt1_mvsl") { cfg_.set("music_volume", b.p2); music_.setVolume(std::clamp(b.p2, 0, 255)); }
-        else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
-        else if (b.name == "but_opt2_vsl") { b.p2 = std::min(b.p2, b.p1 - 1); refreshKeys(); }   // opt2_ScrollTo 0x43a6b0
-        else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
-        else if (b.name == "but_mb_mpvsl") mapY_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 323.f);
-        else if (b.name == "but_mb_mphsl") mapX_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 279.f);
+        sliderChanged(b);
     }
 
     Screen screen_ = Screen::Soldier, next_ = Screen::Soldier, returnTo_ = Screen::Main;
@@ -1632,13 +1645,19 @@ void FrontendDf2::event(D2Button& b, int ev) {
     }
     else if (cb == "opt1_FMChange") { soldier().set(0x5b4, !soldier().get(0x5b4)); refreshOptions(); }
     else if (cb == "opt1_TUChange") { cfg_.set("turbo", !cfg_.get("turbo")); refreshOptions(); }
-    else if (cb == "opt1_MSLeft" || cb == "opt1_MSRight") { soldier().set(0x5b0, std::clamp(soldier().get(0x5b0) + (cb == "opt1_MSRight" ? 5 : -5), 0, 512)); refreshOptions(); }
-    else if (cb == "opt1_FXLeft" || cb == "opt1_FXRight") { soldier().set(0x5b8, std::clamp(soldier().get(0x5b8) + (cb == "opt1_FXRight" ? 5 : -5), 0, 256)); refreshOptions(); }
-    else if (cb == "opt1_MVLeft" || cb == "opt1_MVRight") {
-        cfg_.set("music_volume", std::clamp(cfg_.get("music_volume") + (cb == "opt1_MVRight" ? 5 : -5), 0, 256));
-        music_.setVolume(std::clamp(cfg_.get("music_volume"), 0, 255));
+    else if (cb == "opt1_MSLeft" || cb == "opt1_MSRight" || cb == "opt1_FXLeft" || cb == "opt1_FXRight" || cb == "opt1_MVLeft" ||
+             cb == "opt1_MVRight" || cb == "opt1_DVLeft" || cb == "opt1_DVRight") {
+        // 0x4399c0.. / 0x439d90.. / 0x439de0.. / 0x439e50..: the slider's
+        // value +-1 within 0..range, then the same write as dragging it.
+        const std::string k = cb.substr(5, 2);
+        const char* name = k == "MS" ? "but_opt1_mssl" : k == "FX" ? "but_opt1_sfsl" : k == "MV" ? "but_opt1_mvsl" : "but_opt1_dvsl";
+        if (D2Button* sl = btn(name)) {
+            const bool right = cb.find("Right") != std::string::npos;
+            sl->p2 = std::clamp(sl->p2 + (right ? 1 : -1), 0, sl->p1);
+            sliderChanged(*sl);
+        }
         refreshOptions();
-    } else if (cb == "opt1_DVLeft" || cb == "opt1_DVRight") { soldier().set(0x5c0, std::clamp(soldier().get(0x5c0) + (cb == "opt1_DVRight" ? 5 : -5), 0, 256)); refreshOptions(); }
+    }
     else if (cb.rfind("opt3_", 0) == 0) {
         int at = cfg_.get("attributes");
         const std::string k = cb.substr(5, 2);
@@ -1725,6 +1744,7 @@ int FrontendDf2::run() {
     const auto exe = findDf2Exe(o_.gameDir);
     saveDir_ = exe.empty() ? o_.gameDir : exe.parent_path();
     loadSoldiers();
+    cfg_ = DfConfig::df2();   // DF2.EXE's own keys (0x436ab0 / 0x436cd0)
     cfg_.load(saveDir_ / "df2.cfg");
     audio_.openDevice();
     {
@@ -1733,7 +1753,9 @@ int FrontendDf2::run() {
             if (upper(e.path().filename().string()) == "DF2MUSIC.SBF") musicLoaded_ = music_.load(vfs_, e.path(), "DF2MUSIC.BIN");
     }
     if (!musicLoaded_) std::fprintf(stderr, "no menu music (DF2MUSIC.SBF / DF2MUSIC.BIN)\n");
-    music_.setVolume(255);
+    // 0x43cbc0: the music plays only while df2.cfg's music_volume is above
+    // 0, at that volume (0x46c170).
+    music_.setVolume(std::clamp(cfg_.get("music_volume"), 0, 255));
     // DF2.EXE's mixer is DF.EXE's integer one (0x48e028; tables 0x48d240,
     // 0x48d100, 0x4a09d0 and pan 0x4a06ce byte-identical to 0x4973c0,
     // 0x497280, 0x4aa320, 0x4aa019; music (V >> 1) >> shift, 0x4a0339), with
@@ -1744,7 +1766,7 @@ int FrontendDf2::run() {
     audio_.setDfGame(2);   // DF2.EXE's WAV conversion (0x4711a0) and mixer (0x48e028)
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
     if (!openWindow()) return 1;
-    music_.start();
+    if (cfg_.get("music_volume") > 0) music_.start();
     music_.setVar(0, 0);
     const std::string& s0 = o_.startScreen;
     Screen first = s0 == "main" ? Screen::Main : s0 == "campaign" ? Screen::Campaign : s0 == "quick" ? Screen::Quick
@@ -1963,7 +1985,7 @@ int FrontendDf2::run() {
                 }
                 saveSoldiers();
                 if (!openWindow()) return 1;
-                music_.start();
+                if (cfg_.get("music_volume") > 0) music_.start();
                 music_.setVar(0, 1);
                 music_.setVar(2, out.won ? 2 : 1);
                 enter(fromCampaign_ ? Screen::Campaign : Screen::Quick);
