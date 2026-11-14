@@ -29,6 +29,10 @@ public:
     // A vehicle was destroyed: blast with shrapnel (0x46cb64 with n pieces)
     // at a point and heading (set by the game).
     std::function<void(Vec3 at, int shrapnel, float heading)> detonate;
+    // DF2.EXE 0x415490 / 0x4572d0: the big blast (kind 5 and 200 fragments).
+    std::function<void(Vec3 at)> bigBlast;
+    // DF2: a positioned one-shot sound (the train horn).
+    std::function<void(int id, Vec3 at)> playSound;
     // Engine / rotor loops, every frame.
     void sounds(const World& world, const AiSystem& ai, SoundSystem& sound) const;
     // Moving vehicles and their speeds (m/s), e.g. for claymore sensors.
@@ -41,9 +45,17 @@ public:
     void followPath(World& world, int team, int path);
 
 private:
+    // Delta Force 2's movers (ITEMS.DEF move_function): herc flies level at its
+    // start height (0x42c240); boat floats, sinks when destroyed (0x42be10);
+    // loco runs along the map's y axis at its team's speed (0x42c4a0); carg
+    // cars follow the first loco (0x42c440).
+    enum class Kind { Veh0, Helo, Herc, Boat, Loco, Car };
     struct Vehicle {
         int object = -1;
         bool helo = false;
+        Kind kind = Kind::Veh0;
+        int loco = -1;            // cars and locos: the coupled loco (vehicle index, 0x45bd1f)
+        float vyTick = 0;         // loco/car: this tick's step along y (m, OpenDF z)
         int pathMode = 0, path = 0, waypoint = 0;
         float speed = 0;          // m/s along the heading
         float targetSpeed = 0;
@@ -78,6 +90,7 @@ private:
         int lastHp = 0;
     };
     void drive(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
+    void driveTrain(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound);
     void heloTargeting(World& world, AiSystem& ai, Vehicle& v);

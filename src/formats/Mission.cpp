@@ -78,6 +78,7 @@ bool ItemDefs::parse(const std::string& text) {
         else if (key == "anim_def") cur.animDef = val;
         else if (key == "chr_file") cur.chrFile = val;
         else if (key == "ai_function") cur.aiFunction = val;
+        else if (key == "move_function") cur.moveFunction = val;
         else if (key == "interrupt_sound_id") cur.interruptSound = std::atoi(val.c_str());
         else if (key == "phrase_set") cur.phraseSet = std::atoi(val.c_str());
         else if (key == "acceleration") cur.acceleration = float(std::atof(val.c_str()));

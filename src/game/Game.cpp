@@ -477,6 +477,8 @@ bool Game::loadMission(int index) {
     vehicles_.init(world_, mission_);
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
+    vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
+    vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
     // AI rounds leave from the weapon (0x46ad9c): the body (no pitch) x the
     // posed right hand (mesh 7) x the held-weapon turn x the mode's
     // hardpoint (+0x90) of its third-person item's model.

@@ -28,12 +28,16 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         WorldObject& o = world.objects[i];
         if (!o.item || o.missionIndex < 0) continue;
         const std::string& f = o.item->aiFunction;
-        if (f != "veh0" && f != "helo") continue;
+        const std::string& mv = o.item->moveFunction;
+        const bool df2Mover = mv == "herc" || mv == "boat" || mv == "loco" || mv == "carg";
+        if (f != "veh0" && f != "helo" && !df2Mover) continue;
         const MissionObject& mo = mission.objects[size_t(o.missionIndex)];
         const auto* rec = reinterpret_cast<const uint8_t*>(mo.raw);
         Vehicle v;
         v.object = int(i);
         v.helo = f == "helo";
+        v.kind = v.helo ? Kind::Helo : mv == "herc" ? Kind::Herc : mv == "boat" ? Kind::Boat : mv == "loco" ? Kind::Loco
+               : mv == "carg" ? Kind::Car : Kind::Veh0;
         const uint32_t fl = uint32_t(mo.raw[3]);
         v.flags = (fl & 1 ? 1u : 0u) | (fl & 2 ? 2u : 0u);
         v.path = rec[0x49];
@@ -55,6 +59,49 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         v.think = 1 + int(i % 8);
         vehicles_.push_back(v);
     }
+    // Train coupling (DF2.EXE 0x45bd1f): every Train-flagged vehicle (attrib
+    // 0x800) points at the first other loco (type 2025) in the list.
+    for (size_t a = 0; a < vehicles_.size(); ++a) {
+        const WorldObject& o = world.objects[size_t(vehicles_[a].object)];
+        if (!o.item || !(o.item->attrib & 0x800)) continue;
+        for (size_t b = 0; b < vehicles_.size(); ++b) {
+            const WorldObject& l = world.objects[size_t(vehicles_[b].object)];
+            if (a != b && l.item && l.item->id == 102025) { vehicles_[a].loco = int(b); break; }
+        }
+    }
+}
+
+// Delta Force 2's trains: loco 0x42c4a0 / ai 0x401340, cars carg 0x42c440.
+void VehicleSystem::driveTrain(World& world, AiSystem& ai, Vehicle& v, float teamSpeed) {
+    WorldObject& o = world.objects[size_t(v.object)];
+    if (v.kind == Kind::Car) {
+        // A car copies its loco's step along y and rocks: roll = 4·cos(y << 11)
+        // (0x1000000 = 1.4°, one period per 32 m of y). A destroyed car rolls on.
+        v.vyTick = v.loco >= 0 ? vehicles_[size_t(v.loco)].vyTick : 0.f;
+        o.pos.z += v.vyTick;
+        o.roll = 4.f * float(0x400000) / 4294967296.f * 2 * kPi * std::cos(-o.pos.z / 32.f * 2 * kPi);
+        return;
+    }
+    if (--v.think <= 0) {
+        // The path only fires its waypoint events; the target speed is the
+        // team's speed with or without one; the horn (803) when it starts.
+        if (!v.dead) {
+            pathStep(world, ai, v);
+            if (v.targetSpeed == 0 && teamSpeed != 0 && playSound) playSound(803, o.pos);
+            v.targetSpeed = teamSpeed;
+        }
+        v.think = 0x40;
+    }
+    // Heading snaps to +y or -y (north / south).
+    const float theta = wrapAngle(kPi / 2 - o.heading);   // DF's angle from east, anticlockwise
+    o.heading = (theta >= 0 && theta < kPi) ? 0.f : kPi;
+    if (v.speed != 0) v.vyTick = (o.heading == 0 ? -1.f : 1.f) * v.speed / kTicks;   // north = -z
+    else if (v.loco >= 0 && vehicles_[size_t(v.loco)].vyTick != 0) v.vyTick = vehicles_[size_t(v.loco)].vyTick;
+    else if (v.loco < 0) v.vyTick = 0;
+    if (v.speed != 0 || v.loco >= 0) o.pos.z += v.vyTick;
+    const float accel = (o.item ? o.item->acceleration : 1.f) / kTicks * (v.dead ? 2.f : 1.f);
+    if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
+    else v.speed += v.targetSpeed > v.speed ? accel : -accel;
 }
 
 // Path step (0x45aa68 / 0x47c5d4): head for the point; arrival when within
@@ -107,7 +154,13 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     // in 1/2048 turns] along DF's (sin yaw, cos yaw), only for indices >= 0
     // (DF.EXE reads before its sine table otherwise: 0 or garbage, taken as
     // 0); all with the new yaw and the speed before this tick's ramp.
-    const float steer = wrapAngle(v.targetHeading - o.heading) / 8.f;
+    float steer = wrapAngle(v.targetHeading - o.heading) / 8.f;
+    if (world.df2Rules && v.kind == Kind::Veh0) {
+        // DF2.EXE's veh0 (0x41efa1): the steer eases toward (target − heading) / 2
+        // by at most 0x200000 (0.18°) a tick; herc and boat keep DF1's / 8.
+        const float want = wrapAngle(v.targetHeading - o.heading) / 2.f, step = float(0x200000) / 4294967296.f * 2 * kPi;
+        steer = o.steer + std::clamp(want - o.steer, -step, step);
+    }
     o.steer = steer;   // drawn by the `tire` routine (0x4808fc)
     const float axle = o.item && o.item->axleDist > 0 ? o.item->axleDist : 2.3f;
     const float dyaw = (kPi / 4.f) / axle * v.speed * std::sin(steer) / kTicks;
@@ -128,9 +181,20 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     const float ext = world.extent();
     o.pos.x -= std::floor(o.pos.x / ext) * ext;
     o.pos.z -= std::floor(o.pos.z / ext) * ext;
+    // The Hercules never follows the ground: level at its start height (0x42c240).
+    if (v.kind == Kind::Herc) return;
     const Vec3 f = o.pos + fwd * 2.75f, b = o.pos - fwd * 2.75f, l = o.pos - right * 0.6875f, r = o.pos + right * 0.6875f;
-    const float hf = world.terrain->heightAt(f.x, f.z), hb = world.terrain->heightAt(b.x, b.z);
-    const float hl = world.terrain->heightAt(l.x, l.z), hr = world.terrain->heightAt(r.x, r.z);
+    float hf = world.terrain->heightAt(f.x, f.z), hb = world.terrain->heightAt(b.x, b.z);
+    float hl = world.terrain->heightAt(l.x, l.z), hr = world.terrain->heightAt(r.x, r.z);
+    if (v.kind == Kind::Boat) {
+        // 0x42be10: each sample at least the water level (afloat); destroyed,
+        // at least the boat's own height, sinking 0x800 a tick while any
+        // sample is at or under it, until it rests on the bottom.
+        const float floor = v.dead ? o.pos.y - o.lift : world.terrain->waterLevel();
+        const bool sinking = v.dead && std::min({hf, hb, hl, hr}) <= floor;
+        hf = std::max(hf, floor); hb = std::max(hb, floor); hl = std::max(hl, floor); hr = std::max(hr, floor);
+        if (sinking) { hf -= 0x800 / 65536.f; hb -= 0x800 / 65536.f; }
+    }
     o.base = (hf + hb) * 0.5f;
     o.pos.y = o.base + o.lift;
     // (front - back) << 11 and (left - right) << 13 as binary angles.
@@ -438,7 +502,14 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
             // helicopter 40 plus two of 10 to the sides), speed to zero.
             v.dead = true;
             v.targetSpeed = 0;
-            if (detonate) {
+            if (v.kind == Kind::Car) {
+                // gnrl: no blast.
+            } else if (v.kind == Kind::Boat && bigBlast) {
+                // DF2.EXE 0x401f60: five big blasts 1 m up at the boat and 5 m
+                // to each side.
+                const Vec3 c = o.pos + Vec3{0, 1, 0};
+                for (const Vec3 d : {Vec3{0, 0, 0}, Vec3{5, 0, 0}, Vec3{-5, 0, 0}, Vec3{0, 0, -5}, Vec3{0, 0, 5}}) bigBlast(c + d);
+            } else if (detonate) {
                 const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
                 if (v.helo) {
                     detonate(o.pos + Vec3{0, 1, 0}, 40, o.heading);
@@ -458,6 +529,8 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
         if (v.helo) {
             fly(world, ai, v, teamSpeed);
             doorGun(world, v, shots, sound);
+        } else if (v.kind == Kind::Loco || v.kind == Kind::Car) {
+            driveTrain(world, ai, v, teamSpeed);
         } else {
             drive(world, ai, v, teamSpeed);
         }
@@ -475,6 +548,10 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
                 const float pitch = std::clamp((v.rotor / 8192.f + 0x5000) / 65536.f, 0x6000 / 65536.f, 0x12000 / 65536.f);
                 sound.setLoop(100000 + v.object, (o.item && o.item->id == 100000 + kGazelle) ? 502 : 503, o.pos, pitch);
             }
+        } else if (v.kind == Kind::Car) {
+        } else if (v.kind == Kind::Loco) {
+            // The Train loop (808) while moving (0x401340).
+            if (std::abs(v.speed) > 0 && !v.dead) sound.setLoop(100000 + v.object, 808, o.pos, 1.f);
         } else if (std::abs(v.speed) > 0 && !v.dead) {
             // Engine loop 506, pitch 1 + v / team speed (0x48026d).
             const float ts = ai.teamSpeedMs(o.team);

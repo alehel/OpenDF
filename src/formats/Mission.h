@@ -24,6 +24,7 @@ struct ItemDef {
     int hp = 0, damageClass = 0;
     int hp3 = 0;              // Delta Force 2: a third `hp` value (item +0x9c), 0-4 on buildings; meaning not traced
     std::string aiFunction;   // `ai_function` (brrl: explosive barrel, sgen: smoke generator, ...)
+    std::string moveFunction; // `move_function` (veh0, helo, tire; DF2: herc, boat, loco, carg, para, smk2, shck)
     int interruptSound = 0;
     int phraseSet = 0;        // `phrase_set`: voice set (0x4F019C)
     // Vehicles (parser 0x448cec): `acceleration` (m/s^2 at 64 ticks/s,
