@@ -27,6 +27,7 @@ struct GameOptions {
     bool walkForward = false;
     bool showMap = false;
     bool viewModelOnly = false;          // testing: draw only the weapon on magenta
+    bool noHud = false;                  // testing (screenshots): no HUD, the 3D view fills the window
     bool killEnemies = false;            // testing: every side-2 soldier dies at the start
     // Scripted runs: a timed input script (see docs/TESTING.md), shown in a
     // visible window in real time (`watch`) and/or recorded to a video file.

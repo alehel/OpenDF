@@ -3925,6 +3925,7 @@ int Game::run() {
                 s.playY = float(df2Hud_.top.height) * s.art();
                 s.playH = std::max(1.f, s.h - s.playY - float(df2Hud_.bottom.height) * s.art());
             }
+            if (o_.noHud) { s.playY = 0; s.playH = s.h; }   // testing: the 3D view only, whole window
 
             glViewport(0, 0, dw, dh);
             glClearColor(0, 0, 0, 1);
@@ -3970,7 +3971,7 @@ int Game::run() {
                     drawZoomInset(s, view, fovY);
                 }
                 glViewport(0, 0, dw, dh);
-                drawHud(s, proj * view);
+                if (!o_.noHud) drawHud(s, proj * view);
             }
 
             if (!o_.record.empty()) {

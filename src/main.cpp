@@ -53,7 +53,7 @@ struct Options {
     float camera[5] = {0, 0, 0, 0, 0};
     // Game testing aids (mission mode).
     int frames = 1, weapon = -1, stance = -1, zoom = 0;
-    bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, killEnemies = false;
+    bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, noHud = false, killEnemies = false;
     std::string inputScript, record, primary = "M4", secondary = "Ammo", sidearm = ".45", soldierName;
     int gpsIcons = 1;
     bool watch = false;
@@ -96,6 +96,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--watch") o.watch = true;
         else if (a == "--record") o.record = next();
         else if (a == "--viewmodel-only") o.viewModelOnly = true;
+        else if (a == "--no-hud") o.noHud = true;
         else if (a == "--map") o.showMap = true;
         else if (a == "--camera") {
             std::string s = next();
@@ -840,6 +841,7 @@ int main(int argc, char** argv) {
             g.holdFire = o.holdFire;
             g.walkForward = o.walkForward;
             g.viewModelOnly = o.viewModelOnly;
+            g.noHud = o.noHud;
             g.showMap = o.showMap;
             g.gameDir = o.dataDir;
             g.killEnemies = o.killEnemies;
