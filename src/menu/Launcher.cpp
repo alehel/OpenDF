@@ -162,10 +162,17 @@ SheetFont df1Font(Hud& hud, Vfs& vfs, const std::string& name) {
         for (int x = 0; x < W && full; ++x) full = px(x, y) == 1;
         if (full) period = y;
     }
+    // Blended as DF.EXE draws its menu fonts (0x44263c, 0x442aa6; see
+    // Frontend::font): alpha = (palette red of the index >> 1) / 128 over
+    // the anti-aliased grey ramp; indexes 0 and the width markers 2, 3 are
+    // not drawn (0x442231, 0x442249).
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v == 0 || v == 2 || v == 3) continue;
+        const int a = img.palette[v].r >> 1;
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = uint8_t((a * 255 + 64) / 128);
     }
     for (int band = 0; period > 0 && band < 16 && period * (band + 1) <= H; ++band) {
         const int y0 = band == 0 ? 0 : period * band + 1, y1 = period * (band + 1);
