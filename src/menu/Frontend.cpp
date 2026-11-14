@@ -6,6 +6,7 @@
 #include "../game/Config.h"
 #include "../game/KeyMap.h"
 #include "../game/Controls.h"
+#include "../formats/Kdv.h"
 #include "../formats/Pcx.h"
 #include "../formats/Rtxt.h"
 #include "../render/Gl.h"
@@ -21,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 
 namespace df {
@@ -108,6 +110,53 @@ std::string kitName(int item) {
 }
 std::string sidearmName(int item) { return item == 5 ? "HS22" : ".45"; }
 
+// The KDV player's sound (DF.EXE 0x486d07 -> 0x4a9c23): blocks of
+// unsigned 8-bit stereo at 22050 Hz in the mixer's 16-slot stream queue
+// (0x496da2), played one after another; gain (V >> 1) >> shift per side
+// (0x4a9c84) with V the stream volume, 255 until the menu music sets it
+// (0x48c9d7, 0x48cb88). Emptied when the player closes (0x4870ab ->
+// 0x497eaf).
+class KdvStream {
+public:
+    void push(KdvVideo::Audio a) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push_back(std::move(a));
+    }
+    // Blocks queued, the one playing included ((head - tail) & 15, 0x4a9c14).
+    int size() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return int(queue_.size());
+    }
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.clear();
+        played_ = 0;
+    }
+    void mix(float* out, int frames) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        constexpr int V = 255;
+        int done = 0;
+        while (done < frames && !queue_.empty()) {
+            const KdvVideo::Audio& b = queue_.front();
+            const float gl = float((V >> 1) >> std::min(b.shiftL, 31)), gr = float((V >> 1) >> std::min(b.shiftR, 31));
+            const size_t n = b.lr.size() / 2;
+            for (; done < frames && played_ < n; ++played_, ++done) {
+                out[size_t(done) * 2] += float(int(b.lr[played_ * 2]) - 128) * gl;
+                out[size_t(done) * 2 + 1] += float(int(b.lr[played_ * 2 + 1]) - 128) * gr;
+            }
+            if (played_ >= n) {
+                queue_.erase(queue_.begin());
+                played_ = 0;
+            }
+        }
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<KdvVideo::Audio> queue_;
+    size_t played_ = 0;
+};
+
 } // namespace
 
 class Frontend {
@@ -192,6 +241,14 @@ private:
     Hud& hud() { return *hudPtr_; }
     Audio audio_;
     Music music_;
+    KdvStream kdvSound_;
+    // The intro (DF.EXE 0x4019d4 from the Start Screen's init 0x418b6c):
+    // INTRO.KDV through the ANIMMGR player. Returns false when the window
+    // was closed or the test screenshot was taken during it; `frame`
+    // counts presented frames for --screenshot/--frames.
+    bool playIntro(int& frame, bool& shotTaken);
+    bool introLeadSkip_ = false;   // a left click or an unread key during the intro (0x418b50, 0x489dc4)
+    void writeScreenshot(int dw, int dh);
     DfConfig cfg_;              // df.cfg (written at exit, 0x40dc88 from 0x4016c7)
     std::string dragging_;      // the slider being dragged (0x4c1b64)
     void refreshSettings();
@@ -2015,6 +2072,146 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
     }
 }
 
+void Frontend::writeScreenshot(int dw, int dh) {
+    std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+    std::ofstream f(o_.screenshot, std::ios::binary);
+    f << "P6\n" << dw << " " << dh << "\n255\n";
+    for (int y = dh - 1; y >= 0; --y) f.write(reinterpret_cast<const char*>(&px[size_t(y) * size_t(dw) * 3]), dw * 3);
+}
+
+bool Frontend::playIntro(int& frame, bool& shotTaken) {
+    // 0x4019d4: INTRO.KDV from DF.EXE's folder as a plain file (0x48b780(1),
+    // 0x48bbd0), else <CD>\DFSETUP\INTRO.KDV (0x4891a0, "%s\%s\%s"); played
+    // skippable (0x48ff60(name, 1)). No file: no intro.
+    std::filesystem::path path;
+    std::error_code ec;
+    auto look = [&](const std::filesystem::path& dir) {
+        if (!path.empty() || dir.empty()) return;
+        for (auto& e : std::filesystem::directory_iterator(dir, ec))
+            if (toUpper(e.path().filename().string()) == "INTRO.KDV") path = e.path();
+    };
+    if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) look(exe.parent_path());
+    for (auto& e : std::filesystem::directory_iterator(o_.gameDir, ec))
+        if (toUpper(e.path().filename().string()) == "DFSETUP") look(e.path());
+    KdvVideo v;
+    if (path.empty() || !v.open(path)) {
+        if (!path.empty()) std::fprintf(stderr, "%s: %s\n", path.string().c_str(), v.error().c_str());
+        return true;
+    }
+    // 0x486b27: a 320x240 screen for videos up to 320 wide, else 640x480;
+    // the frame at the left edge, centred vertically (0x486b7d), its own
+    // width the row stride.
+    const int sw = v.width() > 320 ? 640 : 320, sh = v.width() > 320 ? 480 : 240;
+    const int top = (sh - v.height()) / 2;
+    HudImage tex;
+    std::vector<uint8_t> rgba;
+    kdvSound_.clear();
+    // Testing (--screenshot): a clock that moves only while the player
+    // waits, so frame N is always the same picture (and OPENDF_AUDIODUMP
+    // the same sound).
+    const bool fixed = !o_.screenshot.empty();
+    const Uint64 freq = SDL_GetPerformanceFrequency(), c0 = SDL_GetPerformanceCounter();
+    int64_t virt = 0, heard = 0;
+    // DF.EXE's clock (0x485f98, 0x486014): 120 ticks a second.
+    auto now = [&]() { return fixed ? virt : int64_t(double(SDL_GetPerformanceCounter() - c0) * 120.0 / double(freq)); };
+    auto hear = [&]() {   // OPENDF_AUDIODUMP: the sound up to the clock
+        const int64_t t = now();
+        if (t > heard) { audio_.advance(double(t - heard) / 120.0); heard = t; }
+    };
+    int keys = 0;   // 0x489e2c: the key queue starts empty
+    // Testing: OPENDF_INTROKEY=N presses a key after N shown frames (with
+    // --screenshot), OPENDF_INTROCLICK=N clicks the left button.
+    const int testKey = fixed && std::getenv("OPENDF_INTROKEY") ? std::atoi(std::getenv("OPENDF_INTROKEY")) : -1;
+    const int testClick = fixed && std::getenv("OPENDF_INTROCLICK") ? std::atoi(std::getenv("OPENDF_INTROCLICK")) : -1;
+    int shown = 0;
+    bool quit = false, active = true;
+    const int period = std::max(1, v.framePeriod());
+    int64_t target = now();   // 0x487069
+    int late = 0;             // 0x486a7c
+    for (;;) {
+        // 0x486138: the message pump. Keys (WM_KEYDOWN / WM_SYSKEYDOWN,
+        // repeats too) go into the key queue (0x485a3a); a left click goes
+        // to the Start Screen's mouse hook, registered before the intro
+        // (0x418b91 -> 0x418b50), which marks DF_LEAD as done (0x4d9120).
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) quit = true;
+            else if (e.type == SDL_KEYDOWN) ++keys;
+            else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) introLeadSkip_ = true;
+            else if (e.type == SDL_WINDOWEVENT && !fixed) {
+                // WM_SETFOCUS / WM_KILLFOCUS (0x48580b, 0x485c64): no frames
+                // while the window is not active (0x490015).
+                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) active = true;
+                if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) active = false;
+            }
+        }
+        if (shown == testKey) ++keys;
+        if (shown == testClick) introLeadSkip_ = true;
+        if (quit) break;                   // 0x490024: the quit flag
+        if (keys > 0) { --keys; break; }   // 0x48ffcc: one key from the queue skips
+        hear();
+        if (!active) { SDL_Delay(10); continue; }
+        // 0x486c15: the end, or an invalid chunk (0x49000b; INTRO.KDV ends
+        // that way: its two clips are followed by filler that is not a
+        // chunk). DF.EXE shows no message.
+        if (v.next() != KdvVideo::Step::Frame) break;
+        // 0x486c48: each frame is due `period` ticks after the last. Late:
+        // not shown (its sound still queued), up to five in a row; the sixth
+        // is shown and the schedule restarts from now. Early: wait until 3/4
+        // of a period before it is due, then show it.
+        target += period;
+        bool show = true;
+        if (target - now() <= 0) {
+            if (++late < 6) show = false;
+            else target = now();
+        } else {
+            const int64_t at = target - ((int64_t(period) * 3) >> 2);
+            if (fixed) virt = std::max(virt, at + 1);
+            while (at - now() >= 0) SDL_Delay(1);
+            hear();
+        }
+        if (show) {
+            late = 0;
+            ++shown;
+            v.takePaletteChanged();   // 0x486cab: a new palette with this flip
+            v.toRgba(rgba);
+            hud().updateImage(tex, v.width(), v.height(), rgba);
+            int dw, dh;
+            SDL_GL_GetDrawableSize(win_, &dw, &dh);
+            const float sc = std::min(float(dw) / float(sw), float(dh) / float(sh));
+            const float ox = (float(dw) - float(sw) * sc) * 0.5f, oy = (float(dh) - float(sh) * sc) * 0.5f;
+            glViewport(0, 0, dw, dh);
+            glClearColor(0, 0, 0, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            hud().begin(dw, dh);
+            hud().image(tex.texture, ox, oy + float(top) * sc, float(v.width()) * sc, float(v.height()) * sc);
+            hud().end();
+            if (fixed && ++frame >= o_.frames) {
+                writeScreenshot(dw, dh);
+                shotTaken = true;
+                break;
+            }
+            SDL_GL_SwapWindow(win_);
+        }
+        // 0x486d07: this frame's sound into the stream queue.
+        KdvVideo::Audio a;
+        if (v.takeAudio(kdvSound_.size(), a)) kdvSound_.push(std::move(a));
+    }
+    // 0x48ffe4 -> 0x48707f -> 0x497eaf: closing the player empties the
+    // stream queue. Keys still queued reach DF_LEAD's update (0x418beb).
+    kdvSound_.clear();
+    if (tex.texture) glDeleteTextures(1, &tex.texture);
+    if (keys > 0) introLeadSkip_ = true;
+    if (quit) {
+        SDL_Event q{};
+        q.type = SDL_QUIT;
+        SDL_PushEvent(&q);
+    }
+    return !quit && !shotTaken;
+}
+
 int Frontend::run() {
     if (!loadData()) { std::fprintf(stderr, "cannot read DF.MNU\n"); return 1; }
     loadProfiles();
@@ -2036,10 +2233,26 @@ int Frontend::run() {
             if (toUpper(e.path().filename().string()) == "DFMUSIC.SBF") musicLoaded_ = music_.load(vfs_, e.path());
     }
     if (!musicLoaded_) std::fprintf(stderr, "no menu music (DFMUSIC.SBF / DFMUSIC.BIN)\n");
-    audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
+    audio_.setStream([this](float* out, int frames) {
+        kdvSound_.mix(out, frames);
+        music_.mix(out, frames);
+    });
     if (!openWindow()) return 1;
+    int frame = 0;
+    // The Start Screen's init (0x418b6c) plays the intro first (0x418b99),
+    // then shows DF_LEAD. `play intro` is the same start, for tests.
+    if (o_.startScreen.empty() || o_.startScreen == "intro") {
+        bool shot = false;
+        playIntro(frame, shot);
+        if (shot) {
+            music_.stop();
+            closeWindow();
+            return 0;
+        }
+    }
     enter(Start);
     next_ = Start;
+    if (introLeadSkip_ && leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; }
     {
         const std::string s = o_.startScreen;
         Screen first = s == "soldier" ? Soldier : s == "main" ? Main : s == "campaign" ? Campaign : s == "briefing" ? Briefing
@@ -2047,7 +2260,6 @@ int Frontend::run() {
         if (first == Briefing || first == Loadout || first == Debrief) { enter(Campaign); }
         if (first != Start) { enter(first); next_ = first; music_.start(); musicVar(0, 0); musicVar(1, first == Soldier ? 4 : first == Main ? 0 : first == Campaign ? 1 : first == Briefing ? 6 : first == Loadout ? 7 : first == Options3 ? 11 : first == Options1 ? 3 : 0); }
     }
-    int frame = 0;
     Uint64 last = SDL_GetPerformanceCounter();
     double clock = 0;
     while (screen_ != Quit) {
@@ -2296,12 +2508,7 @@ int Frontend::run() {
         captureTo(lastTex_);
         haveLast_ = true;
         if (!o_.screenshot.empty() && ++frame >= o_.frames) {
-            std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
-            glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
-            std::ofstream f(o_.screenshot, std::ios::binary);
-            f << "P6\n" << dw << " " << dh << "\n255\n";
-            for (int y = dh - 1; y >= 0; --y) f.write(reinterpret_cast<const char*>(&px[size_t(y) * size_t(dw) * 3]), dw * 3);
+            writeScreenshot(dw, dh);
             break;
         }
         SDL_GL_SwapWindow(win_);

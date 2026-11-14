@@ -532,6 +532,23 @@ First differences from DF1:
     projectile table's flags). A chutist killed in the air keeps falling
     at the chute's rate under the canopy (dead people run the person move). Script action 18
     (teleport, 0x41955c) moves the team (`teleportTeam`).
+  - **start-up and intro movie** (docs/AUDIT.md F15): DF2.EXE's first
+    state is MainMenu (0x41ff91); its first init (0x435500) loads the menu
+    system (0x42f230), then, unless df2.cfg `no_anim` is set (0x43552a),
+    plays DF2INTRO.BIK by running `binkplay.exe DF2INTRO.BIK /I2/C`
+    (`video_type` 0) or `... /r/D208/U1/C` (any other `video_type`),
+    binkplay.exe and the movie each from DF2.EXE's folder or else
+    `<CD>\DF2SETUP` (no intro if either is missing), and waits for the
+    process (0x435830: its window hidden for `video_type` 0, polled every
+    500 ms, the quit flag ends the wait); then the menu video mode
+    (0x436c40), the music (0x43cbc0) and Choose Soldier. No logo or splash
+    image; skipping is binkplay's own. The IntroSplash state (a demo-build
+    menu) is unreachable in retail. OpenDF runs the same sequence and calls
+    `playBinkVideo(path)` (src/menu/FrontendDf2.h), which plays nothing
+    yet: a Bink decoder is pending a decision on Bink support.
+    `OPENDF_DEBUGVIDEO=1` prints the command DF2.EXE would run. DF2.EXE
+    still carries DF1's ANIMMGR KDV player (its strings at file 0x87d9f),
+    but DF2 ships no KDV file.
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
     flags}), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
