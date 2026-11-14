@@ -208,6 +208,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     if (!src.lods.empty()) g->hitMeshes = src.lods[0].hitMeshes;
     std::copy(src.lodThreshold, src.lodThreshold + 4, g->lodThreshold);
     g->headerRadius = src.radius > 0 ? src.radius : 1.f;
+    g->flatRadius = src.flatRadius;
+    g->height = src.height;
     for (auto& t : src.textures) {
         g->textures.push_back(uploadTexture(t));
         g->indexTextures.push_back(uploadIndices(t));

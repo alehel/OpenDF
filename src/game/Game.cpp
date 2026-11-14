@@ -276,6 +276,14 @@ private:
     double audioClock_ = 0;
     std::vector<SmokeGen> smokeGens_;
     int playerHp_ = 4;                    // character word +0x74
+    // The player's item (0x469ae0): male/female x normal/snow x day/night.
+    int playerItem_ = kItemPlayerSoldier;
+    // Dead: the body slides with the death move's root motion from where it
+    // fell (0x436158), at the yaw of death; the orbit camera's pivot and base
+    // yaw follow it smoothed (0x481184: 1/16 and 1/32 per tick).
+    Vec3 deadShift_{0, 0, 0}, camPivot_{0, 0, 0}, camLag_{0, 0, 0};
+    float deadYaw_ = 0, camYaw_ = 0;      // OpenDF heading / DF yaw (anticlockwise), radians
+    Vec3 deadBodyOrigin() const;
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
     void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0}, int part = 0);
     // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
@@ -354,6 +362,13 @@ bool Game::loadMission(int index) {
     if (!vfs_.read(name + ".BMS", raw) || !parseMission(raw, mission_, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
+    }
+    {
+        // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
+        const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
+        static const int kItems[2][2][2] = {{{5003, 5004}, {5044, 5045}}, {{5010, 5011}, {5046, 5047}}};
+        playerItem_ = 100000 + kItems[snow][night][o_.female ? 1 : 0];
+        if (!items_.byId(playerItem_)) playerItem_ = kItemPlayerSoldier;
     }
     std::string trn = mission_.terrain;
     if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
@@ -997,27 +1012,42 @@ void Game::hurtPlayer(int amount, int deathType, Vec3 from, int part) {
     const char* name = moveName(move);
     const AnimMove* mv = name ? playerMoves_.find(name) : nullptr;
     if (!mv) mv = playerMoves_.find("Death_B_P01DF");
-    // Start from the standing pose.
-    if (const AnimMove* st = playerMoves_.find("Standing_2HW")) playerBody_.start(playerChr_, st->animation);
+    // From whatever move the body was in (no reset to standing).
     if (mv) playerBody_.start(playerChr_, mv->animation);
+    deadShift_ = {0, 0, 0};
+    deadYaw_ = player_.yaw;
+}
+
+Vec3 Game::deadBodyOrigin() const {
+    const ChrFrame* f = playerBody_.currentFrame(playerChr_);
+    return player_.feet + deadShift_ + Vec3{0, f ? Chr::originHeight(*f) : 0.f, 0};
 }
 
 // Dead (0x404104 -> 0x481224): third-person orbit around the body, yaw
 // = tick << 21 (one turn per 2048 ticks), pitch 0x4000000 (5.625° down),
 // 3 m away from the body position raised 0.5 m (0x480d40), at least 1 m
 // above the ground.
+// (0x480d75): the eye is the pivot plus (-3, 0, +0.5) turned by yaw =
+// smoothed body yaw + tick << 21 and pitch 0x4000000 (3.03 m behind, 0.20 m
+// up), at least 1 m above the ground (less while the pivot still lags by
+// under 0.5 m); it looks at the pivot raised 0.5 m (0x4810ec).
 Vec3 Game::viewDir() const {
     if (!playerDead()) return player_.forward();
-    const float yaw = float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi;
-    const float pitch = -float(0x4000000) / 4294967296.f * 2 * kPi;
-    return {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
+    const Vec3 target = camPivot_ + Vec3{0, 0.5f + (s < 0.5f ? (s - 0.5f) * 0.5f : 0.f), 0};
+    return normalize(target - viewEye());
 }
 
 Vec3 Game::viewEye() const {
     if (!playerDead()) return player_.eye();
-    const Vec3 pivot = player_.feet + Vec3{0, 0.5f, 0};
-    Vec3 e = pivot - viewDir() * 3.f;
-    e.y = std::max(e.y, terrain_.heightAt(e.x, e.z) + 1.f);
+    const float th = camYaw_ + float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi;
+    const float p = float(0x4000000) / 4294967296.f * 2 * kPi;
+    const float back = -3.f * std::cos(p) - 0.5f * std::sin(p), up = -3.f * std::sin(p) + 0.5f * std::cos(p);
+    Vec3 e = camPivot_ + Vec3{std::cos(th) * back, up, -std::sin(th) * back};
+    const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
+    float floor = terrain_.heightAt(e.x, e.z) + 1.f;
+    if (s < 0.5f) floor += s - 0.5f;
+    e.y = std::max(e.y, floor);
     return e;
 }
 
@@ -1032,7 +1062,7 @@ void Game::spawnPuff(Vec3 at) {
     Effect e{m, at, float((r(effectRng_) * 2 + 0x20000) >> 4) / 65536.f, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame,
              l.frames};
     e.smoke = true;
-    e.roll = float(r(effectRng_) & 0xff) / 256.f;
+    e.roll = float(r(effectRng_)) / 65536.f;   // rand << 16: 0..180 degrees (0x480aac)
     effects_.push_back(e);
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());
 }
@@ -1460,13 +1490,12 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920).
     if (playerDead() && !playerBody_.angles().empty())
-        if (const ItemDef* it = items_.byId(kItemPlayerSoldier); it && !it->graphic.empty())
+        if (const ItemDef* it = items_.byId(playerItem_); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
                 body.model = bm;
-                const ChrFrame* f = playerBody_.currentFrame(playerChr_);
-                body.pos = player_.feet + Vec3{0, f ? Chr::originHeight(*f) : 0.f, 0};
-                body.heading = player_.yaw;
+                body.pos = deadBodyOrigin();
+                body.heading = deadYaw_;
                 models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()));
             }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.
@@ -1478,8 +1507,15 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
         // Model +X faces the heading; the quad's normal is +X, turned to the camera.
         Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
-        // Puffs turn about the axis facing the camera (model +X).
-        if (e.smoke) m = m * rotateX(e.roll * 2 * kPi);
+        // Puffs (efct draw 0x480c70 with +0x3C set) also take the camera's
+        // pitch, so +X lies along the view axis and the roll (1/256 turn a
+        // tick) turns them in the screen plane.
+        if (e.smoke) {
+            Mat4 tilt;
+            const float cp = std::asin(std::clamp(fwd.y, -1.f, 1.f)), c = std::cos(-cp), sn = std::sin(-cp);
+            tilt.at(0, 0) = c; tilt.at(0, 1) = -sn; tilt.at(1, 0) = sn; tilt.at(1, 1) = c;
+            m = m * tilt * rotateX(e.roll * 2 * kPi);
+        }
         Mat4 sc;
         sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
         m = m * sc;
@@ -1488,16 +1524,18 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
     // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
-    // turned to the direction of travel (APPROXIMATION: DF.EXE's in-flight
-    // orientation not traced).
+    // at the launch yaw and pitch for the whole flight (gnrc draw:
+    // T * Rz(yaw) * Ry(pitch), the record's angles never change).
     for (const auto& p : arsenal_.projectiles()) {
         const int id = (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
         const ItemDef* gi = id ? items_.byId(id) : nullptr;
         const GpuModel* gm = gi && !gi->graphic.empty() ? models_.get(vfs_, gi->graphic) : nullptr;
         if (!gm) continue;
         const Vec3 at = world_.nearest(p.pos, eye);
-        const float yaw = std::atan2(p.vel.x, -p.vel.z);
-        models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - yaw));
+        Mat4 pitch;
+        const float c = std::cos(p.pitch), sn = std::sin(p.pitch);
+        pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
+        models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
     }
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
@@ -2446,6 +2484,16 @@ int Game::run() {
                     ai_.tick(world_, arsenal_, sound_, pv);
                     vehicles_.tick(world_, ai_, arsenal_, sound_, pv);
                 }
+                // The camera's pivot and base yaw follow the body (0x481184).
+                {
+                    const Vec3 o = playerDead() ? deadBodyOrigin() : player_.origin();
+                    camLag_ = world_.nearest(o, camPivot_) - camPivot_;
+                    if (std::abs(camLag_.x) > 50.f || std::abs(camLag_.z) > 50.f) camPivot_ = o, camLag_ = {0, 0, 0};
+                    else camPivot_ = camPivot_ + camLag_ * (1.f / 16.f);
+                    float dy = (kPi * 0.5f - (playerDead() ? deadYaw_ : player_.yaw)) - camYaw_;
+                    dy -= std::floor(dy / (2 * kPi) + 0.5f) * 2 * kPi;
+                    camYaw_ += dy / 32.f;
+                }
                 // plyr (0x45a27c): every 64 ticks the route's points count as
                 // reached for the player's side.
                 if ((ticks_ & 63) == 0 && !playerDead())
@@ -2458,6 +2506,11 @@ int Game::run() {
                         if (const AnimMove* mv = playerMoves_.find(playerMove_)) playerBody_.start(playerChr_, mv->animation);
                     }
                     const int ev = playerBody_.tick(playerChr_);
+                    if (playerDead()) {
+                        const auto& r = playerBody_.rootStep();
+                        const Vec3 fw{std::sin(deadYaw_), 0, -std::cos(deadYaw_)}, lf{-std::cos(deadYaw_), 0, -std::sin(deadYaw_)};
+                        deadShift_ = deadShift_ + fw * r[0] + lf * r[1];
+                    }
                     const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
                     if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0);
                 }

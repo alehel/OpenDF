@@ -502,6 +502,7 @@ void Arsenal::fire(Player& player) {
     p.flags = g.flags;
     p.id = ++projectileIds_;
     p.from = player.origin();
+    p.orient();
     bullets_.push_back(p);
     // The shot (gun +0x20, 0x44d5fe) at the muzzle. A burst sounds once:
     // the first round carries the burst gun's sound, the others none.

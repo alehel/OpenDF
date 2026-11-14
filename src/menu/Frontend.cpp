@@ -2176,6 +2176,7 @@ int Frontend::run() {
                 g.secondary = kitName(prof().get(0x688));
                 g.sidearm = sidearmName(prof().get(0x680));
                 g.soldierName = prof().name();
+                g.female = prof().get(0x640) >= 8;
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;

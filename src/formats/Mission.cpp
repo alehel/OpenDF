@@ -110,6 +110,8 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     m.dialogue = cstr(d, 0x64, 0x10);
     for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
     m.colorVariant = int(u32(d, 0x74) & 3);
+    m.variantWord = int(u32(d, 0x74));
+    m.lightFlags = d.size() > 0x7A ? d[0x7A] : 0;
     m.fireMissions = int(u32(d, 0x84));
 
     // Layout from DF.EXE's loader (0x440490): four groups of 96-byte object

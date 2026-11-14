@@ -608,23 +608,39 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
     return o.item->name + " destroyed";
 }
 
+// Blasts (0x45019a..0x450492), distances by DF.EXE's approximate length
+// (0x435bf8: largest + 11/32 middle + 1/4 smallest), by list:
+// people: to the origin within R + 1 m (per axis and in length); objects and
+// vehicles (BMS group 0: types object, vehicle): to the origin, reach
+// widened to flat radius + R; buildings and decorations (group 1): the
+// excess outside a square box about the origin, +-flat radius across and
+// +-height up and down (not turned with the object), within R. Objects
+// (0x44ff27): 128 - 16 d (heavy) or 32 - 4 d; when neither sight line from
+// the origin or 0.5 m above it reaches 0.5 m above the blast: nothing for
+// type 1, half otherwise.
 std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
     std::vector<std::string> out;
+    auto len3 = [](float a, float b, float c) {
+        a = std::abs(a), b = std::abs(b), c = std::abs(c);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        return a + b * 11.f / 32.f + c * 0.25f;
+    };
+    const Vec3 target = at + Vec3{0, 0.5f, 0};
     for (size_t i = 0; i < objects.size(); ++i) {
         WorldObject& o = objects[i];
         if (!o.alive()) continue;
         const Vec3 p = nearest(o.pos, at);
         if (o.person) {
-            // Characters (0x785b60): within radius + 1 m of the body origin.
-            const Vec3 v = p - at;
-            const float dist = std::sqrt(dot(v, v));
-            if (dist > radius + 1.f) continue;
+            const float r = radius + 1.f;
+            if (std::abs(p.x - at.x) > r || std::abs(p.y - at.y) > r || std::abs(p.z - at.z) > r) continue;
+            float d = len3(p.x - at.x, p.y - at.y, p.z - at.z);
+            if (d > r) continue;
             // Line of sight (0x45be04): from the body to the blast point
             // raised 0.5 m, then from 0.5 m higher; both blocked: no damage
             // for type 1, double distance otherwise.
             RayHit h;
-            const Vec3 target = at + Vec3{0, 0.5f, 0};
-            float d = dist;
             if (raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)) {
                 if (!heavy) continue;
                 d *= 2;
@@ -637,18 +653,26 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             continue;
         }
         if (o.hp <= 0 || !o.model) continue;
-        // Objects (0x820f60): distance outside the object's half extents
-        // (horizontal, vertical). APPROXIMATION: OpenDF uses the model's
-        // LOD-0 bounds for DF.EXE's +0x64 / +0x68 extents.
-        const auto& l = o.model->lods[0];
-        const float hx = std::max({std::abs(l.min[0]), std::abs(l.max[0]), std::abs(l.min[2]), std::abs(l.max[2])});
-        const float hz = (l.max[1] - l.min[1]) * 0.5f;
-        const Vec3 c = p + Vec3{0, (l.max[1] + l.min[1]) * 0.5f, 0};
-        const float ex = std::max(0.f, std::sqrt((c.x - at.x) * (c.x - at.x) + (c.z - at.z) * (c.z - at.z)) - hx);
-        const float ey = std::max(0.f, std::abs(c.y - at.y) - hz);
-        const float d = std::sqrt(ex * ex + ey * ey);
-        if (d > radius) continue;
-        const int amount = heavy ? std::max(0, int(128 - 16 * d)) : std::max(0, int(32 - 4 * d));
+        const std::string& type = o.item ? o.item->type : std::string();
+        const float h = o.model->flatRadius, v = o.model->height;
+        float d;
+        if (type == "object" || type == "vehicle") {
+            const float r = h + radius;
+            if (std::abs(p.x - at.x) > r || std::abs(p.y - at.y) > r || std::abs(p.z - at.z) > r) continue;
+            d = len3(p.x - at.x, p.y - at.y, p.z - at.z);
+            if (d > r) continue;
+        } else {
+            const float ex = std::max(0.f, std::abs(at.x - p.x) - h), ez = std::max(0.f, std::abs(at.z - p.z) - h);
+            const float ey = std::max(0.f, std::abs(at.y - p.y) - v);
+            if (ex > radius || ey > radius || ez > radius) continue;
+            d = len3(ex, ey, ez);
+            if (d > radius) continue;
+        }
+        int amount = heavy ? int(128 - 16 * d) : int(32 - 4 * d);
+        if (sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0) {
+            if (!heavy) continue;
+            amount >>= 1;
+        }
         if (amount <= 0) continue;
         std::string m = damage(int(i), amount);
         if (!m.empty()) out.push_back(m);

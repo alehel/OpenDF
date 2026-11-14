@@ -96,6 +96,8 @@ struct Model3di {
     std::string lodCodes[4];
     float lodThreshold[4] = {0, 0, 0, 0};   // header +0x18..+0x24: projected-radius pixels
     float radius = 1;                // header +0x60, metres
+    float flatRadius = 0;            // header +0x64: LOD 0's largest horizontal vertex radius (blasts, collision reach)
+    float height = 0;                // LOD 0 header +0x24: zmax - zmin (model +0x68 at load, 0x43f383)
     std::vector<Model3diTexture> textures;
     std::vector<ModelLod> lods;
 };

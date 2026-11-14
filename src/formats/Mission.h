@@ -90,6 +90,9 @@ struct Mission {
     int colorVariant = 0;
     // Header +0x84: fire missions (artillery strikes) available (0x44319d).
     int fireMissions = 0;
+    // Header +0x74 as a whole (2 = the snow soldiers) and +0x7A (0x10 =
+    // night: night soldiers, tracers) (0x469ae0, 0x44d5a0).
+    int variantWord = 0, lightFlags = 0;
     // The object at `index` of `group`, or null.
     const MissionObject* inGroup(int group, int index) const {
         if (group < 0 || group > 3 || index < 0 || index >= groupSize[group]) return nullptr;

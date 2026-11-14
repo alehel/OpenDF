@@ -62,6 +62,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
     if (lodCount == 0 || lodCount > 16 || texCount > 1024) return fail("implausible 3DI header");
     for (int k = 0; k < 4; ++k) m.lodThreshold[k] = r.i32(0x18 + 4 * k) / 65536.f;
     m.radius = r.i32(0x60) / 65536.f;
+    m.flatRadius = r.i32(0x64) / 65536.f;
     m.kind = r.str(0x28, 4);
     for (int k = 0; k < 4; ++k) {
         std::string c(reinterpret_cast<const char*>(&r.d[0x28 + 4 * size_t(k)]), 4);
@@ -200,6 +201,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             lod.points.push_back({r.i32(o) / 65536.f, r.i32(o + 8) / 65536.f, -r.i32(o + 4) / 65536.f});
         }
         lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
+        if (li == 0) m.height = r.i32(p + 0x24) / 65536.f;
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
         // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.

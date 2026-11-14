@@ -39,6 +39,7 @@ struct GameOptions {
     // Until the soldier screens exist: the name shown in the bottom bar (the
     // original shows the soldier's name, e.g. "ROK").
     std::string soldierName;
+    bool female = false;                 // the soldier's face is a female one (profile +0x640 >= 8)
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.
     int gpsIcons = 1;

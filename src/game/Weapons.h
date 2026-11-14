@@ -7,6 +7,8 @@
 // if DF.EXE is missing or not the expected version.
 #pragma once
 
+#include <cmath>
+
 #include "../core/ExeImage.h"
 #include "../formats/Mission.h"
 #include "Player.h"
@@ -83,6 +85,14 @@ struct Projectile {
     Vec3 from{0, 0, 0};         // where it was fired from (the attacker, for death moves)
     int shooter = -3;           // world object that fired it (-3 the player)
     float tickClock = 0;
+    // The round record's yaw/pitch (+0x30/+0x34, 0x44d450): the launch
+    // direction, never changed in flight (0x44f3e0), so the grenade, M203 and
+    // LAW models are drawn that way the whole time.
+    float yaw = 0, pitch = 0;
+    void orient() {
+        yaw = std::atan2(vel.x, -vel.z);
+        pitch = std::atan2(vel.y, std::sqrt(vel.x * vel.x + vel.z * vel.z));
+    }
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }
 };
@@ -167,7 +177,7 @@ public:
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     // Rounds not fired by the player's weapon (shrapnel); they hit and do
     // damage like any other.
-    void addProjectile(Projectile p) { p.id = ++projectileIds_; bullets_.push_back(p); }
+    void addProjectile(Projectile p) { p.id = ++projectileIds_; p.orient(); bullets_.push_back(p); }
     // The first-person model's points (LOD 0 vertices in file order) by
     // graphic name, for the muzzle (player table +0x90); null if unknown.
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
