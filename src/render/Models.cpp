@@ -50,6 +50,7 @@ uniform float uSat;
 uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha, 3 texture alpha (DF2)
 uniform vec4 uTint;
 uniform bool uOverride;   // DF2 0x445e50: the colour replaces the material's (texel-as-alpha parts)
+uniform bool uTintRaw;    // ... and is used without the scene grade
 out vec4 oColor;
 vec3 dec(vec3 c) { return pow(max(c, 0.0), vec3(1.25)); }
 vec3 enc(vec3 c) { return pow(max(c, 0.0), vec3(0.8)); }
@@ -69,7 +70,7 @@ void main() {
 void shade() {
     float idx = uTextured ? texture(uIndex, vUv).r * 255.0 : 1.0;
     if (uMode == 2) {               // 0x8000: dst += (C - dst) * texel / 256
-        oColor = vec4(post(uOverride ? uTint.rgb : uColor), idx / 256.0);
+        oColor = vec4(uOverride ? (uTintRaw ? uTint.rgb : post(uTint.rgb)) : post(uColor), idx / 256.0);
         return;
     }
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
@@ -242,6 +243,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         gl.meshParent = l.meshParent;
         gl.meshPivot = l.meshPivot;
         gl.meshRadius = l.meshRadius;
+        gl.meshCentre = l.meshCentre;
         gl.ticksPerFrame = l.ticksPerFrame;
         glGenVertexArrays(1, &gl.vao);
         glBindVertexArray(gl.vao);
@@ -266,6 +268,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     }
     g->radius = std::max(std::sqrt(r2), 0.1f);
     g->collision = src.lods[0].collision;
+    g->meshVolumes = src.lods[0].meshVolumes;
+    for (const auto& mv : g->meshVolumes) g->hasVolumes = g->hasVolumes || !mv.volumes.empty();
     g->points = src.lods[0].points;
     {
         size_t most = 0;
@@ -372,9 +376,10 @@ void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& mode
     glDisable(GL_BLEND);
 }
 
-void ModelRenderer::setTint(float r, float g, float b, float a, bool replace) {
+void ModelRenderer::setTint(float r, float g, float b, float a, bool replace, bool raw) {
     glUniform4f(glGetUniformLocation(prog_, "uTint"), r, g, b, a);
     glUniform1i(glGetUniformLocation(prog_, "uOverride"), replace ? 1 : 0);
+    glUniform1i(glGetUniformLocation(prog_, "uTintRaw"), raw ? 1 : 0);
 }
 
 void ModelRenderer::end() {

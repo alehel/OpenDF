@@ -410,8 +410,10 @@ private:
             char n[32];
             std::snprintf(n, sizeof n, "%s%02d.WAV", bms_.substr(0, std::min<size_t>(6, bms_.size())).c_str(), briefVoice_++);
             if (const SoundClip* c = audio_.clip(vfs_, n)) {
-                const float g = float(std::clamp(soldier().get(0x5c0), 0, 255)) / 255.f * 0.5f;
-                briefHandle_ = audio_.play(c, g, g);
+                // Direction 0's pan (63 left, 64 right) at the dialogue volume
+                // (INFERRED: played 2D like the menu sounds, 0x4712f0 dir 0).
+                const float v = float(std::clamp(soldier().get(0x5c0), 0, 255));
+                briefHandle_ = audio_.play(c, 63.f * v / (127.f * 255.f), 64.f * v / (127.f * 255.f));
                 briefVoiceTicks_ = c->rate > 0 ? int(c->samples.size() * 1000 / size_t(c->rate) / 16) + 1 : 1;
                 return;
             }
@@ -463,7 +465,8 @@ HudImage FrontendDf2::file(const std::string& name) {
     HudImage im;
     std::vector<uint8_t> data;
     if (key.size() > 4 && key.compare(key.size() - 4, 4, ".PCX") == 0) {
-        // PCX art: palette index 0 is the colour key (INFERRED for the 4-frame strips).
+        // PCX art: palette index 0 is the colour key (0x462d20: the 8-bit blit
+        // skips index 0, 0x462dd3, for every frame; frame height = h / frames).
         im = hud().loadImage(vfs_, key, false, true);
     } else if (vfs_.read(key, data)) {
         RgbaImage rgba;
@@ -629,13 +632,16 @@ void FrontendDf2::sound(const std::string& name, int channel) {
     if (upper(name) == "BTN_SLCT") vol = 150;
     vol = vol * std::clamp(soldier().get(0x5b8), 0, 255) / 255;
     if (const SoundClip* c = audio_.clip(vfs_, upper(f))) {
-        const float g = float(vol) / 255.f * 0.5f;
+        // 0x43cb00 -> 0x4712f0(sample, direction 0, vol 0..255, pitch 1.0):
+        // the mixer's gains (pan[0] = 63 left, 64 right) x vol x master 255
+        // >> 16 (0x49fc69), passed as pan · vol / (127 · 255).
+        const float gl = 63.f * float(vol) / (127.f * 255.f), gr = 64.f * float(vol) / (127.f * 255.f);
         // 0x42f500 plays on a channel: a new sound there cuts the old one.
         if (channel) {
             if (auto ch = channels_.find(channel); ch != channels_.end()) audio_.stop(ch->second);
-            channels_[channel] = audio_.play(c, g, g);
+            channels_[channel] = audio_.play(c, gl, gr);
         } else {
-            audio_.play(c, g, g);
+            audio_.play(c, gl, gr);
         }
     }
 }
@@ -1292,21 +1298,27 @@ void FrontendDf2::loadBriefing() {
                 RgbaImage im;
                 if (decodeRgbaImage(raw, im)) briefMap_ = hud().makeImage(im.width, im.height, im.rgba);
             }
-            // The player's route (path flag 2): map metres are 1:1 with the
-            // 1024² picture (the 256² JPG x4).
+            // 0x404390 converts every point to the 1024² picture (0x4045dd..
+            // 0x404639): px = 0x200 + (x16.16 >> 18), py = 0x200 - (y >> 18),
+            // a quarter of the map metres about the centre.
+            auto toPic = [](float x, float y) {
+                const int32_t xi = int32_t(std::lround(x * 65536.f)), yi = int32_t(std::lround(y * 65536.f));
+                return std::pair<float, float>{float(0x200 + (xi >> 18)), float(0x200 - (yi >> 18))};
+            };
+            // The player's route (path flag 2).
             for (const auto& p : m.paths)
                 if (p.flags & 2) {
                     for (int idx : p.points)
-                        if (const MissionObject* o = m.inGroup(2, idx); o && waypoints_.size() < 50) waypoints_.push_back({o->x, -o->y});
+                        if (const MissionObject* o = m.inGroup(2, idx); o && waypoints_.size() < 50) waypoints_.push_back(toPic(o->x, o->y));
                     break;
                 }
-            // Centred on the player's start (the first group-3 object of side 1, INFERRED).
-            float px = 512, py = 512;
+            // Centre: the last group-2 marker of type 0x1796 = 6038, item
+            // 106038 "Briefing Map Center" (0x404546..0x404559); without one
+            // the centre stays at (0, 0) -> the picture's middle (512, 512).
+            float mx = 0, my = 0;
             for (const auto& o : m.objects)
-                if (o.group == 3) { px = o.x; py = -o.y; break; }
-            for (auto& w : waypoints_) { w.first = std::fmod(w.first + 1024.f, 1024.f); w.second = std::fmod(w.second + 1024.f, 1024.f); }
-            px = std::fmod(px + 1024.f, 1024.f);
-            py = std::fmod(py + 1024.f, 1024.f);
+                if (o.group == 2 && o.type == 6038) { mx = o.x; my = o.y; }
+            const auto [px, py] = toPic(mx, my);
             mapX_ = std::clamp(px - 140.f, 0.f, 1024.f - 279.f);
             mapY_ = std::clamp(py - 160.f, 0.f, 1024.f - 323.f);
         }
@@ -1657,6 +1669,13 @@ int FrontendDf2::run() {
     }
     if (!musicLoaded_) std::fprintf(stderr, "no menu music (DF2MUSIC.SBF / DF2MUSIC.BIN)\n");
     music_.setVolume(255);
+    // DF2.EXE's mixer is DF.EXE's integer one (0x48e028; tables 0x48d240,
+    // 0x48d100, 0x4a09d0 and pan 0x4a06ce byte-identical to 0x4973c0,
+    // 0x497280, 0x4aa320, 0x4aa019; music (V >> 1) >> shift, 0x4a0339), with
+    // the mode-3 hook set at start-up (0x420919: 0x4712b0(3, 1)) and reset
+    // when the menus close for the Game Loop (0x42f420 -> 0x4712e0).
+    music_.setIntegerUnits(true);
+    audio_.setDfMixer(true, true);
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
     if (!openWindow()) return 1;
     music_.start();
@@ -1751,6 +1770,54 @@ int FrontendDf2::run() {
         if (!o_.screenshot.empty()) clock = 0.016 * 4;
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
+            // Testing: OPENDF_FE2EVENTS="TICK OP ARGS; ..." pushes real SDL
+            // events (OP m = move to x y, c = left click at x y, r = right
+            // click, k = key by SDL name) in 640x480 screen coordinates.
+            if (const char* ev = std::getenv("OPENDF_FE2EVENTS")) {
+                std::istringstream all(ev);
+                std::string item;
+                while (std::getline(all, item, ';')) {
+                    std::istringstream in(item);
+                    uint64_t at = 0;
+                    std::string op;
+                    if (!(in >> at >> op) || at != ticks_) continue;
+                    auto toWin = [&](float x, float y, int& wx, int& wy) {
+                        int ww, wh, dw, dh;
+                        SDL_GetWindowSize(win_, &ww, &wh);
+                        SDL_GL_GetDrawableSize(win_, &dw, &dh);
+                        wx = int((offX_ + x * scale_) * float(ww) / float(std::max(1, dw)));
+                        wy = int((offY_ + y * scale_) * float(wh) / float(std::max(1, dh)));
+                    };
+                    if (op == "m" || op == "c" || op == "r") {
+                        float x = 0, y = 0;
+                        in >> x >> y;
+                        int wx, wy;
+                        toWin(x, y, wx, wy);
+                        SDL_Event m{};
+                        m.type = SDL_MOUSEMOTION;
+                        m.motion.x = wx;
+                        m.motion.y = wy;
+                        SDL_PushEvent(&m);
+                        if (op != "m")
+                            for (Uint32 t : {Uint32(SDL_MOUSEBUTTONDOWN), Uint32(SDL_MOUSEBUTTONUP)}) {
+                                SDL_Event b{};
+                                b.type = t;
+                                b.button.button = op == "c" ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+                                b.button.x = wx;
+                                b.button.y = wy;
+                                SDL_PushEvent(&b);
+                            }
+                    } else if (op == "k") {
+                        std::string name;
+                        std::getline(in >> std::ws, name);
+                        SDL_Event k{};
+                        k.type = SDL_KEYDOWN;
+                        k.key.keysym.scancode = SDL_GetScancodeFromName(name.c_str());
+                        k.key.keysym.sym = SDL_GetKeyFromScancode(k.key.keysym.scancode);
+                        SDL_PushEvent(&k);
+                    }
+                }
+            }
             if (stageTicks_ > 0) --stageTicks_;
             if (leaveTicks_ > 0) --leaveTicks_;
             // Teletype boxes (0x43d040 / 0x43d110): one character a tick; while
@@ -1795,6 +1862,7 @@ int FrontendDf2::run() {
                 g.df2Secondary = soldier().get(0x2c0);
                 g.df2Gear = soldier().get(0x2c4);
                 g.df2Grenade = soldier().get(0x2c8);
+                g.df2Attributes = uint32_t(cfg_.get("attributes"));
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
@@ -1812,6 +1880,7 @@ int FrontendDf2::run() {
                 const int camp = fromCampaign_ && missionSel_ >= 0 ? kMissions[missionSel_].campaign : 0;
                 uint32_t flags = camp ? uint32_t(soldier().get(0xa8 + 4 * size_t(camp))) : 0;
                 MissionOutcome out;
+                audio_.setDfMixer(true, false);   // 0x43b68d: the hook is off from here on
                 runGame(vfs_, g, &out, &flags);
                 if (out.quit) break;
                 // 0x437550: a campaign win marks the mission done; kills add

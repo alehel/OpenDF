@@ -74,6 +74,8 @@ when DF.EXE is missing or a different version.
 | Mission names ("Insurrection") | Original | `DFCAMPcc.BIN` entry m−1, read at run time |
 | Radio messages ("Charlie 2 is down.", opening orders) | Original | mission events fire dialogs `dlg%03i`; clips and subtitles from `DFDLGnn.DBF` + `DFDLGnn.BIN`. Insurrection's opening "Proceed southwest and neutralize all hostiles." appears as in footage. Shown as text at once; the original plays the clips (audio) in sequence, subtitles with their clip |
 | Triggered text | Original | campaign "Triggered Text" `ID%03i` (no shipped campaign uses it) |
+| Message colours (live lines and Old Messages) | Original | 0x42f400's colour per message (entry +0x78): white for text, subtitles and toggles, bright green for "Ammo reloaded" (ammo box), red for the Fire Missions lines; see AUDIT X22 |
+| 16-bit WAVs (INST177, INST178) | Original | silent, as DF.EXE's 0x48cfb0 low-byte conversion makes them (AUDIT X23) |
 | Mission end panel | Original | texts and success rule from DF.EXE (0x483094); events decide the winner |
 | Goals screen (G) | Original | "Win Conditions:" `M%02iSUBGOAL%02i`, "Lose Conditions:" `M%02iSUBFAIL%02i` from the campaign "Goals" section, met goals highlighted; layout from DF.EXE 0x485004 (right-aligned at 625 from 72.5, 25-unit lines, shadowed) |
 | Grid square names and map grid | Original + footage | DF.EXE 0x43DCE0: column = ⌊(x + 1000) / 100⌋ as A..Z, AA.., row = ⌊(1000 − y) / 100⌋ + 1, in mission coordinates (not the 1024 m terrain tile). Start of Insurrection is I12, as in footage; the command map's grid lines up with the terrain as in footage |
@@ -113,4 +115,4 @@ Multiplayer (screens, network).
 
 | Item | Status | Source |
 |---|---|---|
-| Rounds against objects (vehicles, buildings, props) | Original | see AUDIT X21; AI sight lines and movement still use the collision volumes (movement: as DF.EXE 0x437a28; AI sight: faces as DF.EXE 0x45be04 (terrain marched every 1/16 m as 0x433190, object faces, never people, the water term)) |
+| Rounds against objects (vehicles, buildings, props) | Original | see AUDIT X21; AI sight lines and movement still use the collision volumes (movement: as DF.EXE 0x437a28; AI sight: faces as DF.EXE 0x45be04 (terrain marched every 1/16 m as 0x433190, object faces, never people, the water term; a carried goal item still blocks at the carrier's origin, 0x45b6e0 / 0x436a0c)) |

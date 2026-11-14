@@ -65,6 +65,13 @@ public:
         hook_ = hook;
         iprev_[0] = iprev_[1] = 0;
     }
+    // Delta Force's loose-WAV conversion (DF.EXE 0x48cfb0) for clips decoded
+    // from now on: 16-bit data goes through DF.EXE's 16 -> 8-bit step and
+    // its low-byte bug (see Audio::clip). Off for Delta Force 2.
+    void setDf1Wavs(bool on) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        df1Wavs_ = on;
+    }
     // A stereo stream added to the mix (the front-end music); it adds
     // `frames` interleaved float frames at kRate into its buffer.
     void setStream(std::function<void(float*, int)> stream) {
@@ -98,6 +105,7 @@ private:
     std::vector<float> scratch_;
     float feedback_[2] = {0, 0};   // the last output sample per channel (0x497fda)
     bool dfMixer_ = false, hook_ = false;
+    bool df1Wavs_ = false;
     int32_t iprev_[2] = {0, 0};
     std::array<int32_t, 32> ring_{};
     int32_t ringSum_ = 0;

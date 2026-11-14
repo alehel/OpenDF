@@ -74,11 +74,23 @@ struct CollisionBox {
     float cx = 0, cz = 0, r = 0;   // cylinder centre (OpenDF x, z) and radius
 };
 
+// Delta Force 2 (v8) collision volume as DF2.EXE's push-out 0x440f80 reads
+// it, file axes (x forward, y left, z up), metres: the type (+0x00: 1 box or
+// hull, 3 cylinder, 4 ladder, 6 armory area) and its planes (+0x48 count,
+// +0x4C pointer by running total, 8 bytes each: i16 nx, ny, nz / 16384, i16
+// d / 256 m); a point is inside when n.p + d < 0 for every plane.
+struct VolumePlane { float n[3]; float d; };
+struct PlaneVolume { int type = 1; std::vector<VolumePlane> planes; };
+// Per mesh: its box (+0x40..+0x54: xmin xmax ymin ymax zmin zmax, 16.16 m)
+// and the volumes it owns (+0x1C count, +0x20 pointer by running total).
+struct MeshVolumes { float box[6] = {0, 0, 0, 0, 0, 0}; std::vector<PlaneVolume> volumes; };
+
 struct ModelLod {
     std::vector<ModelBatch> batches;
     int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
+    std::vector<MeshVolumes> meshVolumes;  // v8 LOD 0: per mesh, the plane volumes (DF2.EXE 0x440f80)
     std::vector<std::vector<HitFace>> hitMeshes;   // LOD 0 only: every face per mesh (hidden ones too)
     // Hardpoints (LOD header +0xA0, 12 bytes: i32 x, y, z in 16.16 m),
     // OpenDF axes, metres: DF.EXE's model +0xa4 point list (the
@@ -91,6 +103,10 @@ struct ModelLod {
     // Per mesh +0x64 (16.16 m, v8 meshes of 0x70 bytes): Delta Force 2's
     // hit-sphere radius about the posed pivot (DF2.EXE 0x44b2f0); 0 if absent.
     std::vector<float> meshRadius;
+    // Per mesh +0x40..+0x54 (v8 0x70-byte meshes): the box xmin xmax ymin
+    // ymax zmin zmax, 16.16 m, file axes, model frame; DF2's bld2 fireballs
+    // start at its centre ((min + max) >> 1, 0x402eaa..0x402ef4).
+    std::vector<std::array<float, 3>> meshCentre;
     float min[3] = {0, 0, 0}, max[3] = {0, 0, 0};
     int triangleCount = 0;
 };

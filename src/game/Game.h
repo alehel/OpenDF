@@ -51,6 +51,10 @@ struct GameOptions {
     // df.cfg "attributes" (Difficulty settings): 0x80 enemy AI hard, 0x100
     // player health easy, 0x200 no squad members, 0x800 power ups on.
     uint32_t attributes = 0;
+    // Delta Force 2: df2.cfg "attributes" ([0x653000]; default 2): 0x10 enemy
+    // AI hard, 0x20 squad members off, 0x80 tracers off, 0x100 friendly-fire
+    // warning off (Options3).
+    uint32_t df2Attributes = 2;
     // df.cfg CONTROLS / MUSIC: crosshairs (0x40200d), flipmouse and
     // mousescale (0x42eba1: turn per count = mousescale << 14 binary angle),
     // dialog_volume (0x472f44).

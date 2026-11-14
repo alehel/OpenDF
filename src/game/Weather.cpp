@@ -119,7 +119,7 @@ void Weather::drawRain(const Mat4& viewProj, Vec3 eye, float extent, int32_t win
     glBufferData(GL_ARRAY_BUFFER, std::ptrdiff_t(v.size() * sizeof(float)), v.data(), GL_STREAM_DRAW);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);   // INFERRED: z-tested against the frame's depth, not written
+    glDepthMask(GL_FALSE);   // INFERRED: z-tested against the frame's depth, not written (the software line rasterizer 0x46014f tests z unsigned against view+0xc64; its write-back was not traced)
     glDrawArrays(GL_LINES, 0, GLsizei(v.size() / 3));
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
