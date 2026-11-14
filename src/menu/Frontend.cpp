@@ -458,10 +458,20 @@ MenuFont& Frontend::font(const std::string& name) {
         for (int x = 0; x < W && full; ++x) full = px(x, y) == 1;
         if (full) lines.push_back(y);
     }
+    // The menu fonts are loaded with flags 3 (0x40624c): bit 2 cuts the
+    // glyphs (0x4422f0), zeroing the width markers 3 and 2 (0x442231,
+    // 0x442249); bit 1 sets the font's blend flag (0x44263c), so a glyph
+    // pixel is not drawn solid but blended (0x442aa6): a = palette red of
+    // its index >> 1, dst += (colour - dst) * a >> 7 per channel. The sheets
+    // are anti-aliased grey ramps (index 9 white .. 22 dark grey), so the
+    // alpha is a / 128; index 0 is skipped.
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v == 0 || v == 2 || v == 3) continue;
+        const int a = img.palette[v].r >> 1;
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = uint8_t((a * 255 + 64) / 128);
     }
     // Bands repeat every `period` rows (the first separator line's y): band
     // k is above the separator at period * (k + 1); band 0 starts at the top.
@@ -951,8 +961,14 @@ void Frontend::drawMenu() {
     if (!m->background.empty()) blit(image(m->background), 0, 0, 0, 0, 640, 480, false);
     for (const auto& bn : m->buttons)
         if (MnuButton* b = mnu_.button(bn)) drawButton(*b);
-    // The cursor (0x408df8): ImageCursor1 centred on the mouse.
-    const HudImage cur = image("ImageCursor1", true);
+    // The cursor (0x408df8): ImageCursor1 centred on the mouse; pixels of
+    // palette index 0 are skipped (0x408f14: cmpb $0, (%edx)), so the blue
+    // (0,0,255) of CURSOR1.PCX's index 0 never shows.
+    const auto ci = mnu_.images.find("IMAGECURSOR1");
+    const std::string cpcx = ci == mnu_.images.end() ? std::string() : upperCase(ci->second);
+    const std::string ckey = cpcx + "#k";
+    if (!cpcx.empty() && !images_.count(ckey)) images_[ckey] = hud().loadImage(vfs_, cpcx, false, true);
+    const HudImage cur = cpcx.empty() ? HudImage{} : images_[ckey];
     blit(cur, float(mouseX_ - cur.width / 2), float(mouseY_ - cur.height / 2), 0, 0, float(cur.width), float(cur.height), false);
 }
 

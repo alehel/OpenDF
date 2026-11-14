@@ -294,6 +294,28 @@ HudImage Hud::loadImage(Vfs& vfs, const std::string& name, bool blackTransparent
         rgba[i * 4] = c.r; rgba[i * 4 + 1] = c.g; rgba[i * 4 + 2] = c.b;
         rgba[i * 4 + 3] = (index0Transparent ? img.pixels[i] != 0 : (!blackTransparent || (c.r | c.g | c.b))) ? 255 : 0;
     }
+    // Keyed texels take the mean colour of their opaque neighbours (black if
+    // none), so linear filtering when scaling fades only the alpha at an
+    // edge and never mixes in the key colour (CURSOR1.PCX's index 0 is blue).
+    if (blackTransparent || index0Transparent) {
+        const std::vector<uint8_t> src = rgba;
+        const int W = img.width, H = img.height;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                uint8_t* p = &rgba[(size_t(y) * size_t(W) + size_t(x)) * 4];
+                if (p[3]) continue;
+                int r = 0, g = 0, b = 0, n = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                        const uint8_t* q = &src[(size_t(ny) * size_t(W) + size_t(nx)) * 4];
+                        if (!q[3]) continue;
+                        r += q[0]; g += q[1]; b += q[2]; ++n;
+                    }
+                p[0] = uint8_t(n ? r / n : 0); p[1] = uint8_t(n ? g / n : 0); p[2] = uint8_t(n ? b / n : 0);
+            }
+    }
     glGenTextures(1, &out.texture);
     glBindTexture(GL_TEXTURE_2D, out.texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
