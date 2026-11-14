@@ -12,9 +12,9 @@ All integers are little-endian.
 | `DFSETUP/DF.PFF` | 174 MB | PFF3: every object/soldier/weapon model (`*.3DI`, 362), terrains (`*.TRN` + `*_C/_D/_M.PCX`), sky/water textures |
 | `DFSETUP/MISSIONS.PFF` | 19 MB | **PFF2, encrypted**: object models (`*.3DO`, 1729), object descriptors (`*.AI`, 431), waypoints (`*.JIM`, 85) |
 | `DFSETUP/AUDIO.PFF` | 39 MB | **PFF2, encrypted**: speech/SFX `*.WAV` (987), `*.MID` (100) |
-| `DFSETUP/VIEWS.PFF` | 52 MB | **PFF2, encrypted**: `H_*.KDV` campaign briefing videos |
+| `DFSETUP/VIEWS.PFF` | 52 MB | **PFF2, encrypted**: ten `H_*.KDV` award videos, never played by DF.EXE (see "KDV video") |
 | `DFSETUP/DFMUSIC.SBF` | 27 MB | `SBF0` music bank |
-| `DFSETUP/INTRO.KDV` | 160 MB | intro video (`xVDK` container) |
+| `DFSETUP/INTRO.KDV` | 160 MB | intro video (KDV; 30 MB of video, then filler) |
 | `DFSETUP/PACK.EXE` | | archive tool; holds the PFF2 cipher (`/ENCODE`) |
 | `DFSETUP/CMPRSSH0.DLL` | | static-Huffman `compress_buffer`/`expand_buffer`; **not** used for PFF2 |
 
@@ -299,7 +299,7 @@ emitters. OpenDF starts the camera at the first `start, player`.
 |---|---|---|
 | `.JIM` | binary | briefing-map annotations: 9-byte points (u8 kind, u16 x, u16 y, u32 n) then 16-byte names like `2-CP ALPHA`; for the M7 briefing screen |
 | `.PAL` | binary | mission map palettes |
-| `.KDV` | `xVDK`/`sVDK`/`pVDK` chunks | video: 640×480, includes `SAMP` audio chunks |
+| `.KDV` | `xVDK` chunks | video; decoded, see "KDV video" below |
 | `.MNU`, `.BIN`, `.RC`, `.H`, `.I` | | menu system resources |
 | `.ANM`, `.CHR` | | soldier animations / character data |
 
@@ -439,3 +439,107 @@ states (track-relative): Begin, BasicLoop, Lost, Won, Cancelled, FromMP
 Byte-coded stack VM (DF.EXE 0x4ab5ce, table 0x4ab070); jumps are relative to the code base, calls
 and states to the track. Globals Var00..Var15 at byte offsets 0x00..0x3C, `i` 0x40, `lastTime`
 0x44; the game writes Var0n with 0x4b8570. The full opcode table is in src/audio/Music.cpp.
+
+## KDV video (INTRO.KDV, VIEWS.PFF H_*.KDV)
+
+NovaLogic's own video format, played by DF.EXE's hand-written "ANIMMGR"
+module (0x486b0c open, 0x486c00 step, 0x487232 chunk loop, 0x487428 chunk
+dispatch, 0x487894 / 0x487e45 codecs, 0x486c48 timing, 0x486d07 sound).
+OpenDF: `src/formats/Kdv.{h,cpp}`, `opendf kdv FILE [OUTDIR [EVERY]]`.
+
+A file is a flat run of chunks `{char tag[4], u32 size}` where `size`
+includes the 8-byte header. Every tag ends in `K` (checked, 0x487849);
+the loop ends when the bytes consumed reach the file size (0x487827).
+
+| Tag | Contents |
+|---|---|
+| `xVDK` (0x1C bytes) | header: +0x08 width, +0x0C height, +0x10 frame count (of this clip), +0x14 frame period in DF.EXE's 120 Hz ticks, +0x18 version `0x22`, bit 31 set for 24-bit video. Another version: "ANIMMGR: Mismatched Player and KDV file" (0x48745a). A later `xVDK` of the same size just carries on (INTRO.KDV is two clips, 451 + 466 frames); a new size ends the step like a frame |
+| `pVDK` (8 + 768) | palette, 256 × RGB, 8 bits a component (0x4874f8). Applied at the next flip: entries 1..254 from it, 255 white, 0 never set (0x48b1a4) |
+| `aVDK` | mono sound: one `SAMP` block |
+| `sVDK` | stereo sound: two `SAMP` blocks, left then right (the chunk may have 2 pad bytes after them) |
+| `iVDK` | an 8-bit frame (0x487894) |
+| `i42K` | a 24-bit frame (0x487e45) |
+
+Any other tag: `ANIMMGR: "xxxx" Invalid Digital Video Token` with the tag
+byte-reversed in the quotes (0x487691).
+
+`SAMP` block: `"SAMP"`, u32 sample count, u32 rate field `0x10000000`
+(((rate·16) / 22050) << 24, i.e. 22050 Hz, as in loaded WAVs), u8
+attenuation shift (+0x0C, 0..8; 8 = silence), u8 0, u16 1, then the
+unsigned 8-bit samples. Each frame's sound is exactly one frame long
+(INTRO: 1470 samples at 8 ticks = 1/15 s; H_*: 1837 at 10 ticks = 1/12 s).
+
+### Frame codec
+
+Both codecs decode in place onto the previous frame (DF.EXE decodes into
+its back buffer, 0x48aaac), in 4×4 blocks left to right, top to bottom.
+Before every fourth block comes a type byte, two bits per block, low bits
+first (the counter runs on across rows):
+
+| Type | 8-bit (iVDK) | 24-bit (i42K) |
+|---|---|---|
+| 0 | 4 colours (4 bytes), then 16 two-bit indices (u32, low bits first, row-major) | 4 colours (not cached), then the u32 of indices |
+| 1 | 2 colours, then a u16 mask (1 bit per pixel). If the two colour bytes are equal instead: 16 raw pixels follow the pair (18 bytes) | if the next 6 bytes are all 0: 48 raw bytes follow them (54 bytes), written as they are. Else 2 colours (cached), then a u16 mask |
+| 2 | one colour byte for the whole block | one colour (cached) for the whole block |
+| 3 | the last block's type 0/1/2 again with its colours: a new mask (0, 1) or nothing (2) | the same |
+
+8-bit: index 0 is never written, so the old pixel shows through. 24-bit:
+pixels are 3 bytes B, G, R (the DirectDraw 24-bit layout; the result
+matches the footage, e.g. the red stripes of H_CAM's ribbon). A colour is
+either one byte with bit 7 set, an index (bits 0..6) into a 128-entry
+cache cleared at the start of every frame (0x487e61), or 3 bytes: blue =
+first byte << 1 (7 bits), green, red. The literal colours of type 1 and 2
+blocks go into the cache at a rolling index (0, 1, ... 127, 0); type 0's
+do not. In types 0 and 1 a pixel whose red byte is 0 is not written; a
+type 2 block is not written when its colour is 0, 0, 0 (so real black is
+coded as red 1). DF.EXE has a second path for 16-bit displays (0x48859d,
+the same stream converted to 16 bits); its 8-bit and 24-bit paths are the
+ones that match the files.
+
+### Player (DF.EXE)
+
+- Opening (0x486b27): videos up to 320 wide get a 320×240 screen, wider
+  ones 640×480; 8 bits for 8-bit video, else 32 (0x48b39c). The frame sits
+  at the left, centred vertically, with its own width as the row stride.
+- A step (0x486c00) reads chunks until a frame is decoded, then times it
+  (0x486c48): the frame is due one period after the last. If it is late it
+  is not shown, up to five in a row; the sixth is shown and the schedule
+  restarts at the current time. If it is early the player waits until 3/4
+  of a period before it is due, then flips (palette first if a new one
+  arrived).
+- Sound (0x486d07, after every frame, shown or not): the sound chunks read
+  since the last frame went into a 16-buffer ring; only one is queued:
+  stereo the oldest, mono the newest (so at the start of INTRO.KDV, where
+  four sVDK chunks precede the first frame, three are dropped; all four are
+  silent). It is dropped too if the mixer's stream queue holds 10 or more
+  blocks (0x4a9c14). Queued as an interleaved block at 22050 Hz with gain
+  (V>>1)>>shift per side (0x4a9c23), V = 255 (the stream volume before the
+  menu music sets it, 0x48c9d7).
+- The loop (0x48ff60(name, skippable)): the message pump, then if
+  skippable one entry from the key queue (any WM_KEYDOWN / WM_SYSKEYDOWN,
+  repeats included, 0x485a3a; the queue is emptied when the video starts,
+  0x489e2c) ends it; no frames while the window lacks focus (0x490015);
+  closing the program ends it. Mouse clicks do not skip. On close the
+  stream queue is emptied (0x497eaf): the sound stops at once.
+
+### Where the files are played
+
+- **INTRO.KDV** (24-bit, 640×480, 917 frames at 15 fps, 61 s): the Start
+  Screen's init (0x418b6c) plays it first (0x4019d4), skippable, then shows
+  DF_LEAD. DF.EXE looks for `INTRO.KDV` in its own folder, else
+  `<CD>\DFSETUP\INTRO.KDV`. Only the first 30 MB are video: after the
+  second clip (file offset 0x1CD14F0) the file is filler (`\r\n\r\n` then
+  bytes that are not chunks), so playback ends there with "Invalid KDV
+  File", shown nowhere. A left click during the intro is seen by the Start
+  Screen's mouse hook, registered before the intro (0x418b91), so DF_LEAD
+  then fades at once; a second key press left in the queue does the same
+  (0x418beb).
+- **VIEWS.PFF `H_*.KDV`** (10 files, 640×480, 12 fps, 144..177 frames):
+  award / medal presentations ("Awards", "Cambodia Joint Operations Seal",
+  an Air Medal on a desk, ...); H_AIR, H_AMC, H_DSC, H_MSM, H_SLS (177
+  frames) are 8-bit with three palettes (black, the picture, black),
+  H_CAM, H_IND, H_KYR, H_MON, H_SAK (144) 24-bit. **DF.EXE never plays
+  them**: ANIMMGR has one caller
+  (0x401a27, INTRO.KDV), no `H_` or `.KDV` name other than INTRO.KDV is in
+  the executable, and DF.EXE opens no VIEWS.PFF (the installer merges it
+  into dfbase.pff); "medal" and "award" appear nowhere in it.

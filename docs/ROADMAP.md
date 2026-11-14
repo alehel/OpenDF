@@ -44,7 +44,7 @@ Each milestone ends with something you can run.
 
 ## M7: Front end
 - Menus from `DF.MNU` / `DFMENU.BIN`, player profiles, settings
-- KDV video decoder (intro and campaign briefings)
+- KDV video decoder (the intro; done, docs/FORMATS.md "KDV video")
 - Save game progress per campaign
 
 ## Later

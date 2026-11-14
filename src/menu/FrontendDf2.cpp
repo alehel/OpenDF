@@ -276,6 +276,7 @@ private:
 
     // Menus.
     void enter(Screen s);
+    void playIntroMovie();   // 0x435830: DF2INTRO.BIK through binkplay.exe
     D2Menu* menu() { auto it = mnu_.menus.find(menuName_); return it == mnu_.menus.end() ? nullptr : &it->second; }
     D2Button* btn(const std::string& name) { return mnu_.button(name); }
     void layout(D2Button& b);
@@ -1732,6 +1733,45 @@ void FrontendDf2::key(const SDL_KeyboardEvent& k) {
 
 // ---------------------------------------------------------------- loop
 
+void FrontendDf2::playIntroMovie() {
+    // 0x435830: binkplay.exe from DF2.EXE's folder (FindFirstFile on the
+    // bare name: the current folder), else <CD>\DF2SETUP\binkplay.exe;
+    // DF2INTRO.BIK the same way. Either missing: no intro. The command
+    // line is "binkplay.exe DF2INTRO.BIK" plus " /I2/C" when df2.cfg's
+    // video_type is 0, else " /r/D208/U1/C" (0x435993). DF2.EXE starts it
+    // (CreateProcess, 0x4359f3), hides its own window first if video_type
+    // is 0 (ShowWindow 0, 0x435a15), then polls the process every 500 ms
+    // (GetExitCodeProcess, Sleep 0x1f4) pumping its messages (0x46de90);
+    // closing DF2 (quit flag 0xdd00ac) stops the wait. When binkplay exits
+    // the window is restored (ShowWindow 9) if it was hidden. Skipping is
+    // binkplay's own (not traced: RAD's program, packed).
+    std::error_code ec;
+    auto find = [&](const char* name) {
+        std::vector<std::filesystem::path> dirs = {saveDir_};
+        for (auto& e : std::filesystem::directory_iterator(o_.gameDir, ec))
+            if (upper(e.path().filename().string()) == "DF2SETUP") dirs.push_back(e.path());
+        for (const auto& d : dirs)
+            for (auto& e : std::filesystem::directory_iterator(d, ec))
+                if (upper(e.path().filename().string()) == name) return e.path();
+        return std::filesystem::path();
+    };
+    const std::filesystem::path player = find("BINKPLAY.EXE"), movie = find("DF2INTRO.BIK");
+    if (player.empty() || movie.empty()) return;
+    if (std::getenv("OPENDF_DEBUGVIDEO"))
+        std::fprintf(stderr, "intro: %s %s %s\n", player.string().c_str(), movie.string().c_str(),
+                     cfg_.get("video_type") == 0 ? "/I2/C" : "/r/D208/U1/C");
+    playBinkVideo(movie);
+    // INFERRED: keys and clicks during the movie went to binkplay's
+    // window, not to DF2's.
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_KEYDOWN, SDL_MOUSEBUTTONUP);
+}
+
+void playBinkVideo(const std::filesystem::path& path) {
+    // Decoder pending a decision on Bink support: nothing is played yet.
+    (void)path;
+}
+
 int FrontendDf2::run() {
     std::vector<uint8_t> raw;
     if (vfs_.read("DF2.BIN", raw)) menuText_.parse(raw);
@@ -1766,9 +1806,15 @@ int FrontendDf2::run() {
     audio_.setDfGame(2);   // DF2.EXE's WAV conversion (0x4711a0) and mixer (0x48e028)
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
     if (!openWindow()) return 1;
+    const std::string& s0 = o_.startScreen;
+    // The first state is MainMenu (0x41ff91); its init on the first entry
+    // (0x435500, flag 0x4b14b8) sets up the menu system (0x42f230), plays
+    // the intro unless df2.cfg's no_anim is set (0x43552a -> 0x435830),
+    // sets the menu video mode (0x436c40), starts the music (0x43cbc0)
+    // and goes on to ChooseSoldier. `play intro` is the same start, for tests.
+    if ((s0.empty() || s0 == "intro") && cfg_.get("no_anim") == 0) playIntroMovie();
     if (cfg_.get("music_volume") > 0) music_.start();
     music_.setVar(0, 0);
-    const std::string& s0 = o_.startScreen;
     Screen first = s0 == "main" ? Screen::Main : s0 == "campaign" ? Screen::Campaign : s0 == "quick" ? Screen::Quick
                  : s0 == "briefing" ? Screen::Briefing : s0 == "loadout" ? Screen::Gear : s0 == "settings" ? Screen::Options1
                  : s0 == "keyboard" ? Screen::Options2 : s0 == "difficulty" ? Screen::Options3 : s0 == "voice" ? Screen::Options4

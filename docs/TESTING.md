@@ -48,6 +48,15 @@ mixes 0.016 s per menu tick into FILE as raw s16le stereo at 22050 Hz (with `--s
 four ticks per frame), e.g. `OPENDF_AUDIODUMP=brief.raw opendf --game games/DF2 play briefing
 --screenshot b.ppm --frames 500`, then `ffmpeg -f s16le -ar 22050 -ac 2 -i brief.raw -af volumedetect -f null -`.
 
+The Delta Force intro (INTRO.KDV) plays before the start screen. With `--screenshot` its clock
+runs in fixed steps (frame N is always the same picture) and its frames count towards `--frames`:
+`opendf --game games/DeltaForce play intro --screenshot i.ppm --frames 300` shows intro frame 300
+(add `OPENDF_AUDIODUMP=intro.raw` for its sound). `OPENDF_INTROKEY=N` presses a key after N
+frames (skips), `OPENDF_INTROCLICK=N` left-clicks (DF_LEAD then fades at once). `opendf kdv FILE
+[OUTDIR [EVERY]]` decodes any KDV file (also the VIEWS.PFF award videos, after `extract OUT KDV`)
+and writes every EVERY-th frame as a .ppm. Delta Force 2: `OPENDF_DEBUGVIDEO=1` prints the
+binkplay command line DF2.EXE would run at start-up.
+
 More aids: `OPENDF_NOFLY=1` keeps a `--camera` start higher than 2 m
 under the physics (the player falls instead of flying), e.g. onto the
 C03M03 radio-station roof with `--camera 392,-560,8,90,-20`;

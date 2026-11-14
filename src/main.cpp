@@ -17,6 +17,7 @@
 #include "menu/Launcher.h"
 #include "formats/Anm.h"
 #include "formats/Chr.h"
+#include "formats/Kdv.h"
 #include "formats/Mission.h"
 #include "formats/Model3di.h"
 #include "formats/Pcx.h"
@@ -111,7 +112,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play" || a == "launcher")) {
+                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play" || a == "launcher" || a == "kdv")) {
             o.command = a;
             o.commandGiven = true;
         }
@@ -137,6 +138,7 @@ void usage() {
         "  opendf --game ROOT list [EXT]                      list files in the archives\n"
         "  opendf --game ROOT extract OUTDIR [EXT]            extract files (PFF2 decrypted)\n"
         "  opendf --game ROOT check                           parse every model/terrain/image\n"
+        "  opendf kdv FILE [OUTDIR [EVERY]]                   decode a KDV video (every EVERY-th frame to OUTDIR)\n"
         "  --camera X,Y,HEIGHT,YAW,PITCH  start at map metres X (east), Y (north), HEIGHT above\n"
         "                                 ground, compass YAW and PITCH in degrees\n"
         "\n"
@@ -765,6 +767,42 @@ int cmdModels(Vfs& vfs, Options& o) {
     return 0;
 }
 
+// `kdv FILE [OUTDIR [EVERY]]`: decodes a KDV video as DF.EXE's player
+// does (formats/Kdv.h) and prints its clips, frames and audio; with OUTDIR
+// every EVERY-th frame (default 50) is written there as a .ppm.
+int cmdKdv(const Options& o) {
+    if (o.args.empty()) { std::fprintf(stderr, "kdv FILE [OUTDIR [EVERY]]\n"); return 1; }
+    KdvVideo v;
+    if (!v.open(o.args[0])) { std::fprintf(stderr, "%s: %s\n", o.args[0].c_str(), v.error().c_str()); return 1; }
+    const fs::path out = o.args.size() > 1 ? fs::path(o.args[1]) : fs::path();
+    const int every = o.args.size() > 2 ? std::max(1, std::atoi(o.args[2].c_str())) : 50;
+    if (!out.empty()) fs::create_directories(out);
+    std::printf("%dx%d %s, %d frames in the first clip, %d ticks (1/120 s) per frame\n", v.width(), v.height(),
+                v.trueColor() ? "24-bit" : "8-bit", v.frameCount(), v.framePeriod());
+    int frames = 0, audio = 0, palettes = 0;
+    size_t samples = 0;
+    std::vector<uint8_t> rgba;
+    KdvVideo::Step s;
+    while ((s = v.next()) == KdvVideo::Step::Frame) {
+        if (v.takePaletteChanged()) ++palettes;
+        KdvVideo::Audio a;
+        if (v.takeAudio(0, a)) { ++audio; samples += a.lr.size() / 2; }
+        if (!out.empty() && frames % every == 0) {
+            v.toRgba(rgba);
+            char name[32];
+            std::snprintf(name, sizeof name, "frame%04d.ppm", frames);
+            std::ofstream f(out / name, std::ios::binary);
+            f << "P6\n" << v.width() << " " << v.height() << "\n255\n";
+            for (size_t i = 0; i < rgba.size(); i += 4) f.write(reinterpret_cast<const char*>(&rgba[i]), 3);
+        }
+        ++frames;
+    }
+    std::printf("%d frames (%.2f s), %d palettes, %d audio blocks (%zu samples, %.2f s at 22050 Hz); ended: %s\n", frames,
+                frames * v.framePeriod() / 120.0, palettes, audio, samples, double(samples) / 22050.0,
+                s == KdvVideo::Step::End ? "end of file" : v.error().c_str());
+    return 0;
+}
+
 // `play`: the game's own front end (Delta Force 2 has its own, DF2.MNU).
 int runPlay(Vfs& vfs, const Options& o) {
     FrontendOptions f;
@@ -811,6 +849,7 @@ int main(int argc, char** argv) {
     Options o;
     if (!parseArgs(argc, argv, o)) { usage(); return 1; }
     if (o.command == "import") return cmdImport(o);
+    if (o.command == "kdv") return cmdKdv(o);
     const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission" || o.command == "play" ||
                           o.command == "launcher";
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
