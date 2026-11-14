@@ -200,8 +200,8 @@ First differences from DF1:
     objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
     that must reach the item's third hp value. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
-    hits a tick). Not yet: shrapnel counts, the delay grenade's bounce,
-    the M203 dud within 8 ticks (DF1's arming rule is used), fall damage.
+    hits a tick). Not yet: shrapnel counts (the delay grenade, the M203
+    arming and fall damage are covered below).
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
@@ -233,9 +233,38 @@ First differences from DF1:
     mission's header defaults +0x94..+0x97), Settings pages 1 and 3 (df2.cfg,
     sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
     mission back to Campaigns / Quick Missions (no debriefing in DF2), the
-    win marking the mission done and the unlock mask kept. Not yet: the fade
-    effect, the keyboard page, credits, the voice briefing, slider dragging,
-    the map scroll sliders, multiplayer.
+    win marking the mission done and the unlock mask kept; the voice briefing
+    (`<mission>01..19.WAV`, play/stop) and slider dragging. Settings has four
+    pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 48 rows (labels
+    0x4b3af0, defaults 0x4b2cb8 copied into new soldiers by 0x431c00,
+    soldier +0x2e0, 12 bytes {VK, mouse 0..3, 0}), ten shown, scroll arrows
+    and a slider forced to range 39; clicking a key box waits for one key or
+    mouse button (left 1, right 2, middle 3, swallowed while waiting), which
+    is taken from every other row first; keys outside 0x439310's list
+    (Esc, F-keys, Alt, '/', …) give REMAP_RESERVED; DELETE KEY then a row
+    clears it, DEFAULT copies the defaults, REVERT the snapshot taken on the
+    first visit (cleared by ACCEPT); key names as 0x439fe0 ("CTRL OR MOUSE
+    1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
+    130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
+    command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
+    attack_1 and attack_2 (0x43afb0). Page 4 "Voice-over-net": drawn from the
+    MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
+    are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
+    (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`
+    texts from CREDITS.BIN `Credits`, `{PAUSE}` t+1 ticks, `{DISPLAYPIC}`
+    flags 0/1/2, `{DISPLAYANIM}`, `{DRAWLINE}`, `{PLAYSOUND}` on channel 2;
+    TTY text and removals ignored) into 250 slots by ID, lives counting down
+    (−1 forever), drawn in slot order; at the end back to the Main Menu.
+    Teletype boxes play a random TTY_CLK1..9 on channel 2 each tick while
+    typing (0x43d110 calls 0x43d000 while unfinished; DF2.EXE does it per
+    drawn frame); menu sounds use their channels (mnu_tran 1, btn_slct 3,
+    btn_roll 4: a new sound cuts the old). Screen changes: no fade is drawn
+    (the hooks 0x468c00/40/70 call an empty table); input is ignored for 12
+    ticks after entering a screen; only the Main Menu and the Mission
+    Briefing wait 12 more ticks after a click before switching (0x4356a0,
+    0x437811), the others switch at once. A soldier saved by earlier OpenDF
+    builds with no bindings at all gets the defaults when loaded (an OpenDF
+    repair). Not yet: multiplayer (out of scope).
   - **command map** (key C; 0x40b370): instead of the 3D view, a 640×480
     mouse screen (scaled into the window; the background tiles continue past
     its sides): CTILE2 background, CTILE panels with DF2_EDGE/DF2_CRNR frames
@@ -293,12 +322,13 @@ First differences from DF1:
     cloud drawn as a smoke puff, CAL classes per tile line;
   - *done since*: the player's fall damage (0x43f600), the M203 arming
     (the same 8 ticks as DF1);
-  - *not yet*: shrapnel counts per explosion; the delay
-    grenade's bounce; fog_level / fog_color (unused on the disc); the
-    command map's W/D/contour tools and Players/Team/Weapons tabs (squad
-    orders); the front end's keyboard page, credits, voice briefing, fades
-    and slider dragging; multiplayer (out of scope);  the death-move table's DF2
-    numbering (DF1's names are used).
+  - *done since*: the delay grenade's slide and fuse, the command map's
+    Team tab with squad orders, the front end's keyboard page, credits,
+    voice briefing, slider dragging and screen timing;
+  - *not yet*: shrapnel counts per explosion; fog_level / fog_color (unused
+    on the disc); the command map's W/D/contour tools and Players/Weapons
+    tabs (multiplayer-oriented); multiplayer (out of scope); the death-move
+    table's DF2 numbering (DF1's names are used).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
     differences, READ): fire also needs under 128 m at night, no parachute,
     no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more

@@ -8,6 +8,7 @@
 #include "../formats/Pcx.h"
 #include "../formats/Rtxt.h"
 #include "../game/Config.h"
+#include "../game/Controls.h"
 #include "../render/Gl.h"
 #include "../render/Hud.h"
 
@@ -17,6 +18,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -144,6 +146,38 @@ struct D2Mnu {
     }
 };
 
+// Options2 "Keyboard" (0x43a5a0): the 48 rows' label keys (0x4b3af0), the
+// defaults {VK, mouse button} (0x4b2cb8) and the game commands they set at
+// mission start (0x43afb0; row 8 also sets attack_2).
+struct Df2KeyRow { const char* label; const char* game; uint32_t vk, mouse; };
+const Df2KeyRow kDf2Keys[48] = {
+    {"STRAFE_LEFT", "slide_left", 0x25, 0}, {"STRAFE_RIGHT", "slide_right", 0x27, 0}, {"MOVE_FORWARD", "move_forward", 0x26, 0},
+    {"MOVE_BACK", "move_back", 0x28, 0}, {"GO_PRONE", "Prone", 0x22, 3}, {"CROUCH", "Crouch", 0x23, 0},
+    {"STAND", "Stand", 0x2E, 0}, {"JUMP", "move_jump", 0x20, 0}, {"FIRE_WEAPON", "attack_1", 0x11, 1},
+    {"SCOPE", "scope", 'S', 2}, {"WALK", "NoRun", 0x10, 0}, {"CYCLE_WEAPONS", "cycle", 0x08, 0},
+    {"BINOCULARS", "Binoculars", 'B', 0}, {"KNIFE", "weapon1", '1', 0}, {"SIDEARM", "weapon2", '2', 0},
+    {"PRIMARY_WPN_FN_1", "weapon3", '3', 0}, {"PRIMARY_WPN_FN_2", "weapon4", '4', 0}, {"PRIMARY_WPN_FN_3", "weapon5", '5', 0},
+    {"SECONDARY_WEAPON", "weapon6", '6', 0}, {"AUXILIARY_GEAR", "weapon7", '7', 0}, {"DETONATOR", "weapon8", '8', 0},
+    {"GRENADE", "weapon9", '9', 0}, {"LASER_DESIGNATOR", "weapon0", '0', 0}, {"ZOOM_IN", "zoomin", 0xBB, 0},
+    {"ZOOM_OUT", "zoomout", 0xBD, 0}, {"TALK", "talk", 'T', 0}, {"TEAM_TALK", "stalk", 'Y', 0},
+    {"NEXT_WAYPOINT", "NextWaypoint", 'W', 0}, {"AUDIO_COMMAND", "AudioMacros", 'A', 0}, {"VIDEO_RESOLUTION", "resolution", 'V', 0},
+    {"DROP_ITEMS", "Drop", 'D', 0}, {"CHANGE_MAGAZINE", "magazine", 'M', 0}, {"LOOK_UP", "look_up", 'P', 0},
+    {"LOOK_DOWN", "look_down", 0xBE, 0}, {"TURN_RIGHT", "turn_right", 0xBA, 0}, {"TURN_LEFT", "turn_left", 'L', 0},
+    {"CYCLE_FORWARD_OBSERVER", "tab", 0x09, 0}, {"ORDERS", "briefing", 'O', 0}, {"RECENT_MESSAGES", "OldMessages", 'R', 0},
+    {"TEAM_TAGS", "ShowFriendly", 'F', 0}, {"GOALS", "MissionGoals", 'G', 0}, {"COMMANDERS_SCREEN", "BigMap", 'C', 0},
+    {"TURBO", "Turbo", 'H', 0}, {"NEXT_FLAG_(MP)", "NextFlag", 'Q', 0}, {"TOGGLE_HOST_SCREEN", "PrevWaypoint", 0x24, 0},
+    {"SCOPE_ZOOM_IN", "scopeinc", 'X', 0}, {"SCOPE_ZOOM_OUT", "scopedec", 'Z', 0}, {"TOGGLE_NIGHT_VISION", "NVG", 'N', 0}};
+
+// 0x439310: the keys a row may take; anything else is "reserved".
+bool df2KeyAllowed(uint32_t vk) {
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z') || (vk >= 0x60 && vk <= 0x6F) || (vk >= 0x25 && vk <= 0x28)) return true;
+    switch (vk) {
+    case 0x11: case 0x10: case 0x0D: case 0x2D: case 0x2E: case 0x24: case 0x23: case 0x20: case 0x08: case 0x09:
+    case 0x21: case 0x22: case 0xBB: case 0xBD: case 0xBC: case 0xBE: case 0xBA: case 0xDB: case 0xDD: return true;
+    default: return false;
+    }
+}
+
 // ---------------------------------------------------------------- soldiers
 
 // df2plyrs.sav (0x431ba0 / 0x431c90): 'FPBC', version 10, 5 records of 0x6E8.
@@ -157,11 +191,12 @@ struct Soldier {
         std::memcpy(&d[4], n.data(), std::min<size_t>(15, n.size()));
     }
     bool empty() const { return name().empty(); }
-    // Defaults (0x431c00): campaign 1, gear sidearm 5, primary 10, secondary
+    // Defaults (0x431c00): the key bindings 0x4b2cb8, campaign 1, gear sidearm 5, primary 10, secondary
     // 21, auxiliary 1, grenade 26, mouse 128, SFX 255, music 255, dialogue 200.
     void defaults() {
         d.fill(0);
         set(0x28, 1);
+        for (size_t i = 0; i < 48; ++i) { set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
         set(0x2b8, 5); set(0x2bc, 10); set(0x2c0, 21); set(0x2c4, 1); set(0x2c8, 26);
         set(0x5b0, 128); set(0x5b8, 255); set(0x5bc, 255); set(0x5c0, 200);
     }
@@ -198,7 +233,7 @@ const GearInfo* gearInfo(int type) {
 struct Glyph { int x = 0, y = 0, w = 0, h = 0; };
 struct D2FontTex { HudImage tex; std::array<Glyph, 256> glyphs{}; int height = 0; bool ok = false; };
 
-enum class Screen { Soldier, Main, Campaign, Quick, Briefing, Gear, Options1, Options3, Credits, Mission, Quit };
+enum class Screen { Soldier, Main, Campaign, Quick, Briefing, Gear, Options1, Options2, Options3, Options4, Credits, Mission, Quit };
 
 } // namespace
 
@@ -229,7 +264,7 @@ private:
     void blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh);
     void rectOutline(float x0, float y0, float x1, float y1, uint32_t color);
     void fill(float x0, float y0, float x1, float y1, uint32_t color);
-    void sound(const std::string& name);
+    void sound(const std::string& name, int channel = 0);
 
     // Menus.
     void enter(Screen s);
@@ -257,6 +292,31 @@ private:
     void loadBriefing();
     void gearStep(size_t slot, int category, int dir, int altCategory = -1);
     void startMission();
+    // Options2 "Keyboard" (0x439ea0..0x43a930).
+    void refreshKeys();
+    std::string keyName(size_t row);
+    void remapMessage(const char* key) { helpText_ = menuText(key, key); helpShown_ = 0; }
+    void captureTick();
+    std::array<uint8_t, 576> keySnapshot_{};   // 0x4cf370, taken on the first visit per Settings session
+    bool haveKeySnapshot_ = false;             // [0x4cf36c]
+    bool keyDelete_ = false, keyCapture_ = false;
+    int keyRow_ = 0, keyMouse_ = 0;
+    std::deque<uint32_t> keyQueue_;            // key-downs while capturing (VKs)
+    std::map<int, int> channels_;              // menu sound channel -> playing voice
+    // Credits (0x430e00 / 0x430ea0 / 0x4316e0): CREDITS.SCR commands run
+    // until a PAUSE; 250 object slots indexed by the command's ID.
+    struct CreditCmd { int type = -1, id = 0, flags = 0, life = 0, t = 0, x1 = 0, y1 = 0, x2 = 0, y2 = 0; std::string font, color, str; };
+    struct CreditObj { int type = 0, flags = 0, life = -1, x1 = 0, y1 = 0, x2 = 0, y2 = 0, t = 0; std::string font, str; uint32_t color = 0xFFFFFFFF; };
+    std::vector<CreditCmd> creditCmds_;
+    std::array<CreditObj, 250> creditObjs_{};
+    size_t creditPc_ = 0;
+    int creditPause_ = 0;
+    bool creditDone_ = false;
+    TextTable creditText_;
+    bool creditTextLoaded_ = false;
+    void loadCredits();
+    void creditTick();
+    void drawCredits();
     std::string menuText(const char* key, const char* fallback) {
         const std::string* t = menuText_.find("MENU", key);
         return t ? *t : fallback;
@@ -291,6 +351,7 @@ private:
         else if (b.name == "but_opt1_dvsl") soldier().set(0x5c0, b.p2);
         else if (b.name == "but_opt1_mvsl") { cfg_.set("music_volume", b.p2); music_.setVolume(std::clamp(b.p2, 0, 255)); }
         else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
+        else if (b.name == "but_opt2_vsl") { b.p2 = std::min(b.p2, b.p1 - 1); refreshKeys(); }   // opt2_ScrollTo 0x43a6b0
         else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
         else if (b.name == "but_mb_mpvsl") mapY_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 323.f);
         else if (b.name == "but_mb_mphsl") mapX_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 279.f);
@@ -299,6 +360,9 @@ private:
     Screen screen_ = Screen::Soldier, next_ = Screen::Soldier, returnTo_ = Screen::Main;
     std::string menuName_;
     int stageTicks_ = 0;   // 12-tick enter stage: input ignored (0x42e610)
+    bool leaving_ = false;
+    int leaveTicks_ = 0;   // Main Menu / Mission Briefing: 12 more ticks before leaving
+    bool busy() const { return stageTicks_ > 0 || leaveTicks_ > 0; }
     uint64_t ticks_ = 0;
     std::array<Soldier, 5> soldiers_{};
     int current_ = 0;
@@ -516,7 +580,7 @@ void FrontendDf2::fill(float x0, float y0, float x1, float y1, uint32_t color) {
     hud().rect(offX_ + x0 * scale_, offY_ + y0 * scale_, (x1 - x0) * scale_, (y1 - y0) * scale_, argbColor(color));
 }
 
-void FrontendDf2::sound(const std::string& name) {
+void FrontendDf2::sound(const std::string& name, int channel) {
     // MNU [SOUNDS] (0x42f500): the file at its volume (x SFX volume of the soldier).
     auto it = mnu_.sounds.find(upper(name));
     const std::string f = it == mnu_.sounds.end() ? name : it->second;
@@ -525,7 +589,13 @@ void FrontendDf2::sound(const std::string& name) {
     vol = vol * std::clamp(soldier().get(0x5b8), 0, 255) / 255;
     if (const SoundClip* c = audio_.clip(vfs_, upper(f))) {
         const float g = float(vol) / 255.f * 0.5f;
-        audio_.play(c, g, g);
+        // 0x42f500 plays on a channel: a new sound there cuts the old one.
+        if (channel) {
+            if (auto ch = channels_.find(channel); ch != channels_.end()) audio_.stop(ch->second);
+            channels_[channel] = audio_.play(c, g, g);
+        } else {
+            audio_.play(c, g, g);
+        }
     }
 }
 
@@ -537,6 +607,14 @@ void FrontendDf2::loadSoldiers() {
     char head[8] = {};
     if (f.read(head, 8) && std::memcmp(head, "FPBC", 4) == 0 && head[4] == 10)
         for (auto& s : soldiers_) f.read(reinterpret_cast<char*>(s.d.data()), std::streamsize(s.d.size()));
+    // OpenDF's first DF2 builds wrote soldiers without the default bindings;
+    // a named soldier with all 48 rows empty gets 0x4b2cb8's (an OpenDF repair).
+    for (auto& s : soldiers_) {
+        bool none = true;
+        for (size_t i = 0; i < 48 && none; ++i) none = s.get(0x2e0 + 12 * i) == 0 && s.get(0x2e4 + 12 * i) == 0;
+        if (none && !s.empty())
+            for (size_t i = 0; i < 48; ++i) { s.set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); s.set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
+    }
     bool any = false;
     for (auto& s : soldiers_) any = any || !s.empty();
     // All empty: slot 0 becomes CS_DEFAULTNAME "Blackhawk".
@@ -574,7 +652,7 @@ void FrontendDf2::enter(Screen s) {
     helpText_.clear();
     helpShown_ = 0;
     static const char* kMenus[] = {"CHOOSESOLDIER", "MAIN", "CAMPAIGN", "QUICKMISSION", "MISSIONBRIEFING", "CHANGEGEAR", "OPTIONS1",
-                                   "OPTIONS3", "CREDITS", "", ""};
+                                   "OPTIONS2", "OPTIONS3", "OPTIONS4", "CREDITS", "", ""};
     menuName_ = kMenus[int(s)];
     if (D2Menu* m = menu())
         for (int i : m->buttons) {
@@ -584,9 +662,9 @@ void FrontendDf2::enter(Screen s) {
             if (b.drawstate == 2 || b.drawstate == 3) b.drawstate = 1;
             layout(b);
         }
-    sound("mnu_tran");
+    sound("mnu_tran", 1);
     // Music Var1 per state (0x43cc20).
-    const int var1 = s == Screen::Campaign ? 1 : s == Screen::Options1 ? 3 : s == Screen::Soldier ? 4 : s == Screen::Credits ? 5
+    const int var1 = s == Screen::Campaign ? 1 : s == Screen::Options1 || s == Screen::Options2 ? 3 : s == Screen::Soldier ? 4 : s == Screen::Credits ? 5
                    : s == Screen::Briefing ? 6 : s == Screen::Gear ? 7 : 0;
     music_.setVar(1, var1);
     switch (s) {
@@ -602,8 +680,220 @@ void FrontendDf2::enter(Screen s) {
     case Screen::Gear: refreshGear(); break;
     case Screen::Options1:
     case Screen::Options3: refreshOptions(); break;
+    case Screen::Credits: loadCredits(); break;
+    case Screen::Options2:
+        // 0x439ea0: snapshot the bindings on the first visit, scroll to the
+        // top (range forced to 39), clear the box, REMAP_CLICK.
+        if (!haveKeySnapshot_) {
+            std::memcpy(keySnapshot_.data(), &soldier().d[0x2e0], keySnapshot_.size());
+            haveKeySnapshot_ = true;
+        }
+        if (D2Button* b = btn("but_opt2_vsl")) { b->p1 = 39; b->p2 = 0; }
+        remapMessage("REMAP_CLICK");
+        refreshKeys();
+        break;
     default: break;
     }
+}
+
+// Credits init 0x430e00 / parser 0x451290: [MISSIONSCRIPT] SCRIPT= lines,
+// fields by strtok(", "), command names case-sensitive, {END} stops.
+void FrontendDf2::loadCredits() {
+    creditCmds_.clear();
+    creditObjs_ = {};
+    creditPc_ = 0;
+    creditPause_ = 0;
+    creditDone_ = false;
+    std::vector<uint8_t> raw;
+    if (!creditTextLoaded_ && vfs_.read("CREDITS.BIN", raw)) creditTextLoaded_ = creditText_.parse(raw);
+    if (!vfs_.read("CREDITS.SCR", raw)) return;
+    std::istringstream in(std::string(raw.begin(), raw.end()));
+    std::string line;
+    bool inScript = false;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty() && line[0] == '[') { inScript = upper(line).rfind("[MISSIONSCRIPT]", 0) == 0; continue; }
+        if (!inScript || line.rfind("SCRIPT=", 0) != 0) continue;
+        std::vector<std::string> f;
+        std::string cur;
+        for (char c : line.substr(7)) {
+            if (c == ',' || c == ' ' || c == '\t') { if (!cur.empty()) f.push_back(cur); cur.clear(); }
+            else cur += c;
+        }
+        if (!cur.empty()) f.push_back(cur);
+        if (f.empty()) continue;
+        auto num = [&](size_t i) { return i < f.size() ? std::atoi(f[i].c_str()) : 0; };
+        auto str = [&](size_t i) { return i < f.size() ? f[i] : std::string(); };
+        CreditCmd c;
+        const std::string& n = f[0];
+        if (n == "{END}") break;
+        if (n == "{PRINTTEXT}") {
+            c = {0, num(1), num(2), num(3), 0, num(6), num(7), 0, 0, str(4), str(5), str(8)};
+            const std::string* t = creditText_.find("Credits", c.str);
+            if (!t) t = creditText_.find("CREDITS", c.str);
+            if (t) c.str = *t;
+        } else if (n == "{PAUSE}") c = {2, 0, 0, 0, num(1)};
+        else if (n == "{DISPLAYANIM}") c = {3, num(1), num(2), num(3), num(6), num(4), num(5), 0, 0, "", "", str(8)};
+        else if (n == "{DISPLAYPIC}") c = {4, num(1), num(2), num(3), 0, num(4), num(5), 0, 0, "", "", str(6)};
+        else if (n == "{DRAWLINE}") c = {6, num(1), num(2), num(3), 0, num(5), num(6), num(7), num(8), "", str(4)};
+        else if (n == "{PLAYSOUND}") c = {8, 0, 0, 0, 0, num(2), 0, 0, 0, "", "", str(1)};
+        else if (n == "{PRINTTEXTTTY}") c.type = 1;
+        else if (n == "{REMOVEOBJECT}") c.type = 5;
+        else if (n == "{REMOVELINE}") c.type = 7;
+        else continue;   // unknown: skipped
+        creditCmds_.push_back(c);
+    }
+}
+
+// Credits tick 0x430ea0.
+void FrontendDf2::creditTick() {
+    if (!creditDone_) {
+        if (creditPause_ > 0) --creditPause_;
+        else
+            while (true) {
+                if (creditPc_ >= creditCmds_.size()) {
+                    // The end of the list: straight to the Main Menu.
+                    creditDone_ = true;
+                    next_ = Screen::Main;
+                    break;
+                }
+                const CreditCmd& c = creditCmds_[creditPc_++];
+                if (c.type == 2) { creditPause_ = c.t; break; }
+                if (c.type == 8) {
+                    // PLAYSOUND on channel 2 (volume scaling untraced; unused by DF2's credits).
+                    sound(c.str, 2);
+                    continue;
+                }
+                if (c.type != 0 && c.type != 3 && c.type != 4 && c.type != 6) continue;   // TTY text, removals: ignored
+                if (c.id < 0 || c.id >= int(creditObjs_.size())) continue;
+                CreditObj& o = creditObjs_[size_t(c.id)];
+                o = {};
+                o.type = c.type == 0 ? 1 : c.type == 4 ? 2 : c.type == 3 ? 3 : 4;
+                o.flags = c.flags;
+                o.life = c.life;
+                o.x1 = c.x1; o.y1 = c.y1; o.x2 = c.x2; o.y2 = c.y2;
+                o.t = c.t;
+                o.font = c.font;
+                o.str = c.str;
+                if (auto it = mnu_.colors.find(upper(c.color)); it != mnu_.colors.end()) o.color = it->second;
+            }
+    }
+    for (CreditObj& o : creditObjs_) {
+        if (!o.type) continue;
+        if (o.life > 0) --o.life;
+        else if (o.life == 0) o.type = 0;
+    }
+}
+
+// cr_ScriptRender 0x4316e0: slots in index order.
+void FrontendDf2::drawCredits() {
+    for (const CreditObj& o : creditObjs_) {
+        if (o.type == 4) {
+            // 0x461920: a one-pixel line, end points included.
+            const Color c = argbColor(o.color);
+            if (o.y1 == o.y2) fill(float(std::min(o.x1, o.x2)), float(o.y1), float(std::max(o.x1, o.x2) + 1), float(o.y1 + 1), o.color);
+            else if (o.x1 == o.x2) fill(float(o.x1), float(std::min(o.y1, o.y2)), float(o.x1 + 1), float(std::max(o.y1, o.y2) + 1), o.color);
+            else hud().line(offX_ + (float(o.x1) + 0.5f) * scale_, offY_ + (float(o.y1) + 0.5f) * scale_, offX_ + (float(o.x2) + 0.5f) * scale_,
+                            offY_ + (float(o.y2) + 0.5f) * scale_, std::max(1.f, scale_), c);
+        } else if (o.type == 2) {
+            // Flags 0 solid, 1 colour-keyed (pixel 0), 2 a 50 % blend, else nothing.
+            // (MNU PCX images are loaded colour-keyed; flags 0 draws them so too.)
+            const HudImage im = image(o.str);
+            if (!im.texture || o.flags < 0 || o.flags > 2) continue;
+            hud().imageUV(im.texture, offX_ + float(o.x1) * scale_, offY_ + float(o.y1) * scale_, float(im.width) * scale_,
+                          float(im.height) * scale_, 0, 0, 1, 1, Color{1, 1, 1, o.flags == 2 ? 0.5f : 1.f});
+        } else if (o.type == 3) {
+            // 0x462d20: frame (life / t) % frames.
+            const HudImage im = image(o.str);
+            const int frames = std::max(1, imageFrames(o.str));
+            if (!im.texture) continue;
+            const int f = (o.life / std::max(1, o.t)) % frames;
+            const float fh = float(im.height / frames);
+            blit(im, float(o.x1), float(o.y1), 0, fh * float(std::max(0, f)), float(im.width), fh);
+        } else if (o.type == 1) {
+            const int align = (o.flags & 1) ? 0 : (o.flags & 2) ? 1 : 2;
+            if (o.flags & 8) text(o.font, float(o.x1 + 1), float(o.y1 + 1), o.str, 0xFF010101, align);
+            text(o.font, float(o.x1), float(o.y1), o.str, o.color, align);
+        }
+    }
+}
+
+// 0x439fe0: a binding's text.
+std::string FrontendDf2::keyName(size_t row) {
+    const uint32_t vk = uint32_t(soldier().get(0x2e0 + 12 * row)), m = uint32_t(soldier().get(0x2e4 + 12 * row));
+    std::string s;
+    static const std::pair<uint32_t, const char*> named[] = {
+        {0x08, "BACKSPACE"}, {0x09, "TAB"}, {0x0D, "ENTER"}, {0x10, "SHIFT"}, {0x11, "CTRL"}, {0x20, "SPACE_BAR"},
+        {0x21, "PAGE_UP"}, {0x22, "PAGE_DOWN"}, {0x23, "END"}, {0x24, "HOME"}, {0x25, "LEFT"}, {0x26, "UP"},
+        {0x27, "RIGHT"}, {0x28, "DOWN"}, {0x2D, "INSERT"}, {0x2E, "DELETE"}};
+    for (const auto& [v, k] : named)
+        if (v == vk) s = upper(menuText(k, k));
+    const std::string keypad = upper(menuText("KEYPAD", "KEYPAD"));
+    if (vk == 0x6A) s = keypad + " *";
+    else if (vk == 0x6B) s = keypad + " +";
+    else if (vk == 0x6D) s = keypad + " -";
+    else if (vk == 0x6E) s = keypad + " .";
+    else if (vk == 0x6F) s = keypad + " /";
+    else if (vk >= 0x60 && vk <= 0x69) s = keypad + " " + char(vk - 0x30);
+    else if (vk == 0xBA) s = ";";
+    else if (vk == 0xBB) s = "=";
+    else if (vk == 0xBC) s = ",";
+    else if (vk == 0xBD) s = "-";
+    else if (vk == 0xBE) s = ".";
+    else if (vk == 0xDB) s = "[";
+    else if (vk == 0xDD) s = "]";
+    else if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) s = std::string(1, char(vk));
+    if (m) {
+        if (vk) s += " " + upper(menuText("OR", "OR")) + " ";
+        s += upper(menuText("MOUSE", "MOUSE")) + " " + std::to_string(m);
+    }
+    return s;
+}
+
+// 0x43a5a0: ten rows from the slider's value.
+void FrontendDf2::refreshKeys() {
+    const D2Button* vsl = btn("but_opt2_vsl");
+    const int top = vsl ? vsl->p2 : 0;
+    for (int i = 0; i < 10; ++i) {
+        const size_t row = size_t(std::clamp(top + i, 0, 47));
+        std::string label = menuText(kDf2Keys[row].label, kDf2Keys[row].label);
+        if (!menuText_.find("MENU", kDf2Keys[row].label)) std::replace(label.begin(), label.end(), '_', ' ');
+        char n[24];
+        std::snprintf(n, sizeof n, "but_opt2_keyl%d", i);
+        if (D2Button* b = btn(n)) { b->text = label; layout(*b); }
+        std::snprintf(n, sizeof n, "but_opt2_keyb%d", i);
+        if (D2Button* b = btn(n)) b->text = keyName(row);
+    }
+}
+
+// Options tick 0x439510: a caught mouse button first, else one key-down.
+void FrontendDf2::captureTick() {
+    if (!keyCapture_) return;
+    const size_t row = size_t(keyRow_);
+    auto at = [&](size_t r, size_t o) { return soldier().get(0x2e0 + 12 * r + o); };
+    if (keyMouse_) {
+        for (size_t r = 0; r < 48; ++r)
+            if (r != row && at(r, 4) == keyMouse_) soldier().set(0x2e4 + 12 * r, 0);
+        soldier().set(0x2e4 + 12 * row, keyMouse_);
+        remapMessage("REMAP_OK");
+        refreshKeys();
+    } else if (!keyQueue_.empty()) {
+        const uint32_t vk = keyQueue_.front();
+        keyQueue_.pop_front();
+        for (size_t r = 0; r < 48; ++r)
+            if (r != row && uint32_t(at(r, 0)) == vk) soldier().set(0x2e0 + 12 * r, 0);
+        if (df2KeyAllowed(vk)) {
+            soldier().set(0x2e0 + 12 * row, int32_t(vk));
+            remapMessage("REMAP_OK");
+            refreshKeys();
+        } else {
+            remapMessage("REMAP_RESERVED");
+        }
+    } else {
+        return;
+    }
+    keyMouse_ = 0;
+    keyCapture_ = false;
 }
 
 // Button size (0x42d8d0): image type 1 -> image width x height / frames;
@@ -695,9 +985,21 @@ void FrontendDf2::ownerDraw(D2Button& b) {
     if (cb == "mm_Rect") {
         // 0x435fd0: a one-pixel rectangle (x, y)-(user1, user2), 0xCA4409 (0x844030 disabled).
         rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), b.drawstate == 4 ? 0x844030 : 0xCA4409);
+        // The Options2 message box (0x439f60): LCD10N at +5, 130x145, in the box font's colour.
+        if (b.name == "but_opt2_ttybox" && !helpText_.empty())
+            wrapped("LCD10N", float(b.x + 5), float(b.y + 5), float(b.x + 5 + 130), float(b.y + 5 + 145), helpText_.substr(0, helpShown_),
+                    mnu_.fonts[b.font].fg[0]);
         if (b.name == "but_mm_hlrct" && !helpText_.empty())
             wrapped("LCD10N", float(b.x + 5), float(b.y + 5), float(b.user1 - 5), float(b.user2 - 5), helpText_.substr(0, helpShown_),
                     mnu_.fonts["LCD10N"].fg[0]);
+    } else if (cb == "cr_ScriptRender") {
+        drawCredits();
+    } else if (cb == "opt4_Explain") {
+        // 0x43ad30: the button's text wrapped in (x, y)-(user1, user2), coloured by state.
+        auto fi = mnu_.fonts.find(b.font);
+        const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
+        wrapped(b.font, float(b.x), float(b.y), float(b.user1), float(b.user2), b.text,
+                b.drawstate == 4 ? df.fg[2] : b.drawstate == 2 ? df.fg[1] : df.fg[0]);
     } else if (cb == "ca_DrawRegion") {
         if (region_ >= 0) {
             const HudImage im = image(kRegionImage[region_]);
@@ -1027,7 +1329,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
         returnTo_ = Screen::Campaign;
         next_ = Screen::Briefing;
     } else if (cb == "ca_Back" || cb == "qm_Back" || cb == "opt_Accept" || cb == "cr_Back") {
-        if (cb == "opt_Accept") { saveSoldiers(); cfg_.save(saveDir_ / "df2.cfg"); }
+        if (cb == "opt_Accept") { saveSoldiers(); cfg_.save(saveDir_ / "df2.cfg"); haveKeySnapshot_ = false; }
         next_ = Screen::Main;
     }
     // Quick missions.
@@ -1085,7 +1387,47 @@ void FrontendDf2::event(D2Button& b, int ev) {
         refreshGear();
     } else if (cb == "cg_Back") next_ = Screen::Briefing;
     // Options.
-    else if (cb == "opt_NextPage" || cb == "opt_PrevPage") next_ = screen_ == Screen::Options1 ? Screen::Options3 : Screen::Options1;
+    else if (cb == "opt_NextPage" || cb == "opt_PrevPage") {
+        // 0x4396a0 / 0x4396e0: four pages (0x4b3ae0), wrapping.
+        static const Screen kPages[4] = {Screen::Options1, Screen::Options2, Screen::Options3, Screen::Options4};
+        int p = 0;
+        while (p < 3 && kPages[p] != screen_) ++p;
+        next_ = kPages[(p + (cb == "opt_NextPage" ? 1 : 3)) % 4];
+    }
+    // Options2.
+    else if (cb == "opt2_ScrollUp" || cb == "opt2_ScrollDn") {
+        if (D2Button* v = btn("but_opt2_vsl")) {
+            if (cb == "opt2_ScrollUp" && v->p2 > 0) --v->p2;
+            else if (cb == "opt2_ScrollDn" && v->p2 < v->p1 - 1) ++v->p2;
+        }
+        refreshKeys();
+    } else if (cb == "opt2_KeyMap") {
+        const int row = (btn("but_opt2_vsl") ? btn("but_opt2_vsl")->p2 : 0) + (b.name.back() - '0');
+        if (keyDelete_) {
+            for (size_t o = 0; o < 12; o += 4) soldier().set(0x2e0 + 12 * size_t(row) + o, 0);
+            keyDelete_ = false;
+            remapMessage("REMAP_DELETED");
+            refreshKeys();
+        } else {
+            keyCapture_ = true;
+            keyRow_ = row;
+            keyQueue_.clear();
+            remapMessage("REMAP_PRESS");
+        }
+    } else if (cb == "opt2_DeleteKey") { remapMessage("REMAP_SELECT"); keyDelete_ = true; }
+    else if (cb == "opt2_Defaults") {
+        for (size_t i = 0; i < 48; ++i) {
+            soldier().set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk));
+            soldier().set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse));
+            soldier().set(0x2e8 + 12 * i, 0);
+        }
+        remapMessage("REMAP_DEFAULT");
+        refreshKeys();
+    } else if (cb == "opt2_Revert") {
+        std::memcpy(&soldier().d[0x2e0], keySnapshot_.data(), keySnapshot_.size());
+        remapMessage("REMAP_REVERT");
+        refreshKeys();
+    }
     else if (cb == "opt1_FMChange") { soldier().set(0x5b4, !soldier().get(0x5b4)); refreshOptions(); }
     else if (cb == "opt1_TUChange") { cfg_.set("turbo", !cfg_.get("turbo")); refreshOptions(); }
     else if (cb == "opt1_MSLeft" || cb == "opt1_MSRight") { soldier().set(0x5b0, std::clamp(soldier().get(0x5b0) + (cb == "opt1_MSRight" ? 5 : -5), 0, 512)); refreshOptions(); }
@@ -1126,13 +1468,21 @@ void FrontendDf2::key(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    if (stageTicks_ > 0) return;
+    if (busy()) return;
+    // Options2 capture: the Options tick takes the key-down before the menu sees it.
+    if (keyCapture_ && (screen_ == Screen::Options1 || screen_ == Screen::Options2 || screen_ == Screen::Options3 || screen_ == Screen::Options4)) {
+        if (!k.repeat) {
+            const uint32_t vk = Controls::toVirtualKey(k.keysym.scancode);
+            keyQueue_.push_back(vk ? vk : 0xFF);   // a key with no VK here: reserved
+        }
+        return;
+    }
     // BACK buttons carry hot key 1 (Escape).
     if (sym == SDLK_ESCAPE)
         if (D2Menu* m = menu())
             for (int i : m->buttons) {
                 D2Button& b = mnu_.buttons[size_t(i)];
-                if (b.hot1 == 1 && b.drawstate != 0 && b.drawstate != 4) { sound("btn_slct"); b.flash = 3; event(b, 3); event(b, 4); return; }
+                if (b.hot1 == 1 && b.drawstate != 0 && b.drawstate != 4) { sound("btn_slct", 3); b.flash = 3; event(b, 3); event(b, 4); return; }
             }
 }
 
@@ -1166,16 +1516,18 @@ int FrontendDf2::run() {
     const std::string& s0 = o_.startScreen;
     Screen first = s0 == "main" ? Screen::Main : s0 == "campaign" ? Screen::Campaign : s0 == "quick" ? Screen::Quick
                  : s0 == "briefing" ? Screen::Briefing : s0 == "loadout" ? Screen::Gear : s0 == "settings" ? Screen::Options1
-                 : s0 == "difficulty" ? Screen::Options3 : s0 == "credits" ? Screen::Credits : Screen::Soldier;
+                 : s0 == "keyboard" ? Screen::Options2 : s0 == "difficulty" ? Screen::Options3 : s0 == "voice" ? Screen::Options4
+                 : s0 == "credits" ? Screen::Credits : Screen::Soldier;
     if (first == Screen::Briefing || first == Screen::Gear) bms_ = "D03M01";
     enter(first);
     int frame = 0;
+    bool windowQuit = false;
     Uint64 last = SDL_GetPerformanceCounter();
     double clock = 0;
     while (screen_ != Screen::Quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) { next_ = Screen::Quit; break; }
+            if (e.type == SDL_QUIT) { next_ = Screen::Quit; leaveTicks_ = 0; windowQuit = true; break; }
             if (e.type == SDL_TEXTINPUT && !editing_.empty()) {
                 for (const char* p = e.text.text; *p; ++p)
                     if (editText_.size() < 15 && static_cast<unsigned char>(*p) >= 32 && static_cast<unsigned char>(*p) < 128) editText_ += *p;
@@ -1189,7 +1541,14 @@ int FrontendDf2::run() {
                 const float px = float(mx) * float(dw) / float(std::max(1, ww)), py = float(my) * float(dh) / float(std::max(1, wh));
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
-                if (stageTicks_ > 0 || !editing_.empty()) continue;
+                if (busy() || !editing_.empty()) continue;
+                // 0x43a740: while capturing, a button-down is the binding (left 1,
+                // right 2, middle 3) and goes no further.
+                if (screen_ == Screen::Options2 && keyCapture_ && e.type == SDL_MOUSEBUTTONDOWN) {
+                    const int m = e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 2
+                                : e.button.button == SDL_BUTTON_MIDDLE ? 3 : 0;
+                    if (m) { keyMouse_ = m; pressed_.clear(); continue; }
+                }
                 if (D2Button* d = btn(dragging_)) {
                     if (e.type == SDL_MOUSEMOTION) dragTo(*d);
                     else if (e.type == SDL_MOUSEBUTTONUP) dragging_.clear();
@@ -1220,14 +1579,14 @@ int FrontendDf2::run() {
                     hover_ = name;
                     if (b && b->drawstate != 4) {
                         b->drawstate = 2;
-                        if (!(b->attrib & 0x400)) sound("btn_roll");
+                        if (!(b->attrib & 0x400)) sound("btn_roll", 4);
                         event(*b, 1);
                     }
                 }
                 if (b && b->drawstate != 4) {
                     if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                         b->drawstate = 3;
-                        if (!(b->attrib & 0x400)) sound("btn_slct");
+                        if (!(b->attrib & 0x400)) sound("btn_slct", 3);
                         pressed_ = name;
                         event(*b, 3);
                     } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && pressed_ == name) {
@@ -1245,7 +1604,16 @@ int FrontendDf2::run() {
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
             if (stageTicks_ > 0) --stageTicks_;
-            if (helpShown_ < helpText_.size()) ++helpShown_;   // one character a tick (0x43d1a0)
+            if (leaveTicks_ > 0) --leaveTicks_;
+            // Teletype boxes (0x43d040 / 0x43d110): one character a tick; while
+            // unfinished, every frame plays a random TTY_CLK1..9 on channel 2 (0x43d000).
+            if (helpShown_ < helpText_.size()) {
+                ++helpShown_;
+                sound("TTY_CLK" + std::to_string(std::uniform_int_distribution<int>(1, 9)(rng_)), 2);
+            }
+            if (screen_ == Screen::Options1 || screen_ == Screen::Options2 || screen_ == Screen::Options3 || screen_ == Screen::Options4)
+                captureTick();
+            if (screen_ == Screen::Credits) creditTick();
             if (D2Menu* m = menu())
                 for (int i : m->buttons) {
                     D2Button& b = mnu_.buttons[size_t(i)];
@@ -1257,6 +1625,14 @@ int FrontendDf2::run() {
         }
         if (!editing_.empty())
             if (D2Button* b = btn(editing_)) b->text = editText_ + ((ticks_ / 15) & 1 ? "_" : "");
+        // 0x42c800 starts stage 2: only the Main Menu (0x4356a0) and the Mission
+        // Briefing (0x437811) wait it out, 12 ticks with input ignored; nothing
+        // is drawn differently (the fade hooks are empty in the retail game).
+        if (next_ != screen_ && !windowQuit && (screen_ == Screen::Main || screen_ == Screen::Briefing)) {
+            if (!leaving_) { leaving_ = true; leaveTicks_ = 13; }
+            if (leaveTicks_ > 0) goto draw;
+        }
+        leaving_ = false;
         if (next_ != screen_) {
             if (next_ == Screen::Mission) {
                 // Pre Menu -> Game Loop -> Post Menu (0x43ad90).
@@ -1276,6 +1652,15 @@ int FrontendDf2::run() {
                 g.flipMouse = soldier().get(0x5b4) != 0;
                 g.mouseScale = std::clamp(soldier().get(0x5b0), 0, 255);
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
+                // 0x43afb0: each row's command takes the VK (0 clears it) and the
+                // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
+                g.bindings.clear();
+                for (size_t i = 0; i < 48; ++i) {
+                    const uint32_t vk = uint32_t(soldier().get(0x2e0 + 12 * i)) & 0xFFFF, m = uint32_t(soldier().get(0x2e4 + 12 * i));
+                    const uint32_t mask = m == 1 ? 1 : m == 2 ? 2 : m == 3 ? 0x10 : 0;
+                    g.bindings.push_back({kDf2Keys[i].game, vk | mask << 16});
+                    if (i == 8) g.bindings.push_back({"attack_2", vk | mask << 16});
+                }
                 const int camp = fromCampaign_ && missionSel_ >= 0 ? kMissions[missionSel_].campaign : 0;
                 uint32_t flags = camp ? uint32_t(soldier().get(0xa8 + 4 * size_t(camp))) : 0;
                 MissionOutcome out;
@@ -1303,6 +1688,7 @@ int FrontendDf2::run() {
                 enter(next_);
             }
         }
+    draw:
         int dw, dh;
         SDL_GL_GetDrawableSize(win_, &dw, &dh);
         // The 640x480 screens scaled to the window, aspect kept (an amenity).
