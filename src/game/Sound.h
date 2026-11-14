@@ -30,7 +30,8 @@ public:
         ShrapnelStone = 0x4E, FsWaterR = 0x88, FsWaterL = 0x89, AmmoPickup = 0x164,
     };
 
-    bool init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string* error = nullptr);
+    // `df2Exe`: Delta Force 2's DF2.EXE for its sound and voice tables.
+    bool init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string* error = nullptr, const ExeImage* df2Exe = nullptr);
     bool ready() const { return audio_ != nullptr; }
 
     // The listener (0x4735b8): position (OpenDF world, metres) and compass
@@ -42,6 +43,14 @@ public:
     void play(int id, Vec3 at, float pitch = 0);
     // 0x47319c: a sound with no position (full volume, centred).
     void play2D(int id);
+    // Delta Force 2's delayed play (DF2.EXE 0x45E910): beyond the
+    // definition's range nothing; from 30 m on it waits d·62/350 ticks (the
+    // speed of sound, 128 slots, dropped when full), then plays at its
+    // position for the listener of that moment (0x45EA60); nearer at once.
+    // DF1 (no such queue) plays at once.
+    void playDelayed(int id, Vec3 at);
+    void tickDelayed();   // once per 60 Hz tick
+    bool df2() const { return df2_; }
     // Range of a sound in metres (0x473ebc), for AI hearing.
     float range(int id) const;
     // A dialog line from the mission's dialog bank (centred, volume
@@ -93,6 +102,10 @@ private:
     const Terrain* terrain_ = nullptr;
     uint32_t seed_ = 0x2B0749C1;
     std::vector<int> phrases_;   // 0x4F019C
+    int sets_ = 16;              // voice sets: 16 (DF1), 22 (DF2)
+    bool df2_ = false;
+    struct Delayed { int id; Vec3 at; int ticks; };
+    std::vector<Delayed> delayed_;
 };
 
 } // namespace df

@@ -31,5 +31,8 @@ private:
 
 // Finds DF.EXE next to the game's PFF archives (case-insensitive).
 std::filesystem::path findGameExe(const std::filesystem::path& gameDir);
+// Delta Force 2's DF2.EXE next to its archives (DF2SETUP, case-insensitive);
+// read only for DF2's own tables, never by the DF.EXE readers.
+std::filesystem::path findDf2Exe(const std::filesystem::path& gameDir);
 
 } // namespace df

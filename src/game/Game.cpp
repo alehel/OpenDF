@@ -183,6 +183,7 @@ private:
     ItemDefs items_;
     std::vector<std::string> gameText_;   // DFGAME.BIN
     ExeImage exe_;                        // the original DF.EXE, for its tables
+    ExeImage df2Exe_;                     // Delta Force 2: DF2.EXE, for DF2's own tables
     Controls controls_;                   // the original's key table (from DF.EXE)
     AnimDefs playerMoves_;                // the player soldier's .ANM move table
     float eyeHeightTable_[3][2] = {{1.7558f, 1.7677f}, {1.3768f, 1.3768f}, {0.5031f, 0.5031f}};
@@ -776,7 +777,8 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // type 3 (`heavy`: objects lose 128 - 16 d).
 void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
     spawnEffect(surface == 2 ? 4 : 3, at);
-    playSound(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
+    // Delta Force 2 sends these through its speed-of-sound queue (0x45E910).
+    sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
     for (auto& m : world_.blast(at, radius, heavy)) pushMessage(m);
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
@@ -2730,12 +2732,14 @@ int Game::run() {
     {
         const auto exePath = findGameExe(o_.gameDir);
         std::string err;
-        if (exePath.empty()) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
+        if (exePath.empty() && !vfs_.exists("DF2.PWF")) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
         else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
+        if (const auto df2 = findDf2Exe(o_.gameDir); !df2.empty() && !df2Exe_.load(df2, &err))
+            std::fprintf(stderr, "%s; using built-in DF2 values\n", err.c_str());
         if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");
         for (const auto& [name, key] : o_.bindings) controls_.set(name, key);
         std::string sndErr;
-        if (!sound_.init(vfs_, &exe_, &audio_, &sndErr)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
+        if (!sound_.init(vfs_, &exe_, &audio_, &sndErr, &df2Exe_)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
     }
@@ -2939,6 +2943,7 @@ int Game::run() {
                 tickDialogs();
                 touchPickups();
                 if (mission_.version >= 0x0F) tickAir();
+                sound_.tickDelayed();
                 arsenal_.underwaterRule = mission_.version >= 0x0F;
                 arsenal_.waterLevel = terrain_.waterLevel();
                 tickCharges();

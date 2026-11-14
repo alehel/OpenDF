@@ -26,6 +26,8 @@ struct SoundLayer {
     uint32_t flags = 0;                   // 0x1 positional pan, 0x10 variants in turn (else random)
     std::vector<SoundVariant> variants;
     int next = 0;                         // round-robin position
+    int shuffleStart = 0;                 // DF2 flag 0x80: the random start (+0xC) ...
+    bool shuffling = false;               // ... and runtime bit 0x100
 };
 
 struct SoundDef {

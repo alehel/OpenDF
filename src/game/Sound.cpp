@@ -165,7 +165,7 @@ float approxLength(Vec3 v) {
 
 } // namespace
 
-bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string* error) {
+bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string* error, const ExeImage* df2Exe) {
     audio_ = nullptr;
     std::vector<uint8_t> data;
     // Delta Force: SNIPER.PWF; Delta Force 2 and later: DF2.PWF (DF2.EXE
@@ -173,13 +173,33 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
     const bool df2 = !vfs.exists("SNIPER.PWF") && vfs.exists("DF2.PWF");
     if (!vfs.read(df2 ? "DF2.PWF" : "SNIPER.PWF", data)) { if (error) *error = "SNIPER.PWF / DF2.PWF not found"; return false; }
     bank_.full16 = df2;
+    df2_ = df2;
+    delayed_.clear();
     if (!bank_.load(std::move(data), error)) return false;
     names_.fill({});
     bool fromExe = false;
     if (df2) {
-        for (const auto& s : kDf2Sounds)
-            if (s.id > 0 && s.id < 0x400 && (s.flags & 3) && names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
-        fromExe = true;   // (the table, not DF1's built-in copy)
+        // DF2.EXE 0x4B85A8: 469 records of DF1's 40-byte layout, ids below
+        // 0x400 (sorted at load by 0x45DA50: the first record of an id wins).
+        if (df2Exe && df2Exe->loaded()) {
+            int found = 0;
+            for (uint32_t i = 0; i < 469; ++i) {
+                const uint32_t rec = 0x4B85A8 + i * 40;
+                uint32_t w = 0, fl = 0;
+                if (!df2Exe->u32(rec, w) || !df2Exe->u32(rec + 0x24, fl)) break;
+                const int id = int(int16_t(w & 0xFFFF));
+                const std::string name = df2Exe->str(rec + 0xE, 22);
+                if (id <= 0 || id >= 0x400 || name.empty() || !(fl & 3)) continue;
+                if (names_[size_t(id)].empty()) names_[size_t(id)] = name;
+                ++found;
+            }
+            fromExe = found > 400 && names_[801] == "AIR_SUCK";
+            if (!fromExe) names_.fill({});
+        }
+        if (!fromExe)
+            for (const auto& s : kDf2Sounds)
+                if (s.id > 0 && s.id < 0x400 && (s.flags & 3) && names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
+        fromExe = true;   // (DF2's table either way, not DF1's built-in copy)
     } else if (exe && exe->loaded()) {
         // 0x200 records of 40 bytes: word id at +0, name at +0xE (22 bytes),
         // flags at +0x24. The table is sorted by id at load (0x472e70).
@@ -213,10 +233,35 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
             if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
     }
     for (int i = 0; i < 0x400; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
-    // Voice sets (0x4F019C: 16 sets of 12 sound ids).
+    // Voice sets (0x4F019C: 16 sets of 12 sound ids; DF2.EXE 0x4B70FC: 22).
     phrases_.assign(16 * 12, 0);
     bool phrasesOk = false;
-    if (exe && exe->loaded()) {
+    if (df2) {
+        sets_ = 22;
+        phrases_.assign(22 * 12, 0);
+        if (df2Exe && df2Exe->loaded()) {
+            phrasesOk = true;
+            for (uint32_t i = 0; i < 22 * 12; ++i) {
+                int32_t v = 0;
+                if (!df2Exe->i32(0x4B70FC + 4 * i, v)) { phrasesOk = false; break; }
+                phrases_[i] = v;
+            }
+            phrasesOk = phrasesOk && phrases_[12 + 1] == 150 && phrases_[16 * 12 + 1] == 700;
+        }
+        if (!phrasesOk) {
+            // Built-in copy: DF1's sets 1-15, then sets 16-18 slots 1-11 =
+            // 700 + 11 (set - 16) + slot - 1 and 19-21 = 740 + 11 (set - 19) + slot - 1.
+            for (int st = 1; st <= 12; ++st)
+                for (int k = 1; k <= 11; ++k) phrases_[size_t(st * 12 + k)] = 150 + 11 * (st - 1) + k - 1;
+            phrases_[11 * 12 + 8] = 237;
+            for (int st = 13; st <= 15; ++st)
+                for (int k = 7; k <= 11; ++k) phrases_[size_t(st * 12 + k)] = 401 + (st - 13) * 10 + k - 7;
+            for (int st = 16; st <= 21; ++st)
+                for (int k = 1; k <= 11; ++k)
+                    phrases_[size_t(st * 12 + k)] = (st < 19 ? 700 + 11 * (st - 16) : 740 + 11 * (st - 19)) + k - 1;
+            phrasesOk = true;
+        }
+    } else if (exe && exe->loaded()) {
         phrasesOk = true;
         for (uint32_t i = 0; i < 16 * 12; ++i) {
             int32_t v = 0;
@@ -389,7 +434,24 @@ void SoundSystem::start(SoundDef& def, float distance, int dir, bool positional,
         if (!(layer.flags & 6) || layer.variants.empty()) continue;   // mask 0x4F31EC = 6
         if (layer.range > 0 && distance >= layer.range) continue;
         const int count = int(layer.variants.size());
-        const int pick = (layer.flags & 0x10) ? (layer.next++ % count) : int((random() & 0xFF) * uint32_t(count) >> 8);
+        int pick;
+        if (layer.flags & 0x10) {
+            pick = layer.next++ % count;
+        } else if (df2_ && (layer.flags & 0x80)) {
+            // DF2's shuffle (0x470560): a random start stored in +0xC, then in
+            // turn until the counter comes back to it, then a new start.
+            if (!layer.shuffling) {
+                layer.shuffleStart = int((random() & 0xFF) * uint32_t(count) >> 8);
+                pick = layer.shuffleStart;
+                layer.shuffling = true;
+            } else {
+                pick = layer.next % count;
+                layer.next = (layer.next + 1) % count;
+                if (layer.next == layer.shuffleStart) layer.shuffling = false;
+            }
+        } else {
+            pick = int((random() & 0xFF) * uint32_t(count) >> 8);
+        }
         const SoundVariant& v = layer.variants[size_t(pick)];
         // A layer without a range plays at the caller's volume (255).
         const int vol = layer.range > 0
@@ -411,12 +473,37 @@ void SoundSystem::play(int id, Vec3 at, float pitch) {
     // way makes it seem farther (x (1 + metres / 512)), cut again.
     float d = approxLength(at - listener_);
     if (d > def.maxDistance) return;
-    d *= 1.f + occlusion(listener_, at) / 512.f;
+    // DF2.EXE's occlusion (0x45E0A0) always returns 1.0.
+    if (!df2_) d *= 1.f + occlusion(listener_, at) / 512.f;
     if (d > def.maxDistance) return;
     // Direction byte: 0xFF - ((listener yaw - bearing) >> 24) in DF.EXE's
     // anticlockwise angles, i.e. the bearing relative to the heading,
     // anticlockwise, in 256ths of a turn.
     start(def, d, direction(at), true, pitch);
+}
+
+void SoundSystem::playDelayed(int id, Vec3 at) {
+    if (!df2_) { play(id, at); return; }
+    if (!audio_ || id <= 0 || id >= 0x400 || !byId_[size_t(id)]) return;
+    const int d = int(approxLength(at - listener_));
+    if (float(d) > byId_[size_t(id)]->maxDistance) return;
+    if (d >= 30) {
+        if (delayed_.size() < 128) delayed_.push_back({id, at, d * 62 / 350});
+        return;
+    }
+    play(id, at);
+}
+
+void SoundSystem::tickDelayed() {
+    for (size_t i = 0; i < delayed_.size();) {
+        if (--delayed_[i].ticks <= 0) {
+            const Delayed e = delayed_[i];
+            delayed_.erase(delayed_.begin() + std::ptrdiff_t(i));
+            play(e.id, e.at);
+        } else {
+            ++i;
+        }
+    }
 }
 
 void SoundSystem::play2D(int id) {
@@ -452,9 +539,9 @@ int SoundSystem::dialogLineTicks(const std::string& clip) {
 }
 
 void SoundSystem::voice(int set, int slot, Vec3 at) {
-    if (set < 0 || set >= 16 || slot < 0 || slot >= 12) return;
+    if (set < 0 || set >= sets_ || slot < 0 || slot >= 12) return;
     const int id = phrases_.empty() ? 0 : phrases_[size_t(set * 12 + slot)];
-    if (id > 0) play(id, at + Vec3{0, 1.f, 0});
+    if (id > 0) playDelayed(id, at + Vec3{0, 1.f, 0});   // DF2: through the delay queue (0x448280)
 }
 
 void SoundSystem::stopAll() {

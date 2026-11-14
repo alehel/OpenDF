@@ -168,10 +168,14 @@ First differences from DF1:
     underwater pistol/rifle, others play their +0x2C sound (0x414ad0); the
     animation events 0x10/0x11/0x17 play DEATH_WATER/UW_IDLE/UW_SWIM
     (0x43f480).
-- Not yet: DF2's mission-end panel and menus, the new layer flag
-  0x80 (random-then-sequential variants), the speed-of-sound delay for distant
-  sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),
-  fog keys, the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
+  - **sound**: DF2's tables read from the user's DF2.EXE (sound names
+    0x4B85A8, 469 records, ids below 0x400; voice sets 0x4B70FC, 22 sets: the
+    new 16-21 are ids 700-772), built-in copies otherwise; no terrain
+    occlusion (0x45E0A0 returns 1.0); the layer flag 0x80 shuffle (a random
+    start, then in turn back round to it, 0x470560); the speed-of-sound queue
+    (0x45E910: from 30 m a sound waits d·62/350 ticks, 128 slots) for voices
+    and explosions (INFERRED: the other 14 callers not mapped).
+- Not yet: DF2's mission-end panel and menus, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order
