@@ -111,6 +111,57 @@ const ChrAnimation* Chr::animation(int n) const {
     return &anims_[size_t(n)];
 }
 
+ChrMatrix Chr::rotationFor(const std::array<float, 3>& t) const {
+    if (ksa_) return multiply(rotation(2, t[0]), multiply(rotation(1, t[1]), rotation(0, t[2])));
+    return partRotation(t);
+}
+
+bool Chr::parseKsa(const std::vector<uint8_t>& d) {
+    parts_.clear();
+    order_.clear();
+    anims_.clear();
+    auto u32 = [&](size_t o) { uint32_t v = 0; if (o + 4 <= d.size()) std::memcpy(&v, &d[o], 4); return v; };
+    auto s16 = [&](size_t o) { int16_t v = 0; if (o + 2 <= d.size()) std::memcpy(&v, &d[o], 2); return v; };
+    if (d.size() < 0x64 || std::memcmp(d.data(), "KSA", 3) != 0 || u32(4) != 1) return false;
+    const uint32_t count = u32(0x34);
+    if (count == 0 || count > 1024) return false;
+    const size_t table = 0x64, pool = table + size_t(count) * 0x1C;
+    size_t cursor = pool;
+    anims_.resize(count);
+    for (uint32_t a = 0; a < count; ++a) {
+        const size_t e = table + size_t(a) * 0x1C;
+        const uint32_t frames = u32(e), next = u32(e + 8), nextFrame = u32(e + 0x0C);
+        if (cursor + size_t(frames) * 0x58 > d.size()) return false;
+        for (uint32_t k = 0; k < frames; ++k, cursor += 0x58) {
+            ChrFrame f;
+            f.ticks = 1;   // one frame a step, no interpolation
+            for (int p = 0; p < 15; ++p) f.angles.push_back({d[cursor + 4 * size_t(p)], d[cursor + 4 * size_t(p) + 1], d[cursor + 4 * size_t(p) + 2]});
+            // Root motion (+0x48, model axes x forward, y left, z up, << 4 =
+            // 16.16 m) stored in the CHR axes the animator converts from.
+            const float dx = float(s16(cursor + 0x48)) * 16.f / 65536.f, dy = float(s16(cursor + 0x4A)) * 16.f / 65536.f,
+                        dz = float(s16(cursor + 0x4C)) * 16.f / 65536.f;
+            f.root = {-dy, dz, -dx};
+            f.event = d[cursor + 0x4E];
+            f.ground = -float(s16(cursor + 0x44)) / 256.f;   // feet at origin + min z
+            f.hasGround = true;
+            anims_[a].frames.push_back(std::move(f));
+        }
+        if (frames) {
+            // Loops repeat frame 0 as their last frame and never apply its root
+            // motion; the last frame continues at (next, next frame) (0x41e830).
+            if (next == a && nextFrame == 1) anims_[a].frames[0].root = {0, 0, 0};
+            ChrTransition t;
+            t.anim = int(next);
+            t.frame = int(nextFrame);
+            anims_[a].frames.back().transitions.push_back(t);
+        }
+    }
+    parts_.resize(15);   // no skeleton: the model's meshes carry the pivots
+    for (int p = 0; p < 15; ++p) order_.push_back(p);
+    ksa_ = true;
+    return true;
+}
+
 ChrMatrix Chr::partRotation(const std::array<float, 3>& t) {
     return multiply(rotation(2, -t[0]), multiply(rotation(1, t[1]), rotation(0, -t[2])));
 }
@@ -164,6 +215,7 @@ std::vector<ChrMatrix> Chr::pose(const ChrFrame& f) const {
 }
 
 float Chr::originHeight(const ChrFrame& f) {
+    if (f.hasGround) return f.ground;
     float lowest = 0;
     bool any = false;
     for (size_t k = 0; k < f.contacts.size(); ++k) {

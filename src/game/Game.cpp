@@ -742,7 +742,6 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
 // the .CHR rotations are in (x forward, y left, z up).
 std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns,
                                    float aimPitch) {
-    (void)chr;
     // The aim pitch (obj+0x34, within +-90 degrees) goes 1/4 into the torso
     // and 3/4 into the head (0x44ca34).
     const float aim = std::clamp(aimPitch, -kPi / 2, kPi / 2) / (2 * kPi);
@@ -757,7 +756,7 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
             std::array<float, 3> t = turns[k];
             if (k == 1) t[1] += aim * 0.25f;
             if (k == 2) t[1] += aim * 0.75f;
-            const ChrMatrix c = Chr::partRotation(t);
+            const ChrMatrix c = chr.rotationFor(t);
             // C R C^-1 with C: (x, y, z) -> (x, z, -y).
             const int map[3] = {0, 2, 1};
             const float sign[3] = {1, 1, -1};
@@ -2340,7 +2339,8 @@ int Game::run() {
         // eye offset, 0.7 m, or 0.4 m prone (DF.EXE 0x449913).
         Chr& chr = playerChr_;
         const std::string chrName = toUpper(soldier && !soldier->chrFile.empty() ? soldier->chrFile : "player01") + ".CHR";
-        if (vfs_.read(chrName, raw) && chr.parse(raw)) {
+        const std::string ksaName = chrName.substr(0, chrName.size() - 4) + ".KSA";
+        if ((vfs_.read(chrName, raw) && chr.parse(raw)) || (vfs_.read(ksaName, raw) && chr.parseKsa(raw))) {
             const char* stances[3] = {"Standing", "Crouched", "Prone"};
             for (int st = 0; st < 3; ++st)
                 for (int h = 0; h < 2; ++h) {

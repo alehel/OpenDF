@@ -34,6 +34,8 @@ struct ChrFrame {
     std::vector<ChrTransition> transitions;   // checked when the last frame ends (0x468520)
     std::vector<std::array<float, 3>> contacts;   // CHR axes, metres
     std::vector<std::array<uint8_t, 3>> angles;   // per part: yaw, pitch, roll bytes (256 per turn)
+    float ground = 0;                // KSA: the origin's height above the feet (no contacts)
+    bool hasGround = false;
 };
 
 struct ChrAnimation { std::vector<ChrFrame> frames; };
@@ -44,6 +46,13 @@ struct ChrMatrix { float m[3][4]; };
 class Chr {
 public:
     bool parse(const std::vector<uint8_t>& file);
+    // Delta Force 2's .KSA (DF2.EXE 0x41e5e0): 255 animations of 88-byte
+    // frames, 15 parts posed about the model's own mesh pivots (no skeleton).
+    bool parseKsa(const std::vector<uint8_t>& file);
+    bool ksa() const { return ksa_; }
+    // The part rotation for this file's convention: CHR Rz(-a0) Ry(a1)
+    // Rx(-a2); KSA Rz(a0) Ry(a1) Rx(a2) (DF2.EXE 0x449df0).
+    ChrMatrix rotationFor(const std::array<float, 3>& turns) const;
     const std::vector<ChrPart>& parts() const { return parts_; }
     const ChrAnimation* animation(int n) const;
 
@@ -70,6 +79,7 @@ private:
     std::vector<ChrPart> parts_;
     std::vector<int> order_;
     std::vector<ChrAnimation> anims_;   // by animation number (empty if absent)
+    bool ksa_ = false;
 };
 
 } // namespace df

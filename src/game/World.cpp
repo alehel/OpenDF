@@ -112,7 +112,11 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         const std::string c = toUpper(item.chrFile) + ".CHR", a = toUpper(item.animDef) + ".ANM";
         if (!chrs_.count(c)) {
             std::vector<uint8_t> raw;
-            if (!vfs.read(c, raw) || !chrs_[c].parse(raw)) chrs_[c] = Chr{};
+            if (!vfs.read(c, raw) || !chrs_[c].parse(raw)) {
+                // Delta Force 2 and later: the .KSA animation file.
+                chrs_[c] = Chr{};
+                if (!vfs.read(toUpper(item.chrFile) + ".KSA", raw) || !chrs_[c].parseKsa(raw)) chrs_[c] = Chr{};
+            }
         }
         if (!anms_.count(a)) {
             std::vector<uint8_t> raw;
