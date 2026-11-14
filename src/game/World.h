@@ -140,7 +140,7 @@ public:
     void personTick(WorldObject& o);
 
     // Pushes a vertical cylinder (feet at `feet`) out of solid boxes (DF.EXE
-    // 0x437a28). Under Delta Force 2's rules it does nothing: DF2 has no
+    // 0x437a28); people are never in the list (0x436a34). Under Delta Force 2's rules it does nothing: DF2 has no
     // mover box, people are pushed out of the volumes in personTick.
     Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
 
