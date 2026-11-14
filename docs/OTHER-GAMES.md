@@ -198,8 +198,9 @@ First differences from DF1:
     shells/impact grenades (16), others max(1, E/25); explosions (0x44d4a0):
     people base 8 (32 for the 12 m charge) full/half/quarter by 4 m/8 m,
     objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
-    that must reach the item's third hp value. Not yet: rounds penetrating
-    objects by surface material, shrapnel counts, the delay grenade's bounce,
+    that must reach the item's third hp value. Rounds penetrate objects (0x44bdd0: the face's
+    material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
+    hits a tick). Not yet: shrapnel counts, the delay grenade's bounce,
     the M203 dud within 8 ticks (DF1's arming rule is used), fall damage.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,

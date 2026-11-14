@@ -769,6 +769,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
     // 0xb2 per tick² (not the LAW), age one tick; gone after its lifetime in
     // ticks or below -1 m.
     for (auto& b : bullets_) {
+        int passes = 0;   // DF2: up to 20 hits in a tick (penetration)
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
             RayHit hit;
@@ -860,6 +861,37 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else dmg = df2Damage(b);
                     }
                     if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                    // Penetration (0x44c2f0 -> 0x44bdd0): the face's material
+                    // costs 100 (Flesh item, checked first), metal 200, wood 90,
+                    // stone 500, bush 10, armour 2000, canvas 5, 0x10000000 10;
+                    // none: the round stops. T = cost · (hp2 + 1); with E =
+                    // |v|²·M above T the round goes on, its speed × sqrt((E−T)/E),
+                    // from 0.25 m before the hit + 0.375 m; up to 20 hits a tick.
+                    if (it && !b.explosive() && passes < 20) {
+                        int cost = 0;
+                        const uint32_t m = hit.material;
+                        if (it->attrib & 0x40) cost = 100;
+                        else if (m & 0x10000) cost = 200;
+                        else if (m & 0x20000) cost = 90;
+                        else if (m & 0x40000) cost = 500;
+                        else if (m & 0x80000) cost = 10;
+                        else if (m & 0x04000000) cost = 2000;
+                        else if (m & 0x08000000) cost = 5;
+                        else if (m & 0x10000000) cost = 10;
+                        if (cost > 0) {
+                            const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
+                                          vz = int64_t(b.vel.z * kTick * 65536.f);
+                            const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
+                            const int64_t t = int64_t(cost) * 65536 * (it->damageClass + 1);
+                            if (e > t && e > 0) {
+                                b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
+                                b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
+                                ++passes;
+                                b.tickClock += kTick;   // the same tick goes on from here
+                                continue;
+                            }
+                        }
+                    }
                 } else
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
