@@ -34,3 +34,12 @@ part, position; object −2 is water), every effect spawned and, for people,
 their hit spheres. `OPENDF_DEBUGPLAYER=1` prints the player's hit points,
 position, ground, eye, water level and land/FLOAT/SWIM state twice a second. `opendf --game … chr`
 prints the stance origin heights and head sphere from PLAYER01.CHR.
+
+More aids: `OPENDF_NOFLY=1` keeps a `--camera` start higher than 2 m
+under the physics (the player falls instead of flying), e.g. onto the
+C03M03 radio-station roof with `--camera 392,-560,8,90,-20`;
+`tests/input/c03m03-crate.txt` (with `--camera 381,-563.5,0,90,0`) jumps onto
+a crate. `OPENDF_DEBUGPLAYER` also prints the surface under the feet, CHUTE,
+ARMORY (DF2 type-6 volume) and LADDER, and whether Request Weapons was
+accepted. `OPENDF_DEBUGSWIM=1` prints people entering and leaving the water;
+`OPENDF_DEBUGOBJ=1` lists the mission's objects with their positions.

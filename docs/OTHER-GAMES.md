@@ -194,7 +194,42 @@ First differences from DF1:
     shots from a muzzle under the water fire just the knife and the
     underwater pistol/rifle, others play their +0x2C sound (0x414ad0); the
     animation events 0x10/0x11/0x17 play DEATH_WATER/UW_IDLE/UW_SWIM
-    (0x43f480).
+    (0x43f480). The AI swims too (both games, every person runs the same
+    move): falling in sets the swim flag with effect 4 and sound 0x8A at the
+    surface, walking in sets it silently with one gravity step; in water
+    vz ×0x68DB per DF1 AI ground pass (every 4th tick, 0x43693b; the
+    player's ×0xCCCC), ×0xCCCC every tick in DF2 (0x440c0a); out when the
+    origin is above the level; the bottom holds. The swim motion is by the
+    flag (0x43620b / 0x4404df): the move's whole per-frame step along the
+    heading and pitch. DF2's chooser (0x43f690) makes any mover under the
+    level play 141 Swimming (moving forward) or 140 Floating; DF1's AI keeps
+    its own move (only the player's controller picks Swimming, 0x43752e).
+    The AI's steering keeps out of deep water (DF1 0x46b34c: 0.75 m; DF2
+    0x4151a0: 0.25 m with ai flag 0x800 only).
+  - **collision volumes** (0x440f80, 0x440984): v8 volumes are convex plane
+    sets (LOD +0xB0 planes, volume +0x48 count). People and the player are
+    two 0.5 m cubes (at the origin and 0.5 m above the feet) against every
+    object of their neighbour list (0x43f2b0: groups 0/1 within the
+    flat radius + 10 m, the header radius + 10 m up; rebuilt every 65
+    ticks); a cube inside a volume (every plane's n·p + d − 0.5 < 0) is
+    pushed out along the least-negative plane: sideways less 0.1 m
+    (nothing within 0.1 m), vertically less 0.02 m (a side push sinks the
+    mover 0.02 m, which the terrain then lifts back); a downward push stands
+    him on the object (ground distance 0, +0xF8 = it). Touch items
+    (movecb) do not push. Type 4 volumes are ladders: no gravity, and the
+    chooser climbs: forward +0x800 (run +0x1000) a chooser tick (odd ticks)
+    with Ladder_Up, back down, the diagonals half, sideways Ladder_Left /
+    Right (0x43f951); the player always may, AI with ai flag 0x400 (BMS
+    record +0xC bit 0x1000). Type 6 volumes set +0x64 & 0x1000000: the
+    armory (item 103099 `armory`, model AMMODUMP, in the multiplayer maps;
+    KHUFU and TAVERN have one too). READ quirks kept: the sum of a mesh is
+    cleared only when a point reaches the mesh box, so a mesh no point
+    reaches adds the previous mesh's push again. DF2 has no DF1 mover box
+    (World::resolve does nothing under DF2 rules) and no face ground: the
+    surface is found only by overlap, so a falling person lands when the
+    feet cube enters the roof volume. Placed charges go on a volume top
+    within 0.25 m (0x4520d6 → 0x43fb80, a 1/256 m point). Not done: riding
+    a moving platform (+0xF8 velocity and turn, 0x440876).
   - **sound**: DF2's tables read from the user's DF2.EXE (sound names
     0x4B85A8, 469 records, ids below 0x400; voice sets 0x4B70FC, 22 sets: the
     new 16-21 are ids 700-772), built-in copies otherwise; no terrain
@@ -346,10 +381,13 @@ First differences from DF1:
     selected; headings; scroll bar arrows). The Weapons tab (0x40fbe0):
     current and requested loadout with WEAP640 pictures by type (0x4434e0),
     < > cycling through types the slot's category mask allows (0x4a4c88),
-    the button rows' quirk (empty slots share a row); Request Weapons
-    applies only on armory ground (+0x64 & 0x1000000), which OpenDF does not
-    track yet, so it does nothing (INFERRED; OPENDF_REARM forces it for
-    testing). + / − zoom every frame while held, route lines with the black
+    the button rows' quirk (empty slots share a row); Request Weapons is
+    accepted only while the player overlaps a type-6 volume (+0x64 &
+    0x1000000, an armory: 0x45a6e0), else nothing happens; accepted, the
+    loadout is applied with each slot's full magazines and the ammunition
+    pools refilled as at the start (0x458190, 0x456f10). INFERRED: single
+    player delivers its own request message. OPENDF_REARM accepts anywhere
+    (testing). + / − zoom every frame while held, route lines with the black
     ±1 px outline, the Mission tab's CMAP_SETTINGS title. Not done: the
     scroll-bar thumb (not traced), the Players/Team rows staying clickable
     on the Map tab (READ quirk), and the multiplayer parts (send-to lists,
@@ -399,8 +437,18 @@ First differences from DF1:
     teleport targets that high: the trace found no code that sets the chute
     flag on markers, but starts like D06M06's 160 m only make sense with
     one) descend 0x2222 a tick under
-    `parachut` (PFoil items) or `pararnd`; landing leaves the canopy, which
-    tips over and sinks for 1800 ticks (`para` 0x42c570). Script action 18
+    `parachut` (PFoil items) or `pararnd`; landing (on the ground, an
+    object's volume or the water) leaves the canopy, which tips over and
+    sinks for 1800 ticks (`para` 0x42c570). There is no wind drift: with
+    PFoil (every player item and the Squad Members) the chute glides 0x4000
+    a tick (0.25 m, 15 m/s) along the heading, so the player steers by
+    turning; without PFoil it comes straight down (0x440651; the wind
+    vector 0x4ee250 only moves rain and snow). The canopy is drawn, not an
+    object: rounds cannot hit it, and nothing but the landing clears the
+    flag, so "shoot the chute to fall faster" is not in this EXE (the
+    readers of +0x64 & 0x20 at 0x44c490 / 0x44cb46 / 0x44d0b4 are the
+    projectile table's flags). A chutist killed in the air keeps falling
+    at the chute's rate under the canopy (dead people run the person move). Script action 18
     (teleport, 0x41955c) moves the team (`teleportTeam`).
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
     flags}), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.

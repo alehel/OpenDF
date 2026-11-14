@@ -1,0 +1,9 @@
+# DF1 C03M03, run with --camera 381,-563.5,0,90,0 and OPENDF_DEBUGPLAYER=1:
+# walk east toward a crate5 (top 0.65 m: too high to step onto, the step is
+# 0.5 m), jump (Space held briefly) and land on its top face (DF.EXE
+# 0x435dc0 via World::faceGround): feet end at surface 34.20.
+0.2 hold Up
+0.35 hold Space
+0.45 release Space
+0.75 release Up
+2.5 end

@@ -31,6 +31,7 @@ public:
     Stance stance = Stance::Stand;
     bool fly = false;                // debug free flight (N)
     bool chute = false;              // Delta Force 2: on a parachute (0.133 m a tick down)
+    bool pfoil = true;               // the player item's attribute PFoil (0x400): the chute glides (DF2.EXE 0x440651)
     const AnimDefs* moves = nullptr; // the soldier's .ANM table
     bool oneHanded = false;          // pistol: the *_1HW moves
     // Eye height above the feet per stance (stand, crouch, prone) and hand
@@ -64,11 +65,30 @@ public:
     // The move being played (an .ANM name), for the body's animation.
     const std::string& move() const { return move_; }
     float speed() const { return speed_; }
+    // Delta Force 2: standing in a type-6 collision volume this tick (person
+    // flag +0x64 & 0x1000000, 0x440acf): Request Weapons is accepted there.
+    bool armory() const { return armory_; }
+    // Delta Force 2: on a ladder (a type-4 volume, +0x64 & 0x400000).
+    bool onLadder() const { return ladder_; }
     // The vertical speed (m/s, down negative) of the last landing; 0 after read.
     float takeLanding() { const float v = landingSpeed_; landingSpeed_ = 0; return v; }
 
 private:
     void updateInWater(float dt, const PlayerInput& in, const World& world, float water);
+    // Delta Force 2's person move for the player, one 60 Hz tick (DF2.EXE
+    // 0x440cd0 jump key, 0x43f690 move chooser, 0x440400 physics).
+    void tickDf2(const PlayerInput& in, const World& world);
+    void enterWater(float z);
+    void leaveWater(float z);
+    float df2Clock_ = 0;
+    uint32_t df2Ticks_ = 0;
+    float vz_ = 0;                   // DF2: vertical speed, metres a tick (+0x44)
+    Vec3 step_{0, 0, 0};             // DF2: the stored horizontal step of the move (0x9e2260)
+    float stepDz_ = 0;               // and its vertical part (swimming)
+    float poseOrigin_ = 0;           // DF2: the chosen move's origin height above the feet
+    bool ladder_ = false, armory_ = false;
+    std::vector<int> neighbours_;    // DF2 +0xFC: the objects that can push (0x43f2b0)
+    uint32_t listTicks_ = 0x40;      // DF2 [0x9e2e60]: rebuilt when it reaches 0x40
 
     std::string move_ = "Standing_2HW";
     float eyeHeight_ = 1.7558f;

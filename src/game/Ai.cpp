@@ -632,10 +632,13 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
             const char* name = moveName(o.moveNumber);
             const AnimMove* mv = name ? o.moves->find(name) : nullptr;
             if (mv && mv->velocity > 0) {
-                const Vec3 f{std::sin(o.heading), 0, -std::cos(o.heading)};
-                Vec3 next = o.pos + f * (mv->velocity / 60.f);
+                // On land velocity / 60 along the heading; swimming the
+                // move's whole per-frame distance and a vertical part
+                // (World::personStep: DF.EXE 0x43621a, DF2.EXE 0x4404dc).
+                Vec3 next = o.pos + world.personStep(o, mv->velocity);
                 // Kept out of collision volumes like the player (0x437a28:
-                // the same +-0.75 m mover box), on odd ticks only (0x436cbe).
+                // the same +-0.75 m mover box), on odd ticks only (0x436cbe);
+                // DF2 pushes people out of the volumes in World::personTick.
                 Vec3 feet{next.x, o.base, next.z};
                 if (ticks_ & 1) feet = world.resolve(feet, 0.75f, 1.75f, 0.5f);
                 o.pos.x = feet.x;

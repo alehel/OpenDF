@@ -29,10 +29,6 @@ struct Frame {
     }
 };
 
-bool insideXZ(const CollisionBox& b, Vec3 p) {
-    return p.x >= b.min[0] && p.x <= b.max[0] && p.z >= b.min[2] && p.z <= b.max[2];
-}
-
 // Slab test of segment p0→p1 against box b; returns entry fraction.
 bool segmentBox(Vec3 p0, Vec3 p1, const CollisionBox& b, float& tHit) {
     float t0 = 0, t1 = 1;
@@ -154,6 +150,9 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         }
         o.hp = item->hp;
         o.missionGroup = mo.group;
+        // DF2 (0x40374a): BMS record +0xC bit 0x1000 -> AI +0x34 & 0x400, the
+        // ladder test of the person move (0x440ab6).
+        if (df2Rules && o.person) o.climbs = (uint32_t(mo.raw[3]) & 0x1000) != 0;
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
         o.radarShape = int(int8_t(mo.raw[19] & 0xFF));
@@ -163,6 +162,10 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.missionY = mo.y;
         o.missionIndex = int(&mo - mission.objects.data());
         refreshBoxes(o);
+        if (std::getenv("OPENDF_DEBUGOBJ"))
+            std::fprintf(stderr, "object %zu %s (%s) group %d at mission (%.1f, %.1f) z %.2f ground %.2f height %.2f volumes %d\n", objects.size(),
+                         item->name.c_str(), item->graphic.c_str(), mo.group, mo.x, mo.y, mo.z, o.pos.y - mo.z, o.model->height,
+                         int(o.model->meshVolumes.size()));
         objects.push_back(std::move(o));
     }
     // People stand (Standing_2HW, held on its frame 1); the feet below the
@@ -205,6 +208,19 @@ bool World::startMove(WorldObject& o, int number) {
 }
 
 void World::requestMove(WorldObject& o, int number) {
+    // DF2.EXE's move chooser 0x43f690 (READ 0x43f6fb..0x43f745): with the
+    // origin below the water level the move is 141 Swimming when the mover
+    // goes forward at some speed, else 140 Floating, whatever was asked
+    // (after the parachute's 150). INFERRED for the AI: a move with a
+    // velocity is a forward move (AiSystem only walks and runs forward).
+    if (df2Rules && o.moves && !o.chute) {
+        const float water = terrain->waterLevel();
+        if (water != 0 && o.base + o.hip < water) {
+            const char* name = moveName(number);
+            const AnimMove* mv = name ? o.moves->find(name) : nullptr;
+            number = mv && mv->velocity > 0 ? 141 : 140;
+        }
+    }
     if (o.moveNumber != number) startMove(o, number);
 }
 
@@ -288,25 +304,13 @@ Vec3 World::nearest(Vec3 p, Vec3 ref) const {
 
 float World::groundHeight(Vec3 feet, float step) const {
     if (!df2Rules) return faceGround(feet, step);   // DF.EXE 0x435dc0 (people and the player)
-    // Delta Force 2 (0x440f80): collision volumes, people excluded.
-    float h = terrain->heightAt(feet.x, feet.z);
-    for (const auto& o : objects) {
-        if (o.boxes.empty() || o.person) continue;
-        Vec3 at = nearest(o.pos, feet);
-        float dx = at.x - feet.x, dz = at.z - feet.z;
-        if (dx * dx + dz * dz > (o.model->radius + 1) * (o.model->radius + 1)) continue;
-        Frame f(at, o.heading);
-        Vec3 local = f.toLocal(feet);
-        for (const auto& b : o.boxes) {
-            if (!insideXZ(b, local)) continue;
-            float top = at.y + b.max[1];
-            if (top <= feet.y + step && top > h) h = top;
-        }
-    }
-    return h;
+    // Delta Force 2 (0x43fb80): the terrain or a volume top the point is in,
+    // among the objects a person's list would hold (10 m margin, 0x43f2b0).
+    return df2Surface(feet, step, df2Neighbours(feet, 10.f));
 }
 
 Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
+    if (df2Rules) return feet;   // DF2.EXE has no mover box: the volume push-out (0x440f80) in personTick
     for (int pass = 0; pass < 2; ++pass) {
         for (const auto& o : objects) {
             if (o.boxes.empty()) continue;
@@ -484,6 +488,163 @@ float World::faceGround(Vec3 feet, float step) const {
         });
     }
     return best;
+}
+
+// DF2.EXE 0x440f80(points, halves, count, object, &push, &flags), READ:
+//   flags = 0, push = 0; model = the husk when destroyed, else the model;
+//   some point within +-(model +0x60 + half) of the object on all three
+//   axes, else 0; no LOD 0 volumes (+0xB8) -> 0; the pose routine
+//   (model +0x4C) gives the mesh slots. Per mesh with volumes and slot +0x3C
+//   bit 0 clear, per point: into the mesh (0x42baa0 inverse, 0x42b550); the
+//   cube must overlap the mesh box (+0x40..+0x54); then sum := 0 and per
+//   volume, per plane s = n.L + d - half, outside at the first s >= 0;
+//   inside: type 4 -> flags |= 1, type 6 -> flags |= 4, others: hit and
+//   sum += s_max x n of the least-negative plane. After the points, push +=
+//   the slot's rotation (0x42b680) of sum.
+// READ quirk kept: `sum` is cleared only when a point passes a mesh box, so
+// a later mesh that no point reaches adds the previous mesh's sum again
+// (in its own rotation), and only the last point that reaches a mesh counts.
+// Its first value is uninitialised stack in DF2.EXE: taken as 0 here.
+bool World::df2Overlap(const WorldObject& n, const Vec3* pts, const float* halves, int count, Vec3& push, uint32_t& flags) const {
+    flags = 0;
+    push = {0, 0, 0};
+    if (!n.model || count <= 0) return false;
+    const GpuModel& m = *n.model;
+    const Vec3 at = nearest(n.pos, pts[0]);
+    const float R = m.headerRadius;   // model +0x60
+    bool near = false;
+    for (int k = 0; k < count; ++k) {
+        const Vec3 q = nearest(pts[k], at);
+        if (std::abs(q.x - at.x) <= R + halves[k] && std::abs(q.z - at.z) <= R + halves[k] && std::abs(q.y - at.y) <= R + halves[k]) near = true;
+    }
+    if (!near || !m.hasVolumes) return false;
+    bool hit = false;
+    float sum[3] = {0, 0, 0};
+    forPosedMeshes(*this, n, pts[0], hitSkip_, [&](int mi, const Mat4& w) {
+        if (size_t(mi) >= m.meshVolumes.size() || m.meshVolumes[size_t(mi)].volumes.empty()) return true;
+        const MeshVolumes& mv = m.meshVolumes[size_t(mi)];
+        for (int k = 0; k < count; ++k) {
+            const auto L = toFileAxes(w, nearest(pts[k], at));
+            const float h = halves[k];
+            if (L[0] - h > mv.box[1] || L[0] + h < mv.box[0] || L[1] - h > mv.box[3] || L[1] + h < mv.box[2] ||
+                L[2] - h > mv.box[5] || L[2] + h < mv.box[4])
+                continue;
+            sum[0] = sum[1] = sum[2] = 0;
+            for (const PlaneVolume& v : mv.volumes) {
+                float best = -16384.f;   // 0xC0000000
+                const VolumePlane* bp = nullptr;
+                bool inside = true;
+                for (const VolumePlane& pl : v.planes) {
+                    const float sd = pl.n[0] * L[0] + pl.n[1] * L[1] + pl.n[2] * L[2] + pl.d - h;
+                    if (sd >= 0) { inside = false; break; }
+                    if (sd > best) { best = sd; bp = &pl; }
+                }
+                if (!inside) continue;
+                if (v.type == 4) flags |= 1;
+                else if (v.type == 6) flags |= 4;
+                else {
+                    hit = true;
+                    if (bp)
+                        for (int c = 0; c < 3; ++c) sum[c] += best * bp->n[c];
+                }
+            }
+        }
+        // File (x, y, z up) -> model (x, z, -y) -> world (rotation only).
+        const float mx = sum[0], my = sum[2], mz = -sum[1];
+        push.x += w.at(0, 0) * mx + w.at(0, 1) * my + w.at(0, 2) * mz;
+        push.y += w.at(1, 0) * mx + w.at(1, 1) * my + w.at(1, 2) * mz;
+        push.z += w.at(2, 0) * mx + w.at(2, 1) * my + w.at(2, 2) * mz;
+        return true;
+    });
+    return hit;
+}
+
+std::vector<int> World::df2Neighbours(Vec3 at, float margin, int self) const {
+    std::vector<int> out;
+    if (margin <= 0) return out;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        const WorldObject& o = objects[i];
+        // Groups 0 (0xC4A5C0) and 1 (0xCD05C0); +0x64 & 2 (removed) skipped.
+        if (int(i) == self || o.person || o.removed || !o.model || o.missionGroup == 2 || o.missionGroup == 3) continue;
+        const Vec3 p = nearest(o.pos, at);
+        const float r = o.model->flatRadius + margin;   // model +0x64
+        if (std::abs(p.x - at.x) > r || std::abs(p.z - at.z) > r) continue;
+        if (std::abs(p.y - at.y) > o.model->headerRadius + margin) continue;   // model +0x60
+        if (out.size() >= 2000) break;   // 0x7d0 entries in all (0x43f370)
+        out.push_back(int(i));
+    }
+    return out;
+}
+
+// DF2.EXE 0x440984..0x440af1 (READ). P0 = the origin, P1 = (x, y, z +
+// (frame +0x44 << 8) + 0x8000): 0.5 m above the feet; both half 0x8000.
+// Per neighbour, 0x440f80; on a hit: a touch item (def +0x24 & 0x10) runs
+// its contact (0x43fc80, done by the game) and does not push; otherwise
+// push.z < 0 -> standing on it (+0xF8 = it); x and y move by the push less
+// 0x1999 (0.1 m) toward zero, not at all within 0.1 m; z: a push under
+// 0x51E (0.02 m) gets 0x51E added, z -= push.z (so 0.02 m of overlap stays,
+// and a side push lowers z by 0.02 m). The points are not moved between
+// neighbours. Flags 1 (type 4) with the player or AI +0x34 & 0x400: ladder
+// 0x400000 and not airborne; flags 4 (type 6): +0x64 |= 0x1000000.
+World::Df2Contact World::df2PushOut(Vec3& origin, float feetOffset, const std::vector<int>& neighbours, bool mayClimb) const {
+    Df2Contact c;
+    const Vec3 pts[2] = {origin, origin + Vec3{0, feetOffset + 0.5f, 0}};
+    const float halves[2] = {0.5f, 0.5f};
+    constexpr float kSide = 0x1999 / 65536.f, kOverlap = 0x51E / 65536.f;
+    for (int i : neighbours) {
+        if (i < 0 || size_t(i) >= objects.size()) continue;
+        const WorldObject& n = objects[size_t(i)];
+        Vec3 push;
+        uint32_t flags = 0;
+        if (df2Overlap(n, pts, halves, 2, push, flags)) {
+            if (n.item && (n.item->attrib & 0x10)) {
+                c.touched.push_back(i);
+            } else {
+                if (push.y < 0) { c.onObject = true; c.platform = i; }
+                if (std::abs(push.x) > kSide) origin.x -= push.x > 0 ? push.x - kSide : push.x + kSide;
+                if (std::abs(push.z) > kSide) origin.z -= push.z > 0 ? push.z - kSide : push.z + kSide;
+                float pz = push.y;
+                if (pz < kOverlap) pz += kOverlap;
+                origin.y -= pz;
+            }
+        }
+        if ((flags & 1) && mayClimb) c.ladder = true;
+        if (flags & 4) c.armory = true;
+    }
+    return c;
+}
+
+// DF2.EXE 0x43fb80(p, mover, step), READ: best = terrain(p); +0xF8 = 0; per
+// neighbour, 0x440f80 with one point of half 0x100; on a hit c = p.z -
+// push.z is kept if best <= c <= p.z + step.
+float World::df2Surface(Vec3 p, float step, const std::vector<int>& neighbours) const {
+    float best = terrain->heightAt(p.x, p.z);
+    const float half = 0x100 / 65536.f;
+    for (int i : neighbours) {
+        if (i < 0 || size_t(i) >= objects.size()) continue;
+        Vec3 push;
+        uint32_t flags = 0;
+        if (!df2Overlap(objects[size_t(i)], &p, &half, 1, push, flags)) continue;
+        const float c = p.y - push.y;
+        if (c <= p.y + step && c >= best) best = c;
+    }
+    return best;
+}
+
+Vec3 World::personStep(WorldObject& o, float velocity) const {
+    const Vec3 f{std::sin(o.heading), 0, -std::cos(o.heading)};
+    o.swimDz = 0;
+    if (!o.swimming) return f * (velocity / 60.f);
+    // In the water (DF.EXE 0x43621a, DF2.EXE 0x4404dc): the move's per-frame
+    // distance v = velocity / 30 along the heading and pitch (+0x34), not
+    // halved horizontally, halved vertically; no rising once the origin is
+    // within 0.4 m (26214.4 / 65536) of the surface.
+    const float v = velocity / 30.f, p = o.aimPitch;
+    float dz = v * std::sin(p) * 0.5f;
+    const float water = terrain->waterLevel();
+    if (dz > 0 && o.base + o.hip + 26214.4f / 65536.f > water) dz = 0;
+    o.swimDz = dz;
+    return f * (v * std::cos(p));
 }
 
 bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
@@ -856,25 +1017,24 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
 }
 
 void World::update(float dt) {
-    // DF2 parachutes (0x440b2b): -0x2222 a tick (0.133 m) while above the
-    // ground and the water; landing ends it and leaves the canopy.
-    for (chuteClock_ += dt; chuteClock_ >= 1.f / 60.f; chuteClock_ -= 1.f / 60.f)
-        for (size_t i = 0; i < objects.size(); ++i) {
-            WorldObject& o = objects[i];
-            if (!o.chute) continue;
-            o.base -= 0x2222 / 65536.f;
-            const float ground = terrain->heightAt(o.pos.x, o.pos.z), water = terrain->waterLevel();
-            if (o.base <= ground || (water != 0 && o.base < water)) {
-                o.base = std::max(o.base, ground);
-                o.chute = false;
-                landings_.push_back(int(i));
-            }
-            o.pos.y = o.base + o.hip;
-        }
     for (personClock_ += dt; personClock_ >= 1.f / 60.f; personClock_ -= 1.f / 60.f) {
         ++personTicks_;
+        // DF2 0x440180: the neighbour lists are rebuilt (0x440ef0) when the
+        // counter has reached 0x40, else it counts up; built at mission start
+        // too (0x45d8f7, the counter's first value here).
+        if (df2Rules) {
+            if (listTicks_ >= 0x40) {
+                listTicks_ = 0;
+                for (size_t i = 0; i < objects.size(); ++i)
+                    if (objects[i].person) objects[i].neighbours = df2Neighbours(objects[i].pos, 10.f, int(i));
+            } else {
+                ++listTicks_;
+            }
+        }
+        // Every person with an animation, alive or dead (DF.EXE 0x436cd5,
+        // DF2.EXE 0x440225: +0x18 != 0).
         for (auto& o : objects)
-            if (o.person && !o.removed && !o.chute) personTick(o);
+            if (o.person && !o.removed) personTick(o);
     }
     for (auto& o : objects)
         if (o.dead && o.fall > 0 && o.fall < 1) o.fall = std::min(1.f, o.fall + dt * 2.5f);
@@ -897,30 +1057,106 @@ void World::update(float dt) {
 }
 
 void World::personTick(WorldObject& o) {
-    // z += vz every tick (0x436440 / 0x44095f).
-    o.base += o.vz;
+    const bool wasSwimming = o.swimming;
+    if (df2Rules) personTickDf2(o);
+    else personTickDf1(o);
+    if (o.swimming != wasSwimming && std::getenv("OPENDF_DEBUGSWIM"))
+        std::fprintf(stderr, "person %d %s the water at mission (%.1f, %.1f), origin %.2f water %.2f move %d alive %d\n", int(&o - objects.data()),
+                     o.swimming ? "enters" : "leaves", o.pos.x, -o.pos.z, o.base + o.hip, terrain->waterLevel(), o.moveNumber, int(o.alive()));
+}
+
+void World::personTickDf1(WorldObject& o) {
+    // z += vz + the swim move's dz every tick (DF.EXE 0x436440..0x436459).
+    o.base += o.vz + o.swimDz;
+    o.swimDz = 0;
     const float water = terrain->waterLevel();
-    float g, G;
-    if (!df2Rules) {
-        // DF.EXE: AI ground pass on ticks with (tick & 3) == 3 (0x4364bf),
-        // object faces within 0.5 m above the feet; gravity 0xB20 a pass.
-        if ((personTicks_ & 3) != 3) { o.pos.y = o.base + o.hip; return; }
-        g = faceGround({o.pos.x, o.base, o.pos.z}, 0.5f);
-        G = 0xB20 / 65536.f;
-    } else {
-        // DF2.EXE: every tick; standing on an object's collision volume when
-        // the 1 m feet cube overlaps it (0x440f80, volumes as boxes:
-        // INFERRED until the v8 planes are read), else the terrain; gravity 0xA7.
-        g = groundHeight({o.pos.x, o.base, o.pos.z}, 1.f);
-        G = 0xA7 / 65536.f;
-    }
+    // DF.EXE: AI ground pass on ticks with (tick & 3) == 3 (0x4364bf),
+    // object faces within 0.5 m above the feet; gravity 0xB20 a pass.
+    if ((personTicks_ & 3) != 3) { o.pos.y = o.base + o.hip; return; }
+    const float g = faceGround({o.pos.x, o.base, o.pos.z}, 0.5f);
+    const float G = 0xB20 / 65536.f;
     const float d = o.base - g;
-    const bool under = water != 0 && o.base + o.hip < water;
+    const float z = o.base + o.hip;               // the origin (obj +0x2C)
+    const bool under = water != 0 && water > z;   // `cmp [0x68bfe8], z; jle`
     if (o.airborne) {
-        if (d < 0 || (df2Rules && d <= 0)) {
-            // DF2 landing (0x43f600, single player): n = trunc(vz / -10360.5)
-            // - 1 for everyone but the player, (1 << n) - 1 damage, kind 4.
-            if (df2Rules && o.alive()) {
+        // 0x436563: landing; or into the water: +0x6C &= ~0x22000, +0x6E |= 2,
+        // effect 4 and sound 0x8A at (x, y, water) (0x436586..0x4365be).
+        if (d < 0) { o.vz = 0; o.airborne = false; o.base -= d; }
+        else if (under) { o.airborne = false; o.swimming = true; splashes_.push_back({o.pos.x, water, o.pos.z}); }
+        else o.vz -= G;
+    } else if (o.swimming) {
+        // 0x4368e6: out when the origin is above the level; the bottom holds
+        // the body up; else vz x 0x68DB for AI (0xCCCC is the player's).
+        if (z > water) o.swimming = false;
+        else if (d < 0) { o.vz = 0; o.base -= d; }
+        else o.vz = o.vz * float(0x68DB) / 65536.f;
+    } else if (d < 0) {
+        o.vz = 0;
+        o.base -= d;
+    } else if (under) {
+        // 0x43697d: walking in: +0x6E |= 2 (no splash), and gravity once.
+        o.swimming = true;
+        o.vz -= G;
+    } else if (d > 0x800 / 65536.f) {
+        o.vz -= G;
+        if (d > 0.5f || o.vz > 0) o.airborne = true;
+    }
+    o.pos.y = o.base + o.hip;
+}
+
+// DF2.EXE person move 0x440400 (READ), every tick for everyone, alive or
+// dead; the horizontal part comes from AiSystem (personStep) or the death
+// root motion, and on a parachute from the drift below.
+void World::personTickDf2(WorldObject& o) {
+    const float water = terrain->waterLevel();
+    // On a parachute (0x440651): with the item attribute PFoil (0x400)
+    // 0x4000 a tick (0.25 m) along the heading + the Parachute move's
+    // direction (0, table 0x4ab758), from 0x41ab10's (cos, sin); without it
+    // no horizontal motion. Walking is skipped (0x4406a8 -> 0x440876).
+    if (o.chute && o.item && (o.item->attrib & 0x400)) {
+        const Vec3 f{std::sin(o.heading), 0, -std::cos(o.heading)};
+        o.pos = o.pos + f * (0x4000 / 65536.f);
+        const float ext = extent();
+        o.pos.x -= std::floor(o.pos.x / ext) * ext;
+        o.pos.z -= std::floor(o.pos.z / ext) * ext;
+    }
+    // z += vz + dz (0x440962..0x44096f); +0x64 &= ~0x01400000.
+    o.base += o.vz + o.swimDz;
+    o.swimDz = 0;
+    o.ladder = o.armory = false;
+    // Push-out against the neighbour list (0x440984): points at the origin
+    // and 0.5 m above the feet (feet = origin + frame +0x44 << 8 = -hip).
+    bool onObject = false;
+    if (!o.neighbours.empty()) {
+        Vec3 origin{o.pos.x, o.base + o.hip, o.pos.z};
+        const Df2Contact c = df2PushOut(origin, -o.hip, o.neighbours, o.climbs);
+        o.pos.x = origin.x;
+        o.pos.z = origin.z;
+        o.base = origin.y - o.hip;
+        if (c.onObject) { onObject = true; o.platform = c.platform; }
+        if (c.ladder) { o.airborne = false; o.ladder = true; }
+        if (c.armory) o.armory = true;
+    }
+    // Ground (0x440af6): d = 0 on an object, else feet - terrain (d <= 0
+    // clears +0xF8).
+    float d = 0;
+    if (!onObject) {
+        d = o.base - terrain->heightAt(o.pos.x, o.pos.z);
+        if (d <= 0) o.platform = -1;
+    }
+    const float z = o.base + o.hip;
+    const bool below = water != 0 && z < water;   // [0x50bd84] = 0: no water
+    constexpr float G = 0xA7 / 65536.f;
+    if (o.chute) {
+        // 0x440b2e: vz = -0x2222 while above the ground (or an object) and
+        // the water; else the chute ends and the canopy is left (0x413d70).
+        if (d > 0 && !below) o.vz = -0x2222 / 65536.f;
+        else { o.chute = false; landings_.push_back(int(&o - objects.data())); }
+    } else if (o.airborne) {
+        if (d <= 0) {
+            // Landing (0x43f600, single player): n = trunc(vz / -10360.5) - 1
+            // for everyone but the player, (1 << n) - 1 damage, kind 4.
+            if (o.alive()) {
                 const int n = int(-o.vz * 65536.f / 10360.5f) - 1;
                 if (n >= 1) {
                     const int idx = int(&o - objects.data());
@@ -928,18 +1164,31 @@ void World::personTick(WorldObject& o) {
                         landingMessages_.push_back(m);
                 }
             }
-            o.vz = 0; o.airborne = false; o.base -= d;
+            o.airborne = false;
+            o.base -= d;
+            o.vz = 0;
+        } else if (below) {
+            // 0x440b9b: into the water, effect 4 and sound 0x8A at the surface.
+            o.airborne = false;
+            o.swimming = true;
+            splashes_.push_back({o.pos.x, water, o.pos.z});
+        } else {
+            o.vz -= G;
         }
-        else if (under) { o.airborne = false; o.vz = 0; }   // into the water (swimming is not modelled for the AI)
-        else o.vz -= G;
-    } else if (d < 0 || (df2Rules && d <= 0)) {
+    } else if (o.swimming) {
+        // 0x440bdb: out above the level; the bottom holds; else vz x 0xCCCC.
+        if (z > water) o.swimming = false;
+        else if (d < 0) { o.base -= d; o.vz = 0; }
+        else o.vz = o.vz * float(0xCCCC) / 65536.f;
+    } else if (d <= 0) {
         o.vz = 0;
         o.base -= d;
-    } else if (under) {
-        o.vz = 0;
-    } else if (d > 0x800 / 65536.f) {
+    } else if (below) {
+        o.swimming = true;   // 0x440c5c: walking in, no splash, gravity once
         o.vz -= G;
-        if (d > 0.5f || o.vz > 0) o.airborne = true;
+    } else if (d > 0x800 / 65536.f && !o.ladder) {
+        o.vz -= G;
+        if (d > 0x8000 / 65536.f || o.vz > 0) o.airborne = true;
     }
     o.pos.y = o.base + o.hip;
 }

@@ -255,6 +255,31 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             cb.r = r.i32(vo + 0x18) / 65536.f;
             lod.collision.push_back(cb);
         }
+        // v8 (DF2.EXE loader 0x43e937..0x43e9a4): each mesh owns the next
+        // +0x1C volumes, each volume the next +0x48 planes. Running totals
+        // past the LOD's counts (10 shipped LODs do not add up) are cut off
+        // here; DF2.EXE would read past the arrays (not reproduced).
+        if (layout.v8 && li == 0) {
+            uint32_t vol = 0, plane = 0;
+            for (uint32_t mi = 0; mi < nm; ++mi) {
+                const size_t mo = mOff + size_t(mi) * layout.mesh;
+                MeshVolumes mv;
+                for (int c = 0; c < 6; ++c) mv.box[c] = r.i32(mo + 0x40 + 4 * size_t(c)) / 65536.f;
+                const uint32_t count = r.u32(mo + 0x1C);
+                for (uint32_t k = 0; k < count && vol < nvol; ++k, ++vol) {
+                    const size_t vo = volOff + size_t(vol) * layout.volume;
+                    PlaneVolume pv;
+                    pv.type = int(r.u32(vo));
+                    const uint32_t np = r.u32(vo + 0x48);
+                    for (uint32_t j = 0; j < np && plane < nplanes; ++j, ++plane) {
+                        const size_t po = hOff + size_t(nh) * 12 + size_t(plane) * 8;
+                        pv.planes.push_back({{r.i16(po) / 16384.f, r.i16(po + 2) / 16384.f, r.i16(po + 4) / 16384.f}, r.i16(po + 6) / 256.f});
+                    }
+                    mv.volumes.push_back(std::move(pv));
+                }
+                lod.meshVolumes.push_back(std::move(mv));
+            }
+        }
         if (std::getenv("OPENDF_DEBUGMESH") && li == 0 && m.name == std::getenv("OPENDF_DEBUGMESH"))
             for (uint32_t mi = 0, vb = 0; mi < nm; ++mi) {
                 const size_t mo = mOff + size_t(mi) * layout.mesh;
