@@ -121,7 +121,16 @@ First differences from DF1:
     panel, the halves stay at the window's sides and that panel stretches;
     HUD.DEF points follow their half. INFERRED: the weapon's ammo kind uses
     DF1's weapon type numbers; radar objects use record +0x4C as their
-    shape. Not yet: the radar's water blend and nearest-texel sampling;
+    shape. The radar picture is the graded level-0 colour map, nearest
+    texel, cells at or under the water level averaged 50/50 with the water
+    colour (0x421510);
+  - **sky**: the mission's sky block (BMS 0xB8..0xE4, a SUNSETS.DEF entry)
+    replaces the TRN's clouds, gradient, sky height, horizon, gamma,
+    saturation and filter when both names are set (0x4654b6); clouds blend
+    toward the cloud colour (gradient row 0) by density/256 (0x4679b0); the
+    sky is not colour-graded. APPROXIMATION still: the 256-step gradient is
+    sampled to 16 steps with DF1's row rate (DF2's rate uses camera field
+    +0x4c, not traced);
   - **air** (0x4587f0): +1 a tick while the player's origin is 0.5 m or more
     under the water; surfacing with more than 60 resets it (AIR_SUCK 801);
     gags (802) at 2304/2496/2688; over 2880 (48 s) the player drowns at once;

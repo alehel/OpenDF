@@ -125,6 +125,16 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         // Flag 0x78 bit 0: the mission's own water height (word +0x88, TRN
         // water_height units; DF2.EXE 0x45d6ae).
         if (u32(d, 0x78) & 1) m.waterOverride = int(u32(d, 0x88) & 0xFFFF);
+        // The sky block (a SUNSETS.DEF entry): clouds 0xB8, gradient 0xC8,
+        // height 0xD8, horizon 16.16 0xDC, gamma/sat/r/g/b bytes 0xE0..0xE4.
+        m.sky.clouds = cstr(d, 0xB8, 0x10);
+        m.sky.gradient = cstr(d, 0xC8, 0x10);
+        m.sky.on = !m.sky.clouds.empty() && !m.sky.gradient.empty();
+        m.sky.height = float(int32_t(u32(d, 0xD8)));
+        m.sky.horizon = float(int32_t(u32(d, 0xDC))) / 65536.f;
+        m.sky.gamma = d[0xE0];
+        m.sky.saturation = d[0xE1];
+        for (int k = 0; k < 3; ++k) m.sky.filter[k] = d[size_t(0xE2 + k)];
         m.windKph = int(u32(d, 0xE8));
         m.windDeg = int(u32(d, 0xEC));
     } else {

@@ -426,6 +426,7 @@ bool Game::loadMission(int index) {
     std::string trn = mission_.terrain;
     if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
     terrain_.waterOverride = mission_.waterOverride;
+    terrain_.skyOverride = mission_.sky;
     if (!terrain_.load(vfs_, trn, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.c_str());
         return false;
@@ -2239,7 +2240,7 @@ void Game::drawDf2Bottom(const Screen& s) {
     const Vec3 c = player_.feet;
     if (mx1 > mx0 && my1 > my0) {
         const float ext = terrain_.mapExtent(), hw = (mx1 - mx0) * 0.5f * mPerPx, hh = (my1 - my0) * 0.5f * mPerPx;
-        hud_.imageUV(terrain_.colorTexture(), mx0, my0, mx1 - mx0, my1 - my0, (c.x - hw) / ext, (c.z - hh) / ext, (c.x + hw) / ext,
+        hud_.imageUV(terrain_.radarTexture() ? terrain_.radarTexture() : terrain_.colorTexture(), mx0, my0, mx1 - mx0, my1 - my0, (c.x - hw) / ext, (c.z - hh) / ext, (c.x + hw) / ext,
                      (c.z + hh) / ext);
     }
     if (df2Hud_.rad.texture) {

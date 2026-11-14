@@ -31,6 +31,16 @@ struct TerrainDesc {
     std::vector<TerrainColorType> types;
 };
 
+// Delta Force 2: a mission's copy of a SUNSETS.DEF entry (BMS header 0xB8..),
+// replacing the TRN's sky and colour grading when both names are set
+// (DF2.EXE 0x4654b6..0x465590).
+struct SkyOverride {
+    bool on = false;
+    std::string clouds, gradient;
+    float height = 0, horizon = 1;
+    int gamma = 128, saturation = 128, filter[3] = {128, 128, 128};
+};
+
 bool parseTrn(const std::string& text, TerrainDesc& out);
 
 } // namespace df

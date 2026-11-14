@@ -119,6 +119,7 @@ uniform mat4 uInvRot;
 uniform vec2 uTan;
 uniform vec3 uEye;
 uniform float uCloudH, uHorizon, uPitchTan, uTime;
+uniform bool uDf2;
 uniform vec3 uPal[17];
 uniform sampler2D uClouds;
 out vec4 oColor;
@@ -141,9 +142,13 @@ void main() {
         vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
         float px = texture(uClouds, p / 512.0).r * 255.0;
         float c = px < 128.0 ? 0.0 : min(62.0, floor((px - 128.0) / 2.0)) / 64.0;
+        // Delta Force 2 (0x4679b0, span 0x485c80): the texel is a density,
+        // lerp(gradient, cloud colour, density / 256).
+        if (uDf2) c = px / 256.0;
         sky = mix(sky, dec(uPal[16]), c);
     }
-    oColor = vec4(post(enc(sky)), 1.0);
+    // Delta Force 2 does not grade the sky (2.7 of the DF2 terrain notes).
+    oColor = vec4(uDf2 ? enc(sky) : post(enc(sky)), 1.0);
 }
 )";
 
@@ -263,8 +268,9 @@ Terrain::~Terrain() { release(); }
 
 void Terrain::release() {
     GLuint texs[] = {texColor_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
-                     texWaterGrad_, texScene_};
+                     texWaterGrad_, texScene_, texRadar_};
     for (GLuint t : texs) if (t) glDeleteTextures(1, &t);
+    texRadar_ = 0;
     texColor_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
     texWaterGrad_ = texScene_ = 0;
     sceneW_ = sceneH_ = 0;
@@ -291,6 +297,15 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     if (!vfs.read(withExt(trnName, ".TRN"), raw)) return fail("terrain " + trnName + " not found");
     desc_ = TerrainDesc{};
     if (!parseTrn(std::string(raw.begin(), raw.end()), desc_)) return fail("cannot parse " + trnName);
+    if (skyOverride.on) {
+        desc_.skyMap = skyOverride.clouds;
+        desc_.skyPalette = skyOverride.gradient;
+        desc_.skyHeight = skyOverride.height;
+        desc_.horizon = skyOverride.horizon;
+        desc_.gamma = skyOverride.gamma;
+        desc_.saturation = skyOverride.saturation;
+        for (int k = 0; k < 3; ++k) desc_.filter[k] = skyOverride.filter[k];
+    }
 
     IndexedImage color, elev, detail;
     // Delta Force 2 and later: a true-colour JPEG/TGA colour map (no palette).
@@ -351,6 +366,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             }
         }
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, rgb.data(), true, true);
+        colorRgb_ = rgb;
     } else
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, color.palette).data(), true, true);
     {
@@ -580,6 +596,26 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         hasWater_ = true;
     }
 
+    if (gen2_ && !colorRgb_.empty()) {
+        // The radar's picture: VColor level 0 (graded), water cells averaged
+        // with the plain water colour ((a>>1 & 0x7f7f7f7f) + (b>>1 & ..)).
+        std::vector<uint8_t> radar(colorRgb_.size());
+        for (size_t i = 0; i < colorRgb_.size() / 3; ++i) {
+            const uint8_t* c = &colorRgb_[i * 3];
+            const float y = (c[0] + 2.f * c[1] + c[2]) / 4.f;
+            const uint8_t* w = &waterColor_.r;
+            const bool wet = hasWater_ && heights_[i] <= desc_.waterHeight;
+            for (int ch = 0; ch < 3; ++ch) {
+                const float v = std::clamp(y + (c[ch] - y) * desc_.saturation / 128.f, 0.f, 255.f);
+                uint8_t g = lut[size_t(int(v)) * 3 + size_t(ch)];
+                if (wet) g = uint8_t((g >> 1) + (w[ch] >> 1));
+                radar[i * 3 + size_t(ch)] = g;
+            }
+        }
+        texRadar_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, radar.data(), false, false);
+        colorRgb_.clear();
+        colorRgb_.shrink_to_fit();
+    }
     const std::string terrainFS = std::string("#version 330 core\n") + kPost + kTerrainFSBody;
     const std::string skyFS = std::string("#version 330 core\n") + kPost + kSkyFSBody;
     progTerrain_ = compileProgram(kTerrainVS, terrainFS.c_str());
@@ -813,6 +849,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     setV3(progSky_, "uEye", eye);
     setF(progSky_, "uCloudH", desc_.skyHeight);   // metres (DF.EXE 0x43b5f4)
     setF(progSky_, "uHorizon", desc_.horizon);
+    glUniform1i(glGetUniformLocation(progSky_, "uDf2"), gen2_ ? 1 : 0);
     {
         const Vec3 fwd{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)};
         const float pitch = std::asin(std::clamp(fwd.y, -1.f, 1.f));

@@ -57,6 +57,10 @@ public:
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
     GLuint colorTexture() const { return texColor_; }
+    // Delta Force 2's radar picture (DF2.EXE 0x421510): the level-0 colour
+    // map, nearest texel, cells at or under the water level averaged 50/50
+    // with the water colour; 0 when not a DF2 terrain.
+    GLuint radarTexture() const { return texRadar_; }
     int mapSize() const { return size_; }
     WorldScale scale;
     // F / 320: the original's ring distances scale with the focal length of
@@ -65,6 +69,7 @@ public:
     // Delta Force 2: the mission's water height override (BMS flag 0x78 bit 0,
     // word +0x88, in TRN water_height units); -1 none. Set before load().
     int waterOverride = -1;
+    SkyOverride skyOverride;   // Delta Force 2: the mission's sky block; set before load()
     // Delta Force 2 water (DF2.EXE 0x4670a0/0x466b60): drawn before the
     // objects while the camera is above it, after them below it.
     bool df2Water() const { return gen2_ && hasWater_; }
@@ -82,7 +87,8 @@ private:
     Rgb waterColor_{0, 0, 0};      // DF2: graded water palette entry 255 (under-water tint, radar)
     bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha
 
-    GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0;
+    GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0;
+    std::vector<uint8_t> colorRgb_;   // DF2: the colour map as drawn (for the radar)
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
     GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0, texWaterGrad_ = 0, texScene_ = 0;
     int sceneW_ = 0, sceneH_ = 0;
