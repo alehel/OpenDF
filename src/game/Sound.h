@@ -86,8 +86,8 @@ private:
 
     Audio* audio_ = nullptr;
     Pwf bank_, dialogs_;
-    std::array<SoundDef*, 0x200> byId_{};
-    std::array<std::string, 0x200> names_{};
+    std::array<SoundDef*, 0x400> byId_{};   // 1024 id slots (DF2: 0x45DA50; DF1 uses 0x200)
+    std::array<std::string, 0x400> names_{};
     Vec3 listener_{0, 0, 0};
     float listenerYaw_ = 0;
     const Terrain* terrain_ = nullptr;

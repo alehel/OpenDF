@@ -133,7 +133,7 @@ const SoundClip* Pwf::clip(int sample) {
                 peak = std::max(peak, std::abs(int(int16_t(r.u16(o + 0x2C + i)))));
             const int64_t scale = int64_t(0x7EFF0000) / peak;
             for (uint32_t i = 0; i + 1 < len && r.ok(o + 0x2C + i, 2); i += 2) {
-                const int b = int8_t(data_[o + 0x2C + i]);
+                const int b = full16 ? int(int16_t(r.u16(o + 0x2C + i))) : int(int8_t(data_[o + 0x2C + i]));
                 const int v = int(((int64_t(b) * scale + 0x800000) >> 24) & 0xFF) ^ 0x80;
                 c.samples.push_back(int16_t((v - 128) << 8));
             }

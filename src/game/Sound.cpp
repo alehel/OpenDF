@@ -1,4 +1,5 @@
 #include "Sound.h"
+#include "Df2Sounds.h"
 
 #include "../core/Pff.h"
 #include "../render/Terrain.h"
@@ -167,11 +168,19 @@ float approxLength(Vec3 v) {
 bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string* error) {
     audio_ = nullptr;
     std::vector<uint8_t> data;
-    if (!vfs.read("SNIPER.PWF", data)) { if (error) *error = "SNIPER.PWF not found"; return false; }
+    // Delta Force: SNIPER.PWF; Delta Force 2 and later: DF2.PWF (DF2.EXE
+    // 0x45D83B, same PWF2 format) with DF2's own table (Df2Sounds.h).
+    const bool df2 = !vfs.exists("SNIPER.PWF") && vfs.exists("DF2.PWF");
+    if (!vfs.read(df2 ? "DF2.PWF" : "SNIPER.PWF", data)) { if (error) *error = "SNIPER.PWF / DF2.PWF not found"; return false; }
+    bank_.full16 = df2;
     if (!bank_.load(std::move(data), error)) return false;
     names_.fill({});
     bool fromExe = false;
-    if (exe && exe->loaded()) {
+    if (df2) {
+        for (const auto& s : kDf2Sounds)
+            if (s.id > 0 && s.id < 0x400 && (s.flags & 3) && names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
+        fromExe = true;   // (the table, not DF1's built-in copy)
+    } else if (exe && exe->loaded()) {
         // 0x200 records of 40 bytes: word id at +0, name at +0xE (22 bytes),
         // flags at +0x24. The table is sorted by id at load (0x472e70).
         int found = 0;
@@ -203,7 +212,7 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
         for (const auto& s : kBuiltinSounds)
             if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
     }
-    for (int i = 0; i < 0x200; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
+    for (int i = 0; i < 0x400; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
     // Voice sets (0x4F019C: 16 sets of 12 sound ids).
     phrases_.assign(16 * 12, 0);
     bool phrasesOk = false;
@@ -282,7 +291,7 @@ void SoundSystem::sweepLoops() {
 int SoundSystem::idOf(const std::string& name) const {
     auto up = [](std::string s) { for (auto& c : s) c = char(std::toupper(static_cast<unsigned char>(c))); return s; };
     const std::string n = up(name);
-    for (int i = 1; i < 0x200; ++i)
+    for (int i = 1; i < 0x400; ++i)
         if (!names_[size_t(i)].empty() && up(names_[size_t(i)]) == n) return i;
     return 0;
 }
@@ -299,7 +308,7 @@ void SoundSystem::updateLoops() {
     struct Live { Emitter* e; int vol; };
     std::vector<Live> live;
     for (auto& e : emitters_) {
-        const std::string& name = (e.id > 0 && e.id < 0x200) ? names_[size_t(e.id)] : std::string();
+        const std::string& name = (e.id > 0 && e.id < 0x400) ? names_[size_t(e.id)] : std::string();
         std::string key = name;
         for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
         auto it = loopDefs_.find(key);
@@ -396,7 +405,7 @@ void SoundSystem::start(SoundDef& def, float distance, int dir, bool positional,
 }
 
 void SoundSystem::play(int id, Vec3 at, float pitch) {
-    if (!audio_ || id <= 0 || id >= 0x200 || !byId_[size_t(id)]) return;
+    if (!audio_ || id <= 0 || id >= 0x400 || !byId_[size_t(id)]) return;
     SoundDef& def = *byId_[size_t(id)];
     // 0x473220: distance, cut at the definition's maximum; terrain in the
     // way makes it seem farther (x (1 + metres / 512)), cut again.
@@ -411,12 +420,12 @@ void SoundSystem::play(int id, Vec3 at, float pitch) {
 }
 
 void SoundSystem::play2D(int id) {
-    if (!audio_ || id <= 0 || id >= 0x200 || !byId_[size_t(id)]) return;
+    if (!audio_ || id <= 0 || id >= 0x400 || !byId_[size_t(id)]) return;
     start(*byId_[size_t(id)], 0, 0, false, 0);
 }
 
 float SoundSystem::range(int id) const {
-    if (id <= 0 || id >= 0x200 || !byId_[size_t(id)]) return 0;
+    if (id <= 0 || id >= 0x400 || !byId_[size_t(id)]) return 0;
     return byId_[size_t(id)]->maxDistance;
 }
 

@@ -39,6 +39,9 @@ struct SoundDef {
 class Pwf {
 public:
     bool load(std::vector<uint8_t> file, std::string* error = nullptr);
+    // Delta Force 2's converter (DF2.EXE 0x4711A0) reads the whole 16-bit
+    // sample; DF1's (0x48cfb0) its low byte.
+    bool full16 = false;
     int sampleCount() const { return int(samples_.size()); }
     int sampleIndex(const std::string& name) const;
     const std::string& sampleName(int i) const { return samples_[size_t(i)].name; }
