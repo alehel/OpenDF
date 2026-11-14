@@ -14,6 +14,7 @@
 #include "game/Game.h"
 #include "menu/Frontend.h"
 #include "menu/FrontendDf2.h"
+#include "menu/Launcher.h"
 #include "formats/Anm.h"
 #include "formats/Chr.h"
 #include "formats/Mission.h"
@@ -57,6 +58,8 @@ struct Options {
     int gpsIcons = 1;
     bool watch = false;
     int width = 1280, height = 720;
+    bool commandGiven = false;
+    fs::path settings;       // --settings FILE: the launcher's settings file (testing)
 };
 
 bool parseArgs(int argc, char** argv, Options& o) {
@@ -66,6 +69,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         if (a == "--game") o.dataDir = next();
         else if (a == "--terrain") o.terrain = next();
         else if (a == "--screenshot") o.screenshot = next();
+        else if (a == "--settings") o.settings = next();
         else if (a == "--spawn") o.spawn = true;
         else if (a == "--frames") o.frames = std::atoi(next().c_str());
         else if (a == "--weapon") o.weapon = std::atoi(next().c_str());
@@ -104,7 +108,10 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (std::sscanf(s.c_str(), "%dx%d", &o.width, &o.height) != 2) return false;
         } else if (a == "-h" || a == "--help") return false;
         else if (o.command == "view" && o.args.empty() &&
-                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play")) o.command = a;
+                 (a == "list" || a == "import" || a == "extract" || a == "view" || a == "models" || a == "check" || a == "mission" || a == "chr" || a == "play" || a == "launcher")) {
+            o.command = a;
+            o.commandGiven = true;
+        }
         else o.args.push_back(a);
     }
     return true;
@@ -118,7 +125,10 @@ void usage() {
         "  opendf import SOURCE [DEST]                        copy a game into games/ from its CD:\n"
         "                                 a mounted disc or folder, .iso, .bin/.cue, .img\n"
         "                                 or a raw disc device (DEST defaults to games/NAME)\n"
-        "  opendf --game ROOT [--terrain NAME] [--size WxH]   terrain viewer\n"
+        "  opendf                                             the launcher: pick one of your games\n"
+        "  opendf launcher [add]          the same (add: open the add-a-game screen)\n"
+        "  opendf --game ROOT play                            that game's own front end\n"
+        "  opendf --game ROOT view [--terrain NAME] [--size WxH]  terrain viewer\n"
         "  opendf --game ROOT mission [C02M01]                play a mission in first person\n"
         "  opendf --game ROOT models [NAME]                   3DI model viewer\n"
         "  opendf --game ROOT list [EXT]                      list files in the archives\n"
@@ -752,16 +762,62 @@ int cmdModels(Vfs& vfs, Options& o) {
     return 0;
 }
 
+// `play`: the game's own front end (Delta Force 2 has its own, DF2.MNU).
+int runPlay(Vfs& vfs, const Options& o) {
+    FrontendOptions f;
+    f.gameDir = o.dataDir;
+    f.width = o.width;
+    f.height = o.height;
+    f.game.gameDir = o.dataDir;
+    f.game.width = o.width;
+    f.game.height = o.height;
+    if (!o.args.empty()) f.startScreen = o.args[0];
+    f.screenshot = o.screenshot;
+    f.frames = std::max(1, o.frames);
+    return vfs.exists("DF2.MNU") ? runFrontendDf2(vfs, f) : runFrontend(vfs, f);
+}
+
+// No --game: the launcher (docs/LAUNCHER.md) picks one of the games the
+// user has added, runs its front end and comes back when it is left.
+int runLauncherLoop(Options o) {
+    LauncherOptions l;
+    l.width = o.width;
+    l.height = o.height;
+    l.settingsFile = o.settings;
+    l.screenshot = o.screenshot;
+    l.frames = std::max(1, o.frames);
+    if (!o.args.empty()) l.startScreen = o.args[0];
+    int rc = 0;
+    for (;;) {
+        fs::path chosen;
+        if (!runLauncher(l, &chosen)) return rc;
+        Vfs vfs;
+        o.dataDir = chosen;
+        o.args.clear();
+        if (!mountData(vfs, o)) return 1;
+        rc = runPlay(vfs, o);
+        // Testing (launch:N with a screenshot): the front end took it.
+        if (!o.screenshot.empty()) return rc;
+        l.startScreen.clear();
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     Options o;
     if (!parseArgs(argc, argv, o)) { usage(); return 1; }
     if (o.command == "import") return cmdImport(o);
-    const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission" || o.command == "play";
+    const bool graphics = o.command == "view" || o.command == "models" || o.command == "mission" || o.command == "play" ||
+                          o.command == "launcher";
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
+    }
+    if (o.dataDir.empty() && (o.command == "launcher" || o.command == "play" || (o.command == "view" && !o.commandGiven))) {
+        const int rc = runLauncherLoop(o);
+        SDL_Quit();
+        return rc;
     }
     Vfs vfs;
     int rc = 1;
@@ -798,20 +854,7 @@ int main(int argc, char** argv) {
             rc = runGame(vfs, g);
         }
         else if (o.command == "chr") rc = cmdChr(vfs, o);
-        else if (o.command == "play") {
-            FrontendOptions f;
-            f.gameDir = o.dataDir;
-            f.width = o.width;
-            f.height = o.height;
-            f.game.gameDir = o.dataDir;
-            f.game.width = o.width;
-            f.game.height = o.height;
-            if (!o.args.empty()) f.startScreen = o.args[0];
-            f.screenshot = o.screenshot;
-            f.frames = std::max(1, o.frames);
-            // Delta Force 2 has its own front end (DF2.MNU).
-            rc = vfs.exists("DF2.MNU") ? runFrontendDf2(vfs, f) : runFrontend(vfs, f);
-        }
+        else if (o.command == "play") rc = runPlay(vfs, o);
         else if (o.command == "check") rc = cmdCheck(vfs);
         else rc = cmdView(vfs, o);
     }
