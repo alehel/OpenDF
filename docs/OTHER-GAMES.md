@@ -293,7 +293,7 @@ First differences from DF1:
     grenade's bounce; fog_level / fog_color (unused on the disc); the
     command map's W/D/contour tools and Players/Team/Weapons tabs (squad
     orders); the front end's keyboard page, credits, voice briefing, fades
-    and slider dragging; multiplayer (out of scope); multiplayer (out of scope); the command map's squad orders (the AI
+    and slider dragging; multiplayer (out of scope); the command map's squad orders (the AI
     honours +0xBB, but nothing sets it yet); the death-move table's DF2
     numbering (DF1's names are used).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
