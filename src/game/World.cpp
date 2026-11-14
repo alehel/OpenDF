@@ -314,7 +314,12 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
     if (df2Rules) return feet;   // DF2.EXE has no mover box: the volume push-out (0x440f80) in personTick
     for (int pass = 0; pass < 2; ++pass) {
         for (const auto& o : objects) {
-            if (o.boxes.empty()) continue;
+            // The mover's list (0x436a34, rebuilt every tick by 0x436bec
+            // into +0x104 / +0x108) takes its candidates from the object
+            // arrays 0x820f60 and 0x796f60 (not the mover itself), never
+            // from the people array 0x785b60: soldiers and the player do
+            // not collide with people, their own body box included.
+            if (o.boxes.empty() || o.person) continue;
             Vec3 at = nearest(o.pos, feet);
             float dx = at.x - feet.x, dz = at.z - feet.z;
             float reach = o.model->radius + radius + 1;
