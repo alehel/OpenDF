@@ -292,7 +292,12 @@ First differences from DF1:
     command map's W/D/contour tools and Players/Team/Weapons tabs (squad
     orders); the front end's keyboard page, credits, voice briefing, fades
     and slider dragging; multiplayer (out of scope); AI behaviour beyond
-    DF1's (DF2's AI tables were not traced: soldiers use DF1's AI).
+    DF1's (DF2's AI routines were not traced: soldiers think as in DF1, but
+    fire through DF2's tables: the BMS weapon byte's table is the same at
+    DF2.EXE file offset 0xc88c8, and every shooter uses DF2's modes, ammo,
+    drag and energy damage, 0x414ad0; vehicle guns mode 53, 0x41fac0). The
+    player is DF2's `player01` (105300, hp 8) or, by name, its snow, night,
+    female, LAR V and ghillie variants (INFERRED choice).
 
 ## Suggested order
 

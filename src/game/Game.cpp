@@ -489,6 +489,17 @@ bool Game::loadMission(int index) {
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
         static const int kItems[2][2][2] = {{{5003, 5004}, {5044, 5045}}, {{5010, 5011}, {5046, 5047}}};
         playerItem_ = 100000 + kItems[snow][night][o_.female ? 1 : 0];
+        if (mission_.version >= 0x0F) {
+            // Delta Force 2: its player items by name (INFERRED from the
+            // names; DF2.EXE's choice is not traced): LAR V / ghillie gear,
+            // snow, night, female ("player F ...", "playerF1").
+            const std::string f = o_.female ? "player F " : "player ";
+            std::string n = o_.df2Gear == 33 ? f + "Lar V" : o_.df2Gear == 32 ? f + "Ghuilli"
+                          : snow && night ? f + "Snow Night" : snow ? f + "Snow" : night ? f + "Night" : (o_.female ? "playerF1" : "player01");
+            const ItemDef* d = items_.byName(n);
+            if (!d) d = items_.byName("player01");
+            if (d) playerItem_ = d->id;
+        }
         if (!items_.byId(playerItem_)) playerItem_ = kItemPlayerSoldier;
     }
     std::string trn = mission_.terrain;
@@ -591,7 +602,7 @@ bool Game::loadMission(int index) {
                 hudGuns.push_back(t ? *t : std::string());
             }
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
-            if (const ItemDef* soldier = items_.byId(kItemPlayerSoldier)) arsenal_.playerArmourClass = soldier->damageClass;
+            if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
             arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
         }
@@ -603,7 +614,7 @@ bool Game::loadMission(int index) {
     }
     // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
     {
-        const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
+        const ItemDef* soldier = items_.byId(mission_.version >= 0x0F ? playerItem_ : kItemPlayerSoldier);
         playerHp_ = soldier && soldier->hp > 0 ? soldier->hp : 4;
         // Player Health: Easy (0x469c02); DF2 has no such option (health is
         // the ITEMS.DEF hp as it is, DF2.EXE 0x412a0a).

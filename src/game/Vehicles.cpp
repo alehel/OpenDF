@@ -468,14 +468,16 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
             return;
     }
     auto err = [&]() { return float(int((rnd() & 0xFFFF) << 6) - 0x200000) * turn; };
-    const ModeDef& md0 = modeInfo(12);
-    const GunDef& g0 = gunInfo(md0.gun);
+    // DF2 vehicle guns fire mode 53 (.50, ammo 34; 0x41fac0); DF1 mode 12.
+    const int gunMode = shots.df2() ? 53 : 12;
+    const ModeDef& md0 = shots.modeAt(gunMode);
+    const GunDef& g0 = shots.gunAt(md0.gun);
     auto spread = [&]() { return float((0x8000 - int(rnd())) * (g0.accuracy - 1) * 30) * turn; };
     // OpenDF heading is clockwise: the DF yaw bias and spread turn the other way.
     const float yaw = std::atan2(d.x, -d.z) - err() - v.bias * turn - spread();
     const float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) + err() + spread();
-    const ModeDef& md = modeInfo(12);
-    const GunDef& g = gunInfo(md.gun);
+    const ModeDef& md = shots.modeAt(gunMode);
+    const GunDef& g = shots.gunAt(md.gun);
     Projectile p;
     p.pos = muzzle;
     p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * (float(g.velocity) * 60.f / 62.f);
@@ -485,6 +487,7 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     p.flags = g.flags;
     p.from = o.pos;
     p.shooter = v.object;
+    if (shots.df2()) p.gun = md.gun;
     shots.addProjectile(p);
     if (g.sounds[0] > 0) sound.play(g.sounds[0], muzzle);
 }

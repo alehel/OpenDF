@@ -44,6 +44,7 @@ public:
     // whose id was typed without the leading 10 (3034), so both are tried.
     const ItemDef* byMissionType(uint32_t type) const;
     const ItemDef* byId(int id) const;
+    const ItemDef* byName(const std::string& name) const;
     size_t size() const { return items_.size(); }
 
 private:

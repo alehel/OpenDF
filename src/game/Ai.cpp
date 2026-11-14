@@ -243,7 +243,7 @@ void AiSystem::patrol(World& world, Person& p) {
 
 void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player, bool followUp) {
     WorldObject& o = world.objects[size_t(p.object)];
-    const ModeDef& md = modeInfo(p.weapon);
+    const ModeDef& md = shots.modeAt(p.weapon);
     if (md.type != 1) return;
     // Muzzle (0x46ad30: the held weapon at the right hand). APPROXIMATION:
     // 0.5 m ahead of the body origin, 0.4 m up.
@@ -274,7 +274,7 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         yaw += r() * spread;
         pitch += r() * spread / 4.f;
         // The gun's own spread (0x46af90).
-        const GunDef& g = gunInfo(md.gun);
+        const GunDef& g = shots.gunAt(md.gun);
         if (g.accuracy > 1) {
             const float dev = 30.f * 0x8000 / 4294967296.f * 2 * kPi * float(g.accuracy - 1);
             yaw += r() * dev;
@@ -283,7 +283,7 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         dir = {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
         p.burstDir = dir;
     }
-    const GunDef& g = gunInfo(md.gun);
+    const GunDef& g = shots.gunAt(md.gun);
     Projectile pr;
     pr.pos = muzzle;
     pr.vel = dir * (float(g.velocity) * 60.f / 62.f);
@@ -293,6 +293,7 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     pr.flags = g.flags;
     pr.from = o.pos;
     pr.shooter = p.object;
+    if (shots.df2()) pr.gun = md.gun;   // DF2: drag and energy damage by the ammo record
     shots.addProjectile(pr);
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d fires mode %d at target %d (%s)\n", p.object, p.weapon, p.target, followUp ? "burst" : "aimed");
@@ -302,7 +303,7 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     bool silentRound = false;
     for (const auto& bg : burstGuns)
         if (bg[0] == p.weapon) { soundGun = bg[1]; silentRound = followUp; }
-    const int id = gunInfo(soundGun).sounds[0];
+    const int id = shots.gunAt(soundGun).sounds[0];
     if (id > 0 && !silentRound) {
         sound.play(id, muzzle);
         shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object);

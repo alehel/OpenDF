@@ -155,6 +155,15 @@ public:
     // names by mode. False (and DF1 left in place) if DF2.EXE is unusable.
     bool initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout loadout);
     bool df2() const { return df2_; }
+    // The tables in use (DF2's when loaded, else DF.EXE's), for AI and
+    // vehicle guns: every shooter goes through the same tables (DF2.EXE
+    // 0x414ad0).
+    const ModeDef& modeAt(int m) const {
+        return df2_ && m >= 0 && m < int(modes_.size()) ? modes_[size_t(m)] : modeInfo(m);
+    }
+    const GunDef& gunAt(int g) const {
+        return df2_ && g >= 0 && g < int(guns_.size()) ? guns_[size_t(g)] : gunInfo(g);
+    }
     // DF2: the mission's wind, per tick in metres along x (east) and z
     // (DF2.EXE 0x46bbf0; projectiles are dragged toward it, 0x44c2f0).
     void setWind(float kph, float degrees);

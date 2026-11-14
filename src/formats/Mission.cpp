@@ -92,6 +92,12 @@ bool ItemDefs::parse(const std::string& text) {
     return !items_.empty();
 }
 
+const ItemDef* ItemDefs::byName(const std::string& name) const {
+    for (const auto& [id, d] : items_)
+        if (d.name == name) return &d;
+    return nullptr;
+}
+
 const ItemDef* ItemDefs::byId(int id) const {
     auto it = items_.find(id);
     return it == items_.end() ? nullptr : &it->second;
