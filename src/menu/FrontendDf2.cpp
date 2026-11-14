@@ -611,8 +611,10 @@ void FrontendDf2::enter(Screen s) {
 void FrontendDf2::layout(D2Button& b) {
     const HudImage im = b.image.empty() ? HudImage{} : image(b.image);
     if (im.texture) {
+        // 0x42d8d0: a push button's image is always 4 stacked frames
+        // (whatever the IMAGE record's frame count); animations use the record's.
         b.w = im.width;
-        b.h = im.height / std::max(1, imageFrames(b.image));
+        b.h = im.height / (b.type == 1 ? 4 : std::max(1, imageFrames(b.image)));
         if (b.type == 2) b.w = b.p3;
         if (b.type == 3) b.h = b.p3;
     } else if (!b.text.empty() || b.user1 || b.user2) {
@@ -648,7 +650,7 @@ void FrontendDf2::drawButton(D2Button& b) {
     if (b.attrib & 0x40) ownerDraw(b);   // G: owner draw (event 7)
     if (b.attrib & 4) return;            // C: no default draw
     const HudImage im = b.image.empty() ? HudImage{} : image(b.image);
-    const int frames = std::max(1, imageFrames(b.image));
+    const int frames = b.type == 1 ? 4 : std::max(1, imageFrames(b.image));
     if (im.texture) {
         const float fh = float(im.height / frames);
         if (b.type == 1) {
@@ -728,8 +730,7 @@ void FrontendDf2::ownerDraw(D2Button& b) {
         const int i = quickTop_ + b.user1;
         if (i < int(quick_.size())) {
             const HudImage im = image(b.image);
-            const int frames = std::max(1, imageFrames(b.image));
-            const float fh = float(im.height / frames);
+            const float fh = float(im.height / 4);
             blit(im, float(b.x), float(b.y), 0, fh * float(i == quickSel_ ? 2 : b.drawstate == 2 ? 1 : 0), float(im.width), fh);
             const std::string* t = briefText_.find("TITLE", quick_[size_t(i)]);
             std::string title = t ? *t : quick_[size_t(i)];
