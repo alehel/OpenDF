@@ -201,7 +201,17 @@ First differences from DF1:
     occlusion (0x45E0A0 returns 1.0); the layer flag 0x80 shuffle (a random
     start, then in turn back round to it, 0x470560); the speed-of-sound queue
     (0x45E910: from 30 m a sound waits d·62/350 ticks, 128 slots) for voices
-    and explosions (INFERRED: the other 14 callers not mapped).
+    and explosions (INFERRED: the other 14 callers not mapped). The mixer is
+    DF1's integer one (0x48e028; the rounding tables 0x48d240 / 0x48d100 /
+    0x4a09d0 and pan 0x4a06ce are byte-identical to DF.EXE's, gains
+    pan·vol·master(255) >> 16 at 0x49fc69, music (V >> 1) >> shift at
+    0x4a0339, y[n−1] >> 2, clamp ±0x7fff, the mode-3 hook 0x49fb83 set at
+    start-up (0x420919: (3, 1))). Unlike DF1 the hook is reset when the menus
+    close for the Game Loop (0x43b68d → 0x42f420 → 0x43cb50 → 0x4712e0), so
+    it is on in the front end until the first mission starts and never in a
+    mission. Not reproduced: DF2 mixes a buffer in four parts and slides a
+    voice's pitch step a quarter of the way each part (0x48f818, +0x34);
+    OpenDF changes pitch at once.
   - **weapons** read from the user's DF2.EXE (0x46b230 and its in-place
     conversions): 57 modes (0x4C7238, 92 bytes: kind = DF1's fire type, ammo,
     first-person item, offsets, muzzle vertex, cooldown, zoom, flags 0x1
@@ -239,6 +249,22 @@ First differences from DF1:
     fire-mission shell kept above the water. Death moves (0x415130): DF1's
     names, plus kind 4 (falls: Death_B_P11DF) and 5 (drowning: Death_Water),
     no part clamp; soldiers landing hard take (1 << n) − 1 (0x43f600).
+    Weapon handling is DF1's, routine for routine (READ): select 0x4480b0
+    (= 0x44aa74: timers and burst counter cleared, a gun with an empty
+    magazine reloads, launchers/charges/grenades with an empty chamber get
+    the cooldown with the +0x24 sound; any slot 0-9 is taken, also an empty
+    one or the one held, 0x41bced), the tick 0x446050 (cooldown end, then
+    reload end, then the burst counter's fire command), the silent cooldown-
+    end chambering 0x446410 (full auto on flag 0x40), reload end 0x447950
+    (an empty chamber gets the cooldown with +0x24 via 0x447f40(0); no
+    message — "Ammo reloaded" is the ammo crate in both games), dry fire
+    0x4470ae (click +0x2C, silent cooldown, burst counter 0; launchers and
+    grenades click only, charges do nothing) and the fire command 0x447270
+    with no reload gate. DF2's scope flag [0x7655f4] is only toggled
+    (0x447b30) and counts for flag-0x1 modes (0x447b40), so it survives
+    weapon changes and reloads. Kevlar is checked on every person
+    (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that
+    byte (0x45429d and the network copies); placed soldiers have none.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
@@ -452,7 +478,16 @@ First differences from DF1:
     while idle; silent soldiers never radio; DF1's water probe only with the
     avoid-water bit; any order holds position. Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
-    vehicle guns mode 53. The player is DF2's `player01` (105300, hp 8) or
+    vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
+    0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed
+    hand; no shot without it), the aim 0x415de0 (= 0x46b838: from the body
+    origin at the target's origin while it is seen, else the last known
+    point with errMul 5, whole-metre distance, the error stored on the
+    body; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
+    target sight line from 1 m up to the target's origin (0x401732).
+    Squad Members Off is df2.cfg attributes 0x20 (0x45bf44 → 0x45c460): the
+    same four Squad Member items as DF1 are deleted (the ghillie one, 105271,
+    stays); enemy AI hard is attributes 0x10 (0x415f16). The player is DF2's `player01` (105300, hp 8) or
     its snow, night and female variants by id (0x4128d0), the ghillie and
     LAR V models drawn in their place (0x415410);
   - **delay grenade** (0x44ae50): no impact fuse; it slides off object

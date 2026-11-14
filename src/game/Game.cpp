@@ -654,19 +654,22 @@ bool Game::loadMission(int index) {
     ai_.df2 = mission_.version >= 0x0F;
     ai_.night = (mission_.lightFlags & 0x10) != 0;
     ai_.playerGear = o_.df2Gear;
-    // Squad members off (attributes 0x200; DF.EXE 0x402a38, before the AI
-    // lists): every object of the four "Squad Member" items (105002, 105038,
-    // 105048, 105049) is deleted. (Delta Force 2: not traced; its team-mates
-    // are taken out by side.)
-    if (o_.attributes & 0x200)
+    // Squad members off, before the AI lists: DF.EXE 0x402cc5 (attributes
+    // 0x200) -> 0x402a38, DF2.EXE 0x45bf44 (df2.cfg attributes 0x20, the
+    // Options3 SQUAD MEMBERS row) -> 0x45c460: every person of the four
+    // "Squad Member" items (item +0x20 = 0x138a, 0x13ae, 0x13b8, 0x13b9:
+    // 105002, 105038, 105048, 105049) is deleted (0x469fd8 / 0x4160d0 zero the
+    // object and its AI block). The same ids in both games.
+    const bool df2Mission = mission_.version >= 0x0F;
+    if (df2Mission ? (o_.df2Attributes & 0x20) : (o_.attributes & 0x200))
         for (auto& o : world_.objects) {
             const int id = o.item ? o.item->id - 100000 : 0;
-            const bool squad = mission_.version >= 0x0F ? (o.person && o.side == kPlayerSide && o.missionGroup == 3)
-                                                        : (id == 5002 || id == 5038 || id == 5048 || id == 5049);
-            if (squad) { o.removed = true; o.boxes.clear(); }
+            if (id == 5002 || id == 5038 || id == 5048 || id == 5049) { o.removed = true; o.boxes.clear(); }
         }
     ai_.init(world_, mission_);
-    ai_.hard = (o_.attributes & 0x80) != 0;
+    // Enemy AI hard: DF.EXE attributes 0x80 ([0x66fa88]), DF2.EXE df2.cfg
+    // attributes 0x10 ([0x653000], read by the aim 0x415f16).
+    ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
     lights_.clear();
     if (world_.df2Rules)
@@ -686,16 +689,17 @@ bool Game::loadMission(int index) {
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
     vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
     vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
-    // AI rounds leave from the weapon (0x46ad9c): the body (no pitch) x the
-    // posed right hand (mesh 7) x the held-weapon turn x the mode's
-    // hardpoint (+0x90) of its third-person item's model.
+    // AI rounds leave from the weapon (0x46ad9c; DF2.EXE 0x414f20 the same):
+    // the body (no pitch) x the posed right hand (mesh 7) x the held-weapon
+    // turn x the mode's hardpoint (+0x90; DF2 +0x30) of its third-person
+    // item's model (DF2: the mode's +0x08 item).
     ai_.muzzle = [this](int object, int mode, Vec3& at) {
         const WorldObject& o = world_.objects[size_t(object)];
         if (!o.chr || !o.model || o.anim.angles().empty()) return false;
-        const int item = modeThirdPersonItem(mode);
+        const int item = arsenal_.heldItemAt(mode);
         const ItemDef* wi = item > 0 ? items_.byId(100000 + item) : nullptr;
         const GpuModel* wm = wi && !wi->graphic.empty() ? models_.get(vfs_, wi->graphic) : nullptr;
-        const int hp = modeInfo(mode).muzzleVertex;
+        const int hp = arsenal_.modeAt(mode).muzzleVertex;
         if (!wm || hp < 0 || hp >= int(wm->points.size()) || o.model->lods.empty() || o.model->lods[0].meshPivot.size() <= 7) return false;
         const auto pose = personPose(*o.model, 0, *o.chr, o.anim.angles(), o.aimPitch);
         if (pose.size() <= 7) return false;
@@ -2404,7 +2408,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             // The held weapon (0x44cc34): the mode's third-person item (+0x68),
             // its LOD's first mesh, at the right hand (mesh 7) turned by the
             // fixed offset 0x44d3c0 (-30, -65, -30 degrees as yaw, pitch, roll).
-            if (const int item = modeThirdPersonItem(v.o->weaponMode); item > 0 && pose.size() > 7 && !v.o->dead)
+            if (const int item = arsenal_.heldItemAt(v.o->weaponMode); item > 0 && pose.size() > 7 && !v.o->dead)
                 if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
                     if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty()) {
                         const Mat4& offset = heldWeaponOffset();
@@ -4922,8 +4926,12 @@ int Game::run() {
                 if (world_.objects[i].side == 2 && world_.objects[i].missionGroup == 3) world_.damage(int(i), 1000);
 
         captured_ = !scripted;
-        // Delta Force: DF.EXE's integer mixer (DF2's is not checked).
-        if (mission_.version < 0x0F) audio_.setDfMixer(true, o_.mixerHook);
+        // The integer mixer of both games (DF.EXE 0x497f9c, DF2.EXE 0x48e028:
+        // the same tables, gains, y[n-1] >> 2 and clamp). Its mode-3 hook:
+        // DF1 on until the first mission ends; DF2 already reset by the menu
+        // teardown into the Game Loop (0x43b68d -> 0x42f420 -> 0x43cb50 ->
+        // 0x4712e0), so never on in a DF2 mission.
+        audio_.setDfMixer(true, mission_.version < 0x0F && o_.mixerHook);
         if (!o_.record.empty()) {
             audioOut_ = std::fopen((o_.record + ".pcm").c_str(), "wb");
         } else if (!hidden && !audio_.openDevice()) {

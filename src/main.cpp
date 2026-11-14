@@ -56,6 +56,7 @@ struct Options {
     bool holdFire = false, showMap = false, walkForward = false, viewModelOnly = false, noHud = false, killEnemies = false;
     std::string inputScript, record, primary = "M4", secondary = "Ammo", sidearm = ".45", soldierName;
     int gpsIcons = 1;
+    long attributes = -1;    // --attributes N: df.cfg / df2.cfg attributes for a direct mission run
     bool watch = false;
     int width = 1280, height = 720;
     bool commandGiven = false;
@@ -81,6 +82,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--input") o.inputScript = next();
         else if (a == "--name") o.soldierName = next();
         else if (a == "--gps") o.gpsIcons = std::atoi(next().c_str());
+        else if (a == "--attributes") o.attributes = std::strtol(next().c_str(), nullptr, 0);
         else if (a == "--loadout") {
             const std::string v = next();
             const auto comma = v.find(',');
@@ -849,6 +851,7 @@ int main(int argc, char** argv) {
             g.primary = o.primary;
             g.soldierName = o.soldierName;
             g.gpsIcons = o.gpsIcons;
+            if (o.attributes >= 0) g.attributes = g.df2Attributes = uint32_t(o.attributes);
             g.secondary = o.secondary;
             g.sidearm = o.sidearm;
             g.watch = o.watch;

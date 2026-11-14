@@ -34,6 +34,7 @@ struct ModeDef {
     int muzzleVertex = 0;       // +0x90 vertex of the first-person model the round leaves from
     int cooldown = 0;           // +0x9C ticks between rounds
     int scope = 0;              // +0xA0 zoom inset magnification
+    int heldItem = 0;           // DF2 +0x08: the third-person item (DF1: modeThirdPersonItem)
     int flags = 0;              // +0xA4: 0x1 zoom allowed, 0x4 rifle (two-handed), 0x20 full auto
     std::string name;           // DFGAME.BIN string of the mode number
     std::string viewModel;      // the first-person item's graphic
@@ -185,9 +186,9 @@ public:
     }
     bool fromExe() const { return fromExe_; }
 
-    // Keys 0-9 (0x44aa74): slot 0 laser designator, 1 knife, 2 sidearm,
-    // 3-5 the primary's modes, 6-8 the kit's, 9 frag grenade. A slot without
-    // a working mode does nothing.
+    // Keys 0-9 (0x44aa74 / DF2 0x4480b0): slot 0 laser designator, 1 knife,
+    // 2 sidearm, 3-5 the primary's modes, 6-8 the kit's, 9 frag grenade.
+    // Any slot is taken, an empty one (mode 0) or the one already held.
     void select(int slot);
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
@@ -206,6 +207,12 @@ public:
     const ModeDef* slotMode(int i) const { return i >= 0 && i < kSlots && slots_[size_t(i)] ? &modes_[size_t(slots_[size_t(i)])] : nullptr; }
     const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
     int modeIndex() const { return slots_[size_t(current_)]; }   // the player-table mode number
+    // The third-person item a person holds for mode m: DF.EXE's table
+    // (modeThirdPersonItem, +0x68), DF2.EXE the mode's +0x08 item
+    // ([0x4ee328 + 0x8c·m], read by 0x414f40 and the drawing).
+    int heldItemAt(int m) const {
+        return df2_ && m >= 0 && m < int(modes_.size()) ? modes_[size_t(m)].heldItem : modeThirdPersonItem(m);
+    }
     const GunDef& gun() const { return guns_[size_t(mode().gun)]; }
     const std::string& modeName() const { return mode().name; }
     // Ammunition of the current mode's gun (0x933354 / 0x9333d4 / 0x933454).
@@ -213,8 +220,9 @@ public:
     int rounds() const { return mag_[size_t(mode().gun)]; }
     int spares() const { return spares_[size_t(mode().gun)]; }
 
-    float zoom() const { return zoomLevel_ ? float(mode().scope) : 1.f; }
-    bool zoomed() const { return zoomLevel_ > 0; }
+    float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
+    // DF2.EXE 0x447b40: the scope flag counts only for modes with flag 0x1.
+    bool zoomed() const { return zoomLevel_ > 0 && (!df2_ || (mode().flags & 1)); }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
@@ -269,6 +277,7 @@ private:
     int cooldown_ = 0, reloadTicks_ = 0, burstLeft_ = 0;
     bool pressed_ = false;
     float clock_ = 0;
+    uint64_t debugTick_ = 0;   // ticks run (OPENDF_DEBUGWEAPON)
     int zoomLevel_ = 0;
     float flashTimer_ = 0;
     float kick_[3] = {0, 0, 0};

@@ -395,8 +395,10 @@ private:
             char n[32];
             std::snprintf(n, sizeof n, "%s%02d.WAV", bms_.substr(0, std::min<size_t>(6, bms_.size())).c_str(), briefVoice_++);
             if (const SoundClip* c = audio_.clip(vfs_, n)) {
-                const float g = float(std::clamp(soldier().get(0x5c0), 0, 255)) / 255.f * 0.5f;
-                briefHandle_ = audio_.play(c, g, g);
+                // Direction 0's pan (63 left, 64 right) at the dialogue volume
+                // (INFERRED: played 2D like the menu sounds, 0x4712f0 dir 0).
+                const float v = float(std::clamp(soldier().get(0x5c0), 0, 255));
+                briefHandle_ = audio_.play(c, 63.f * v / (127.f * 255.f), 64.f * v / (127.f * 255.f));
                 briefVoiceTicks_ = c->rate > 0 ? int(c->samples.size() * 1000 / size_t(c->rate) / 16) + 1 : 1;
                 return;
             }
@@ -588,13 +590,16 @@ void FrontendDf2::sound(const std::string& name, int channel) {
     if (upper(name) == "BTN_SLCT") vol = 150;
     vol = vol * std::clamp(soldier().get(0x5b8), 0, 255) / 255;
     if (const SoundClip* c = audio_.clip(vfs_, upper(f))) {
-        const float g = float(vol) / 255.f * 0.5f;
+        // 0x43cb00 -> 0x4712f0(sample, direction 0, vol 0..255, pitch 1.0):
+        // the mixer's gains (pan[0] = 63 left, 64 right) x vol x master 255
+        // >> 16 (0x49fc69), passed as pan · vol / (127 · 255).
+        const float gl = 63.f * float(vol) / (127.f * 255.f), gr = 64.f * float(vol) / (127.f * 255.f);
         // 0x42f500 plays on a channel: a new sound there cuts the old one.
         if (channel) {
             if (auto ch = channels_.find(channel); ch != channels_.end()) audio_.stop(ch->second);
-            channels_[channel] = audio_.play(c, g, g);
+            channels_[channel] = audio_.play(c, gl, gr);
         } else {
-            audio_.play(c, g, g);
+            audio_.play(c, gl, gr);
         }
     }
 }
@@ -1509,6 +1514,13 @@ int FrontendDf2::run() {
     }
     if (!musicLoaded_) std::fprintf(stderr, "no menu music (DF2MUSIC.SBF / DF2MUSIC.BIN)\n");
     music_.setVolume(255);
+    // DF2.EXE's mixer is DF.EXE's integer one (0x48e028; tables 0x48d240,
+    // 0x48d100, 0x4a09d0 and pan 0x4a06ce byte-identical to 0x4973c0,
+    // 0x497280, 0x4aa320, 0x4aa019; music (V >> 1) >> shift, 0x4a0339), with
+    // the mode-3 hook set at start-up (0x420919: 0x4712b0(3, 1)) and reset
+    // when the menus close for the Game Loop (0x42f420 -> 0x4712e0).
+    music_.setIntegerUnits(true);
+    audio_.setDfMixer(true, true);
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
     if (!openWindow()) return 1;
     music_.start();
@@ -1647,6 +1659,7 @@ int FrontendDf2::run() {
                 g.df2Secondary = soldier().get(0x2c0);
                 g.df2Gear = soldier().get(0x2c4);
                 g.df2Grenade = soldier().get(0x2c8);
+                g.df2Attributes = uint32_t(cfg_.get("attributes"));
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
@@ -1664,6 +1677,7 @@ int FrontendDf2::run() {
                 const int camp = fromCampaign_ && missionSel_ >= 0 ? kMissions[missionSel_].campaign : 0;
                 uint32_t flags = camp ? uint32_t(soldier().get(0xa8 + 4 * size_t(camp))) : 0;
                 MissionOutcome out;
+                audio_.setDfMixer(true, false);   // 0x43b68d: the hook is off from here on
                 runGame(vfs_, g, &out, &flags);
                 if (out.quit) break;
                 // 0x437550: a campaign win marks the mission done; kills add
