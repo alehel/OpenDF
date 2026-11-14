@@ -311,6 +311,9 @@ private:
     float deadYaw_ = 0, camYaw_ = 0;      // OpenDF heading / DF yaw (anticlockwise), radians
     Vec3 deadBodyOrigin() const;
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
+    // Delta Force 2: air used under water (player slot +0xcc, DF2.EXE 0x4587f0).
+    int air_ = 0;
+    void tickAir();
     void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0}, int part = 0);
     // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
     // 0x12-0x16 (0x473f70, slots 7-11) of a body at `origin`.
@@ -495,6 +498,7 @@ bool Game::loadMission(int index) {
         playerBody_ = Animator{};
         playerMove_.clear();
         damageFlash_ = 0;
+        air_ = 0;
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
@@ -1091,6 +1095,31 @@ void Game::dropCarried() {
     o.removed = false;
     o.boxes = o.model ? o.model->collision : std::vector<CollisionBox>{};
     carried_ = -1;
+}
+
+// Delta Force 2's air (DF2.EXE 0x4587f0, a player tick, only on maps with
+// water): 0 when dead (or wearing the LAR V rebreather, not selectable in
+// OpenDF yet); +1 a tick while the origin is at least 0.5 m below the water;
+// at the surface a count over 60 resets with AIR_SUCK (801), a smaller one
+// stays. Gags (802) at 2304, 2496 and 2688; over 2880 the player drowns at
+// once (no killer, the water death move, no red flash).
+void Game::tickAir() {
+    const float water = terrain_.waterLevel();
+    if (water == 0) return;
+    if (playerDead()) { air_ = 0; return; }
+    const Vec3 at = player_.origin();
+    if (at.y <= water - 0.5f) {
+        ++air_;
+        if (air_ == 2304 || air_ == 2496 || air_ == 2688) playSound(802, at);
+        if (air_ > 2880) {
+            const int flash = damageFlash_;
+            hurtPlayer(playerHp_, 0, at);
+            damageFlash_ = flash;
+        }
+    } else if (air_ > 60) {
+        air_ = 0;
+        playSound(801, at);
+    }
 }
 
 // Damage to the player (0x44fe9e blast, 0x44f2b2 bullets): hit points, and
@@ -2097,6 +2126,17 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
 
     if (friendlyTags_) drawFriendlyTags(s, viewProj);
     if (binoculars_ && !playerDead()) drawBinoculars(s);
+    // Delta Force 2's breath bar (0x441540) while the air count is not 0, in
+    // the virtual 1024x768 space: half-width w = 100 - air*100/2880 about
+    // x 512, 10 high, 20 below the 3D view's top; cyan, red over 2240;
+    // "Breath" centred 20 lower in the bar's colour.
+    if (df2Hud_.on && air_ > 0) {
+        const int w = 100 - air_ * 100 / 2880;
+        const float top = s.playY + s.vy(20);
+        const Color c = air_ > 2240 ? kDf2Red : rgb(0, 0xff, 0xff);   // the label too
+        if (w > 0) hud_.rect(s.vx(512.f - float(w)), top, s.vx(512.f + float(w)) - s.vx(512.f - float(w)), s.vy(10), c);
+        hud_.text(s.vx(512) - hud_.textWidth("Breath", s.text()) / 2, top + s.vy(20), "Breath", c, s.text());
+    }
     if (oldMessages_) drawOldMessages(s);
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
@@ -2725,6 +2765,12 @@ int Game::run() {
     if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
         df2Hud_.on = df2Hud_.def.parse(def);
 
+    if (rc == 0 && std::getenv("OPENDF_LOWEST")) {
+        float best = 1e9, bx = 0, bz = 0;
+        const float ext = terrain_.mapExtent();
+        for (float x = 0; x < ext; x += 16) for (float z = 0; z < ext; z += 16) { float h = terrain_.heightAt(x, z); if (h < best) { best = h; bx = x; bz = z; } }
+        std::fprintf(stderr, "LOWEST %.2f at mission (%.1f, %.1f) water %.2f\n", best, bx, -bz, terrain_.waterLevel());
+    }
     if (rc == 0) {
         if (o_.hasCamera) {
             player_ = Player{};
@@ -2880,6 +2926,7 @@ int Game::run() {
                 tickEffects();
                 tickDialogs();
                 touchPickups();
+                if (mission_.version >= 0x0F) tickAir();
                 tickCharges();
                 // The player as a target: animated hit spheres (0x44dca4).
                 world_.playerBody.present = !playerDead();

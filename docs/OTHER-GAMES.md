@@ -121,15 +121,24 @@ First differences from DF1:
     panel, the halves stay at the window's sides and that panel stretches;
     HUD.DEF points follow their half. INFERRED: the weapon's ammo kind uses
     DF1's weapon type numbers; radar objects use record +0x4C as their
-    shape. Not yet: the breath bar, the radar's water blend and
-    nearest-texel sampling;
+    shape. Not yet: the radar's water blend and nearest-texel sampling;
+  - **air** (0x4587f0): +1 a tick while the player's origin is 0.5 m or more
+    under the water; surfacing with more than 60 resets it (AIR_SUCK 801);
+    gags (802) at 2304/2496/2688; over 2880 (48 s) the player drowns at once;
+    the breath bar (0x441540) while the count is not 0: half-width
+    100 − c·100/2880 about x 512 (1024×768 space), cyan, red over 2240, with
+    "Breath" below in the same colour. The LAR V rebreather (body slot 33)
+    stops it; OpenDF has no DF2 loadout yet, so nobody wears one;
   - **wind**: fixed for the mission from the BMS header (+0xE8 kph, +0xEC
     degrees it blows from; DF2.EXE 0x45d3f8), shown as `Wind: SW, 3kph` /
     `Wind: None`. The `sp_wind` option (default/none/random) only applies in
     multiplayer. Not yet: its only physical effect, DF2's projectile drag
     toward the wind velocity (0x44c2f0, per-ammo drag bands; DF1 has no
     drag), and rain/snow drifting with it.
-- Not yet: the new layer flag
+- Not yet: water is not drawn on DF2 maps (the level is read, e.g. D03M03
+  8.75 m), DF2's swimming (vertical speed damped ×0.8 a tick in water,
+  0x440b2b; the player now walks on the bottom), DF2's mission-end panel and
+  menus, the new layer flag
   0x80 (random-then-sequential variants), the speed-of-sound delay for distant
   sounds (d·62/350 ticks from 30 m), the cloud layer (512-wide density PCX),
   fog keys, the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
