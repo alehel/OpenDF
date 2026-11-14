@@ -67,6 +67,10 @@ struct HitFace {
 
 struct CollisionBox {
     float min[3], max[3];
+    // Volume type (+0x00): 1 box, 3 upright cylinder (centre +0x08..+0x10,
+    // radius +0x18); others are ignored by DF.EXE's mover test (0x437a28).
+    int type = 1;
+    float cx = 0, cz = 0, r = 0;   // cylinder centre (OpenDF x, z) and radius
 };
 
 struct ModelLod {

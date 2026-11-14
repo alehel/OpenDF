@@ -84,7 +84,9 @@ void World::refreshBoxes(WorldObject& o) const {
     o.boxes.clear();
     if (o.removed || o.dead || !o.model) return;
     if (std::getenv("OPENDF_DEBUGBOX") && o.item)
-        std::fprintf(stderr, "boxes %s: %zu volumes\n", o.item->name.c_str(), o.model->collision.size());
+        for (const auto& b : o.model->collision)
+            std::fprintf(stderr, "boxes %s: type %d r %.2f c (%.2f %.2f) x %.2f..%.2f z %.2f..%.2f\n", o.item->name.c_str(), b.type, b.r, b.cx, b.cz,
+                         b.min[0], b.max[0], b.min[2], b.max[2]);
     if (!o.model->collision.empty()) {
         o.boxes = o.model->collision;
         return;
@@ -253,6 +255,7 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
             for (const auto& b : o.boxes) {
                 float bottom = at.y + b.min[1], top = at.y + b.max[1];
                 if (feet.y + step >= top || feet.y + height <= bottom) continue;  // can step onto it / passes under
+                if (b.type != 1 && b.type != 3) continue;   // other volume types are ignored (0x437a28)
                 // 0x437a28: the mover is a square of +-radius in the
                 // object's frame; an overlap is pushed out along the axis
                 // needing the smaller push (x on a tie), toward the side
@@ -263,7 +266,16 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
                 const float qx = l.x < cx ? b.min[0] - (l.x + radius) : b.max[0] - (l.x - radius);
                 const float qz = l.z < cz ? b.min[2] - (l.z + radius) : b.max[2] - (l.z - radius);
                 float px = 0, pz = 0;
-                if (std::abs(qz) >= std::abs(qx)) px = qx; else pz = qz;
+                if (b.type == 3) {
+                    // Cylinder: within r + radius of the centre, set out to
+                    // (r + radius) x 1.01 along the line from the centre.
+                    const float dx = l.x - b.cx, dz = l.z - b.cz, dist = std::sqrt(dx * dx + dz * dz);
+                    const float k = (b.r + radius) * 1.01f;
+                    if (dist > b.r + radius) continue;
+                    const float a = std::atan2(dz, dx);
+                    px = b.cx + k * std::cos(a) - l.x;
+                    pz = b.cz + k * std::sin(a) - l.z;
+                } else if (std::abs(qz) >= std::abs(qx)) px = qx; else pz = qz;
                 // Back to world: inverse of toLocal's rotation.
                 feet.x += f.c * px + f.s * pz;
                 feet.z += -f.s * px + f.c * pz;

@@ -211,7 +211,13 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             float ymin = r.i32(o + 8) / 65536.f, ymax = r.i32(o + 12) / 65536.f;
             float zmin = r.i32(o + 16) / 65536.f, zmax = r.i32(o + 20) / 65536.f;
             if (xmax < xmin || ymax < ymin || zmax < zmin) continue;
-            lod.collision.push_back({{xmin, zmin, -ymax}, {xmax, zmax, -ymin}});
+            CollisionBox cb{{xmin, zmin, -ymax}, {xmax, zmax, -ymin}};
+            const size_t vo = volOff + size_t(i) * 72;
+            cb.type = int(r.u32(vo));
+            cb.cx = r.i32(vo + 0x08) / 65536.f;
+            cb.cz = -r.i32(vo + 0x0C) / 65536.f;
+            cb.r = r.i32(vo + 0x18) / 65536.f;
+            lod.collision.push_back(cb);
         }
         if (std::getenv("OPENDF_DEBUGMESH") && li == 0 && m.name == std::getenv("OPENDF_DEBUGMESH"))
             for (uint32_t mi = 0, vb = 0; mi < nm; ++mi) {
