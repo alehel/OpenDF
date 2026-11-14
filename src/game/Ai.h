@@ -78,6 +78,18 @@ public:
     // For vehicles: the team's speed (m/s) and marking path points reached.
     float teamSpeedMs(int team) const { return team >= 0 && team < 64 ? teamSpeed_[size_t(team)] * 1000.f / 3600.f : 0.f; }
     void markReached(int team, int path, int point) { reached_[team * 128 + path] |= 1u << (point & 31); }
+    // DF2 command-map orders (0x403380): AI byte +0xBB = 0 none, 1 hold
+    // position and fire, 2 hold position and cover me, 3 hold position.
+    // False if the object is no AI soldier or already has that order.
+    bool setOrder(int object, int order) {
+        for (auto& p : people_)
+            if (p.object == object) { if (p.order == order) return false; p.order = order; return true; }
+        return false;
+    }
+    int order(int object) const {
+        for (const auto& p : people_) if (p.object == object) return p.order;
+        return 0;
+    }
 
 private:
     struct Person {

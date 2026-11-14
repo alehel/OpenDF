@@ -422,6 +422,8 @@ private:
         int mouseX = 0, mouseY = 0;   // in the 640x480 screen
         bool panning = false;
         int pressFlash = -1;
+        int member = -3;   // Team tab: the selected squad member (-3 the player)
+        bool testInit = false;
     } df2Map_;
     void drawDf2CommandMap(const Screen& s);
     void df2MapClick(const Screen& s, int x, int y, bool down, int button);
@@ -2744,6 +2746,15 @@ void Game::drawDf2Top(const Screen& s) {
 // pixels), art 1:1 at 640.
 void Game::drawDf2CommandMap(const Screen& s) {
     Df2Map& m = df2Map_;
+    // Testing: OPENDF_CMAPTAB opens a tab (2 Team selects the first squad member).
+    if (!m.testInit) {
+        m.testInit = true;
+        if (const char* t = std::getenv("OPENDF_CMAPTAB")) {
+            m.tab = std::atoi(t);
+            for (size_t i = 0; i < world_.objects.size() && m.tab == 2; ++i)
+                if (world_.objects[i].person && world_.objects[i].alive() && world_.objects[i].side == 1) { m.member = int(i); break; }
+        }
+    }
     if (!m.loaded) {
         m.loaded = true;
         auto pcx = [&](const char* n, bool key) { return hud_.loadImage(vfs_, n, false, key); };
@@ -2935,9 +2946,11 @@ void Game::drawDf2CommandMap(const Screen& s) {
         // Buttons (width 152 virtual): Gridlines, Names, People, Waypoints,
         // Vehicles, Buildings; the icon buttons and + / -.
         static const char* kLabels[6] = {"Gridlines", "Names", "People", "Waypoints", "Vehicles", "Buildings"};
+        static const char* kKeys[6] = {"CMAP_BTN_GRIDLINES", "CMAP_BTN_NAMES", "CMAP_BTN_PEOPLE", "CMAP_BTN_WAYPOINTS", "CMAP_BTN_VEHICLES",
+                                       "CMAP_BTN_BUILDINGS"};
         static const float kPos[6][2] = {{48, 668}, {48, 700}, {208, 668}, {208, 700}, {368, 668}, {368, 700}};
         for (int i = 0; i < 6; ++i)
-            textButton(kPos[i][0], kPos[i][1], 152, kLabels[i], m.toggles[i], rgb(0x68, 0x30, 0), rgb(0xff, 0x90, 0x20));
+            textButton(kPos[i][0], kPos[i][1], 152, df2Text("Cmap", kKeys[i], kLabels[i]), m.toggles[i], rgb(0x68, 0x30, 0), rgb(0xff, 0x90, 0x20));
         auto icon = [&](const HudImage& im, float vx, float vy, bool on) {
             const float x = V(vx), y = V(vy);
             const bool hover = m.mouseX >= x && m.mouseX < x + 16 && m.mouseY >= y && m.mouseY < y + 16;
@@ -2949,6 +2962,48 @@ void Game::drawDf2CommandMap(const Screen& s) {
         icon(m.iconContour, 568, 700, false);
         textButton(608, 668, 32, "+", true, rgb(0xc0, 0x60, 0), rgb(0xc0, 0x60, 0));
         textButton(608, 700, 32, "-", true, rgb(0xc0, 0x60, 0), rgb(0xc0, 0x60, 0));
+    } else if (m.tab == 2) {
+        // Team tab (0x40f190): the squad from (80, 224), 28 apart, the player
+        // first; headings Name/Plan/Weapon at (344, 196); the selected one's
+        // buttons: the player "Set my plan to..." (plans: multiplayer, no
+        // effect in single player), a teammate "Set teammate to..." with the
+        // four orders (0x4113b0).
+        const Color head = rgb(0xc0, 0x60, 0), sel = rgb(0xff, 0x90, 0x20), dim = rgb(0x60, 0x30, 0);
+        char hdr[96];
+        std::snprintf(hdr, sizeof hdr, "%s/%s/%s", df2Text("Cmap", "CMAP_HEADING_NAME", "Name").c_str(),
+                      df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan").c_str(), df2Text("Cmap", "CMAP_HEADING_WEAPON", "Weapon").c_str());
+        hud_.text(X(V(344)) - hud_.textWidth(hdr, k) / 2, Y(V(196)), hdr, head, k);
+        float row = 224;
+        auto line = [&](int id, const std::string& name, const std::string& plan, const std::string& weapon) {
+            const std::string t = name + "/" + plan + "/" + weapon;
+            hud_.text(X(V(80)), Y(V(row)), t, id == m.member ? sel : dim, k);
+            row += 28;
+        };
+        static const char* kOrderKey[4] = {"CMAP_BTN_NOORDER", "CMAP_BTN_HPHF", "CMAP_BTN_HPCM", "CMAP_BTN_HP"};
+        static const char* kOrderDef[4] = {"No orders", "Hold Position, Hold Fire", "Hold Position, Cover Me", "Hold Position"};
+        line(-3, o_.soldierName.empty() ? "Player" : o_.soldierName, df2Text("Cmap", "CMAP_PLANNONE", "None"), arsenal_.modeName());
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const WorldObject& o = world_.objects[i];
+            if (!o.person || !o.alive() || o.side != 1 || row > 616) continue;
+            line(int(i), o.item ? o.item->name : "?", df2Text("Cmap", kOrderKey[std::clamp(ai_.order(int(i)), 0, 3)], kOrderDef[0]),
+                 arsenal_.modeAt(o.weaponMode).name);
+        }
+        if (m.member == -3) {
+            hud_.text(X(V(80)), Y(V(640)), df2Text("Cmap", "CMAP_SETPLAN", "Set my plan to..."), head, k);
+            static const char* kPlans[2][4] = {{"CMAP_PLAN001", "CMAP_PLAN002", "CMAP_PLAN003", "CMAP_PLAN004"},
+                                               {"CMAP_PLAN011", "CMAP_PLAN012", "CMAP_PLAN013", "CMAP_PLAN014"}};
+            for (int r = 0; r < 2; ++r) {
+                hud_.text(X(V(56)), Y(V(664 + 32 * r)), "-", head, k);
+                for (int c = 0; c < 4; ++c)
+                    textButton(100 + 136 * c, 664 + 32 * r, 124, df2Text("Cmap", kPlans[r][c], kPlans[r][c]), false, head, sel);
+            }
+        } else {
+            hud_.text(X(V(80)), Y(V(640)), df2Text("Cmap", "CMAP_SETTEAMMATE", "Set teammate to..."), head, k);
+            static const float kOrderPos[4][2] = {{56, 664}, {344, 664}, {56, 696}, {344, 696}};
+            const int cur = ai_.order(m.member);
+            for (int i = 0; i < 4; ++i)
+                textButton(kOrderPos[i][0], kOrderPos[i][1], 280, df2Text("Cmap", kOrderKey[i], kOrderDef[i]), i == cur, head, sel);
+        }
     } else if (m.tab == 4) {
         // Mission tab: the DF2BRIEF MBBRIEF text in (64, 216)-(608, 704),
         // colour 0xc06000; "Game Settings" n/a in single player.
@@ -3013,12 +3068,55 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
             tx += w + gap;
         }
     }
+    if (m.tab == 2) {
+        // Team tab: pick a row (the player first), or give an order.
+        if (y >= V(224) && y < V(616) && x >= V(80) && x < V(656)) {
+            const int r = int((float(y) - V(224)) / V(28) + 0.0001f);
+            int row = 0;
+            if (r == 0) { m.member = -3; return; }
+            for (size_t i = 0; i < world_.objects.size(); ++i) {
+                const WorldObject& o = world_.objects[i];
+                if (!o.person || !o.alive() || o.side != 1) continue;
+                if (++row == r) { m.member = int(i); return; }
+            }
+            return;
+        }
+        if (m.member >= 0) {
+            static const float kOrderPos[4][2] = {{56, 664}, {344, 664}, {56, 696}, {344, 696}};
+            for (int i = 0; i < 4; ++i)
+                if (x >= V(kOrderPos[i][0]) && x < V(kOrderPos[i][0]) + V(280) && y >= V(kOrderPos[i][1]) && y < V(kOrderPos[i][1]) + 16 &&
+                    ai_.setOrder(m.member, i)) {
+                    // STRMISC34..37 in green, a system line (0x403380).
+                    char key[16];
+                    std::snprintf(key, sizeof key, "STRMISC%02d", 34 + i);
+                    pushMessage(df2Text("Misc", key, "Acknowledged."), rgb(0, 0xff, 0));
+                }
+        }
+        return;
+    }
     if (m.tab != 0) return;
     static const float kPos[6][2] = {{48, 668}, {48, 700}, {208, 668}, {208, 700}, {368, 668}, {368, 700}};
     for (int i = 0; i < 6; ++i)
         if (x >= V(kPos[i][0]) && x < V(kPos[i][0]) + V(152) && y >= V(kPos[i][1]) && y < V(kPos[i][1]) + 16) { m.toggles[i] = !m.toggles[i]; return; }
     auto in = [&](float vx, float vy, float w) { return x >= V(vx) && x < V(vx) + w && y >= V(vy) && y < V(vy) + 16; };
     if (in(568, 668, 16)) { m.panX = m.panZ = 0; return; }                               // >< re-centres
+    // A click on the map picks the soldier under the cursor (0x422640): a
+    // squad member becomes the Team tab's selection.
+    if (x >= V(48) && x < V(640) && y >= V(200) && y < V(656)) {
+        const float mPerPx = 1024.f / 640.f * mapScale_;
+        const float mx = (V(48) + V(640)) / 2, my = (V(200) + V(656)) / 2;
+        const Vec3 c = player_.feet + Vec3{m.panX, 0, m.panZ};
+        float best = 6.f;
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const WorldObject& o = world_.objects[i];
+            if (!o.person || !o.alive() || o.side != 1) continue;
+            const Vec3 at = world_.nearest(o.pos, c);
+            const float dx = mx + (at.x - c.x) / mPerPx - float(x), dy = my + (at.z - c.z) / mPerPx - float(y);
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < best) { best = d; m.member = int(i); }
+        }
+        return;
+    }
     if (in(608, 668, V(32))) { mapScale_ = std::max(0.25f, mapScale_ * 0.9f); return; }  // + (0x4000 min)
     if (in(608, 700, V(32))) { mapScale_ = std::min(3.6f, mapScale_ * 1.1f); return; }   // - (0x39999 max)
     (void)s;

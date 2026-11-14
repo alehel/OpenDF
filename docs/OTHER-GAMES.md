@@ -247,9 +247,13 @@ First differences from DF1:
     toggle buttons (Gridlines, Names, People, Waypoints, Vehicles, Buildings:
     END1/MIDL/END2, 0xff9020 on / 0x683000 off), the icon buttons, + / −
     zoom, >< re-centre, right-drag pan, the DF2CURSA / DF2CROSA cursors in
-    green; Mission tab: MBBRIEF in 0xc06000. Not yet: the W waypoint tool,
-    the elevation and contour views, selecting objects, the Players, Team
-    (squad orders) and Weapons tabs.
+    green; Mission tab: MBBRIEF in 0xc06000; Team tab (0x40f190): the side-1
+    soldiers (player first) as Name/Plan/Weapon rows, picked there or by
+    clicking them on the map (0x422640); a teammate's four orders (Cmap
+    CMAP_BTN_NOORDER/HPHF/HPCM/HP) set the AI byte +0xBB and answer with
+    STRMISC34..37 in green (0x4113b0 -> 0x403380); the player's plans are
+    shown (multiplayer only). Not yet: the W waypoint tool, the elevation
+    and contour views, the Players and Weapons tabs (multiplayer-oriented).
   - **item behaviours** (DF2.EXE ai table 0x4a4030): snd3 ambient markers
     (acceleration·64 + rand·axle_dist·64 ticks, at the marker, 0x402730);
     bld2 buildings (their sound as dec0's; destroyed: everyone and every
@@ -293,8 +297,7 @@ First differences from DF1:
     grenade's bounce; fog_level / fog_color (unused on the disc); the
     command map's W/D/contour tools and Players/Team/Weapons tabs (squad
     orders); the front end's keyboard page, credits, voice briefing, fades
-    and slider dragging; multiplayer (out of scope); the command map's squad orders (the AI
-    honours +0xBB, but nothing sets it yet); the death-move table's DF2
+    and slider dragging; multiplayer (out of scope);  the death-move table's DF2
     numbering (DF1's names are used).
   - **soldier AI** (DF2's org1 0x4015f0 is DF1's 0x4599ec recompiled; the
     differences, READ): fire also needs under 128 m at night, no parachute,
