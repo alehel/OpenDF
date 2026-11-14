@@ -119,28 +119,13 @@ const SoundClip* Pwf::clip(int sample) {
         // unsigned 8-bit mono PCM from +0x10.
         const uint32_t len = r.u32(o + 4);
         c.rate = int(data_[o + 0xB]) * 22050 / 16;
+        c.rateField = r.u32(o + 8);   // the mixer multiplies the whole field (0x4a9a12)
         for (uint32_t i = 0; i < len && r.ok(o + 16 + i, 1); ++i) c.samples.push_back(int16_t((int(data_[o + 16 + i]) - 128) << 8));
     } else if (r.ok(o, 0x2C) && std::memcmp(&data_[o], "RIFF", 4) == 0) {
-        // A WAV, converted as 0x48cfb0 does: rate +0x18, bits +0x22, data
-        // length +0x28, data from +0x2C. 8-bit is used as it is; 16-bit is
-        // scaled to 8 bits by 0x7EFF0000 / peak, reading (as DF.EXE does,
-        // a bug) the low byte of each sample.
-        const uint32_t rate = r.u32(o + 0x18), bits = r.u16(o + 0x22), len = r.u32(o + 0x28);
-        c.rate = int((rate * 16 / 22050) * 22050 / 16);
-        if (bits == 16) {
-            int peak = 1;
-            for (uint32_t i = 0; i + 1 < len && r.ok(o + 0x2C + i, 2); i += 2)
-                peak = std::max(peak, std::abs(int(int16_t(r.u16(o + 0x2C + i)))));
-            const int64_t scale = int64_t(0x7EFF0000) / peak;
-            for (uint32_t i = 0; i + 1 < len && r.ok(o + 0x2C + i, 2); i += 2) {
-                const int b = full16 ? int(int16_t(r.u16(o + 0x2C + i))) : int(int8_t(data_[o + 0x2C + i]));
-                const int v = int(((int64_t(b) * scale + 0x800000) >> 24) & 0xFF) ^ 0x80;
-                c.samples.push_back(int16_t((v - 128) << 8));
-            }
-        } else {
-            for (uint32_t i = 0; i < len && r.ok(o + 0x2C + i, 1); ++i)
-                c.samples.push_back(int16_t((int(data_[o + 0x2C + i]) - 128) << 8));
-        }
+        // A WAV, read on first use into a buffer of the entry's size
+        // (0x491d3e..0x491d6b) and converted in place as a loose one is
+        // (0x48cfb0; DF2.EXE 0x4711a0): see dfConvertWav.
+        dfConvertWav(&data_[o], std::min<size_t>(e.size, data_.size() - o), full16, c);
     }
     return &(clips_[sample] = std::move(c));
 }

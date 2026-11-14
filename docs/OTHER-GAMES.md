@@ -244,9 +244,17 @@ First differences from DF1:
     start-up (0x420919: (3, 1))). Unlike DF1 the hook is reset when the menus
     close for the Game Loop (0x43b68d → 0x42f420 → 0x43cb50 → 0x4712e0), so
     it is on in the front end until the first mission starts and never in a
-    mission. Not reproduced: DF2 mixes a buffer in four parts and slides a
-    voice's pitch step a quarter of the way each part (0x48f818, +0x34);
-    OpenDF changes pitch at once.
+    mission. DF2 mixes each 100 ms timer call (0x47102b) in four parts of
+    (n + 4) >> 2 frames (0x48e05a) and a voice whose pitch was changed
+    moves its step a quarter of the way (target +0x34 − step +8) >> 2 after
+    each part (0x48f818, 0x48e531), where DF1 sets it at once (0x4a971a);
+    an update gives the voice the sign-flipped gain pair when that is nearer
+    the old one (0x49fcba) and is ignored for a voice not yet started
+    (0x49fbf4). OpenDF mixes DF2 in calls of 0x89d frames (INFERRED: the
+    timer's nominal length, 0x470e4b). Both games step voices in 1/1024
+    samples by pitch × the clip's rate field (0x4a0092) and convert WAVs
+    with the canonical 44-byte header (0x4711a0: rate field (rate·16) /
+    22050 << 24, size +0x28, data +0x2c; 16-bit by the whole word).
   - **weapons** read from the user's DF2.EXE (0x46b230 and its in-place
     conversions): 57 modes (0x4C7238, 92 bytes: kind = DF1's fire type, ammo,
     first-person item, offsets, muzzle vertex, cooldown, zoom, flags 0x1
@@ -296,8 +304,10 @@ First differences from DF1:
     0x4470ae (click +0x2C, silent cooldown, burst counter 0; launchers and
     grenades click only, charges do nothing) and the fire command 0x447270
     with no reload gate. DF2's scope flag [0x7655f4] is only toggled
-    (0x447b30) and counts for flag-0x1 modes (0x447b40), so it survives
-    weapon changes and reloads. Kevlar is checked on every person
+    (0x447b30, from command 0x41b35a; cleared with the weapon block at the
+    mission start, 0x4477bf) and counts for flag-0x1 modes (0x447b40), so it
+    survives weapon changes, reloads, moving and the binoculars. DF1's
+    [0x93353c] is the same (AUDIT G5), only hidden while moving. Kevlar is checked on every person
     (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that
     byte (0x45429d and the network copies); placed soldiers have none.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
@@ -333,7 +343,13 @@ First differences from DF1:
     sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
     mission back to Campaigns / Quick Missions (no debriefing in DF2), the
     win marking the mission done and the unlock mask kept; the voice briefing
-    (`<mission>01..19.WAV`, play/stop) and slider dragging. Settings has four
+    (0x4384f0: on entering the briefing once per chosen mission, and from
+    PLAY BRIEFING; `<mission>NN.WAV`, NN 01..19, filed by NN and played in
+    slot order, each when the last has ended; the music first ramps over 60
+    ticks from the soldier's music volume +0x5bc toward 70 and stays there
+    until the page is left, 0x437a70; each voice at direction 0, volume 255,
+    pitch 1.0 (0x437933), gains 62 / 63, the dialogue volume unused) and
+    slider dragging. Settings has four
     pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 48 rows (labels
     0x4b3af0, defaults 0x4b2cb8 copied into new soldiers by 0x431c00,
     soldier +0x2e0, 12 bytes {VK, mouse 0..3, 0}), ten shown, scroll arrows

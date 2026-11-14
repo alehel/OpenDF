@@ -484,9 +484,11 @@ void Arsenal::select(int slot) {
     // the slot already held, so the same key again cancels a running
     // cooldown or reload too, and an empty slot holds no weapon (mode 0).
     current_ = slot;
-    // DF2's scope flag [0x7655f4] is only toggled (0x447b30): select and
-    // reload leave it, and it counts for flag-0x1 modes only (0x447b40).
-    if (!df2_) zoomLevel_ = 0;
+    // The scope flag (DF.EXE [0x93353c], DF2.EXE [0x7655f4]) is only
+    // toggled (0x44b498 / 0x447b30, their only writers) and cleared with the
+    // mission's weapon block (0x449753 memset 0x933340 / 0x4477bf
+    // 0x7653a0): select and reload leave it; it counts for flag-0x1 modes
+    // only (zoomed(), 0x44b420 / 0x447b40).
     reloadTicks_ = 0;   // 0x44ab1d / 0x448129
     cooldown_ = 0;      // 0x44ab14 / 0x44811f
     burstLeft_ = 0;     // the burst counter (player AI block +0x6c / +0x7c, 0x44abc2 / 0x4481b8)
@@ -526,25 +528,20 @@ void Arsenal::startReload() {
     // 0x44a004: needs a spare magazine and a magazine that is not full; the
     // rounds left in it are discarded; the new one is in after 0x78 ticks.
     // The reload sound (+0x28) plays as it begins (0x44a084).
-    // DF2.EXE 0x448020 is the same (clips, rounds = 0, 0x78 ticks, +0x28),
-    // and touches neither the scope flag nor the burst counter.
+    // DF2.EXE 0x448020 is the same (clips, rounds = 0, 0x78 ticks, +0x28).
+    // Neither touches the scope flag or the burst counter (0x44a004..0x44a0a0
+    // writes only [0x933350] and the gun's rounds; the reload key 0x42e7e2
+    // -> 0x44a88c jumps straight here for type 1, table 0x44a860).
     if (reloadTicks_ > 0 || sparesRef() <= 0 || magRef() == gun().magazine) return;
     sound(2);
     magRef() = 0;
     reloadTicks_ = kReloadTicks;
-    if (!df2_) {
-        zoomLevel_ = 0;
-        burstLeft_ = 0;
-    }
 }
 
 void Arsenal::toggleZoom() {
-    // DF2.EXE 0x447b30 (command 6): the flag is toggled whatever is held;
-    // zoomed() applies it to flag-0x1 modes (0x447b40).
-    if (df2_) { zoomLevel_ = zoomLevel_ ? 0 : 1; return; }
-    // 0x44b420: only modes with flag 0x1 (and a magnification), not with
-    // the binoculars up ([0x93367c]).
-    if (reloadTicks_ > 0 || !mode().zoomable() || binoculars_) return;
+    // DF.EXE 0x42e45c -> 0x44b498 / DF2.EXE 0x41b35a -> 0x447b30: the flag
+    // is toggled whatever is held, reloading or not; zoomed() decides when
+    // it shows.
     zoomLevel_ = zoomLevel_ ? 0 : 1;
 }
 

@@ -381,29 +381,89 @@ private:
     float mapX_ = 0, mapY_ = 0;
     std::vector<std::pair<float, float>> waypoints_;
     int optPage_ = 1;
-    // Voice briefing (0x437aa0): <mission>NN.WAV, NN 01..19, in order.
-    int briefVoice_ = 0, briefVoiceTicks_ = 0, briefHandle_ = 0;
+    // Voice briefing (DF2.EXE 0x4384f0 start, 0x4378af per tick, 0x4385c0
+    // end, 0x438640 the button, 0x437a70 leaving the page).
+    bool briefVoice_ = false;        // [0x4cef94] playing
+    bool briefStarted_ = false;      // [0x4cef98]: played since the mission was chosen
+    int briefHandle_ = 0;            // [0x4cefb0]
+    int briefCount_ = 0, briefAt_ = 0;   // [0x4cef90] left, [0x4cef8c] next slot
+    std::array<std::string, 19> briefFiles_;   // 0x4cedf0: slot NN - 1
+    int briefRamp_ = 0, briefRampMode_ = 0;    // [0x4cefa0] ticks, [0x4cef9c] 1 up / 2 down
+    int briefMusic_ = 0, briefMusicTarget_ = 0, briefMusicStep_ = 0;   // [0x4cefa8], [0x4cefac], [0x4cefa4]
     void stopVoice() {
+        // 0x4385c0: the voice stopped (0x471480), the counts cleared, the
+        // button back to PLAY BRIEFING. The music stays where the ramp left it.
         if (briefHandle_) audio_.stop(briefHandle_);
         briefHandle_ = 0;
-        briefVoice_ = 0;
-        briefVoiceTicks_ = 0;
+        briefVoice_ = false;
+        briefCount_ = briefAt_ = 0;
         if (D2Button* b = btn("but_mb_rbbtn")) b->text = menuText("PLAY_BRIEFING", "PLAY BRIEFING");
     }
-    void nextVoice() {
-        while (briefVoice_ >= 1 && briefVoice_ <= 19) {
-            char n[32];
-            std::snprintf(n, sizeof n, "%s%02d.WAV", bms_.substr(0, std::min<size_t>(6, bms_.size())).c_str(), briefVoice_++);
-            if (const SoundClip* c = audio_.clip(vfs_, n)) {
-                // Direction 0's pan (63 left, 64 right) at the dialogue volume
-                // (INFERRED: played 2D like the menu sounds, 0x4712f0 dir 0).
-                const float v = float(std::clamp(soldier().get(0x5c0), 0, 255));
-                briefHandle_ = audio_.play(c, 63.f * v / (127.f * 255.f), 64.f * v / (127.f * 255.f));
-                briefVoiceTicks_ = c->rate > 0 ? int(c->samples.size() * 1000 / size_t(c->rate) / 16) + 1 : 1;
-                return;
-            }
+    void startVoice() {
+        // 0x4384f0, once per chosen mission (also on entering the page,
+        // 0x43778f): 0x437aa0 files <mission>NN.WAV (the first six letters,
+        // NN 01..19) by NN into 19 slots, counting them; with any, the music
+        // ramps over 60 ticks from the soldier's music volume (+0x5bc)
+        // toward 70 (0x438552), by trunc(min(70 − v, 0) / 60) a tick, and the
+        // voices follow.
+        if (briefStarted_) return;
+        briefStarted_ = true;
+        briefFiles_.fill(std::string());
+        briefCount_ = briefAt_ = 0;
+        const std::string mis = upper(bms_.substr(0, std::min<size_t>(6, bms_.size())));
+        for (const std::string& f : vfs_.list(".WAV")) {
+            if (f.size() < 8 || upper(f.substr(0, 6)) != mis) continue;
+            const int nn = (f[6] - '0') * 10 + (f[7] - '0');   // 0x437afd: c6·10 + c7 − 0x210
+            if (nn <= 0 || nn >= 20) continue;
+            briefFiles_[size_t(nn - 1)] = f;
+            ++briefCount_;
         }
+        if (briefCount_ <= 0) return;
+        briefHandle_ = 0;
+        briefRamp_ = 60;
+        briefRampMode_ = 2;
+        briefVoice_ = true;
+        briefMusic_ = soldier().get(0x5bc);
+        briefMusicTarget_ = 70;
+        briefMusicStep_ = std::min(70 - briefMusic_, 0) / 60;
+        if (D2Button* b = btn("but_mb_rbbtn")) b->text = menuText("STOP_BRIEFING", "STOP BRIEFING");
+    }
+    void voiceTick() {
+        // 0x43783a: while the ramp runs, the music moves (0x46c170 clamps
+        // it to 0..255) and nothing else happens.
+        if (briefRamp_ > 0) {
+            --briefRamp_;
+            if ((briefRampMode_ == 1 && briefMusic_ < briefMusicTarget_) || (briefRampMode_ == 2 && briefMusic_ > briefMusicTarget_)) {
+                briefMusic_ += briefMusicStep_;
+                music_.setVolume(std::clamp(briefMusic_, 0, 255));
+            }
+            return;
+        }
+        if (!briefVoice_) return;
+        if (briefCount_ > 0) {
+            // 0x4378c9: the next slot once the last voice has ended (0x471420);
+            // an empty slot plays nothing but is used up.
+            if (briefHandle_ && audio_.playing(briefHandle_)) return;
+            const std::string f = briefFiles_[size_t(std::min(briefAt_, 18))];
+            --briefCount_;
+            ++briefAt_;
+            if (const SoundClip* c = f.empty() ? nullptr : audio_.clip(vfs_, f)) {
+                // 0x437933: 0x4712f0(clip, direction 0, volume 255, pitch
+                // 1.0): pan[0] (63 left, 64 right) · 255 · master 255 >> 16,
+                // gains 62 / 63 as the loudest menu sound; the dialogue
+                // volume (+0x5c0) is not used.
+                briefHandle_ = audio_.play(c, 63.f / 127.f, 64.f / 127.f);
+            }
+        } else if (!briefHandle_ || !audio_.playing(briefHandle_)) {
+            stopVoice();
+        }
+    }
+    void leaveBriefing() {
+        // 0x437a70: the voice ends and the music goes back to the soldier's
+        // music volume (+0x5bc).
         stopVoice();
+        music_.setVolume(std::clamp(soldier().get(0x5bc), 0, 255));
+        briefRamp_ = 0;
     }
     std::mt19937 rng_{1};
 };
@@ -1205,6 +1265,9 @@ void FrontendDf2::loadBriefing() {
             mapY_ = std::clamp(py - 160.f, 0.f, 1024.f - 323.f);
         }
     }
+    // Page init (0x4376f0): the ramp cleared, then 0x43778f -> 0x4384f0.
+    briefRamp_ = briefRampMode_ = 0;
+    startVoice();
 }
 
 void FrontendDf2::refreshGear() {
@@ -1340,6 +1403,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
         missionSel_ = -1;
         refreshCampaign();
     } else if (cb == "ca_ChooseMission") {
+        if (b.user2 != missionSel_) briefStarted_ = false;   // 0x42fea0: another mission, its voices play again
         missionSel_ = b.user2;
         refreshCampaign();
     } else if (cb == "ca_MissionBriefing" && missionSel_ >= 0) {
@@ -1354,7 +1418,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
     // Quick missions.
     else if (cb == "qm_SelMis") {
         const int i = quickTop_ + b.user1;
-        if (i < int(quick_.size())) quickSel_ = i;
+        if (i < int(quick_.size())) quickSel_ = i, briefStarted_ = false;   // 0x43c4f6
         refreshQuick();
     } else if (cb == "qm_ScrollUp") { quickTop_ = std::max(0, quickTop_ - 1); refreshQuick(); }
     else if (cb == "qm_ScrollDown") { quickTop_ = std::clamp(quickTop_ + 1, 0, std::max(0, int(quick_.size()) - 8)); refreshQuick(); }
@@ -1377,12 +1441,13 @@ void FrontendDf2::event(D2Button& b, int ev) {
         next_ = Screen::Gear;
     } else if (cb == "mb_Back") { stopVoice(); next_ = returnTo_; }
     else if (cb == "mb_Replay") {
-        // PLAY_BRIEFING / STOP_BRIEFING.
+        // PLAY_BRIEFING / STOP_BRIEFING (0x438640): playing, it stops;
+        // otherwise it starts again from the first voice.
         if (briefVoice_) stopVoice();
         else {
-            briefVoice_ = 1;
-            b.text = menuText("STOP_BRIEFING", "STOP BRIEFING");
-            nextVoice();
+            briefStarted_ = false;
+            stopVoice();
+            startVoice();
         }
     }
     else if (cb == "mb_BriefUp") briefLine_ = std::max(0, briefLine_ - 1);
@@ -1535,6 +1600,7 @@ int FrontendDf2::run() {
     // when the menus close for the Game Loop (0x42f420 -> 0x4712e0).
     music_.setIntegerUnits(true);
     audio_.setDfMixer(true, true);
+    audio_.setDfGame(2);   // DF2.EXE's WAV conversion (0x4711a0) and mixer (0x48e028)
     audio_.setStream([this](float* out, int frames) { music_.mix(out, frames); });
     if (!openWindow()) return 1;
     music_.start();
@@ -1694,7 +1760,8 @@ int FrontendDf2::run() {
                     if (b.flash > 0) --b.flash;
                 }
             // The next incomplete region blinks while none is chosen (0x42fc50).
-            if (briefVoice_ && --briefVoiceTicks_ <= 0) nextVoice();
+            if (screen_ == Screen::Briefing) voiceTick();   // 0x437820, the page's tick
+            audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             music_.update();
         }
         if (!editing_.empty())
@@ -1708,6 +1775,7 @@ int FrontendDf2::run() {
         }
         leaving_ = false;
         if (next_ != screen_) {
+            if (screen_ == Screen::Briefing) leaveBriefing();   // 0x437a70
             if (next_ == Screen::Mission) {
                 // Pre Menu -> Game Loop -> Post Menu (0x43ad90).
                 music_.stop();
