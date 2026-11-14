@@ -187,7 +187,7 @@ private:
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
     // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
-    bool scopeShown() const { return arsenal_.zoomed(); }
+    bool scopeShown() const { return arsenal_.scopeShown(); }
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -617,6 +617,15 @@ private:
     // random aim offset chosen as they come up (yaw, pitch radians).
     bool binoculars_ = false;
     float binoYaw_ = 0, binoPitch_ = 0;
+    // DF.EXE 0x44b870 / DF2.EXE 0x4481e0 (the same code): sin / cos of a
+    // random angle (0x435db4 / 0x41ac40, << 16) through the tables
+    // (0x435c40 / 0x41ab10), times 8: up to 2^25 binary angle (2.8125
+    // degrees), the first added to the yaw, the second to the pitch.
+    void pickBinocularOffset() {
+        const float r = std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
+        binoYaw_ = std::sin(r) * 2.8125f * kPi / 180.f;
+        binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
+    }
     bool paused_ = false;                 // [0xc70ac4] (0x42df53)
     bool oldMessages_ = false;            // [0x66f974]
     bool friendlyTags_ = false;           // [0x66f978]
@@ -2404,13 +2413,11 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
     case Action::Binoculars:
+        // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
+        // follows the raised move, set each tick (Game::run, 0x45c7e2).
+        if (arsenal_.df2()) { arsenal_.toggleBinoculars(); break; }
         binoculars_ = !binoculars_ && !playerDead();
-        if (binoculars_) {
-            // 0x44b870: sin / cos of a random angle times 2^25 binary angle (2.8125 degrees).
-            const float r = std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
-            binoYaw_ = std::sin(r) * 2.8125f * kPi / 180.f;
-            binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
-        }
+        if (binoculars_) pickBinocularOffset();
         arsenal_.setBinoculars(binoculars_);
         break;
     case Action::BigMap:
@@ -3094,8 +3101,10 @@ void Game::drawCommandMap(const Screen& s) {
     drawMapMarker(s, x0 + w / 2, y0 + h / 2, 5, kHudBlue, player_.yaw, false);
 
     // Compass rose (0x43dec0): centre (560, 315), arms 40, inner points 5;
-    // the main cross, a small X, and a four-pointed star; N in white, E S W
-    // in green (bright, as the rest of the rose: assumed), black-outlined.
+    // the main cross, a small X, and a four-pointed star (0x42529c lines in
+    // [0x66f94c]); N in [0x66f930] (white), E S W in [0x66f94c], the lines'
+    // own colour (0x43e0c7 / 0x43e0f2 / 0x43e118 / 0x43e13e, through 0x43ddf4
+    // with flag 2), black-outlined.
     {
         const float rx = s.rx(560), ry = s.y(315), a = s.y(40), i = s.y(5);
         hud_.line(rx - a, ry, rx + a, ry, t, kHudBright);
@@ -3156,7 +3165,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         // DF2.EXE 0x44e2a0: a black ring; posts solid black from the edge to
         // r/2, the inner ±r/2 segments half blended with 0x000080; the range
         // "%4im" at (780, 500) in orange ("10km+", "1m-"); the zeroing "%4im"
-        // (setting × 100 m, X/Z; OpenDF keeps setting 0) at (700, 500) in
+        // (setting × 100 m, keys X/Z 0x445ff0) at (700, 500) in
         // yellow, not for the LAW; the laser designator's square of r/8.
         const float zx = s.cx(160), zy = s.h * 0.5f, r = s.y(100);
         const Color black{0.004f, 0.004f, 0.004f, 1}, navy{0, 0, 0.5f, 0.5f};
@@ -4105,13 +4114,17 @@ void Game::drawDf2CommandMap(const Screen& s) {
         m.cross = cursor("DF2CROSA.PCX");
         m.hand = cursor("DF2HANDA.PCX");
         m.wcur = cursor("DF2WCURA.PCX");
+        // f_LG%i with i = min(width, 800) (0x45c110), the width 640 while
+        // the map is open (0x45da2a); F_LG640 is also the only f_LG in
+        // DF2.PFF (an F_LG800 load would fail and leave the font empty,
+        // 0x4197e0 frees it first via 0x4195c0).
         m.big = hud_.loadSheetFont(vfs_, "F_LG640.PCX");
     }
     const float k = df2MapK(s), ox = (s.w - 640.f * k) * 0.5f, oy = (s.h - 480.f * k) * 0.5f;
-    // f_sml (F_SML%i, the width capped at 800) is drawn 1:1 in the
-    // original's mode pixels while the layout scales with the mode
-    // (0x44f050: 1024-virtual -> surface), so in this 640-based frame its
-    // glyphs scale by 640 / mode.
+    // f_sml (F_SML%i, the width capped at 800) is drawn 1:1 in the mode's
+    // pixels while the layout scales with the mode (0x44f050: 1024-virtual
+    // -> surface); the map always runs at 640x480 (Game::run, 0x45da2a), so
+    // hudMode_ is 640 here and kt = k: F_SML640 1:1 in this 640 frame.
     const float kt = k * 640.f / float(std::max(640, hudMode_));
     auto V = [](float v) { return std::floor(v * 0.625f); };   // virtual -> 640
     auto X = [&](float x) { return ox + x * k; };
@@ -5296,7 +5309,10 @@ int Game::run() {
                     // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
                     // (0x200000, 0.1758°, at the default 128), a quarter while
                     // zoomed; flipmouse flips the vertical axis (0x42ebd6).
-                    const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * (arsenal_.zoomed() ? 0.25f : 1.f);
+                    // DF2.EXE 0x41adec..0x41ae13: an eighth while the scope
+                    // shows (0x447b40, not moving: +0x74 & 0x18 clear).
+                    const float zoomScale = arsenal_.df2() ? (arsenal_.scopeShown() ? 0.125f : 1.f) : (arsenal_.zoomed() ? 0.25f : 1.f);
+                    const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * zoomScale;
                     const float dy = o_.flipMouse ? -float(e.motion.yrel) : float(e.motion.yrel);
                     player_.yaw += e.motion.xrel * sens;
                     player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
@@ -5341,7 +5357,22 @@ int Game::run() {
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
             const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
             arsenal_.setMoveKeys(moveKeys);
-            if (moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
+            if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
+            if (arsenal_.df2()) {
+                // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
+                // move chooser picks the raised moves 0x72 / 0x68 / 5 only
+                // at speed bits ((+0x74 >> 3) & 3) zero (0x43f74f, 0x43f7a3,
+                // 0x43f886, each then testing the mode's 0x200); moving keeps
+                // the slot but lowers them. The frame (0x45c7e2) gives the
+                // view FOV 22 and the offset only in those moves and not in
+                // an outside view ([0xbba840]); the offset is picked anew on
+                // the first frame of each raise ([0x4d2e78], 0x45c809 /
+                // 0x45c869 -> 0x4481e0). INFERRED: speed bits non-zero
+                // exactly while a move key is down.
+                const bool raised = arsenal_.binocularsHeld() && !moveKeys && !playerDead();
+                if (raised && !binoculars_) pickBinocularOffset();
+                binoculars_ = raised;
+            }
             const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.mode().oneHanded();
@@ -5750,7 +5781,14 @@ int Game::run() {
             // The largest of the original's modes (640x480, 800x600,
             // 1024x768) that fits the window height.
             s.modeW = s.h >= 768 ? 1024 : s.h >= 600 ? 800 : 640;
-            useHudMode(s.modeW);
+            // DF2.EXE's command map runs in 640x480: opening it sets
+            // resolution index 4 (0x45da2a -> 0x45cbc0, the old index kept in
+            // [0x4d2dd8]), closing restores it (0x45d9ea); the mode set
+            // reloads the fonts for the new width (0x45cbfa -> 0x45c0a0:
+            // f_sml%i and f_LG%i, i = min(width, 800)) and the HUD strips
+            // (0x45cc06 -> 0x443bd0). So the map's text is F_SML640 /
+            // F_LG640 at any display mode.
+            useHudMode(df2Hud_.on && showMap_ ? 640 : s.modeW);
             // The 3D view: rows letterbox/8 .. 1 - letterbox/8 of the height
             // (0x404650); Delta Force 2: the rows between its strips, DHT_h ..
             // H - DHB_h (DF2.EXE 0x45cb40).

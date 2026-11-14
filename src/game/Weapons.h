@@ -40,6 +40,7 @@ struct ModeDef {
     std::string viewModel;      // the first-person item's graphic
     int icon = -1;              // WEAP%i.PCX frame (0x484ae8), -1 none
     bool burst = false;         // 0x46aefc: modes 6, 8, 21, 35, 36 fire bursts of three
+    bool binoculars = false;    // DF2 +0x3C & 0x200: the binoculars (mode 47); the move chooser 0x43f690 raises them
     std::vector<int> elevation; // DF2: the weapon type's scope elevation per range setting (type +0x98, << 16 binary angle)
     bool oneHanded() const { return !(flags & 4); }
     bool automatic() const { return flags & 0x20; }
@@ -147,6 +148,9 @@ int aiWeaponMode(int index);
 class Arsenal {
 public:
     static constexpr int kSlots = 10;
+    // DF2.EXE: slot 10 holds T[35] mode 0 = 47, the binoculars (0x447e20);
+    // only the binoculars command reaches it (0x41b6e3). Empty in DF1.
+    static constexpr int kBinocularSlot = 10;
 
     // `gameText`: DFGAME.BIN strings (mode names); `exe`: the original
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
@@ -196,6 +200,15 @@ public:
     void cycle();                 // 0x44b81c: next slot with a mode, wrapping
     void reload();                // 0x44a004
     void toggleZoom();
+    // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10
+    // selects the slot saved in [0x76553c]; otherwise the current slot is
+    // saved there and slot 10 selected (0x4480b0 both ways).
+    void toggleBinoculars() {
+        if (current_ == kBinocularSlot) select(prevSlot_);
+        else { prevSlot_ = current_; select(kBinocularSlot); }
+    }
+    // DF2: the binoculars mode is held (its +0x3C 0x200 bit).
+    bool binocularsHeld() const { return df2_ && mode().binoculars; }
 
     // Runs the weapon on 60 Hz ticks. Messages go to the HUD.
     void update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
@@ -220,13 +233,21 @@ public:
     int spares() const { return spares_[size_t(mode().gun)]; }
 
     float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
-    // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40);
-    // in DF.EXE (0x44b420) also not while a move or jump key is down this
-    // tick ([0x93351c] & 0x41e) or the binoculars are up ([0x93367c]), so
-    // the scope comes back when the player stops.
+    // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40:
+    // the held mode's +0x3C & 1 and [0x7655f4]; the binoculars, mode 47,
+    // have no such bit, so holding them hides the scope and it comes back
+    // with the previous slot); in DF.EXE (0x44b420) also not while a move
+    // or jump key is down this tick ([0x93351c] & 0x41e) or the binoculars
+    // are up ([0x93367c]), so the scope comes back when the player stops.
     bool zoomed() const {
         return zoomLevel_ > 0 && (mode().flags & 1) && (df2_ || (!moveKeys_ && !binoculars_));
     }
+    // The scope inset drawn. DF.EXE: zoomed() (0x44b420 at 0x4044dc).
+    // DF2.EXE 0x45c682..0x45c6b0: 0x447b40 and the player's speed bits
+    // (+0x74 & 0x18) zero, i.e. not while moving; the shot's origin
+    // (0x447102) and the designator (0x45aad6) take 0x447b40 alone.
+    // INFERRED: the speed bits are non-zero exactly while a move key is down.
+    bool scopeShown() const { return zoomed() && (!df2_ || !moveKeys_); }
     void setMoveKeys(bool down) { moveKeys_ = down; }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
@@ -277,7 +298,8 @@ private:
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick
     bool fromExe_ = false;
-    std::array<int, kSlots> slots_{};   // mode per slot, 0 = empty
+    std::array<int, kSlots + 1> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars
+    int prevSlot_ = 3;   // DF2 [0x76553c]: the slot the binoculars came from
     int current_ = 3;
     int kit_ = 1;
     std::vector<int> chambered_, mag_, spares_;   // per gun
