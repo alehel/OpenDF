@@ -65,6 +65,11 @@ First differences from DF1:
 
 ## Status in OpenDF
 
+- The launcher (`opendf` without `--game`, [LAUNCHER.md](LAUNCHER.md)) lists
+  every added game: Delta Force and Delta Force 2 start their front ends; Land
+  Warrior and Task Force Dagger are recognised (`DFLW.PFF`, `SMALL.PFF`) and
+  shown greyed out until they are playable (`gamePlayable` in
+  `src/menu/Launcher.cpp`).
 - `opendf --game games/DF2|DFLW|DFTFD list|extract` works: the setup folders
   (`DF2SETUP`, `DFLSETUP`, `TFDSETUP`) and the later archives are mounted.
 - Delta Force 2 formats now read:

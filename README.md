@@ -77,18 +77,30 @@ disc image (`.iso`, `.bin`/`.cue`, `.img`):
 ./build/opendf import /Volumes/DELTAFORCE   # or D:\, or DeltaForce.iso
 ```
 
-Then start OpenDF with `--game` pointing at that folder:
+Then start OpenDF. Without `--game` it opens the launcher, a Delta Force
+styled screen listing your games (the ones in `games/` are added on the first
+start; add others with *Add game*) that starts the chosen game's own front end
+([docs/LAUNCHER.md](docs/LAUNCHER.md)):
 
 ```bash
-./build/opendf --game games/DeltaForce mission C02M01
+./build/opendf
 ```
 
-Without `--game`, OpenDF lists the games it finds in `games/`. Values that
+Or skip the launcher with `--game` pointing at the game's folder:
+
+```bash
+./build/opendf --game games/DeltaForce play             # the game's own menus
+./build/opendf --game games/DeltaForce mission C02M01   # straight into a mission
+```
+
+Values that
 only exist in the original executable (weapon tables, key bindings, …) are read
 from the game's own `DFSETUP/DF.EXE`.
 
 | Command | Purpose |
 |---|---|
+| `opendf` / `opendf launcher [add]` | the launcher: pick one of your games (`add`: open on the add-a-game screen) |
+| `opendf --game ROOT play` | the game's own front end (Delta Force or Delta Force 2) |
 | `opendf import SOURCE [DEST]` | copy a game from its disc, a folder or a disc image into `games/` (Delta Force 2's fake file sizes are cut back to the real ones) |
 | `opendf --game ROOT [--terrain DFG1] [--size 1600x900]` | terrain viewer |
 | `opendf --game ROOT mission [C02M01]` | play a mission in first person, starting where the player starts |
