@@ -23,6 +23,7 @@ const ActionName kNames[] = {
     {Action::Binoculars, "Binoculars"}, {Action::Pause, "Pause"}, {Action::OldMessages, "OldMessages"},
     {Action::ShowFriendly, "ShowFriendly"}, {Action::LetterBox, "lbsize"}, {Action::Drop, "Drop"},
     {Action::Briefing, "briefing"}, {Action::Help, "help"},
+    {Action::ScopeInc, "scopeinc"}, {Action::ScopeDec, "scopedec"}, {Action::NightVision, "NVG"},
     {Action::Escape, "escape"},
 };
 
@@ -138,6 +139,33 @@ bool Controls::init(const ExeImage* exe) {
         if (n == "move_forward" && (k & 0xFFFF) == 0x26) sane = true;
     if (!sane) return false;
     for (const auto& [n, k] : found) apply(n.c_str(), k);
+    fromExe_ = true;
+    return true;
+}
+
+bool Controls::initDf2(const ExeImage& exe) {
+    if (!exe.loaded()) return false;
+    constexpr uint32_t kTable = 0x4a5cd4, kEntry = 44;
+    std::vector<std::pair<std::string, uint32_t>> found;
+    for (uint32_t i = 0; i < 160; ++i) {
+        const std::string name = exe.str(kTable + i * kEntry + 4, 32);
+        uint32_t key = 0;
+        if (!exe.u32(kTable + i * kEntry + 36, key)) break;
+        if (name.empty()) {
+            if (i > 0 && found.empty()) break;
+            continue;
+        }
+        found.push_back({name, key});
+    }
+    bool sane = false;
+    for (const auto& [n, k] : found)
+        if (n == "move_forward" && (k & 0xFFFF) == 0x26) sane = true;
+    if (!sane) return false;
+    // Start from nothing: DF2's table is the whole set.
+    for (auto& b : bind_) b = {};
+    for (const auto& [n, k] : found)
+        for (const auto& nm : kNames)
+            if (n == nm.name) bind_[int(nm.action)] = {fromVirtualKey(k & 0xFFFF), int(k >> 16)};
     fromExe_ = true;
     return true;
 }

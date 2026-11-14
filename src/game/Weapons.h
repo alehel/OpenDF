@@ -39,6 +39,7 @@ struct ModeDef {
     std::string viewModel;      // the first-person item's graphic
     int icon = -1;              // WEAP%i.PCX frame (0x484ae8), -1 none
     bool burst = false;         // 0x46aefc: modes 6, 8, 21, 35, 36 fire bursts of three
+    std::vector<int> elevation; // DF2: the weapon type's scope elevation per range setting (type +0x98, << 16 binary angle)
     bool oneHanded() const { return !(flags & 4); }
     bool automatic() const { return flags & 0x20; }
     bool zoomable() const { return (flags & 1) && scope > 1; }
@@ -159,6 +160,18 @@ public:
     void setWind(float kph, float degrees);
     // DF2: body gear worn (type 31 Armor, 32 Ghillie, 33 LAR V), 0 none.
     int bodyGear() const { return gear_; }
+    // DF2 scope zeroing (keys X / Z, 0x445ff0): the setting of the primary
+    // slots 3-5, 0..10 (0..15 for the Barrett); the scope view is lowered by
+    // the type's elevation for it (0x44e143).
+    void zeroStep(int d) {
+        if (current_ < 3 || current_ > 5) return;
+        zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
+    }
+    int zeroSetting() const { return zero_; }
+    float zeroElevation() const {
+        const auto& e = mode().elevation;
+        return current_ >= 3 && current_ <= 5 && zero_ < int(e.size()) ? float(e[size_t(zero_)]) * 65536.f / 4294967296.f * 6.28318531f : 0.f;
+    }
     bool fromExe() const { return fromExe_; }
 
     // Keys 0-9 (0x44aa74): slot 0 laser designator, 1 knife, 2 sidearm,
@@ -233,7 +246,7 @@ private:
     std::vector<ModeDef> modes_;
     std::vector<GunDef> guns_;
     bool df2_ = false;
-    int gear_ = 0;
+    int gear_ = 0, zero_ = 0;
     struct DragPoint { int64_t x, y, slope; };
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick

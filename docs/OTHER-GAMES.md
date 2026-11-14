@@ -211,7 +211,9 @@ First differences from DF1:
     as spelt), binocular texts in orange at the view's centre − 15; the
     scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
     half-blended navy inner segments, "%4im" range in orange, the zeroing
-    readout in yellow (always 0 m: X/Z zeroing not yet), the laser square;
+    readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
+    Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
+    0x44e0a0), the laser square;
     night vision (key N, on at the start of night missions: 0x44781e) as an
     ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
     scope image green ×4 at night. DF2 has no "Player Health: Easy".
@@ -274,7 +276,9 @@ First differences from DF1:
     `parachut` (PFoil items) or `pararnd`; landing leaves the canopy, which
     tips over and sinks for 1800 ticks (`para` 0x42c570). Not yet: script
     action 18 (teleport) and whether teleported paratroopers open a chute.
-- Not yet: X/Z scope zeroing, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
+  - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
+    flags}), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
+- Not yet: fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 
 ## Suggested order

@@ -1586,10 +1586,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
     }
-    // Delta Force 2: N toggles the night vision (action 51, [0x765740]).
-    if (df2Hud_.on && k.keysym.sym == SDLK_n && !(k.keysym.mod & KMOD_CTRL)) { nvg_ = !nvg_; return; }
-    // Debug keys (not in the original): N free flight (Ctrl+N in DF2).
-    if (k.keysym.sym == SDLK_n) { player_.fly = !player_.fly; return; }
+    // Debug keys (not in the original): N free flight (Ctrl+N in DF2, where N
+    // is the night vision).
+    if (k.keysym.sym == SDLK_n && (!df2Hud_.on || (k.keysym.mod & KMOD_CTRL))) { player_.fly = !player_.fly; return; }
     (void)shift;
     // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
     if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
@@ -1650,6 +1649,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
+    case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
+    case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
+    case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
     case Action::Binoculars:
         binoculars_ = !binoculars_ && !playerDead();
         if (binoculars_) {
@@ -1956,7 +1958,9 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     const float insetFov = 2 * std::atan(100.f / focal);
     glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
     glClear(GL_DEPTH_BUFFER_BIT);
-    drawWorld(view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
+    // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
+    // elevation (the shot keeps the player's pitch, so the bore rises).
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.
@@ -2338,7 +2342,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             else std::snprintf(buf, sizeof buf, "%4dm", int(range));
             hud_.text(s.vx(780), s.vy(500), buf, kDf2Amber, s.text());
             if (arsenal_.modeIndex() != 0x1c) {
-                std::snprintf(buf, sizeof buf, "%4dm", 0);
+                std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
             }
         }
@@ -3356,7 +3360,8 @@ int Game::run() {
         } else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
         if (const auto df2 = findDf2Exe(o_.gameDir); !df2.empty() && !df2Exe_.load(df2, &err))
             std::fprintf(stderr, "%s; using built-in DF2 values\n", err.c_str());
-        if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");
+        if (!controls_.init(&exe_) && !vfs_.exists("DF2.PWF")) std::fprintf(stderr, "using built-in key bindings\n");
+        if (vfs_.exists("DF2.PWF") && !controls_.initDf2(df2Exe_)) std::fprintf(stderr, "using DF1's key bindings for DF2\n");
         for (const auto& [name, key] : o_.bindings) controls_.set(name, key);
         std::string sndErr;
         if (!sound_.init(vfs_, &exe_, &audio_, &sndErr, &df2Exe_)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());

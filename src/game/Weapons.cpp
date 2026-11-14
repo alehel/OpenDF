@@ -337,6 +337,12 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
         d.flags = (f & 1) | ((f & 0x40) ? 0x20 : 0) | ((f & 4) ? 0 : 4);
         if (d.gun < 0 || d.gun >= kAmmoN) ok = false;
         if (m < int(hudGuns.size())) d.name = hudGuns[size_t(m)];
+        {
+            // The weapon type's scope elevations (+0x98 + 4r, r 0..15).
+            const int type = rd(b + 0x10);
+            if (type > 0 && type < kTypeN)
+                for (int r = 0; r < 16; ++r) d.elevation.push_back(rd(kTypes + uint32_t(type) * 216 + 0x98 + 4 * uint32_t(r)));
+        }
         d.icon = -1;
         // Bursts (0x414ad0): 6, 8 and 51 (shot 8 then 9), 21, 35, 36.
         d.burst = m == 6 || m == 8 || m == 51 || m == 21 || m == 35 || m == 36;

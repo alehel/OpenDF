@@ -20,6 +20,8 @@ enum class Action {
     Weapon0, Weapon1, Weapon2, Weapon3, Weapon4, Weapon5, Weapon6, Weapon7, Weapon8, Weapon9,
     NextWaypoint, BigMap, MissionGoals, MapZoomIn, MapZoomOut, Crosshairs, ShowGun, Escape,
     Binoculars, Pause, OldMessages, ShowFriendly, LetterBox, Drop, Briefing, Help,
+    // Delta Force 2: scope zeroing (X / Z) and night vision (N).
+    ScopeInc, ScopeDec, NightVision,
     Count
 };
 
@@ -27,6 +29,9 @@ class Controls {
 public:
     // Reads the defaults from DF.EXE if possible; false = built-in copy used.
     bool init(const ExeImage* exe);
+    // Delta Force 2's defaults from DF2.EXE (0x4a5cd4: 44-byte records {id,
+    // name[32], key, flags}); false = left as they were.
+    bool initDf2(const ExeImage& exe);
     bool fromExe() const { return fromExe_; }
 
     // The action bound to a key press, or Action::Count.
