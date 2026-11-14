@@ -45,6 +45,7 @@ struct D2Font { std::string file; uint32_t fg[3] = {0xFFF0621C, 0xFFFF8000, 0xFF
 struct D2Image { std::string file; int attrib = 0, frames = 1; };
 struct D2Button {
     std::string name, menu, text, callback, font, image;
+    std::string mnuText;   // the text at load time, which the layout 0x42d8d0 measures
     int type = 0, attrib = 0, x = 0, y = 0, p1 = 0, p2 = 0, p3 = 0, drawstate = 1, hot1 = 0, hot2 = 0, zorder = 0;
     int user1 = 0, user2 = 0, w = 0, h = 0;
     bool selected = false;
@@ -115,6 +116,7 @@ struct D2Mnu {
                     const std::string* t = menuText.find("MENU", upper(f[5]));
                     b.text = t ? *t : "??TTID??";
                 }
+                b.mnuText = b.text;
                 b.callback = upper(f[6]) == "NULL" ? "" : f[6];
                 b.x = num(7);
                 b.y = num(8);
@@ -230,8 +232,12 @@ const GearInfo* gearInfo(int type) {
     return nullptr;
 }
 
-struct Glyph { int x = 0, y = 0, w = 0, h = 0; };
-struct D2FontTex { HudImage tex; std::array<Glyph, 256> glyphs{}; int height = 0; bool ok = false; };
+// A front-end font glyph (DF2.EXE 0x468d30, 28-byte records at font +0): the
+// tight ink box (x, y, w, h) in the sheet and yoff = top ink row - band top - 3.
+struct Glyph { int x = 0, y = 0, w = 0, h = 0, yoff = 0; };
+// height: the height of 'A' (+0x734, used for line spacing and the hot-key
+// text's vertical offset); heightX: the height of 'X' (+0x9b8).
+struct D2FontTex { HudImage tex; std::array<Glyph, 256> glyphs{}; int height = 0, heightX = 0; bool ok = false; };
 
 enum class Screen { Soldier, Main, Campaign, Quick, Briefing, Gear, Options1, Options2, Options3, Options4, Credits, Mission, Quit };
 
@@ -258,9 +264,11 @@ private:
     }
     D2FontTex& font(const std::string& name);
     float textWidth(const std::string& fontName, const std::string& s);
+    float textHeight(const std::string& fontName, const std::string& s);
     void text(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align = 0);
     int wrapped(const std::string& fontName, float x0, float y0, float x1, float y1, const std::string& s, uint32_t color,
                 int skipLines = 0);
+    void boxText(const std::string& fontName, int l, int r, int top, int bottom, const std::string& s, uint32_t color, int justify);
     void blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh);
     void rectOutline(float x0, float y0, float x1, float y1, uint32_t color);
     void fill(float x0, float y0, float x1, float y1, uint32_t color);
@@ -274,6 +282,13 @@ private:
     D2Button* hit(int x, int y);
     void drawMenu();
     void drawButton(D2Button& b);
+    void drawDefault(D2Button& b);
+    // 0x43d4c0 keeps the justification in two locals of its loop ([esp+0x14]
+    // for push buttons, [esp+0x18] for the rest) that only F/H/E/D buttons set.
+    // On entry they hold whatever the stack had; INFERRED: 0 (neither 1, 2 nor
+    // 4), which centres hot-key text and left-aligns the rest - the Main menu's
+    // eight buttons (no F/H/E/D, drawn before EXIT GAME) come out centred.
+    int staleJustify0_ = 0, staleJustify1_ = 0;
     void ownerDraw(D2Button& b);
     void event(D2Button& b, int ev);
     void key(const SDL_KeyboardEvent& k);
@@ -521,9 +536,13 @@ HudImage FrontendDf2::file(const std::string& name) {
     return im;
 }
 
-// DF2.EXE 0x4196f0 / 0x4195f0: bands top-down, a band ends at the first row
-// whose column-0 pixel is 1 and the next starts two rows below; ink is
-// pixel 3 (spacer), 4 or >= 8; each run of ink columns is the next glyph.
+// DF2.EXE 0x468d30 (the front-end font loader, called from the FONT record
+// parser 0x42ce31): bands top-down, a band runs from the row after the last
+// line of palette index 1 (column 0) to the next such line; glyphs are searched
+// from the first column holding an index-2 baseline mark. Ink is index 3 or
+// > 7; each run of ink columns is the next glyph (numbered across all bands,
+// not 16 per band), its box the tight ink rectangle. Indices <= 7 are then
+// cleared (index 3 sets the width of the space but is not drawn).
 D2FontTex& FrontendDf2::font(const std::string& name) {
     const std::string key = upper(name);
     if (auto it = fonts_.find(key); it != fonts_.end()) return it->second;
@@ -534,48 +553,70 @@ D2FontTex& FrontendDf2::font(const std::string& name) {
     if (fi == mnu_.fonts.end() || !vfs_.read(upper(fi->second.file), data) || !decodePcx(data, img)) return f;
     const int W = img.width, H = img.height;
     auto px = [&](int x, int y) { return img.pixels[size_t(y) * size_t(W) + size_t(x)]; };
+    auto ink = [&](int x, int y) { const uint8_t v = px(x, y); return v == 3 || v > 7; };
+    // 0x469240 / 0x4616d0 blend each pixel into the screen by the red byte of its
+    // palette entry: dst += (colour - dst) * (red >> 1) >> 7.
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v <= 7) continue;
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = uint8_t(std::min(255, (img.palette[v].r >> 1) * 2));
     }
-    int y0 = 0;
-    for (int band = 0; band < 16 && y0 < H; ++band) {
-        int y1 = y0;
-        while (y1 < H && px(0, y1) != 1) ++y1;
-        if (y1 <= y0) break;
-        if (!f.height) f.height = y1 - y0;
-        int code = band * 16;
-        for (int x = 0; x < W && code < band * 16 + 16;) {
-            auto ink = [&](int cx) {
-                for (int y = y0; y < y1; ++y) {
-                    const uint8_t v = px(cx, y);
-                    if (v >= 8 || v == 3 || v == 4) return true;
-                }
-                return false;
+    int code = 0;
+    for (int r = 0; r < H;) {
+        int n = 0;
+        while (r + n < H && px(0, r + n) != 1) ++n;
+        if (r + n >= H) break;
+        int col = 0;
+        auto hasMark = [&](int c) { for (int k = 0; k < n; ++k) if (px(c, r + k) == 2) return true; return false; };
+        while (col < W && !hasMark(col)) ++col;
+        if (col >= W) break;
+        while (col < W) {
+            int y0 = H, y1 = -1;
+            auto scan = [&](int c) {
+                bool any = false;
+                for (int k = 0; k < n; ++k)
+                    if (ink(c, r + k)) { any = true; y0 = std::min(y0, r + k); y1 = std::max(y1, r + k); }
+                return any;
             };
-            if (!ink(x)) { ++x; continue; }
-            const int start = x;
-            while (x < W && ink(x)) ++x;
-            f.glyphs[size_t(code++)] = {start, y0, x - start, y1 - y0};
+            if (!scan(col)) { ++col; continue; }
+            const int x0 = col;
+            int x1 = col++;
+            while (col < W) {
+                const bool any = scan(col++);
+                if (!any) break;
+                x1 = col - 1;
+            }
+            if (code < 256) f.glyphs[size_t(code)] = {x0, y0, x1 - x0 + 1, y1 - y0 + 1, y0 - r - 3};
+            ++code;
         }
-        y0 = y1 + 2;
+        r += n + 1;
     }
+    f.height = f.glyphs['A'].h;
+    f.heightX = f.glyphs['X'].h;
     f.tex = hud().makeImage(W, H, rgba);
-    f.ok = f.height > 0;
+    f.ok = code > 0;
     return f;
 }
 
+// 0x4694a0: width = sum of (glyph w + 2), height = the tallest glyph.
 float FrontendDf2::textWidth(const std::string& fontName, const std::string& s) {
     D2FontTex& f = font(fontName);
     float w = 0;
-    for (char c : s)
-        if (c != '&') w += float(f.glyphs[static_cast<unsigned char>(c)].w + 1);
+    for (char c : s) w += float(f.glyphs[static_cast<unsigned char>(c)].w + 2);
     return w;
 }
 
-// Opaque glyphs in `color` (0x4198e0); align 0 left, 1 right, 2 centred;
-// y is the top of the glyph cell. '&' marks a hot key (not drawn).
+float FrontendDf2::textHeight(const std::string& fontName, const std::string& s) {
+    D2FontTex& f = font(fontName);
+    int h = 0;
+    for (char c : s) h = std::max(h, f.glyphs[static_cast<unsigned char>(c)].h);
+    return float(h);
+}
+
+// 0x469240: each glyph's ink box at (x, y + yoff), advancing w + 2; align 0
+// left, 1 right, 2 centred (0x469420: x - w, x - w/2).
 void FrontendDf2::text(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align) {
     D2FontTex& f = font(fontName);
     if (!f.ok) return;
@@ -584,17 +625,16 @@ void FrontendDf2::text(const std::string& fontName, float x, float y, const std:
     else if (align == 2) x -= std::floor(w / 2);
     const Color c = argbColor(color);
     for (char ch : s) {
-        if (ch == '&') continue;
         const Glyph& g = f.glyphs[static_cast<unsigned char>(ch)];
-        if (g.w > 0 && ch != ' ')
-            hud().imageUV(f.tex.texture, offX_ + x * scale_, offY_ + y * scale_, float(g.w) * scale_, float(g.h) * scale_,
+        if (g.w > 0 && g.h > 0)
+            hud().imageUV(f.tex.texture, offX_ + x * scale_, offY_ + (y + float(g.yoff)) * scale_, float(g.w) * scale_, float(g.h) * scale_,
                           float(g.x) / float(f.tex.width), float(g.y) / float(f.tex.height), float(g.x + g.w) / float(f.tex.width),
                           float(g.y + g.h) / float(f.tex.height), c);
-        x += float(g.w + 1);
+        x += float(g.w + 2);
     }
 }
 
-// Word-wrapped text in a box; "\r\n" / "~" break lines. Returns the line count.
+// Word-wrapped text in a box (0x419d50); "\r\n" / "~" break lines. Returns the line count.
 int FrontendDf2::wrapped(const std::string& fontName, float x0, float y0, float x1, float y1, const std::string& s, uint32_t color,
                          int skipLines) {
     D2FontTex& f = font(fontName);
@@ -617,9 +657,10 @@ int FrontendDf2::wrapped(const std::string& fontName, float x0, float y0, float 
     }
     flushWord();
     if (!line.empty()) lines.push_back(line);
-    const float lh = float(f.height + 1);
+    // 0x419d50: lines (height of 'A') + 3 apart; a line is drawn while y + that <= the box bottom.
+    const float lh = float(f.height + 3);
     float y = y0;
-    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + lh <= y1 + 1; ++i, y += lh) text(fontName, x0, y, lines[i], color);
+    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + lh <= y1; ++i, y += lh) text(fontName, x0, y, lines[i], color);
     return int(lines.size());
 }
 
@@ -926,7 +967,7 @@ void FrontendDf2::refreshKeys() {
         if (!menuText_.find("MENU", kDf2Keys[row].label)) std::replace(label.begin(), label.end(), '_', ' ');
         char n[24];
         std::snprintf(n, sizeof n, "but_opt2_keyl%d", i);
-        if (D2Button* b = btn(n)) { b->text = label; layout(*b); }
+        if (D2Button* b = btn(n)) b->text = label;
         std::snprintf(n, sizeof n, "but_opt2_keyb%d", i);
         if (D2Button* b = btn(n)) b->text = keyName(row);
     }
@@ -973,9 +1014,18 @@ void FrontendDf2::layout(D2Button& b) {
         b.h = im.height / (b.type == 1 ? 4 : std::max(1, imageFrames(b.image)));
         if (b.type == 2) b.w = b.p3;
         if (b.type == 3) b.h = b.p3;
-    } else if (!b.text.empty() || b.user1 || b.user2) {
-        b.w = b.user1 > b.x ? b.user1 - b.x : int(textWidth(b.font.empty() ? "FRK12N" : b.font, b.text));
-        b.h = b.user2 > b.y ? b.user2 - b.y : font(b.font.empty() ? "FRK12N" : b.font).height;
+    } else if (!b.mnuText.empty()) {
+        // 0x42dc7c: (user1 - x, user2 - y); if either is not positive both come
+        // from the text's measure 0x4694a0 (the text as stored, '&' removed).
+        b.w = b.user1 - b.x;
+        b.h = b.user2 - b.y;
+        if (b.w <= 0 || b.h <= 0) {
+            std::string t = b.mnuText;
+            if (size_t a = t.find('&'); a != std::string::npos && a + 1 < t.size()) t.erase(a, 1);
+            const std::string f = b.font.empty() ? "FRK12N" : b.font;
+            b.w = int(textWidth(f, t));
+            b.h = int(textHeight(f, t));
+        }
     } else {
         b.w = b.p1;
         b.h = b.p2;
@@ -1001,10 +1051,15 @@ D2Button* FrontendDf2::hit(int x, int y) {
     return nullptr;
 }
 
+// 0x43d4c0: the default drawing (skipped for C or state 0), then a G
+// button's owner draw (event 7) on top of it.
 void FrontendDf2::drawButton(D2Button& b) {
     if (b.drawstate == 0) return;
-    if (b.attrib & 0x40) ownerDraw(b);   // G: owner draw (event 7)
-    if (b.attrib & 4) return;            // C: no default draw
+    if (!(b.attrib & 4)) drawDefault(b);
+    if (b.attrib & 0x40) ownerDraw(b);
+}
+
+void FrontendDf2::drawDefault(D2Button& b) {
     const HudImage im = b.image.empty() ? HudImage{} : image(b.image);
     const int frames = b.type == 1 ? 4 : std::max(1, imageFrames(b.image));
     if (im.texture) {
@@ -1016,31 +1071,93 @@ void FrontendDf2::drawButton(D2Button& b) {
         } else if (b.type == 4) {
             blit(im, float(b.x), float(b.y), 0, fh * float(std::clamp(b.p2, 0, frames - 1)), float(im.width), fh);
         } else if (b.type == 2 || b.type == 3) {
+            // 0x43d8a0 / 0x43d919: a disabled slider is not drawn.
+            if (b.drawstate == 4) return;
             const float pos = b.p1 > 0 ? float(b.p2) * float(b.p3) / float(b.p1) : 0;
             blit(im, float(b.x) + (b.type == 2 ? pos : 0), float(b.y) + (b.type == 3 ? pos : 0), 0, 0, float(im.width), fh);
-        } else {
-            blit(im, float(b.x), float(b.y), 0, 0, float(im.width), fh);
         }
+        // 0x43d98e: other types draw no image, only their text.
     }
+    if (b.type >= 2 && b.type <= 4) return;   // sliders and animations have no text
     if (b.text.empty() || b.font.empty()) return;
     auto fi = mnu_.fonts.find(b.font);
     const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
-    const uint32_t c = b.drawstate == 4 ? df.fg[2] : (b.drawstate == 2 || b.selected) ? df.fg[1] : df.fg[0];
-    const float fh = float(font(b.font).height);
-    float y = float(b.y);
-    if (im.texture) y += std::floor((float(b.h) - fh) / 2);
-    // F / H centre; an image button without D/E/F centres too. The button
-    // draw 0x43d4c0 (READ, not yet reproduced in full): rectangle left = x+2,
-    // right = x+w-2 with an image (D adds user1 to left), left = right = x
-    // without one; justify F/H (0xA0) centre, E (0x10) right, D (8) left,
-    // none: the previous button's value (a stale stack slot). No hotkey:
-    // top = y - ftol(font height · 0.4) with an image, then 0x469380 centres
-    // vertically in (top, y + h). A '&' hotkey goes through 0x419fd0 /
-    // 0x41a1f0 / 0x41a0d0 with the letter underlined. So an image-less F
-    // label centres on x, not on x + w/2 as here.
-    if ((b.attrib & (0x20 | 0x80)) || (im.texture && !(b.attrib & (0x8 | 0x10)))) text(b.font, float(b.x) + float(b.w) / 2, y, b.text, c, 2);
-    else if (b.attrib & 0x10) text(b.font, im.texture ? float(b.x + b.w) : float(b.x), y, b.text, c, 1);
-    else text(b.font, float(b.x + 2 + (im.texture ? b.user1 : 0)), y, b.text, c, 0);
+    D2FontTex& ft = font(b.font);
+    // The set-text routine 0x42d7b0 (all 99 callers) removes the first '&' that
+    // has a character after it, keeps that character's index (+0x90) and the
+    // character upper-cased (+0x8c) as the button's key. Done here at draw time.
+    std::string t = b.text;
+    int hotIdx = 0;
+    bool hot = false;
+    if (size_t a = t.find('&'); a != std::string::npos && a + 1 < t.size()) {
+        t.erase(a, 1);
+        hotIdx = int(a);
+        hot = true;
+    }
+    const int x = b.x, y = b.y;
+    if (b.type != 1) {
+        // 0x43d98e (types other than 1-4): lit in state 2, disabled in 4; the box
+        // (x, y)-(x + w, y + height of 'A'); F/H centre in [x, x + w], E right in
+        // [x - w + 2, x - 2], D left in [x + 2, x + w - 2] (an image's box
+        // [x + 2, x + w - 2] wins); no hot-key underline. The justification is a
+        // local of the draw loop that only F/H/E/D set (staleJustify0_).
+        const uint32_t c = b.drawstate == 2 ? df.fg[1] : b.drawstate == 4 ? df.fg[2] : df.fg[0];
+        int l = x, r = x;
+        if (b.attrib & 0xA0) { staleJustify0_ = 4; l = x; r = x + b.w; }
+        if (b.attrib & 0x10) { staleJustify0_ = 2; l = x - b.w + 2; r = x - 2; }
+        if (b.attrib & 0x08) { staleJustify0_ = 1; l = x + 2; r = x + b.w - 2; }
+        if (im.texture) { l = x + 2; r = x + b.w - 2; }
+        boxText(b.font, l, r, y, y + ft.height, t, c, staleJustify0_);
+        return;
+    }
+    // 0x43d5d2 (push buttons): lit in state 2 or while selected / flashing,
+    // disabled in state 4.
+    const bool lit = b.selected || b.flash > 0;
+    const uint32_t c = b.drawstate == 4 ? df.fg[2] : (lit || b.drawstate == 2) ? df.fg[1] : df.fg[0];
+    // 0x43d653: the box starts as (x, y)-(x, y + h): F/H/E/D only set the
+    // justification (4 / 2 / 1); their box sizes are all overwritten below by
+    // the image's [x + 2 (+ user1 for D), x + w - 2]. Without an image the box
+    // has no width, so a centred image-less button is centred on x itself and a
+    // right-justified one ends at x. A button with none of F/H/E/D keeps the
+    // previous push button's value (a stale local, staleJustify1_).
+    int l = x, r = x, top = y;
+    const int bottom = y + b.h;
+    if (b.attrib & 0xA0) staleJustify1_ = 4;
+    if (b.attrib & 0x10) staleJustify1_ = 2;
+    if (b.attrib & 0x08) staleJustify1_ = 1;
+    if (im.texture) {
+        l = x + 2 + ((b.attrib & 0x08) ? b.user1 : 0);
+        r = x + b.w - 2;
+        // 0x43d71c: without a hot key the box top is raised by 0.4 x the height
+        // of 'X' (float 0x4a1418, truncated by _ftol 0x479f64).
+        if (!hot) top = y - int(float(ft.heightX) * 0.4f);
+    }
+    if (!hot) {
+        boxText(b.font, l, r, top, bottom, t, c, staleJustify1_);
+        return;
+    }
+    // Hot-key text: the text, then '_' one pixel lower under the key character
+    // (0x419fd0 left at l, 0x41a1f0 right-aligned to l, 0x41a0d0 centred on
+    // l + (r - l) / 2 at y + (bottom - y - height of 'A') / 4; the first two
+    // draw at y itself).
+    const float W = textWidth(b.font, t), pre = textWidth(b.font, t.substr(0, size_t(hotIdx)));
+    float tx = float(l), ty = float(y);
+    if (staleJustify1_ == 2) tx = float(l) - W;
+    else if (staleJustify1_ != 1) {
+        tx = float(l + ((r - l) >> 1)) - float(int(W) >> 1);
+        ty = float(y + ((bottom - ft.height - y) >> 2));
+    }
+    text(b.font, tx, ty, t, c);
+    text(b.font, tx + pre, ty + 1, "_", c);
+}
+
+// 0x469380: the text in a box, vertically centred on its tallest glyph
+// ((bottom - top - h) >> 1); justify 2 right, 4 centred, anything else left.
+void FrontendDf2::boxText(const std::string& fontName, int l, int r, int top, int bottom, const std::string& s, uint32_t color, int justify) {
+    const int W = int(textWidth(fontName, s)), H = int(textHeight(fontName, s));
+    const int ty = top + ((bottom - top - H) >> 1);
+    const int tx = justify == 2 ? r - W : justify == 4 ? l + ((r - l - W) >> 1) : l;
+    text(fontName, float(tx), float(ty), s, color);
 }
 
 void FrontendDf2::drawMenu() {
@@ -1048,6 +1165,7 @@ void FrontendDf2::drawMenu() {
     if (!m) return;
     const HudImage bg = image(m->background);
     if (bg.texture) blit(bg, 0, 0, 0, 0, float(bg.width), float(bg.height));
+    staleJustify0_ = staleJustify1_ = 0;
     for (auto it = m->buttons.rbegin(); it != m->buttons.rend(); ++it) drawButton(mnu_.buttons[size_t(*it)]);
 }
 
@@ -1561,13 +1679,36 @@ void FrontendDf2::key(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    // BACK buttons carry hot key 1 (Escape).
-    if (sym == SDLK_ESCAPE)
-        if (D2Menu* m = menu())
+    // 0x42e832: the first button (z-order) whose hotkey1/2 is the key's
+    // DirectInput scancode (0x42dea0), else the first whose '&' key is the
+    // upper-cased character (0x42de50); a hidden or disabled match, or one
+    // without a callback, does nothing. Then pushed for 3 frames, btn_slct on
+    // channel 3, events 3 and 4. DF2.MNU only uses scancode 1 (Escape, the BACK
+    // buttons), so only that one is mapped; the character is the key's
+    // unshifted symbol (INFERRED: the EXE's key event carries the translated
+    // character; letters and digits are the same either way).
+    if (D2Menu* m = menu()) {
+        D2Button* hit = nullptr;
+        if (sym == SDLK_ESCAPE)
             for (int i : m->buttons) {
                 D2Button& b = mnu_.buttons[size_t(i)];
-                if (b.hot1 == 1 && b.drawstate != 0 && b.drawstate != 4) { sound("btn_slct", 3); b.flash = 3; event(b, 3); event(b, 4); return; }
+                if (b.hot1 == 1 || b.hot2 == 1) { hit = &b; break; }
             }
+        if (!hit && sym > 0 && sym < 128) {
+            const int ch = std::toupper(int(sym));
+            for (int i : m->buttons) {
+                D2Button& b = mnu_.buttons[size_t(i)];
+                const size_t a = b.text.find('&');
+                if (a != std::string::npos && a + 1 < b.text.size() && std::toupper(static_cast<unsigned char>(b.text[a + 1])) == ch) { hit = &b; break; }
+            }
+        }
+        if (hit && hit->drawstate != 0 && hit->drawstate != 4 && !hit->callback.empty()) {
+            sound("btn_slct", 3);
+            hit->flash = 3;
+            event(*hit, 3);
+            event(*hit, 4);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- loop

@@ -534,17 +534,48 @@ First differences from DF1:
     points are at 4 m a pixel about 512 (0x404546, 0x4045dd); the command
     map prompt y = (H − bottom strip)·768/H − 160 (0x45cb40, 0x443e21);
     the scroll bar's thumb and zones (0x40c7d0, 0x40c8c0); the image-button
-    text placement (0x43d4c0);
-  - *also INFERRED*: the fog pass's depth unit in the software z-buffer (the
-    D3D per-vertex fog is view depth, 0x460449), the rain's depth write,
-    the crush box height (entry +0x68), the Options2 prompt's Escape (jump
-    table 0x41d698 not decoded), the scroll-bar arrow placement (0x40c3f0
-    not read);
-  - *approximations*: the water's own fog quad folded into the fog pass;
-    DF2 pickups test boxes, not the v8 volume planes (not loaded);
-  - *not yet reproduced*: the image-button text rules of 0x43d4c0 in full
-    (hotkey underline, the stale justify value, image-less F centred on x),
-    the scroll bars' thumb, page zones and drag;
+    text placement (0x43d4c0); the software z-buffer's depth (0x484077);
+  - *also INFERRED*: the crush box height (entry +0x68); the front end's
+    stale justify locals start each frame at 0 (stack garbage in the EXE;
+    0 centres the Main menu's hot-key labels); the character of a key
+    hot key is the unshifted SDL symbol; message 0x55 reaching the local
+    server in single player (queued 0x406ac0, packed 0x411ba0, the flush
+    0x411c70 not followed); the player listed first on the Team tab; a
+    soldier's waypoint radius (+0x88) taken as 0;
+  - *approximations*: the fog pass reads the perspective-correct depth where
+    the software z-buffer steps the vertex depth linearly across each span
+    (0x484077); DF2 pickups test boxes, not the v8 volume planes (not loaded);
+  - *done since* (front end and command map from DF2.EXE): the front-end
+    font loader 0x468d30 (bands below each index-1 line, glyphs from the
+    index-2 baseline mark, tight ink boxes with y offset ymin − band − 3,
+    numbered across the sheet, advance w + 2 (0x469240), alpha = palette
+    red / 256 (0x4616d0)); text measure 0x4694a0, layout 0x42dc7c (both from
+    the text when user1/user2 give no positive size), wrap 0x419d50 (lines
+    'A' height + 3 apart); the button text 0x43d4c0: '&' removed by the
+    set-text routine 0x42d7b0 with the key letter underlined by '_' one
+    pixel lower (0x419fd0 left, 0x41a1f0 right-aligned to the box's left,
+    0x41a0d0 centred at y + (h − 'A' height)/4), the plain box 0x469380
+    (vertically centred on the tallest glyph, image buttons' top raised by
+    0.4 × the 'X' height), the image box [x + 2 (+ user1 for D), x + w − 2],
+    an image-less push button centred on x, the two stale justify locals,
+    other types' box (x, y)−(x + w, y + 'A' height) without underline,
+    owner draw after the default draw; character hot keys (0x42de50) and
+    hotkey1/2 (0x42dea0); the command map's scroll bars (creator 0x40c3f0
+    arrow placement, 0x40c7d0 outline and thumb, 0x40c710 zones, 0x40c8c0
+    arrows, pages and thumb drag on the widget pass 0x40c040's hold
+    counter); the prompt's Escape (table 0x41d6ac / 0x41d698 → 0x41d669);
+    the player array is mission group 3 (0x403ec4); Team tab heading
+    Name/Weapon/Plan, its columns at W·208/1024 and W·384/1024, teammates'
+    weapon "None" (their controller bytes +0xb6.. are never written) and
+    TeamOrders S_* / L_* plans (0x40f53e, 0x403380); team names by side,
+    the player's included (0x40e330); Weapons tab colour −1 = white
+    (0x4198e0); the prompt box rounded to 4 pixels and halved (0x45c160);
+    arrival at an off-route HUD waypoint (0x446230: its own radius +0x88,
+    then entry 1 via 0x446700); f_sml drawn at 640/mode in the command map
+    (the Players headings no longer overlap); the rain's lines test but do
+    not write depth (0x46014f); the software water writes its rows' depth
+    (0x485e17) and is fogged by the fog pass, its fog quad 0x467568 being
+    the hardware path's;
   - *done since*: the player's fall damage (0x43f600), the M203 arming
     (the same 8 ticks as DF1);
   - *done since*: the delay grenade's slide and fuse, the command map's
