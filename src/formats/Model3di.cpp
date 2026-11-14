@@ -29,13 +29,18 @@ struct Reader {
     }
 };
 
-struct Layout { size_t lodHeader, mesh; bool volumes; };
+// v8: Delta Force 2 / Land Warrior (DF2.EXE 0x43e570, docs/OTHER-GAMES.md):
+// 52-byte texture headers (with 16-bit index+alpha pixels), a 192-byte LOD
+// header with collision planes (8 bytes) before 80-byte volumes, 120-byte
+// materials.
+struct Layout { size_t lodHeader, mesh; bool volumes; size_t texHeader = 36, volume = 72, material = 76; bool v8 = false; };
 
 bool layoutFor(int version, Layout& l) {
     switch (version) {
     case 2: l = {176, 88, false}; return true;
     case 3: case 4: l = {176, 104, false}; return true;
     case 5: case 6: l = {184, 112, true}; return true;
+    case 8: l = {192, 112, true, 52, 80, 120, true}; return true;
     default: return false;
     }
 }
@@ -48,7 +53,7 @@ std::string upper(std::string s) {
 } // namespace
 
 bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* error, int variant) {
-    variant = std::clamp(variant, 0, 3);
+    variant = std::clamp(variant, 0, file.size() > 3 && file[3] >= 8 ? 2 : 3);   // v8: three camouflage variants
     auto fail = [&](const char* msg) { if (error) *error = msg; return false; };
     Reader r{file};
     if (!r.ok(0, 0x80) || std::memcmp(file.data(), "3DI", 3) != 0) return fail("not a 3DI file");
@@ -72,27 +77,39 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
     // Textures: 36-byte header, pixels (frame 0 is used), 256 x RGBA palette.
     size_t p = 0x80;
     for (uint32_t i = 0; i < texCount; ++i) {
-        if (!r.ok(p, 36)) return fail("truncated texture header");
+        if (!r.ok(p, layout.texHeader)) return fail("truncated texture header");
         Model3diTexture t;
+        const size_t f = layout.v8 ? 0x0C : 0;   // v8 fields move by 12 (a second name at +0x0C)
         t.name = r.str(p, 12);
-        const uint32_t size = r.u32(p + 0x10);
-        t.sequence = r.u8(p + 0x14);
-        t.indexZeroTransparent = (r.u8(p + 0x16) & 0x20) != 0;
-        t.width = r.u16(p + 0x18);
-        t.height = r.u16(p + 0x1A);
-        const size_t pixels = p + 36;
+        const uint32_t size = r.u32(p + 0x10 + f);
+        t.sequence = r.u8(p + 0x14 + f);
+        const uint8_t tflags = r.u8(p + 0x16 + f);
+        t.indexZeroTransparent = !layout.v8 && (tflags & 0x20) != 0;
+        t.width = r.u16(p + 0x18 + f);
+        t.height = r.u16(p + 0x1A + f);
+        const size_t pixels = p + layout.texHeader;
         const size_t palette = pixels + size;
         const size_t texels = size_t(t.width) * t.height;
         if (texels == 0 || size < texels || !r.ok(pixels, size) || !r.ok(palette, 1024)) return fail("bad texture");
+        // v8: loaded only for its camouflage variants (bits 0-2) or all (0x08)
+        // (0x43ee76); skipped textures keep no sequence.
+        if (layout.v8 && !(tflags & (1 << variant)) && !(tflags & 0x08)) {
+            p = palette + 1024;
+            continue;
+        }
+        // v8 alpha textures: 2 bytes a texel (palette index, alpha), named at +0x0C.
+        const bool alpha16 = layout.v8 && size == 2 * texels;
+        if (alpha16) t.name = r.str(p + 0x0C, 16);
         t.rgba.resize(texels * 4);
-        t.indices.assign(file.begin() + std::ptrdiff_t(pixels), file.begin() + std::ptrdiff_t(pixels + texels));
+        t.indices.resize(texels);
         for (size_t k = 0; k < texels; ++k) {
-            const uint8_t idx = file[pixels + k];
+            const uint8_t idx = alpha16 ? file[pixels + 2 * k] : file[pixels + k];
+            t.indices[k] = idx;
             const uint8_t* c = &file[palette + size_t(idx) * 4];
             t.rgba[k * 4] = c[0];
             t.rgba[k * 4 + 1] = c[1];
             t.rgba[k * 4 + 2] = c[2];
-            t.rgba[k * 4 + 3] = (t.indexZeroTransparent && idx == 0) ? 0 : 255;
+            t.rgba[k * 4 + 3] = alpha16 ? file[pixels + 2 * k + 1] : (t.indexZeroTransparent && idx == 0) ? 0 : 255;
         }
         // Transparent texels keep palette entry 0's colour (often magenta).
         // The original samples textures without filtering; OpenDF filters, so
@@ -146,7 +163,8 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const uint32_t dataSize = r.u32(p + 0x14);
         const uint32_t nv = r.u32(p + 0x80), nn = r.u32(p + 0x88), nf = r.u32(p + 0x90);
         const uint32_t nm = r.u32(p + 0x98), nh = r.u32(p + 0xA0), nmat = r.u32(p + 0xA8);
-        const uint32_t nvol = layout.volumes ? r.u32(p + 0xB0) : 0;
+        const uint32_t nvol = layout.volumes ? r.u32(p + (layout.v8 ? 0xB8 : 0xB0)) : 0;
+        const uint32_t nplanes = layout.v8 ? r.u32(p + 0xB0) : 0;   // v8: 8-byte collision planes
         if (nv > 65536 || nn > 65536 || nf > 65536 || nm > 4096 || nmat > 4096) return fail("implausible LOD counts");
 
         size_t q = p + layout.lodHeader;
@@ -155,14 +173,15 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t fOff = q; q += size_t(nf) * 72;
         const size_t mOff = q; q += size_t(nm) * layout.mesh;
         const size_t hOff = q; q += size_t(nh) * 12;   // hardpoints
-        const size_t volOff = q; q += size_t(nvol) * 72;
-        const size_t matOff = q; q += size_t(nmat) * 76;
+        q += size_t(nplanes) * 8;
+        const size_t volOff = q; q += size_t(nvol) * layout.volume;
+        const size_t matOff = q; q += size_t(nmat) * layout.material;
         if (!r.ok(p + layout.lodHeader, q - (p + layout.lodHeader))) return fail("truncated LOD data");
 
         struct Mat { int tex; float rgb[3]; bool hidden; int blend; uint32_t flags; float spec; int specPow; float bright; uint16_t impact; };
         std::vector<Mat> mats(nmat);
         for (uint32_t i = 0; i < nmat; ++i) {
-            const size_t o = matOff + size_t(i) * 76;
+            const size_t o = matOff + size_t(i) * layout.material;
             uint32_t flags = r.u16(o + 0x10);
             const size_t rgbAt = o + 0x28 + 3 * size_t(variant);
             Mat mt{-1, {r.u8(rgbAt) / 255.f, r.u8(rgbAt + 1) / 255.f, r.u8(rgbAt + 2) / 255.f}, false, 0, flags,
@@ -177,8 +196,10 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             // 0x0800 hidden; 0x0008 is not drawn in the hi-colour renderer;
             // 0x0080 and 0x8000 need a texture (no span for the untextured ones).
             const bool textured = mt.tex >= 0;
-            mt.hidden = (flags & (0x0800 | 0x0008)) != 0 || ((flags & (0x0080 | 0x8000)) && !textured);
-            mt.blend = (flags & 0x8000) ? 2 : (flags & 0x0080) ? 1 : 0;
+            mt.hidden = (flags & (0x0800 | 0x0008)) != 0 || ((flags & (0x0080 | 0x8000)) && !textured) ||
+                        (layout.v8 && (flags & 0x0001) && !textured);   // v8: a missing texture hides it
+            // v8: 0x8000 marks the alpha textures (blended by their alpha).
+            mt.blend = (flags & 0x8000) ? (layout.v8 ? 1 : 2) : (flags & 0x0080) ? 1 : 0;
             mats[i] = mt;
         }
         std::vector<int> matTextures;
@@ -206,13 +227,13 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
         // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.
         for (uint32_t i = 0; i < nvol; ++i) {
-            const size_t o = volOff + size_t(i) * 72 + 0x30;
+            const size_t o = volOff + size_t(i) * layout.volume + 0x30;
             float xmin = r.i32(o) / 65536.f, xmax = r.i32(o + 4) / 65536.f;
             float ymin = r.i32(o + 8) / 65536.f, ymax = r.i32(o + 12) / 65536.f;
             float zmin = r.i32(o + 16) / 65536.f, zmax = r.i32(o + 20) / 65536.f;
             if (xmax < xmin || ymax < ymin || zmax < zmin) continue;
             CollisionBox cb{{xmin, zmin, -ymax}, {xmax, zmax, -ymin}};
-            const size_t vo = volOff + size_t(i) * 72;
+            const size_t vo = volOff + size_t(i) * layout.volume;
             cb.type = int(r.u32(vo));
             cb.cx = r.i32(vo + 0x08) / 65536.f;
             cb.cz = -r.i32(vo + 0x0C) / 65536.f;
