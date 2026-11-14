@@ -11,7 +11,7 @@ namespace df {
 bool ExeImage::load(const fs::path& path, std::string* error) {
     auto fail = [&](const char* m) { data_.clear(); if (error) *error = m; return false; };
     std::ifstream f(path, std::ios::binary);
-    if (!f) return fail("cannot open DF.EXE");
+    if (!f) return fail("cannot open the game executable");
     data_.assign(std::istreambuf_iterator<char>(f), {});
     auto rd = [&](size_t o) -> uint32_t {
         return o + 4 <= data_.size() ? uint32_t(data_[o]) | uint32_t(data_[o + 1]) << 8 | uint32_t(data_[o + 2]) << 16 |
@@ -19,9 +19,9 @@ bool ExeImage::load(const fs::path& path, std::string* error) {
                                      : 0;
     };
     auto rd16 = [&](size_t o) -> uint32_t { return o + 2 <= data_.size() ? uint32_t(data_[o] | data_[o + 1] << 8) : 0; };
-    if (data_.size() < 0x40 || data_[0] != 'M' || data_[1] != 'Z') return fail("DF.EXE is not an executable");
+    if (data_.size() < 0x40 || data_[0] != 'M' || data_[1] != 'Z') return fail("the game executable is not a PE file");
     const uint32_t pe = rd(0x3C);
-    if (pe + 24 > data_.size() || rd(pe) != 0x00004550) return fail("DF.EXE has no PE header");
+    if (pe + 24 > data_.size() || rd(pe) != 0x00004550) return fail("the game executable has no PE header");
     const uint32_t sections = rd16(pe + 6), optSize = rd16(pe + 20);
     imageBase_ = rd(pe + 24 + 28);
     // Watcom-linked: VirtualSize may be 0, so use the larger of the two sizes.
@@ -33,7 +33,7 @@ bool ExeImage::load(const fs::path& path, std::string* error) {
         if (sec.size < sec.fileSize) sec.size = sec.fileSize;
         sections_.push_back(sec);
     }
-    return sections_.empty() ? fail("DF.EXE has no sections") : true;
+    return sections_.empty() ? fail("the game executable has no sections") : true;
 }
 
 bool ExeImage::u32(uint32_t va, uint32_t& out) const {

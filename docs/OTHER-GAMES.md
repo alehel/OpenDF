@@ -175,6 +175,22 @@ First differences from DF1:
     start, then in turn back round to it, 0x470560); the speed-of-sound queue
     (0x45E910: from 30 m a sound waits d·62/350 ticks, 128 slots) for voices
     and explosions (INFERRED: the other 14 callers not mapped).
+  - **weapons** read from the user's DF2.EXE (0x46b230 and its in-place
+    conversions): 57 modes (0x4C7238, 92 bytes: kind = DF1's fire type, ammo,
+    first-person item, offsets, muzzle vertex, cooldown, zoom, flags 0x1
+    scope / 0x40 full auto / 0x4 one-handed), 39 weapon types (0x4C5150,
+    loadout categories, modes), 38 ammo records (0x4C4310: DF1's gun layout
+    plus drag bands and bullet mass), the drag curve (0x4C86B8); slots per
+    0x447e20 (laser, knife, sidearm, primary ×3, secondary, gear, detonator,
+    grenade), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
+    projectiles (0x44c2f0): gravity 0xa7 a tick², drag toward the mission's
+    wind by the ammo's speed band and the curve (×(1 + depth/10) under water,
+    at most 0.5 a tick), rounds under the water spent below 15.5 m/s; people
+    take max(1, |v|²·M / 25) (×8 head, 0x44bf40/0x44bff0); the MasterKey's
+    12 pellets within ±5.625°; the Barrett's 1/32 m push. INFERRED: bullets
+    carry on under the water and splash where they cross it. Not yet: Kevlar
+    (75·(n+1) energy), people's health scale, objects' damage, explosions,
+    scope zeroing (X/Z), DF2's loadout screen.
 - Not yet: DF2's mission-end panel and menus, fog keys (unused on the disc), the new ITEMS.DEF attribute bits, DF2's menus, and everything DF1
   reads from DF.EXE (DF2.EXE has other addresses).
 

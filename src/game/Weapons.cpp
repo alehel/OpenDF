@@ -141,7 +141,7 @@ const int kBuiltinGunSounds[kGunCount][4] = {
 // (silent). Ammunition comes from the mode's own gun.
 int burstGun(int mode) {
     switch (mode) {
-    case 6: case 8: return 8;
+    case 6: case 8: case 51: return 8;   // 51: DF2's MasterKey burst
     case 21: return 5;
     case 35: return 23;
     case 36: return 25;
@@ -313,12 +313,150 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     impacts_.clear();
 }
 
+bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout lo) {
+    constexpr uint32_t kModes = 0x4C7238, kTypes = 0x4C5150, kAmmo = 0x4C4310, kCurve = 0x4C86B8;
+    constexpr int kModeN = 57, kTypeN = 39, kAmmoN = 38, kCurveN = 44;
+    if (!exe.loaded()) return false;
+    bool ok = true;
+    auto rd = [&](uint32_t va) { int32_t v = 0; ok = ok && exe.i32(va, v); return v; };
+    std::vector<ModeDef> modes(kModeN);
+    std::vector<GunDef> guns(kAmmoN);
+    for (int m = 0; m < kModeN; ++m) {
+        const uint32_t b = kModes + uint32_t(m) * 92;
+        ModeDef& d = modes[size_t(m)];
+        d.type = rd(b + 0x0C);   // kind: DF1's fire types (dispatch 0x446c34)
+        d.gun = rd(b + 0x14);    // ammo type: ammunition is kept per ammo type
+        d.item = rd(b + 0x04);   // first-person model item
+        for (int k = 0; k < 3; ++k) d.offset[k] = rd(b + 0x18 + 4 * uint32_t(k));
+        d.muzzleVertex = rd(b + 0x30);
+        d.cooldown = rd(b + 0x34);
+        d.scope = rd(b + 0x38);
+        const int f = rd(b + 0x3C);
+        // DF2 flags: 0x1 scope, 0x40 full auto, 0x4 pistols (one-handed);
+        // DF1's bits here: 0x1 zoom, 0x20 full auto, 0x4 two-handed.
+        d.flags = (f & 1) | ((f & 0x40) ? 0x20 : 0) | ((f & 4) ? 0 : 4);
+        if (d.gun < 0 || d.gun >= kAmmoN) ok = false;
+        if (m < int(hudGuns.size())) d.name = hudGuns[size_t(m)];
+        d.icon = -1;
+        // Bursts (0x414ad0): 6, 8 and 51 (shot 8 then 9), 21, 35, 36.
+        d.burst = m == 6 || m == 8 || m == 51 || m == 21 || m == 35 || m == 36;
+        if (items && d.item > 0)
+            if (const ItemDef* it = items->byId(100000 + d.item); it && !it->graphic.empty()) {
+                std::string g = it->graphic;
+                if (auto dot = g.rfind('.'); dot != std::string::npos) g.resize(dot);
+                d.viewModel = toUpper(g);
+            }
+    }
+    for (int a = 0; a < kAmmoN; ++a) {
+        const uint32_t b = kAmmo + uint32_t(a) * 96;
+        GunDef& g = guns[size_t(a)];
+        g.n = rd(b + 0x04);
+        g.magazine = rd(b + 0x08);
+        g.velocity = rd(b + 0x0C);
+        g.power = rd(b + 0x10);
+        g.falloff = std::max(1, rd(b + 0x14));
+        g.lifetime = rd(b + 0x18);
+        g.accuracy = rd(b + 0x1C);
+        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
+        g.flags = rd(b + 0x30);
+        // 0x46b230: thresholds / 62 (C truncation), coefficients 2^32 / c.
+        for (int k = 0; k < 5; ++k) {
+            g.dragThr[k] = int64_t(rd(b + 0x34 + 8 * uint32_t(k))) / 62;
+            const int64_t c = rd(b + 0x38 + 8 * uint32_t(k));
+            g.dragCoef[k] = c ? (int64_t(1) << 32) / c : 0;
+        }
+        // +0x58 is both the fifth band's coefficient and the one under water.
+        g.waterCoef = g.dragCoef[4];
+        const int64_t grains = int64_t(rd(b + 0x5C)) << 16;
+        const int64_t kg = (grains << 16) / 0x3c480000;
+        g.mass = (kg << 16) / 0xa7;
+    }
+    std::vector<DragPoint> curve(kCurveN);
+    for (int i = 0; i < kCurveN; ++i) {
+        const uint32_t b = kCurve + uint32_t(i) * 12;
+        curve[size_t(i)] = {(int64_t(rd(b)) << 16) / 62, int64_t(rd(b + 4)) / 62, 0};
+    }
+    for (int i = 0; i + 1 < kCurveN; ++i)
+        if (curve[size_t(i + 1)].x != curve[size_t(i)].x)
+            curve[size_t(i)].slope = ((curve[size_t(i + 1)].y - curve[size_t(i)].y) << 16) / (curve[size_t(i + 1)].x - curve[size_t(i)].x);
+    // Sanity: the M4's ammo (7) is 30 rounds at 915 m/s.
+    if (!ok || guns[7].magazine != 30 || guns[7].velocity != 915) return false;
+
+    // Slots (0x447e20): 0 laser designator (type 19), 1 knife (type 2),
+    // 2 sidearm, 3-5 the primary's modes, 6 secondary, 7 body gear,
+    // 8 the radio detonator (type 21 mode 1), 9 the grenade.
+    auto typeMode = [&](int t, int k) { return t >= 0 && t < kTypeN ? rd(kTypes + uint32_t(t) * 216 + 0x84 + 4 * uint32_t(k)) : 0; };
+    modes_ = std::move(modes);
+    guns_ = std::move(guns);
+    dragCurve_ = std::move(curve);
+    slots_ = {typeMode(19, 0), typeMode(2, 0), typeMode(lo.sidearm, 0), typeMode(lo.primary, 0), typeMode(lo.primary, 1),
+              typeMode(lo.primary, 2), typeMode(lo.secondary, 0), typeMode(lo.gear, 0), typeMode(21, 1), typeMode(lo.grenade, 0)};
+    for (int& s : slots_)
+        if (s < 0 || s >= int(modes_.size()) || !modes_[size_t(s)].works()) s = 0;
+    gear_ = lo.gear;
+    df2_ = true;
+    fromExe_ = true;
+    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips.
+    kit_ = lo.secondary == 1 ? 1 : 0;
+    refill();
+    current_ = 3;
+    if (!slots_[3]) cycle();
+    zoomLevel_ = 0;
+    cooldown_ = reloadTicks_ = burstLeft_ = 0;
+    pressed_ = false;
+    clock_ = flashTimer_ = 0;
+    kick_[0] = kick_[1] = kick_[2] = 0;
+    bullets_.clear();
+    impacts_.clear();
+    return true;
+}
+
+void Arsenal::setWind(float kph, float degrees) {
+    // 0x46bbf0: v = trunc(trunc(trunc(kph·65536000/60)/60)/65) per tick,
+    // blowing from `degrees`: x (east) = -v sin, north = -v cos.
+    const int64_t v = int64_t(int64_t(int64_t(int64_t(kph) * 65536000 / 60) / 60) / 65);
+    const double a = double(degrees) * 3.14159265358979 / 180.0;
+    windX_ = int64_t(-double(v) * std::sin(a));
+    windZ_ = int64_t(double(v) * std::cos(a));   // OpenDF z = -north
+}
+
+int Arsenal::df2Damage(const Projectile& b) const {
+    if (b.gun < 0 || b.gun >= int(guns_.size())) return 1;
+    const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
+                  vz = int64_t(b.vel.z * kTick * 65536.f);
+    const int64_t v2 = (vx * vx + vy * vy + vz * vz) >> 16;
+    const int64_t e = (v2 * guns_[size_t(b.gun)].mass) >> 16;
+    return e <= 0x190000 ? 1 : int(e / 0x190000);
+}
+
+void Arsenal::df2Drag(Projectile& b, float water) const {
+    if (b.gun < 0 || b.gun >= int(guns_.size()) || dragCurve_.empty()) return;
+    const GunDef& g = guns_[size_t(b.gun)];
+    int64_t v[3] = {int64_t(b.vel.x * kTick * 65536.f), int64_t(b.vel.y * kTick * 65536.f), int64_t(b.vel.z * kTick * 65536.f)};
+    const int64_t s = int64_t(std::sqrt(double(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])));
+    const bool under = water != 0 && b.pos.y < water;
+    int64_t c = 0;
+    if (under) c = g.waterCoef;
+    else if (s < g.dragThr[0]) c = g.dragCoef[0];
+    else if (s < g.dragThr[1]) c = g.dragCoef[1];
+    else if (s < g.dragThr[2]) c = g.dragCoef[2];
+    else if (s < g.dragThr[3]) c = g.dragCoef[3];
+    const DragPoint& e = dragCurve_[size_t(std::min<int64_t>(s >> 15, int64_t(dragCurve_.size()) - 1))];
+    const int64_t f = e.y + (((s - e.x) * e.slope) >> 16);
+    int64_t k = (f * c) >> 16;
+    if (under) k = (k * (0x10000 + (int64_t((water - b.pos.y) * 65536.f) << 16) / 0xa0000)) >> 16;
+    k = std::clamp<int64_t>(k, 0, 0x8000);
+    const int64_t wind[3] = {windX_, 0, windZ_};
+    for (int i = 0; i < 3; ++i) v[i] -= ((v[i] - wind[i]) * k) >> 16;
+    b.vel = Vec3{float(v[0]), float(v[1]), float(v[2])} * (1.f / (65536.f * kTick));
+}
+
 void Arsenal::refill() {
     // Ammunition per gun (0x44b634): n - 1 spare, a full magazine, a round
     // chambered; the Ammo kit (row 1) gives the primary's guns 2n - 1.
-    chambered_.assign(kGunCount, 0);
-    mag_.assign(kGunCount, 0);
-    spares_.assign(kGunCount, 0);
+    chambered_.assign(guns_.size(), 0);
+    mag_.assign(guns_.size(), 0);
+    spares_.assign(guns_.size(), 0);
     for (int i = 0; i < kSlots; ++i) {
         if (!slots_[size_t(i)]) continue;
         const int g = modes_[size_t(slots_[size_t(i)])].gun;
@@ -513,8 +651,31 @@ void Arsenal::fire(Player& player) {
     p.flags = g.flags;
     p.id = ++projectileIds_;
     p.from = player.origin();
+    p.gun = md.gun;
     p.orient();
-    bullets_.push_back(p);
+    if (df2_ && (g.flags & 0x400)) {
+        // DF2's shotgun (shot 0x13, 0x44aa10): 12 pellets, heading and pitch
+        // each uniform within ±0x4000000 (±5.625°) of the aim. (DF2 seeds its
+        // generator with the heading; OpenDF's own generator here.)
+        std::uniform_real_distribution<float> u(-1.f, 1.f);
+        const float half = 5.625f * kPi / 180.f;
+        for (int i = 0; i < 12; ++i) {
+            Projectile q = p;
+            const float y = player.yaw + u(rng_) * half, pt = player.pitch + u(rng_) * half;
+            q.vel = Vec3{std::cos(pt) * std::sin(y), std::sin(pt), -std::cos(pt) * std::cos(y)} * (float(g.velocity) * 60.f / 62.f);
+            q.id = ++projectileIds_;
+            q.orient();
+            bullets_.push_back(q);
+        }
+    } else {
+        bullets_.push_back(p);
+    }
+    // The Barrett (mode 15) pushes the shooter back 0x800 (1/32 m) along
+    // -heading (0x447070).
+    if (df2_ && slots_[size_t(current_)] == 15) {
+        player.feet.x -= std::sin(player.yaw) * (0x800 / 65536.f);
+        player.feet.z += std::cos(player.yaw) * (0x800 / 65536.f);
+    }
     // The shot (gun +0x20, 0x44d5fe) at the muzzle. A burst sounds once:
     // the first round carries the burst gun's sound, the others none.
     if (const int bg = burstGun(slots_[size_t(current_)]); bg >= 0) {
@@ -616,7 +777,20 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
             // ends there (0x44fc20): nothing travels under water.
-            if (const float w = world.terrain->waterLevel(); w != 0) {
+            if (const float w = world.terrain->waterLevel(); w != 0 && df2_) {
+                // Delta Force 2: rounds go on under the water (drag rises with
+                // depth); crossing the surface from above splashes there
+                // (INFERRED from 0x44bd40 being one hit type among others and
+                // the under-water speed cut below; the hit code is not traced).
+                if (b.pos.y > w && next.y <= w) {
+                    const float t = (b.pos.y - w) / (b.pos.y - next.y);
+                    if (!hitSomething || t < hit.t) {
+                        Impact im{b.pos + (next - b.pos) * t, -2, -1};
+                        im.flags = b.flags;
+                        impacts_.push_back(im);
+                    }
+                }
+            } else if (const float w = world.terrain->waterLevel(); w != 0) {
                 float t = 2;
                 if (b.pos.y <= w + 0x200 / 65536.f) t = 0;
                 else if (next.y < w) t = (b.pos.y - w) / (b.pos.y - next.y);
@@ -651,6 +825,14 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                                          o.spheres[k][2], o.spheres[k][3]);
                     }
                 }
+                // Delta Force 2 (0x44bff0): people take the round's energy,
+                // max(1, E / 25), x8 on the head (part 2).
+                if (df2_ && (hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person))) {
+                    const int dmg = df2Damage(b) * (hit.part == 2 ? 8 : 1);
+                    if (hit.object == -3) playerHits_.push_back({dmg, hit.part, b.from});
+                    else
+                        world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), b.from), b.shooter);
+                } else
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
                 if (hit.object == -3) {
@@ -687,7 +869,17 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     sounds_.push_back({0x41, b.pos + d * t});
             }
             b.pos = next;
-            if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
+            if (df2_) {
+                // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
+                // for a delay grenade under the water), then drag toward the
+                // wind; under the water a round slower than 0x4000 a tick
+                // (15.5 m/s) is spent (grenades excepted).
+                const float w = world.terrain->waterLevel();
+                const bool under = w != 0 && b.pos.y <= w;
+                if (!(b.flags & 0x40)) b.vel.y -= ((b.flags & 0x1000) && under ? 0x14 : 0xa7) * 60.f / 65536.f * 60.f * kTick;
+                df2Drag(b, w);
+                if (under && !(b.flags & 0x1000) && std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f) b.age = b.lifetime;
+            } else if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
             ++b.age;
             if (b.pos.y < -1.f) b.age = b.lifetime;
         }

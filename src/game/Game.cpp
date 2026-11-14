@@ -487,7 +487,36 @@ bool Game::loadMission(int index) {
         if (const int r = loadoutRow(o_.sidearm); r >= 0) lo.sidearm = r;
         if (const int r = loadoutRow(o_.primary); r >= 0) lo.primary = r;
         if (const int r = loadoutRow(o_.secondary); r >= 0) lo.kit = r;
-        arsenal_.init(gameText_, &exe_, &items_, lo);
+        bool df2Weapons = false;
+        if (mission_.version >= 0x0F) {
+            // Delta Force 2: its own tables from DF2.EXE, its loadout by weapon
+            // type (WeaponNames2); --loadout PRIMARY,SECONDARY,SIDEARM.
+            Df2Loadout d2;
+            static const std::pair<const char*, int> kTypes[] = {
+                {"M4", 9}, {"MK", 10}, {"MASTERKEY", 10}, {"SAW", 11}, {"M249", 11}, {"BARRETT", 12}, {"MP5", 15},
+                {"M40", 23}, {"UAR", 29}, {"AMMO", 1}, {"LAW", 20}, {"SATCHEL", 21}, {"CLAYMORE", 24},
+                {"VIDEO", 36}, {".45", 6}, {".45S", 5}, {"HS22", 5}, {"P11", 28}};
+            auto typeOf = [&](const std::string& n, int def) {
+                const std::string u = toUpper(n);
+                for (const auto& t : kTypes)
+                    if (u == t.first) return t.second;
+                return def;
+            };
+            d2.primary = typeOf(o_.primary, 9);
+            d2.secondary = typeOf(o_.secondary, 1);
+            d2.sidearm = typeOf(o_.sidearm, 6);
+            std::vector<std::string> hudGuns;
+            for (int m = 0; m < 57; ++m) {
+                char key[16];
+                std::snprintf(key, sizeof key, "HG%03d", m);
+                const std::string* t = gameTable_.find("HudGuns", key);
+                hudGuns.push_back(t ? *t : std::string());
+            }
+            df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
+            if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
+            arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+        }
+        if (!df2Weapons) arsenal_.init(gameText_, &exe_, &items_, lo);
         arsenal_.modelPoints = [this](const std::string& name) -> const std::vector<std::array<float, 3>>* {
             const GpuModel* m = name.empty() ? nullptr : models_.get(vfs_, name);
             return m ? &m->points : nullptr;
@@ -609,7 +638,7 @@ bool Game::loadMission(int index) {
     messages_.clear();
     if (exe_.loaded() && !arsenal_.fromExe())
         std::fprintf(stderr, "DF.EXE is not the expected version; using built-in weapon values\n");
-    else if (arsenal_.fromExe()) std::printf("weapon tables read from DF.EXE\n");
+    else if (arsenal_.fromExe()) std::printf(arsenal_.df2() ? "weapon tables read from DF2.EXE\n" : "weapon tables read from DF.EXE\n");
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
                 world_.objects.size());
     return true;
@@ -2732,8 +2761,9 @@ int Game::run() {
     {
         const auto exePath = findGameExe(o_.gameDir);
         std::string err;
-        if (exePath.empty() && !vfs_.exists("DF2.PWF")) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
-        else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
+        if (exePath.empty()) {
+            if (!vfs_.exists("DF2.PWF")) std::fprintf(stderr, "DF.EXE not found; using built-in weapon values\n");
+        } else if (!exe_.load(exePath, &err)) std::fprintf(stderr, "%s; using built-in weapon values\n", err.c_str());
         if (const auto df2 = findDf2Exe(o_.gameDir); !df2.empty() && !df2Exe_.load(df2, &err))
             std::fprintf(stderr, "%s; using built-in DF2 values\n", err.c_str());
         if (!controls_.init(&exe_)) std::fprintf(stderr, "using built-in key bindings\n");

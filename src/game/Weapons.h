@@ -59,6 +59,13 @@ struct GunDef {
     int flags = 0;              // +0x30: 0x01 M203, 0x10 hand grenade, 0x40 LAW
     // +0x20 shot, +0x24 chamber / load, +0x28 reload, +0x2C dry fire (sound ids, 0 none)
     int sounds[4] = {0, 0, 0, 0};
+    // Delta Force 2 ammo records (DF2.EXE 0x4C4310, converted as 0x46b230
+    // does): drag bands +0x34..+0x50 (speed threshold in 16.16 m a tick,
+    // coefficient 2^32 / raw), +0x58 the coefficient under water, and +0x5C
+    // the bullet mass, grains -> kg / (0xa7 / 65536) in 16.16.
+    int64_t dragThr[5] = {0, 0, 0, 0, 0}, dragCoef[5] = {0, 0, 0, 0, 0};
+    int64_t waterCoef = 0;
+    int64_t mass = 0;
 };
 
 // Things the weapons ask the game to do: place a charge (satchel 4020,
@@ -84,6 +91,7 @@ struct Projectile {
     int id = 0;                 // unique, for sounds that follow it
     Vec3 from{0, 0, 0};         // where it was fired from (the attacker, for death moves)
     int shooter = -3;           // world object that fired it (-3 the player)
+    int gun = -1;               // Delta Force 2: its ammo record (drag bands, mass)
     float tickClock = 0;
     // The round record's yaw/pitch (+0x30/+0x34, 0x44d450): the launch
     // direction, never changed in flight (0x44f3e0), so the grenade, M203 and
@@ -115,6 +123,11 @@ struct Impact {
 // 12 Barrett, 15 MP5 SD, 11 SAW. Kit: 1 Ammo, 20 LAW, 21 Satchel,
 // 24 Claymore. A new soldier has .45, M4/M203 and Ammo (0x40ee14).
 struct Loadout { int sidearm = 6, primary = 9, kit = 1; };
+// Delta Force 2's loadout (profile +0x2b8..+0x2c8): weapon TYPES of DF2.EXE's
+// type table (WeaponNames2): sidearm 6 .45, primary 9 M4/M203, secondary 1
+// Extra Ammo, body gear 0 none (31 Armor, 32 Ghillie, 33 LAR V), grenade
+// 26 Impact.
+struct Df2Loadout { int sidearm = 6, primary = 9, secondary = 1, gear = 0, grenade = 26; };
 // Row for a short name (".45", "HS22", "M4", "M40", "Barrett", "MP5", "SAW",
 // "Ammo", "LAW", "Satchel", "Claymore"); -1 if unknown.
 int loadoutRow(const std::string& name);
@@ -136,6 +149,16 @@ public:
     // `gameText`: DFGAME.BIN strings (mode names); `exe`: the original
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
     void init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, Loadout loadout);
+    // Delta Force 2 (DF2.EXE tables 0x4C7238 modes, 0x4C5150 types, 0x4C4310
+    // ammo, 0x4C86B8 drag curve; init 0x46b230). `hudGuns`: the HudGuns
+    // names by mode. False (and DF1 left in place) if DF2.EXE is unusable.
+    bool initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout loadout);
+    bool df2() const { return df2_; }
+    // DF2: the mission's wind, per tick in metres along x (east) and z
+    // (DF2.EXE 0x46bbf0; projectiles are dragged toward it, 0x44c2f0).
+    void setWind(float kph, float degrees);
+    // DF2: body gear worn (type 31 Armor, 32 Ghillie, 33 LAR V), 0 none.
+    int bodyGear() const { return gear_; }
     bool fromExe() const { return fromExe_; }
 
     // Keys 0-9 (0x44aa74): slot 0 laser designator, 1 knife, 2 sidearm,
@@ -208,6 +231,11 @@ private:
 
     std::vector<ModeDef> modes_;
     std::vector<GunDef> guns_;
+    bool df2_ = false;
+    int gear_ = 0;
+    struct DragPoint { int64_t x, y, slope; };
+    std::vector<DragPoint> dragCurve_;
+    int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick
     bool fromExe_ = false;
     std::array<int, kSlots> slots_{};   // mode per slot, 0 = empty
     int current_ = 3;
@@ -231,6 +259,11 @@ private:
     Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst
     Vec3 soundPos_{0, 0, 0};   // the player's position for weapon handling sounds
     void sound(int field, int gun = -1);
+    // Delta Force 2 (0x44bf40): kinetic energy E = |v|²·M (16.16, v per
+    // tick), damage max(1, E / 25.0).
+    int df2Damage(const Projectile& b) const;
+    // Delta Force 2 (0x44c2f0): one tick of drag toward the wind.
+    void df2Drag(Projectile& b, float water) const;
     std::mt19937 rng_{1998};
 };
 
