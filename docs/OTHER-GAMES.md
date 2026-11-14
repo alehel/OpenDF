@@ -114,8 +114,10 @@ First differences from DF1:
    0x0F differences, TGA textures, `KSA` animation, `CAL` terrain data; then a
    mission loading in the viewer, then playing.
 3. Land Warrior: on top of DF2, the new `SAF`/`ENV` formats and its executable.
-4. Task Force Dagger: 3DI v10, and check whether `DFTFD.EXE` can be read at
-   all (SafeDisc).
+4. Pause: Black Hawk Down (2003) is not in `games/` yet. The games most
+   likely build on each other, so it comes before Task Force Dagger.
+5. Black Hawk Down, then Task Force Dagger: 3DI v10, and check whether
+   `DFTFD.EXE` can be read at all (SafeDisc).
 
 ## Comanche (separate application) — research note
 
