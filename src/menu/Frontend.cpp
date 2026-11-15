@@ -2371,7 +2371,10 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
     const SDL_Keymod mod = SDL_GetModState();
     const bool kp = sym == SDLK_KP_ENTER || sym == SDLK_KP_DIVIDE || sym == SDLK_KP_MULTIPLY || sym == SDLK_KP_MINUS || sym == SDLK_KP_PLUS ||
                     ((mod & KMOD_NUM) && ((sym >= SDLK_KP_1 && sym <= SDLK_KP_0) || sym == SDLK_KP_PERIOD));
-    const bool hasChar = (sym >= 32 && sym < 127) || sym == SDLK_RETURN || sym == SDLK_ESCAPE || sym == SDLK_BACKSPACE || sym == SDLK_TAB || kp;
+    // A key has a character when its keycode is one (not a scancode-mask
+    // key such as an arrow or F-key): letters of any layout (ø, æ, dead
+    // keys) give a WM_CHAR, which matches no hot key; Delete gives none.
+    const bool hasChar = (!(sym & SDLK_SCANCODE_MASK) && sym != SDLK_DELETE) || kp;
     // (Alt and the system keys are left out: WM_SYSKEYDOWN.)
     const bool sys = sym == SDLK_LALT || sym == SDLK_RALT || sym == SDLK_LGUI || sym == SDLK_RGUI;
     if (!hasChar && !sys) {
