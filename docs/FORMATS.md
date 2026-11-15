@@ -73,6 +73,16 @@ for (i = 0; i < size; i++) {
 Because rol-7 has period 32 on a 32-bit word, the keystream is a fixed
 32-byte pattern beginning `00 78 2E 7C 70 07 C2 77 …`.
 
+### Delta Force 2's own reader
+
+Df2.exe reads its `DF2.PFF` and `TERRAINS.PFF` with its own rules (GOG
+0x47d720, CD 0x472880): only `headerSize >= 0x14` is checked (no magic), the
+stride is always 0x20, every entry is kept (no deleted flag) and found by name,
+and an entry is decrypted only when bit 0 of its byte 2 (the flag dword's third
+byte) is set, with key `0x312A4CE` and the same rol-7 step (0x47d9f0). No
+shipped DF2 entry is flagged. OpenDF reads those two archives of a Delta Force
+2 folder this way; the CD's PFF2 install packs keep PACK.EXE's rules.
+
 ## PCX
 
 Standard ZSoft PCX v5, 8 bpp, one plane, RLE, with a 256-colour VGA palette
@@ -115,6 +125,13 @@ type R G B material      maps colour-map colours to footstep/terrain materials
 ```
 
 Terrains are 1024×1024 and **wrap around** in both directions.
+
+Delta Force 2 (GOG Df2.exe parser 0x46f9b0, CD 0x465ab0) compares keys with
+`_strcmpi`, also reads `fog_level`, `fog_color R,G,B`, `turbidity R,G,B` and
+`height_scale`, and starts every TRN from its own defaults (0x46d890): all 0
+except `sky_height` 1236, `sun_slope` 60, `horizon` 1, `turbidity` 23,8,4 and
+fog colour 192,192,192 (so a missing `gamma`/`saturation`/`filter` is 0, not
+128). Every shipped DF2 TRN sets those three, `sun_slope` and `sky_height`.
 
 **Scale:** 1 m per map pixel and about 0.25 m per elevation step; see
 *World scale and orientation* below. The exact meaning of `gamma`, `horizon`

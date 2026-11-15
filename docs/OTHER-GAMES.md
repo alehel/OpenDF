@@ -127,7 +127,9 @@ First differences from DF1:
     horizon row taking entry (k·s) >> 16 with s = 10·fov·horizon/width per
     row (0x467700); **surfaces** only from the `char_data` .CAL (DT/GS/SW/
     RK/CT/SD → dirt/grass/snow/rock/sand, RD/MD/IE/QS → classes 8-11, GOG
-    0x470190; the TRN `type` lines are ignored,
+    0x470190; table[i] is CAL line i+1, blank and `/` lines counted, only
+    lines of exactly two tokens and numbers 1..256 stored, 0x46ac50 /
+    0x4705d0; the TRN `type` lines are ignored,
     0x465e5b), read through DF2.EXE's renumbering bug, class(o) =
     cal[remap[remap[o]]] (0x4643a0, 0x466668), copied as the player hears it;
     no .CAL or unmatched names: class 0, silent footsteps (0x4139ae; ±5 m AI
@@ -781,7 +783,9 @@ First differences from DF1:
     its sides): CTILE2 background, CTILE panels with DF2_EDGE/DF2_CRNR frames
     3 px outside, the last three chat/system lines, the six tabs of GOG's
     table 0x4af9e0 (Map, VON, Players, Team, Weapons, Mission: Cmap
-    CMAP_MENU000, the literal "VON", CMAP_MENU001-004; F_LG640, 0xff9020 /
+    CMAP_MENU000, the literal "VON", CMAP_MENU001-004; F_LG640, loaded with
+    flags 3 (0x465a20) and so blended by 0x41bb90, each ink pixel with weight
+    (palette blue >> 1) / 128, no shadow; 0xff9020 /
     0x603000, laid out from x 40 with the rest up to 984 shared six ways,
     0x40bda0, clickable on their text, 0x40d860; the CD's table has five);
     Map tab: the

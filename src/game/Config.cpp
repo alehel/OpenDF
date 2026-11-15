@@ -38,7 +38,7 @@ DfConfig::DfConfig() {
         {"MAP", "map_infrared", 1, false}, {"MAP", "map_iff", 1, false}, {"MAP", "map_AWAC", 1, false},
         {"SYSTEM", "preempt_pff", 0, false}, {"SYSTEM", "whichbrowser", 0, false},
     };
-    for (const D& d : kDefaults) entries_.push_back({d.section, d.key, d.text, d.value, {}, {}});
+    for (const D& d : kDefaults) entries_.push_back({d.section, d.key, d.text, d.value, {}, {}, {}});
     find("internet_address")->str = "0.0.0.0";
 }
 
@@ -49,14 +49,14 @@ DfConfig DfConfig::df1Gog() {
     // red_password, blue_password (empty) and mp_verbose 1 ([0x4cf2e0]).
     DfConfig c;
     c.set("attributes", 2);
-    c.entries_.push_back({"SYSTEM", "country", true, 0, {}, "country\t\t\t"});
-    c.entries_.push_back({"SYSTEM", "red_password", true, 0, {}, {}});
-    c.entries_.push_back({"SYSTEM", "blue_password", true, 0, {}, {}});
-    c.entries_.push_back({"SYSTEM", "mp_verbose", false, 1, {}, {}});
+    c.entries_.push_back({"SYSTEM", "country", true, 0, {}, "country\t\t\t", {}});
+    c.entries_.push_back({"SYSTEM", "red_password", true, 0, {}, {}, {}});
+    c.entries_.push_back({"SYSTEM", "blue_password", true, 0, {}, {}, {}});
+    c.entries_.push_back({"SYSTEM", "mp_verbose", false, 1, {}, {}, {}});
     return c;
 }
 
-DfConfig DfConfig::df2() {
+DfConfig DfConfig::df2(bool gog) {
     DfConfig c;
     c.entries_.clear();
     struct D { const char* section; const char* key; int value; const char* str; };
@@ -85,7 +85,18 @@ DfConfig DfConfig::df2() {
         {"SYSTEM", "red_password", 0, ""}, {"SYSTEM", "blue_password", 0, ""}, {"SYSTEM", "yellow_password", 0, ""},
         {"SYSTEM", "violet_password", 0, ""}, {"SYSTEM", "mp_verbose", 1, nullptr},
     };
-    for (const D& d : kDf2) c.entries_.push_back({d.section, d.key, d.str != nullptr, d.value, d.str ? d.str : "", {}});
+    for (const D& d : kDf2) {
+        // GOG Df2.exe's writer 0x43bd10 (CD 0x436cd0) adds mp_gameport
+        // [0x4f29e8], mp_vonport [0x4f29ec] and mp_usealtnwport [0x4f29f0]
+        // (all 0, 0x43bae0) before login_password, and "flagreturntime"
+        // [0x4f2b18] (default 0xd2) after contest. Its parser 0x43b110 reads
+        // that value back only as "mp_flagreturntime" (0x4c7634).
+        if (gog && std::string(d.key) == "login_password")
+            for (const char* k : {"mp_gameport", "mp_vonport", "mp_usealtnwport"}) c.entries_.push_back({"MULTIPLAYER", k, false, 0, {}, {}, {}});
+        c.entries_.push_back({d.section, d.key, d.str != nullptr, d.value, d.str ? d.str : "", {}, {}});
+        if (gog && std::string(d.key) == "contest")
+            c.entries_.push_back({"MULTIPLAYER", "flagreturntime", false, 0xd2, {}, {}, "mp_flagreturntime"});
+    }
     return c;
 }
 
@@ -93,6 +104,13 @@ DfConfig::Entry* DfConfig::find(const std::string& key) {
     const std::string k = toUpper(key);
     for (Entry& e : entries_)
         if (toUpper(e.key) == k) return &e;
+    return nullptr;
+}
+
+DfConfig::Entry* DfConfig::findLoaded(const std::string& key) {
+    const std::string k = toUpper(key);
+    for (Entry& e : entries_)
+        if (toUpper(e.loadKey.empty() ? e.key : e.loadKey) == k) return &e;
     return nullptr;
 }
 
@@ -144,7 +162,7 @@ bool DfConfig::load(const std::filesystem::path& file) {
         // stale token-2 pointer into the line, an empty string in practice;
         // OpenDF ignores the line.
         if (tok.size() < 3) continue;
-        Entry* e = find(tok[0]);
+        Entry* e = findLoaded(tok[0]);
         if (!e) continue;   // unknown keys are ignored, as 0x406640 does
         if (e->text) e->str = tok[2];
         else e->value = std::atoi(tok[2].c_str());   // atoi (0x49afa0)

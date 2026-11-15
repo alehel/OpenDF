@@ -15,7 +15,8 @@ public:
     DfConfig();
     // Delta Force 2's df2.cfg: DF2.EXE's keys, defaults (0x436ab0) and
     // write order (0x436cd0).
-    static DfConfig df2();
+    // gog: GOG Df2.exe's extra keys (0x43bae0 / 0x43bd10).
+    static DfConfig df2(bool gog);
     // The GOG Df.exe's df.cfg (0x407120 defaults, 0x407360 write order).
     static DfConfig df1Gog();
     bool load(const std::filesystem::path& file);
@@ -30,8 +31,10 @@ private:
         int value = 0;
         std::string str;
         std::string label;   // a text key's text before " = " when not the key padded to 16
+        std::string loadKey;        // the name load() reads it by, when not key
     };
     Entry* find(const std::string& key);
+    Entry* findLoaded(const std::string& key);
     const Entry* find(const std::string& key) const;
     std::vector<Entry> entries_;
 };

@@ -1,5 +1,6 @@
 #include "Trn.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <sstream>
 
@@ -18,7 +19,18 @@ static std::string unquote(std::string s) {
     return s;
 }
 
-bool parseTrn(const std::string& text, TerrainDesc& d) {
+TerrainDesc df2TerrainDefaults() {
+    TerrainDesc d;
+    d.skyHeight = 1236.f;   // 0x4d4
+    d.horizon = 1.f;        // 0x10000
+    d.sunSlope = 60;        // 0x3c
+    d.gamma = 0;
+    d.saturation = 0;
+    for (int& v : d.filter) v = 0;
+    return d;
+}
+
+bool parseTrn(const std::string& text, TerrainDesc& d, bool df2) {
     std::istringstream in(text);
     std::string line;
     bool any = false;
@@ -28,6 +40,8 @@ bool parseTrn(const std::string& text, TerrainDesc& d) {
         if (line.empty()) continue;
         size_t sp = line.find_first_of(" \t");
         std::string key = line.substr(0, sp);
+        if (df2)   // _strcmpi (0x46f9b0)
+            for (auto& ch : key) ch = char(std::tolower(static_cast<unsigned char>(ch)));
         std::string val = sp == std::string::npos ? "" : trim(line.substr(sp));
         any = true;
 
@@ -65,6 +79,13 @@ bool parseTrn(const std::string& text, TerrainDesc& d) {
             for (auto& ch : v) if (ch == ',') ch = ' ';
             std::istringstream fs(v);
             fs >> d.filter[0] >> d.filter[1] >> d.filter[2];
+        } else if (df2 && key == "turbidity") {
+            std::string v = val;
+            for (auto& ch : v) if (ch == ',') ch = ' ';
+            std::istringstream fs(v);
+            fs >> d.turbidity[0] >> d.turbidity[1] >> d.turbidity[2];
+        } else if (df2 && key == "height_scale") {
+            d.heightScale = std::atoi(val.c_str());
         } else if (key == "type") {
             std::istringstream ts(val);
             TerrainColorType t{};

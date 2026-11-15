@@ -473,8 +473,19 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
 
     std::vector<uint8_t> raw;
     if (!vfs.read(withExt(trnName, ".TRN"), raw)) return fail("terrain " + trnName + " not found");
-    desc_ = TerrainDesc{};
-    if (!parseTrn(std::string(raw.begin(), raw.end()), desc_)) return fail("cannot parse " + trnName);
+    // A Delta Force 2 terrain (a true-colour JPEG/TGA colour map, as gen2_
+    // below) takes Df2.exe's record defaults (0x46d890) and parser
+    // (0x46f9b0); a Delta Force one DF.EXE's.
+    const std::string trnText(raw.begin(), raw.end());
+    bool df2Trn = false;
+    {
+        TerrainDesc probe = df2TerrainDefaults();
+        parseTrn(trnText, probe, true);
+        df2Trn = !probe.colorMap.empty() && !vfs.exists(withExt(probe.colorMap, ".PCX")) &&
+                 (vfs.exists(withExt(probe.colorMap, ".JPG")) || vfs.exists(withExt(probe.colorMap, ".TGA")));
+    }
+    desc_ = df2Trn ? df2TerrainDefaults() : TerrainDesc{};
+    if (!parseTrn(trnText, desc_, df2Trn)) return fail("cannot parse " + trnName);
     if (skyOverride.on) {
         desc_.skyMap = skyOverride.clouds;
         desc_.skyPalette = skyOverride.gradient;
@@ -665,19 +676,47 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     if (trueColor && !desc_.charData.empty()) {
         std::vector<uint8_t> raw;
         if (vfs.read(withExt(desc_.charData, ".CAL"), raw)) {
+            // GOG Df2.exe 0x470190: the def reader 0x46ac50 numbers the lines
+            // from 1, blank lines and lines whose first token starts with '/'
+            // included (the last unterminated line loses its last
+            // character); the tokeniser 0x46ae90 splits on space, comma and
+            // tab, '"' quotes; the line callback 0x4705d0 stores a line only
+            // when it has exactly 2 tokens and its number is <= 256, as
+            // table[number - 1] (0x535b38, stride 0x1c). Other entries stay
+            // empty, class 0. OpenDF also takes a bare LF as a line end.
             std::array<uint8_t, 256> cls{};
-            size_t i = 0;
-            std::string text(raw.begin(), raw.end()), line;
-            for (size_t p = 0; p <= text.size() && i < 256; ++p) {
-                if (p < text.size() && text[p] != '\n' && text[p] != '\r') { line += text[p]; continue; }
-                if (line.empty()) continue;
-                std::string name = line.substr(0, line.find(','));
+            const std::string text(raw.begin(), raw.end());
+            size_t lineNo = 0;
+            for (size_t pos = 0; pos < text.size() && lineNo < 256;) {
+                size_t nl = text.find('\n', pos);
+                std::string line = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+                if (nl == std::string::npos) {
+                    line.pop_back();
+                    pos = text.size();
+                } else {
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    pos = nl + 1;
+                }
+                ++lineNo;
+                std::vector<std::string> tok;
+                bool quoted = false, start = true;
+                for (char ch : line) {
+                    if (!quoted && (ch == ' ' || ch == ',' || ch == '\t')) { start = true; continue; }
+                    if (ch == '"') { quoted = !quoted; start = true; continue; }
+                    if (start) {
+                        if (tok.size() >= 30) break;
+                        tok.emplace_back();
+                    }
+                    start = false;
+                    tok.back() += ch;
+                }
+                if (tok.size() != 2 || tok[0][0] == '/') continue;
+                std::string name = tok[0];
                 for (auto& ch : name) ch = char(std::toupper(static_cast<unsigned char>(ch)));
                 const std::string pre = name.substr(0, 2);
                 const bool digit = name.size() == 3 && name[2] >= '1' && name[2] <= '3';
-                cls[i++] = !digit ? 0 : pre == "DT" ? 1 : pre == "GS" ? 2 : pre == "SW" ? 3 : (pre == "RK" || pre == "CT") ? 4 : pre == "SD" ? 5
+                cls[lineNo - 1] = !digit ? 0 : pre == "DT" ? 1 : pre == "GS" ? 2 : pre == "SW" ? 3 : (pre == "RK" || pre == "CT") ? 4 : pre == "SD" ? 5
                        : pre == "RD" ? 8 : pre == "MD" ? 9 : pre == "IE" ? 10 : pre == "QS" ? 11 : 0;
-                line.clear();
             }
             // DF2.EXE's renumbering, copied with its bug: the detail map is
             // rewritten to ranks among the used indices (remap[old] = rank,
