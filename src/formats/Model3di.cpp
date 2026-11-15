@@ -406,11 +406,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 // face normal (word +0x02) for all three (flat) (0x46fa5a).
                 const bool gouraud = (r.u8(fo) & 1) != 0;
                 const uint32_t faceNormal = nBase + uint32_t(r.u16(fo + 0x02));
-                // DF2.EXE / GOG Df2.exe 0x44bc00 -> 0x44b140: in a mesh whose
-                // flag byte +0 has bit 0 set, each vertex is placed by the part
-                // matrix its own word +6 names (skinned joints); else 0x44af90
-                // places the whole mesh by the mesh's matrix.
-                const bool skinned = layout.v8 && (r.u8(mo) & 1) != 0;
+                // GOG Df.exe 0x46b1d0 -> 0x469fc0 (DF1) and DF2.EXE / GOG
+                // Df2.exe 0x44bc00 -> 0x44b140: in a mesh whose flag byte +0
+                // has bit 0 set, each vertex is placed by the part matrix its
+                // own word +6 names (skinned joints); else 0x469dc0 / 0x44af90
+                // places the whole mesh by the mesh's matrix. Both layouts.
+                const bool skinned = (r.u8(mo) & 1) != 0;
                 ModelVertex tri[3];
                 for (int c = 0; c < 3; ++c) {
                     ModelVertex v{};
