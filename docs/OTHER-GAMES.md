@@ -484,7 +484,10 @@ First differences from DF1:
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
     DF1's 28 / mag whole degrees;
     night vision (key N, on at the start of night missions: 0x44781e) as an
-    ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
+    ellipse 4r × 2r, green only ×4, over the gun, which is drawn inside the
+    3D frame and depth-tested against the world (GOG 0x44f8d0 -> 0x44ea10,
+    before the fog and the under-water tint 0x44fcb0); no night vision
+    while scoped or with another camera (GOG 0x465f90 -> 0x450550); the
     scope image green ×4 at night. DF2 has no "Player Health: Easy".
   - **front end** (`opendf --game games/DF2 play`; src/menu/FrontendDf2.cpp;
     DF2.EXE states 0x45ec40): DF2.MNU parsed as 0x42e460 does ([SOUNDS]

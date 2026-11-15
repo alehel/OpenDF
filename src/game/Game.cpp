@@ -184,7 +184,8 @@ private:
     void handleKey(const SDL_KeyboardEvent& k);
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
     void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last);
-    void drawViewModel(const Screen& s);
+    void drawViewModel(const Screen& s, const Mat4* worldProj = nullptr);
+    const Screen* gunInWorld_ = nullptr;   // DF2: drawWorld draws the weapon inside the frame (0x44fa09)
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
@@ -3057,6 +3058,15 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
         drawWorldPass(view, last ? projNear : projFar, eye, waterMid, last);
     }
     terrain_.pass = Terrain::Pass::All;
+    // Delta Force 2: the first-person weapon inside the frame (GOG Df2.exe
+    // 0x44f8d0 -> 0x44ea10 at 0x44fa09, after the objects and the water,
+    // before the fog, the weather and the under-water tint), depth-tested
+    // against the world: it can sink into a wall pressed against it.
+    if (gunInWorld_) {
+        glDepthRange(0.0, 0.5);
+        drawViewModel(*gunInWorld_, &projNear);
+        gunInWorld_ = nullptr;
+    }
     glDepthRange(0.0, 1.0);
     // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
     // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
@@ -3510,14 +3520,14 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     models_.end();
 }
 
-void Game::drawViewModel(const Screen& s) {
+void Game::drawViewModel(const Screen& s, const Mat4* worldProj) {
     // The original hides the weapon while the zoom inset is up.
     // Nor is it drawn once the player is dead (0x4042df).
     if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_) return;   // 0x4042ff
     if (!arsenal_.viewModelShown()) return;   // DF2 mode flag 0x100 (GOG Df2.exe 0x44ea10)
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
-    glClear(GL_DEPTH_BUFFER_BIT);
+    if (!worldProj) glClear(GL_DEPTH_BUFFER_BIT);
 
     // As in the original engine: the P* model is drawn unrotated (aligned with
     // the view) at the weapon's offset from DF.EXE's player weapon table, with
@@ -3539,6 +3549,13 @@ void Game::drawViewModel(const Screen& s) {
     // relative to the centre of the view (in screen heights); the extra width
     // only shows more of the world, so ultrawide screens look natural.
     Mat4 proj = perspective(viewFovY_ > 0 ? viewFovY_ : kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
+    // Inside the DF2 frame: the world's near-pass projection (the same view
+    // and FOV; the gun is hidden with the binoculars up), with depth clamping
+    // so the parts nearer than its near plane stay, in front of everything.
+    if (worldProj) {
+        proj = *worldProj;
+        glEnable(GL_DEPTH_CLAMP);
+    }
     // The world light (DF.EXE 0x44bea4) rotated into view space, as the gun
     // is drawn there; the viewer looks along -Z.
     SceneLighting light;
@@ -3564,6 +3581,7 @@ void Game::drawViewModel(const Screen& s) {
     models_.draw(*m, 0, model, true, flash, flashFrame_);
     models_.drawTranslucent(*m, 0, model, true, flash, flashFrame_);
     models_.end();
+    if (worldProj) glDisable(GL_DEPTH_CLAMP);
 }
 
 // The zoom view is a magnified circle on the right of the 3D view (the main
@@ -6978,24 +6996,27 @@ int Game::run() {
                 glViewport(0, 0, dw, dh);
             } else {
                 // DF2 draws only the command map while it is open (0x45c610).
+                if (df2Hud_.on) gunInWorld_ = &s;
                 if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead());
+                gunInWorld_ = nullptr;
                 // The weather spawns around the last rendered frame's camera (0x46b780's end).
                 weather_.setCamera(viewEye());
                 if (df2Hud_.on && showMap_) {
                     glViewport(0, 0, dw, dh);
                 } else if (df2Hud_.on) {
-                    // DF2.EXE 0x45c610: the scope inset, the night vision
-                    // (0x449450), then the weapon pass (0x448980).
+                    // GOG Df2.exe 0x465f90: the frame with the weapon in it
+                    // (0x44f8d0, above), then the scope view (0x455be0,
+                    // which skips the night vision) or the picture-in-picture
+                    // (0x4559d0), then the night vision (0x450550) only with
+                    // the player's own camera ([0xbf2b40] == 0).
                     drawZoomInset(s, view, fovY);
                     drawCameraInset(s);
                     glViewport(0, 0, dw, dh);
-                    if (nvg_ && !showMap_) {
+                    if (nvg_ && !showMap_ && !scopeShown() && !playerDead()) {
                         hud_.begin(dw, dh);
                         hud_.nightVision(s.w * 0.5f, s.playY + s.playH * 0.5f, float(s.modeW) * 5.f / 32.f * s.art());
                         hud_.end();
                     }
-                    glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
-                    drawViewModel(s);
                 } else {
                     drawViewModel(s);
                     drawZoomInset(s, view, fovY);
