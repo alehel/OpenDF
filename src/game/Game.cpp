@@ -698,15 +698,27 @@ private:
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
     std::deque<std::pair<std::string, Color>> history_;   // the 16 latest messages and their colours (ring 0x68a280, +0x78)
     void drawOldMessages(const Screen& s);
-    // Delta Force 2's top strip (DF2.EXE 0x442170): two histories of 40
-    // {text, colour}, newest first; sys at sys_message, chat at chat_message.
+    // Delta Force 2's message histories (GOG Df2.exe 0x4212a0 chat, 0x421440
+    // sys): each message is kept raw (40 x 0x7c ring 0xaab4c0 / 0xaac824, at
+    // most 0x77 characters) and word-wrapped to its HUD.DEF box into a second
+    // 40-line ring (0xaadb88 / 0xaaeeec), newest line first; the top strip
+    // (0x448770), the command map and the message overlay draw the wrapped
+    // lines. A change of display mode re-wraps the raw rings (0x4215e0).
     struct Df2Line { std::string text; Color colour; };
-    std::deque<Df2Line> df2Sys_, df2Chat_;
+    std::deque<Df2Line> df2Sys_, df2Chat_;         // wrapped lines
+    std::deque<Df2Line> df2SysRaw_, df2ChatRaw_;   // raw messages
+    std::vector<std::string> df2Wrap(const std::string& text, bool chat) const;
+    void df2Rewrap();
     // df1Colour: DF.EXE's colour argument to 0x42f400 (see kHudMessage).
     void pushMessage(const std::string& text, Color df2Colour = {1, 1, 1, 1}, bool df2Chat = false, Color df1Colour = kHudMessage) {
         if (df2Hud_.on) {
+            auto& raw = df2Chat ? df2ChatRaw_ : df2SysRaw_;
+            raw.push_front({text.substr(0, 0x77), df2Colour});
+            while (raw.size() > 40) raw.pop_back();
+            // The full text is wrapped (not the 0x77 copy); the first line
+            // ends up deepest, the last line at entry 0.
             auto& h = df2Chat ? df2Chat_ : df2Sys_;
-            h.push_front({text.substr(0, 119), df2Colour});
+            for (auto& line : df2Wrap(text, df2Chat)) h.push_front({line, df2Colour});
             while (h.size() > 40) h.pop_back();
         }
         messages_.push_back({text, 0, df1Colour});
@@ -1320,6 +1332,7 @@ void Game::useHudMode(int modeW) {
     std::snprintf(name, sizeof name, "F_SML%d.PCX", std::min(modeW, 800));
     std::string err;
     if (!hud_.loadFont(vfs_, name, &err)) std::fprintf(stderr, "%s\n", err.c_str());
+    if (df2Hud_.on) df2Rewrap();   // GOG Df2.exe 0x4215e0 after a mode change (0x41f150 case 7)
 }
 
 // Effect slots (DF.EXE table 0xab3400) -> ITEMS.DEF items.
@@ -4433,6 +4446,60 @@ void Game::drawDf2Bottom(const Screen& s) {
         if (f >= 0) frameOf(df2Hud_.itm, 7, f, X("carrying_icon"), Y("carrying_icon"));
     }
     hud_.setBlend(0);
+}
+
+// GOG Df2.exe 0x41be90 (HUD font 0xa6e068, box width x2 - (x1 - 4) of
+// chat_message / sys_message): a line that measures under the width (plus
+// the indent) stays whole; otherwise it breaks at the last space reached
+// before the advance (indent + glyph width + 1 per character) passes the
+// width, and the rest is wrapped again with the indent of two space glyphs.
+// No space before the overflow keeps the rest as one line. Continuation
+// lines get the "  " prefix (0x4bf834); each line is at most 0x77
+// characters (the ring entry).
+std::vector<std::string> Game::df2Wrap(const std::string& text, bool chat) const {
+    const char* key = chat ? "chat_message" : "sys_message";
+    const int n = hudMode_;
+    const float width = float(df2Hud_.def.value(n, key, 2) - (df2Hud_.def.value(n, key, 0) - 4));
+    const float glyph = std::max(0.f, hud_.textWidth(" ") - 1);
+    std::vector<std::string> lines;
+    std::string rest = text;
+    float indent = 0;
+    for (int guard = 0; guard < 256; ++guard) {
+        if (hud_.textWidth(rest) < width + indent) { lines.push_back(rest); break; }
+        size_t space = std::string::npos;
+        float adv = indent;
+        bool unbreakable = false;
+        for (size_t i = 0; i < rest.size(); ++i) {
+            if (std::isspace(static_cast<unsigned char>(rest[i]))) space = i;
+            adv += hud_.textWidth(std::string(1, rest[i]));
+            if (adv > width) {
+                if (space == std::string::npos) { unbreakable = true; break; }
+                lines.push_back(rest.substr(0, space));
+                rest = rest.substr(space + 1);
+                break;
+            }
+        }
+        if (unbreakable) { lines.push_back(rest); break; }
+        // (Reaching the end without overflowing measures the same rest again with the indent.)
+        indent = 2 * glyph;
+    }
+    for (size_t i = 0; i < lines.size(); ++i) lines[i] = (i ? "  " : "") + lines[i].substr(0, 0x77);
+    return lines;
+}
+
+// GOG Df2.exe 0x4215e0: both wrapped rings rebuilt from the raw ones,
+// newest message first, until 40 lines are filled.
+void Game::df2Rewrap() {
+    auto rewrap = [&](const std::deque<Df2Line>& raw, std::deque<Df2Line>& out, bool chat) {
+        out.clear();
+        for (const auto& m : raw) {
+            if (out.size() >= 40) break;
+            const auto lines = df2Wrap(m.text, chat);
+            for (auto it = lines.rbegin(); it != lines.rend() && out.size() < 40; ++it) out.push_back({*it, m.colour});
+        }
+    };
+    rewrap(df2ChatRaw_, df2Chat_, true);
+    rewrap(df2SysRaw_, df2Sys_, false);
 }
 
 void Game::drawDf2Top(const Screen& s) {

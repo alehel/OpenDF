@@ -136,7 +136,13 @@ First differences from DF1:
     route lines, objects by their marker shape, GPS soldiers, the player, the
     next-waypoint dot on the `map_radius` ring (0x421510, 0x4226c0,
     0x443850); the top strip: the last three of two 40-line histories
-    (system and chat), each line in its own colour, no timeout (0x442170);
+    (system and chat), each line in its own colour, no timeout (0x442170;
+    GOG 0x448770). GOG Df2.exe keeps each message raw (0x77 characters) and
+    word-wraps it into the 40-line history the strip, the command map and
+    the message log draw (0x4212a0 chat, 0x421440 sys, wrap 0x41be90): the
+    HUD.DEF box width x2 − (x1 − 4) in the HUD font, a break at the last
+    space, continuation lines indented "  " and measured with two space
+    glyphs of indent; a mode change re-wraps the raw rings (0x4215e0);
     the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
     (0x45a9e0); target identification (GOG 0x4642b0, scope 0x455be0,
     pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
