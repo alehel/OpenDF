@@ -4008,6 +4008,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.end();
         return;
     }
+    // GOG Df2.exe 0x465fde: the friendly tags (0x44fe70) before the
+    // crosshair and target identification (0x4642b0).
+    if (!showMap_ && friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
     if (showMap_) drawCommandMap(s);
     else if (crosshair_ && df2Hud_.on) {
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
@@ -4120,6 +4123,15 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         drawDf1TargetId(s, zx, zy, r);   // GOG Df.exe 0x466090 (0x46662c)
     }
 
+    // GOG Df2.exe 0x448fd0: the top (0x448770) and bottom (0x448620) panels
+    // first, then the breath bar, dead text, goals, help, boxes, messages
+    // and pause over them.
+    if (df2Hud_.on) {
+        drawDf2Strips(s);
+        drawDf2Top(s);
+        drawDf2Bottom(s);
+    }
+
     if (showGoals_) drawGoals(s);
     // The end panel is not drawn while the End Mission box is open (DF.EXE
     // 0x48309b, DF2.EXE 0x441660).
@@ -4137,8 +4149,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
     }
 
-    if (friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
-    else if (friendlyTags_) drawFriendlyTags(s, viewProj);
+    if (friendlyTags_ && !df2Hud_.on) drawFriendlyTags(s, viewProj);
     if (binoculars_ && !playerDead()) drawBinoculars(s);
     // Delta Force 2's breath bar (0x441540) while the air count is not 0, in
     // the virtual 1024x768 space: half-width w = 100 - air*100/2880 about
@@ -4157,11 +4168,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (paused_) drawPaused(s);
     if (quitBox_) drawQuitBox(s);
 
-    if (df2Hud_.on) {
-        drawDf2Strips(s);
-        drawDf2Top(s);
-        drawDf2Bottom(s);
-    } else {
+    if (!df2Hud_.on) {
         drawTopBar(s);
         drawBottomBar(s);
     }
