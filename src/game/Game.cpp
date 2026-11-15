@@ -495,6 +495,9 @@ private:
         // in m a tick (OpenDF axes) and the binary angles yaw +0x30, pitch
         // +0x34 and roll +0x38.
         bool debris = false; Vec3 dvel{0, 0, 0}; uint32_t yaw = 0, dpitch = 0, droll = 0;
+        // Delta Force's ef3d effects (SPLASH1/2): drawn upright at `yaw`
+        // (+0x30, set at spawn) instead of facing the camera.
+        bool ef3d = false;
         // DF2's dust clouds (move `smk2` 0x42aaa0, item 107051 SMKT_H): 16.16
         // velocity per tick (DF2 axes x east, y north, z up), size +0x84,
         // growth shift +0xb4, cap +0xb8, alpha +0xac and its step +0xb0, roll
@@ -1707,16 +1710,23 @@ void Game::spawnEffect(int slot, Vec3 pos) {
     if (!m || m->lods.empty()) return;
     const auto& l = m->lods[0];
     // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5. GOG Df.exe (0x45dc70 /
-    // 0x45dab0): a roll from 0x477860 << 16 first (not drawn here), then
-    // the scale 0x477860 + 0x8000.
+    // 0x45dab0): the yaw +0x30 from 0x477860 << 16 first (drawn only by
+    // ef3d, 0x480e80), then the scale 0x477860 + 0x8000.
     std::uniform_real_distribution<float> u(0.5f, 1.5f);
     float scale;
+    const bool ef3d = mission_.version < 0x0F && m->lodCodes[0] == "ef3d";
+    uint32_t yaw = 0;
     if (gogRand()) {
-        (void)shrapRand();
+        yaw = uint32_t(shrapRand()) << 16;   // +0x30, the heading an ef3d draw uses
         scale = float(shrapRand() + 0x8000) / 65536.f;
-    } else scale = u(effectRng_);
+    } else {
+        if (ef3d) yaw = uint32_t(std::uniform_int_distribution<int>(0, 0xffff)(effectRng_)) << 16;
+        scale = u(effectRng_);
+    }
     if (effectScale_ > 0) scale = effectScale_;
     effects_.push_back({m, pos, scale, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
+    effects_.back().ef3d = ef3d;
+    effects_.back().yaw = yaw;
     if (std::getenv("OPENDF_DEBUGHITS"))
         std::fprintf(stderr, "effect slot %d %s: %d frames x %d ticks at (%.2f %.2f %.2f) radius %.2f\n", slot, item->graphic.c_str(),
                      l.frames, l.ticksPerFrame, pos.x, pos.y, pos.z, m->radius);
@@ -4311,8 +4321,20 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     for (const auto& e : effects_) {
         const Vec3 at = world_.nearest(e.pos, eye);
         const Vec3 d = at - eye;
-        if (df2Cull ? !df2Keep(d, dot(d, fwd), e.model->headerRadius, false)
-                    : std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f || dot(d, fwd) < 0.5f) continue;
+        // Delta Force (GOG Df.exe 0x485040, as the objects): within 1020 m on
+        // both horizontal axes, the sphere (+0x60) between the eye plane and
+        // 1020 m of view depth (0x44acf0), and a LOD by projected radius
+        // (0x46b780: none under half a pixel).
+        int elod = 0;
+        if (df2Cull) {
+            if (!df2Keep(d, dot(d, fwd), e.model->headerRadius, false)) continue;
+        } else {
+            const float depth = dot(d, fwd), r = e.model->headerRadius;
+            if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
+            if (depth < -r || depth + r > 1020.f) continue;
+            elod = ModelRenderer::chooseLod(*e.model, std::max(depth, 0.01f), focal, false);
+            if (elod < 0) continue;
+        }
         if (e.canopy) {
             WorldObject body;
             body.heading = e.heading;
@@ -4328,7 +4350,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             body.heading = kPi * 0.5f - float(e.yaw) * turn;
             body.pitch = float(e.dpitch) * turn;
             body.roll = float(e.droll) * turn;
-            models_.draw(*e.model, 0, body.matrix(at));
+            models_.draw(*e.model, elod, body.matrix(at));
             continue;
         }
         if (e.smk2) {
@@ -4372,7 +4394,28 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             else draw();
             continue;
         }
-        const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
+        // The frame (GOG Df.exe efct 0x42a610, ef3d 0x480e80): on an animated
+        // LOD (+0x5a) age / ticks per frame of the drawn LOD, 0 once past its
+        // frames; otherwise 0.
+        int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
+        if (!df2Cull && elod < int(e.model->lods.size())) {
+            const auto& el = e.model->lods[size_t(elod)];
+            const int f = e.age / std::max(1, el.ticksPerFrame);
+            frame = el.animated && f < el.frames ? f : 0;
+        }
+        if (e.ef3d) {
+            // Delta Force ef3d (SPLASH1/2, GOG Df.exe 0x480e80 -> 0x45d2f0):
+            // upright at the spawn's random heading +0x30, scaled by +0x7c, no
+            // camera facing; every mesh.
+            WorldObject body;
+            body.heading = kPi * 0.5f - float(e.yaw) * (2 * kPi / 4294967296.f);
+            Mat4 sc;
+            sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
+            const Mat4 m = body.matrix(at) * sc;
+            models_.draw(*e.model, elod, m, false, false, frame);
+            models_.drawTranslucent(*e.model, elod, m, false, false, frame);
+            continue;
+        }
         // Model +X faces the heading; the quad's normal is +X, turned to the camera.
         Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
         // Puffs (efct draw 0x480c70 with +0x3C set) also take the camera's
@@ -4387,9 +4430,9 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         Mat4 sc;
         sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
         m = m * sc;
-        models_.draw(*e.model, 0, m, false, false, frame);
+        models_.draw(*e.model, elod, m, false, false, frame);
         if (df2Cull) translucent.push_back({dot(d, fwd), [this, m, frame, model = e.model] { models_.drawTranslucent(*model, 0, m, false, false, frame); }});
-        else models_.drawTranslucent(*e.model, 0, m, false, false, frame);
+        else models_.drawTranslucent(*e.model, elod, m, false, false, frame);
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
     // 4033 (DF2's delay grenade, CD 0x1000, too: GOG Df2.exe 0x451ae0 gives
@@ -4410,16 +4453,28 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         const Vec3 at = world_.nearest(p.pos, eye);
         // DF2's rounds keep the fixed limits (GOG Df2.exe 0x44fb20): |dx|,
         // |dy| < 4081 m, |depth| < 4080 m, then the sphere test 0x404c70.
+        int rlod = 0;
         if (df2Cull) {
             const Vec3 d = at - eye;
             const float depth = dot(d, fwd), r = gm->headerRadius;
             if (std::abs(d.x) >= 4081.f || std::abs(d.z) >= 4081.f || std::abs(depth) >= 4080.f) continue;
             if (depth < -r || depth + r > 4080.f) continue;
+        } else {
+            // Delta Force (GOG Df.exe 0x485290): whole metres within 1020 of
+            // the camera on both horizontal axes (0x485346..0x485374), |view
+            // depth| under 1020 m (0x485391), the sphere test 0x44acf0 with
+            // +0x60, then the LOD by projected radius (0x46b780).
+            const float depth = dot(at - eye, fwd), r = gm->headerRadius;
+            if (std::abs(std::floor(at.x) - std::floor(eye.x)) > 1020.f || std::abs(std::floor(at.z) - std::floor(eye.z)) > 1020.f) continue;
+            if (std::abs(std::floor(depth)) >= 1020.f) continue;
+            if (depth < -r || depth + r > 1020.f) continue;
+            rlod = ModelRenderer::chooseLod(*gm, std::max(depth, 0.01f), focal, false);
+            if (rlod < 0) continue;
         }
         Mat4 pitch;
         const float c = std::cos(p.pitch), sn = std::sin(p.pitch);
         pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
-        models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
+        models_.draw(*gm, rlod, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
     }
     // DF2, camera above the water: the plane after every opaque world draw
     // (the bodies, effects and rounds in flight included: GOG Df2.exe
