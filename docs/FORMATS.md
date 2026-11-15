@@ -152,6 +152,14 @@ LOD × count, each: header (v5: 184 bytes, v2-v4: 176) then data
     material 76 bytes  name[12]; u32 flags @0x10; u8 flat RGB @0x28; u8 texture sequence @0x34
 ```
 
+Delta Force 2's v8 models (texture fields 12 bytes later) keep the sequence
+as a signed 16-bit word at @0x20, and Df2.exe compares it with the
+material's sequence byte (@0x34 + camouflage variant, or @0x37 for an alpha
+material) sign-extended (GOG 0x444d3d / 0x444e9a), with no fallback by
+name: a byte 0x80..0xFF never matches and the material is hidden (0x0800).
+That hides `DF2PAR02`'s vest pieces (sequences 128..137) and one LOD of
+`DF2FNT01`.
+
 **Character models** (soldiers, hostages) have their origin at the hips (for
 `PLAYER01`, z runs from −1.01 m to +0.82 m), so they have to be raised by
 their leg length. Everything else sits on its origin.

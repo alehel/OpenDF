@@ -18,6 +18,11 @@ bool decodeTga(const std::vector<uint8_t>& file, RgbaImage& out);
 bool decodeJpeg(const std::vector<uint8_t>& file, RgbaImage& out);
 // By the file's own signature (JPEG FF D8, else TGA).
 bool decodeRgbaImage(const std::vector<uint8_t>& file, RgbaImage& out);
+// Delta Force 2's own JPEG decoder (GOG Df2.exe 0x482310): its IDCT with the
+// row-6 slip and nearest chroma. For the game's images (VBLIT_LOADJPG, the
+// terrain colour maps); other formats and files as above.
+bool decodeJpegDf2(const std::vector<uint8_t>& file, RgbaImage& out);
+bool decodeRgbaImageDf2(const std::vector<uint8_t>& file, RgbaImage& out);
 bool jpegSupported();
 
 } // namespace df

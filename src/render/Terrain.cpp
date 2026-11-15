@@ -457,7 +457,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     if (!loadImage(vfs, desc_.colorMap, color)) {
         std::vector<uint8_t> d;
         for (const char* ext : {".JPG", ".TGA"})
-            if (vfs.read(withExt(desc_.colorMap, ext), d) && decodeRgbaImage(d, colorRgba)) { trueColor = true; break; }
+            if (vfs.read(withExt(desc_.colorMap, ext), d) && decodeRgbaImageDf2(d, colorRgba)) { trueColor = true; break; }
         if (!trueColor)
             return fail("missing colour map " + desc_.colorMap + (jpegSupported() ? "" : " (OpenDF was built without libjpeg)"));
         color.width = colorRgba.width;

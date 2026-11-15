@@ -13,7 +13,7 @@ namespace df {
 struct Model3diTexture {
     std::string name;
     int width = 0, height = 0;
-    uint8_t sequence = 0;            // what materials refer to
+    int sequence = 0;                // what materials refer to (v8: signed 16-bit)
     bool indexZeroTransparent = false;
     bool alpha16 = false;            // v8: 16-bit texels (index, alpha)
     // Header +0x16 flag 0x10 (v5): the palette is left out of the TRN grade

@@ -695,7 +695,7 @@ HudImage FrontendDf2::file(const std::string& name) {
         im = hud().loadImage(vfs_, key, false, true);
     } else if (vfs_.read(key, data)) {
         RgbaImage rgba;
-        if (decodeRgbaImage(data, rgba)) im = hud().makeImage(rgba.width, rgba.height, rgba.rgba);
+        if (decodeRgbaImageDf2(data, rgba)) im = hud().makeImage(rgba.width, rgba.height, rgba.rgba);
     }
     images_[key] = im;
     return im;
@@ -1653,7 +1653,7 @@ void FrontendDf2::loadBriefing() {
             if (auto dot = jpg.rfind('.'); dot != std::string::npos) jpg.resize(dot);
             std::vector<uint8_t> raw;
             RgbaImage im;
-            if (!jpg.empty() && vfs_.read(upper(jpg) + ".JPG", raw) && decodeRgbaImage(raw, im) && im.width > 0 && im.height > 0) {
+            if (!jpg.empty() && vfs_.read(upper(jpg) + ".JPG", raw) && decodeRgbaImageDf2(raw, im) && im.width > 0 && im.height > 0) {
                 const size_t row = size_t(im.width) * 4;
                 std::vector<uint8_t> tiled(row * 4 * size_t(im.height) * 4);
                 for (int ty = 0; ty < 4; ++ty)

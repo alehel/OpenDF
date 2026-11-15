@@ -92,6 +92,14 @@ First differences from DF1:
     (only the GOG release does), and the results match the CD files byte
     for byte.
   - Terrain colour maps as JPEG (libjpeg, optional at build time) or TGA.
+    DF2's JPEGs (terrain colour maps, front-end pictures, the briefing
+    map) decode as Df2.exe's own decoder 0x482310 does: libjpeg supplies
+    the coefficients, then 0x481220's IDCT, whose column pass takes the
+    row-6 term from coefficient c+54 instead of c+48 (8x8 block artefacts
+    in about 16% of DF2_MAIN.JPG's blocks, all of DFD1_C.JPG's), nearest
+    chroma and the 0x481080 colour tables. Bit-exact with libjpeg's islow
+    without fancy upsampling once the slip is undone. The launcher keeps
+    plain libjpeg.
 - `opendf --game games/DF2 mission D03M01` (or any `DxxMyy`) loads and plays
   with DF1's rules and built-in tables, now with:
   - **soldier animations** from `PLAYER01.KSA` (DF2.EXE 0x41e5e0): 255
@@ -151,8 +159,8 @@ First differences from DF1:
     first object of the player's side or side 0 along the aim within the
     centre's range + 2 m and 2 m of the ray gets, if on the player's side,
     four red diagonal ticks at the crosshair corners (scope: ±r/2 to ±r/4),
-    and, if it is a named person (DF2WPN.BIN `PeopleNames` STRNAME%03i of
-    record +4), its name in red W·1920/65536 above the top arm (scope: at
+    and, if it has a name (object +0x54 from 0x403790: DF2WPN.BIN `PeopleNames` STRNAME%03i of
+    record +4, item 6005 `WPNames` STRWPNAME%03i of +0x58), its name in red W·1920/65536 above the top arm (scope: at
     the inset centre), with the crosshairs on or off; friendly tags (F,
     GOG 0x41f150 / 0x44fe70 / 0x44fee0): 0 off, 1 names, 2 glyph 4, with
     STRMISC05 / 04 / 33, on (1) at every fresh mission start but kept on a
@@ -913,7 +921,11 @@ First differences from DF1:
     sets resolution index 4, closing restores it, 0x45d9ea), and the mode
     set reloads f_sml%i / f_LG%i at i = min(width, 800) (0x45c0a0), so the
     map's text is F_SML640 / F_LG640 at any display mode (the Players
-    headings no longer overlap); the rain's lines test but do
+    headings no longer overlap; f_sml goes through the band scanner
+    0x41ba90 -> 0x41b9a0 / 0x41b8a0 like f_LG and is drawn opaque by
+    0x41bb90, advance width + 1, a code without a glyph as glyph 0, so
+    F_SML640 (277x240, 14-row bands) loads instead of DF1's fixed
+    16-pixel cells keeping F_SML800); the rain's lines test but do
     not write depth (0x46014f); the software water writes its rows' depth
     (0x485e17) and is fogged by the fog pass, its fog quad 0x467568 being
     the hardware path's;

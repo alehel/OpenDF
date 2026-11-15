@@ -114,6 +114,7 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
         if (error) *error = "cannot load HUD font " + name;
         return false;
     }
+    useSheetHud_ = false;
     std::vector<uint8_t> rgba(size_t(img.width) * img.height * 4, 255);
     for (size_t i = 0; i < img.pixels.size(); ++i) rgba[i * 4 + 3] = img.pixels[i] == 9 ? 255 : 0;
     for (int line = 0; line < 16; ++line) {
@@ -144,6 +145,23 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return true;
+}
+
+bool Hud::loadSheetHudFont(Vfs& vfs, const std::string& name, std::string* error) {
+    SheetFont f = loadSheetFont(vfs, name);
+    if (!f.ok) {
+        if (error) *error = "cannot load HUD font " + name;
+        return false;
+    }
+    if (sheetHud_.tex.texture) {   // the previous mode's font
+        flush();
+        images_.erase(std::remove(images_.begin(), images_.end(), sheetHud_.tex.texture), images_.end());
+        glDeleteTextures(1, &sheetHud_.tex.texture);
+        texture_ = 0;
+    }
+    sheetHud_ = f;
+    useSheetHud_ = true;
     return true;
 }
 
@@ -421,13 +439,38 @@ void Hud::quad(float x0, float y0, float x1, float y1, float u0, float v0, float
     verts_.insert(verts_.end(), {a, b, d, d, b, e});
 }
 
+// GOG Df2.exe 0x41bb90: a code whose entry has no glyph (+5 == 0) draws and
+// advances as entry 0 (0x41bc36).
+static const SheetFont::Glyph& sheetGlyph(const SheetFont& f, unsigned char ch) {
+    return f.glyphs[ch].w > 0 ? f.glyphs[ch] : f.glyphs[0];
+}
+
 float Hud::textWidth(const std::string& s, float scale) const {
     float w = 0;
+    if (useSheetHud_) {
+        for (unsigned char ch : s) w += float(sheetGlyph(sheetHud_, ch).w + 1) * scale;
+        return w;
+    }
     for (unsigned char ch : s) w += (glyphW_[ch] + 1) * scale;
     return w;
 }
 
 float Hud::text(float x, float y, const std::string& s, Color c, float scale) {
+    if (useSheetHud_) {
+        // 0x41bb90, opaque (font +0x1c bit 0 clear): each glyph pixel left
+        // nonzero by the scanner takes the colour; advance width + 1; no shadow.
+        const SheetFont& f = sheetHud_;
+        const float start = x;
+        for (unsigned char ch : s) {
+            const SheetFont::Glyph& g = sheetGlyph(f, ch);
+            if (g.w > 0)
+                imageUV(f.tex.texture, x, y, float(g.w) * scale, float(g.h) * scale, float(g.x) / float(f.tex.width),
+                        float(g.y) / float(f.tex.height), float(g.x + g.w) / float(f.tex.width),
+                        float(g.y + g.h) / float(f.tex.height), c);
+            x += float(g.w + 1) * scale;
+        }
+        return x - start;
+    }
     setMode(1, font_);
     const float start = x;
     for (int pass = 0; pass < 2; ++pass) {
