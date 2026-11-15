@@ -239,7 +239,8 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
 }
 
 // helo (0x47c92c think every 8 ticks, 0x47d05c move): rotor spin-up
-// (+0x800000 per think to 0x1b000000; lift from 0x14000000); modes: on a
+// (+0x800000 per think to 0x1b000000 when busy, else wind-down; lift from
+// 0x14000000); modes: on a
 // path 18 m above the floor (band 4 m), hover 8 m (1 m), land; turning at
 // turn_rate when more than 6 m up; speed ramps at `acceleration`; vertical
 // speed capped at 2 m/s; bank from the turn (within 22.5 degrees), nose
@@ -256,8 +257,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     if (--v.think <= 0) {
         v.think = 8;
         // Destroyed (+0x6C & 4): both rotor speeds 0 at once (0x47cac8).
-        if (!v.dead) v.rotor = std::min(v.rotor + float(0x800000), float(0x1b000000));
-        else v.rotor = 0;
+        if (v.dead) v.rotor = 0;
         if (!v.dead) heloTargeting(world, ai, v);
         else v.gunTarget = -1;   // the dead think clears the target (the gun fires until then)
         // Tail rotor (0x47cb4b): above 2 hits a smoke puff at hardpoint 2
@@ -276,8 +276,10 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
         if (onPath) { v.mode = 2; v.targetSpeed = teamSpeed; }
         else if (v.gunTarget != -1 && !v.dead) {
             // Attack approach (0x47bf0c) toward the target's position when
-            // acquired: > 80 m 15 m/s at 18 m; 30-80 m 5 m/s at 8 m; 8-30 m
-            // hover at 8 m; closer 5 m/s at 8 m. The Black Hawk turns its door
+            // acquired, only with lift (GOG Df.exe 0x451432 calls 0x4503f0
+            // from rotor 0x14000000; below it heading, speed and mode stay
+            // as they were while the rotor spins up): > 80 m 15 m/s at
+            // 18 m; 30-80 m 5 m/s at 8 m; 8-30 m hover at 8 m; closer 5 m/s at 8 m. The Black Hawk turns its door
             // to the target: DF +0x10000000 / +0x30000000 (anticlockwise, the
             // nose left, the target on the right-hand door side) in the middle
             // bands (GOG Df.exe 0x4503f0), so -22.5 / -67.5 degrees in
@@ -286,7 +288,8 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             const float dist = std::sqrt(d.x * d.x + d.z * d.z);
             const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
             float h = std::atan2(d.x, -d.z);
-            if (dist > 80) { v.targetSpeed = 15; v.mode = 2; }
+            if (!world.df2Rules && v.rotor < float(0x14000000)) h = v.targetHeading;
+            else if (dist > 80) { v.targetSpeed = 15; v.mode = 2; }
             else if (dist > 30) { v.targetSpeed = 5; v.mode = 1; if (hawk) h -= kPi / 8; }
             else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h -= 3 * kPi / 8; }
             else { v.targetSpeed = 5; v.mode = 1; }
@@ -312,6 +315,24 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
                              o.pos + fwd * v.speed, o.pos + fwd * (2 * v.speed), o.pos + fwd * (4 * v.speed)})
             fl = std::max(fl, world.terrain->heightAt(p.x, p.z));
         v.floorHeight = fl;
+        if (!v.dead) {
+            // Rotor (GOG Df.exe 0x450e40): +0x800000 per think up to
+            // 0x1b000000 (0x451035) while the mode is not 0 or the think is
+            // busy: a target, alerted (ai+0x9c 2), idle (below 0x400 speed)
+            // more than 8 m up (+0xb4 > 0x80000), or still coming down with
+            // lift in the landing branch; otherwise it winds down, 0x400000
+            // per think above 0x700000, then 0x20000 to 0 (0x4514d7), and the
+            // rotor loop stops at 0. Parked helicopters stay silent and still.
+            // DF2 keeps the old always-on spin-up (its own think is not
+            // reproduced here yet).
+            const bool liftNow = v.rotor >= float(0x14000000);
+            const bool idle = std::abs(v.speed) < 0x400 / 65536.f * kTicks;
+            const bool busy = world.df2Rules || v.mode != 0 || v.gunTarget != -1 || v.alerted ||
+                              (idle && o.pos.y - fl > 8.f) || (liftNow && o.pos.y > ground + rest);
+            if (busy) v.rotor = std::min(v.rotor + float(0x800000), float(0x1b000000));
+            else if (v.rotor > float(0x700000)) v.rotor -= float(0x400000);
+            else v.rotor = std::max(v.rotor - float(0x20000), 0.f);
+        }
     }
     const bool lift = v.rotor >= float(0x14000000);
     const float height = o.pos.y - v.floorHeight;
