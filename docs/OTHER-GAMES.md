@@ -476,7 +476,8 @@ First differences from DF1:
     clips to slot 3's weapon, slot 4's too for primaries 9/10);
     projectiles (0x44c2f0): gravity 0xa7 a tick², drag toward the mission's
     wind by the ammo's speed band and the curve (×(1 + depth/10) under water,
-    at most 0.5 a tick), rounds under the water spent below 15.5 m/s; people
+    at most 0.5 a tick; GOG 0x453860 pulls toward rest instead of the wind
+    at or under the water level, the CD always toward the wind), rounds under the water spent below 15.5 m/s; people
     take max(1, |v|²·M / 25) (×8 head, 0x44bf40/0x44bff0); the MasterKey's
     12 pellets within ±5.625° (GOG 0x451eb0: the shared generator seeded
     with the binary yaw >> 16, each pellet (r + 0x1f8000)·0x800 about the

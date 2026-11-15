@@ -522,8 +522,10 @@ void Arsenal::df2Drag(Projectile& b, float water, int64_t s) const {
     if (under) k = (k * (0x10000 + (int64_t((water - b.pos.y) * 65536.f) << 16) / 0xa0000)) >> 16;
     k = std::clamp<int64_t>(k, 0, 0x8000);
     // GOG Df2.exe 0x453860: toward the wind only while above the water
-    // level (water < z); at or below it toward rest.
-    const bool windy = water < b.pos.y;
+    // level (water < z); at or below it toward rest. The CD's 0x44c2f0
+    // always pulls toward the wind (DAT_004ee250..58), above the water or
+    // not; only its drag coefficient depends on the depth.
+    const bool windy = !df2Gog_ || water < b.pos.y;
     const int64_t wind[3] = {windy ? windX_ : 0, 0, windy ? windZ_ : 0};
     for (int i = 0; i < 3; ++i) v[i] -= ((v[i] - wind[i]) * k) >> 16;
     b.vel = Vec3{float(v[0]), float(v[1]), float(v[2])} * (1.f / (65536.f * kTick));
