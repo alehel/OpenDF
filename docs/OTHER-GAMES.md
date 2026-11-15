@@ -397,8 +397,9 @@ First differences from DF1:
   - **front end** (`opendf --game games/DF2 play`; src/menu/FrontendDf2.cpp;
     DF2.EXE states 0x45ec40): DF2.MNU parsed as 0x42e460 does ([SOUNDS]
     [ARGBS] [FONTS] [IMAGES] [MENUS] [BUTTONS], strtok fields, attribute
-    letters, z-order lists: buttons in _strcmpi name order, then 0x433040's
-    unstable swap sort by descending z; button sizes), DF2.BIN `MENU` texts, 640×480
+    letters, buttons qsorted by name with _strcmpi then each menu's list
+    exchange-sorted by descending z-order, GOG 0x432ba0 / 0x433040, so the
+    Campaigns region buttons draw over the world map; button sizes), DF2.BIN `MENU` texts, 640×480
     screens scaled to the window (amenity), 4-frame button strips, the menu
     fonts (bands ending at a column-0 marker row), mm_Rect outlines 0xCA4409;
     Choose Soldier (df2plyrs.sav 'FPBC' v14 as GOG 0x436890 writes, v10..v14
@@ -406,9 +407,15 @@ First differences from DF1:
     stats; "Blackhawk" when empty; name editing), Main Menu (help texts
     teletyped; NovaWorld, Multiplayer and Update disabled), Campaigns (C03/C05,
     regions, the 28 missions with the header +0x7C unlock rule, done marks,
-    titles under the dots, CABRIEF), Quick Missions (D06*, TITLE, QMBRIEF,
-    pictures), Mission Briefing (MBBRIEF, the terrain JPG ×4 with numbered
-    waypoints), Change Gear (categories 3/4/2/4+5, grenades 26/37, the
+    titles under the dots, CABRIEF; GOG 0x434800: only this campaign's
+    regions with a done or unlocked mission and only the done or unlocked
+    dots of the current region are shown, the rest hidden and unclickable), Quick Missions (D06*, TITLE, QMBRIEF,
+    pictures), Mission Briefing (MBBRIEF, the terrain JPG ×4; the BMS
+    markers of GOG 0x4045e0, object byte +0x4C set and flags & 0x50 clear, up
+    to 50: route markers 1-3 joined by 0xFFFFE000 lines with a yellow icon
+    and their number at (x+4, y-5), the others as 8-frame team icons
+    grn/blu/red/yel_icon.pcx, GOG 0x43d250; scroll centred by (view-1)>>1,
+    0x43cdf0), Change Gear (categories 3/4/2/4+5, grenades 26/37, the
     mission's header defaults +0x94..+0x97), Settings pages 1 and 3 (df2.cfg,
     sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
     mission back to Campaigns / Quick Missions (no debriefing in DF2), the
@@ -420,19 +427,23 @@ First differences from DF1:
     until the page is left, 0x437a70; each voice at direction 0, volume 255,
     pitch 1.0 (0x437933), gains 62 / 63, the dialogue volume unused) and
     slider dragging. Settings has four
-    pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 48 rows (labels
-    0x4b3af0, defaults 0x4b2cb8 copied into new soldiers by 0x431c00,
-    soldier +0x2e0, 12 bytes {VK, mouse 0..3, 0}), ten shown, scroll arrows
-    and a slider forced to range 39; clicking a key box waits for one key or
+    pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 59 rows in the
+    GOG build (labels 0x4c8144, defaults 0x4c7190 copied into new soldiers by
+    0x4368f0; the CD's 48 plus PRINT_SCREEN, the voice-over-net keys,
+    SELECT_TARGETED and SCOPE_MAGNIFICATION, rows 45/46 named
+    INCREASE/DECREASE_SCOPE_ZERO; soldier +0x2e0, 12 bytes {VK, mouse 0..3,
+    0}), ten shown, scroll arrows and a slider forced to range 50; clicking a key box waits for one key or
     mouse button (left 1, right 2, middle 3, swallowed while waiting), which
-    is taken from every other row first; keys outside 0x439310's list
-    (Esc, F-keys, Alt, '/', …) give REMAP_RESERVED; DELETE KEY then a row
+    is taken from every other row first; Esc, Scroll Lock, Pause, the
+    Windows keys, VK 0x2A, '`' and F1..F24 give REMAP_RESERVED (GOG
+    0x43e6c0; the CD's allow-list 0x439310 is gone); DELETE KEY then a row
     clears it, DEFAULT copies the defaults, REVERT the snapshot taken on the
     first visit (cleared by ACCEPT); key names as 0x439fe0 ("CTRL OR MOUSE
     1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
-    attack_1 and attack_2 (0x43afb0). Page 4 "Voice-over-net": drawn from the
+    attack_1 and attack_2 (GOG 0x441140; PrintScreen, scopemag and the Von*
+    commands have no game-side action in OpenDF yet). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
     (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`

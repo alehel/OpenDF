@@ -169,11 +169,15 @@ struct D2Mnu {
     }
 };
 
-// Options2 "Keyboard" (0x43a5a0): the 48 rows' label keys (0x4b3af0), the
-// defaults {VK, mouse button} (0x4b2cb8) and the game commands they set at
-// mission start (0x43afb0; row 8 also sets attack_2).
+// Options2 "Keyboard" (0x43a5a0): the rows' label keys, the defaults {VK,
+// mouse button} and the game commands they set at mission start (row 8 also
+// sets attack_2). GOG Df2.exe has 59 rows (0x2c4 / 12 in 0x43e780): labels
+// 0x4c8144, defaults 0x4c7190 (copied by 0x4368f0), commands 0x441140; the CD
+// build's 48 (0x4b3af0, 0x4b2cb8, 0x43afb0) are rows 0..47, with rows 45/46
+// relabelled INCREASE/DECREASE_SCOPE_ZERO. Rows 48..58 are GOG's additions.
+constexpr size_t kDf2KeyRows = 59;
 struct Df2KeyRow { const char* label; const char* game; uint32_t vk, mouse; };
-const Df2KeyRow kDf2Keys[48] = {
+const Df2KeyRow kDf2Keys[kDf2KeyRows] = {
     {"STRAFE_LEFT", "slide_left", 0x25, 0}, {"STRAFE_RIGHT", "slide_right", 0x27, 0}, {"MOVE_FORWARD", "move_forward", 0x26, 0},
     {"MOVE_BACK", "move_back", 0x28, 0}, {"GO_PRONE", "Prone", 0x22, 3}, {"CROUCH", "Crouch", 0x23, 0},
     {"STAND", "Stand", 0x2E, 0}, {"JUMP", "move_jump", 0x20, 0}, {"FIRE_WEAPON", "attack_1", 0x11, 1},
@@ -189,15 +193,21 @@ const Df2KeyRow kDf2Keys[48] = {
     {"CYCLE_FORWARD_OBSERVER", "tab", 0x09, 0}, {"ORDERS", "briefing", 'O', 0}, {"RECENT_MESSAGES", "OldMessages", 'R', 0},
     {"TEAM_TAGS", "ShowFriendly", 'F', 0}, {"GOALS", "MissionGoals", 'G', 0}, {"COMMANDERS_SCREEN", "BigMap", 'C', 0},
     {"TURBO", "Turbo", 'H', 0}, {"NEXT_FLAG_(MP)", "NextFlag", 'Q', 0}, {"TOGGLE_HOST_SCREEN", "PrevWaypoint", 0x24, 0},
-    {"SCOPE_ZOOM_IN", "scopeinc", 'X', 0}, {"SCOPE_ZOOM_OUT", "scopedec", 'Z', 0}, {"TOGGLE_NIGHT_VISION", "NVG", 'N', 0}};
+    {"INCREASE_SCOPE_ZERO", "scopeinc", 'X', 0}, {"DECREASE_SCOPE_ZERO", "scopedec", 'Z', 0}, {"TOGGLE_NIGHT_VISION", "NVG", 'N', 0},
+    {"PRINT_SCREEN", "PrintScreen", 'I', 0}, {"SELECT_LAST_TALKER", "VonSLT", 0x6F, 0}, {"DISPLAY_LAST_TALKER", "VonDLT", 0x6A, 0},
+    {"VON_DISPLAY", "VonDisplay", 0x6D, 0}, {"UNMUTE_SELECTED_PLAYER", "VonUSP", 0x6B, 0}, {"DECREASE_RECORD_VOLUME", "VonRVU", 0x61, 0},
+    {"INCREASE_RECORD_VOLUME", "VonRVD", 0x63, 0}, {"MUTE_CURRENT_TALKER", "VonMCT", 0x60, 0}, {"BREAK_TALKER", "VonBT", 0x6E, 0},
+    {"SELECT_TARGETED", "VonSBX", 0xDC, 0}, {"SCOPE_MAGNIFICATION", "scopemag", 'E', 0}};
 
-// 0x439310: the keys a row may take; anything else is "reserved".
+// GOG Df2.exe 0x43e6c0 (replacing the CD's allow-list 0x439310): a row may
+// take any key but Esc, Scroll Lock, Pause, the Windows keys, VK 0x2A, '`'
+// (0xC0) and F1..F24; those are "reserved". (0xFF: OpenDF's mark for a key
+// with no Windows VK, also reserved.)
 bool df2KeyAllowed(uint32_t vk) {
-    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z') || (vk >= 0x60 && vk <= 0x6F) || (vk >= 0x25 && vk <= 0x28)) return true;
     switch (vk) {
-    case 0x11: case 0x10: case 0x0D: case 0x2D: case 0x2E: case 0x24: case 0x23: case 0x20: case 0x08: case 0x09:
-    case 0x21: case 0x22: case 0xBB: case 0xBD: case 0xBC: case 0xBE: case 0xBA: case 0xDB: case 0xDD: return true;
-    default: return false;
+    case 0xFF:
+    case 0x1B: case 0x91: case 0x13: case 0x5B: case 0x5C: case 0x2A: case 0xC0: return false;
+    default: return vk < 0x70 || vk > 0x87;
     }
 }
 
@@ -220,7 +230,7 @@ struct Soldier {
     void defaults() {
         d.fill(0);
         set(0x28, 1);
-        for (size_t i = 0; i < 48; ++i) { set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
+        for (size_t i = 0; i < kDf2KeyRows; ++i) { set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
         set(0x2b8, 5); set(0x2bc, 10); set(0x2c0, 21); set(0x2c4, 1); set(0x2c8, 26);
         set(0x5b0, 128); set(0x5b8, 255); set(0x5bc, 255); set(0x5c0, 200);
     }
@@ -364,6 +374,7 @@ private:
     Soldier& soldier() { return soldiers_[size_t(current_)]; }
     uint32_t header(const std::string& bms, size_t offset);
     bool missionAvailable(int i);
+    bool missionOpen(int i);
     void refreshSoldier();
     void refreshCampaign();
     void refreshQuick();
@@ -377,7 +388,7 @@ private:
     std::string keyName(size_t row);
     void remapMessage(const char* key) { helpText_ = menuText(key, key); helpShown_ = 0; }
     void captureTick();
-    std::array<uint8_t, 576> keySnapshot_{};   // 0x4cf370, taken on the first visit per Settings session
+    std::array<uint8_t, kDf2KeyRows * 12> keySnapshot_{};   // 0x4cf370, taken on the first visit per Settings session
     bool haveKeySnapshot_ = false;             // [0x4cf36c]
     bool keyDelete_ = false, keyCapture_ = false;
     int keyRow_ = 0, keyMouse_ = 0;
@@ -474,7 +485,10 @@ private:
     int briefLine_ = 0;
     HudImage briefMap_;
     float mapX_ = 0, mapY_ = 0;
-    std::vector<std::pair<float, float>> waypoints_;
+    // GOG Df2.exe 0x4045e0: the briefing map's markers, up to 50, in the
+    // picture's 1024² coordinates (0x4f3a40, count 0x4f3d60).
+    struct MapMarker { int marker, x, y, team; };
+    std::vector<MapMarker> mapMarkers_;
     int optPage_ = 1;
     // Voice briefing (DF2.EXE 0x4384f0 start, 0x4378af per tick, 0x4385c0
     // end, 0x438640 the button, 0x437a70 leaving the page).
@@ -828,12 +842,12 @@ void FrontendDf2::loadSoldiers() {
         }
     }
     // OpenDF's first DF2 builds wrote soldiers without the default bindings;
-    // a named soldier with all 48 rows empty gets 0x4b2cb8's (an OpenDF repair).
+    // a named soldier with all rows empty gets the defaults (an OpenDF repair).
     for (auto& s : soldiers_) {
         bool none = true;
-        for (size_t i = 0; i < 48 && none; ++i) none = s.get(0x2e0 + 12 * i) == 0 && s.get(0x2e4 + 12 * i) == 0;
+        for (size_t i = 0; i < kDf2KeyRows && none; ++i) none = s.get(0x2e0 + 12 * i) == 0 && s.get(0x2e4 + 12 * i) == 0;
         if (none && !s.empty())
-            for (size_t i = 0; i < 48; ++i) { s.set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); s.set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
+            for (size_t i = 0; i < kDf2KeyRows; ++i) { s.set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); s.set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
     }
     bool any = false;
     for (auto& s : soldiers_) any = any || !s.empty();
@@ -861,6 +875,11 @@ bool FrontendDf2::missionAvailable(int i) {
     // 0x42f97a: header +0x7C 0, or the soldier's unlock mask for the campaign shares a bit.
     const uint32_t need = header(kMissions[i].bms, 0x7C);
     return need == 0 || (uint32_t(soldier().get(0xa8 + 4 * size_t(kMissions[i].campaign))) & need);
+}
+
+bool FrontendDf2::missionOpen(int i) {
+    // GOG Df2.exe 0x434670 (CD 0x42f8a0): completed missions count as available.
+    return soldier().get(0x30 + 4 * size_t(i)) != 0 || missionAvailable(i);
 }
 
 // ---------------------------------------------------------------- screens
@@ -904,12 +923,12 @@ void FrontendDf2::enter(Screen s) {
     case Screen::Credits: loadCredits(); break;
     case Screen::Options2:
         // 0x439ea0: snapshot the bindings on the first visit, scroll to the
-        // top (range forced to 39), clear the box, REMAP_CLICK.
+        // top (range forced to 50, GOG Df2.exe 0x43f44f; CD 39), clear the box, REMAP_CLICK.
         if (!haveKeySnapshot_) {
             std::memcpy(keySnapshot_.data(), &soldier().d[0x2e0], keySnapshot_.size());
             haveKeySnapshot_ = true;
         }
-        if (D2Button* b = btn("but_opt2_vsl")) { b->p1 = 39; b->p2 = 0; }
+        if (D2Button* b = btn("but_opt2_vsl")) { b->p1 = 50; b->p2 = 0; }
         remapMessage("REMAP_CLICK");
         refreshKeys();
         break;
@@ -1063,6 +1082,9 @@ std::string FrontendDf2::keyName(size_t row) {
     else if (vk == 0xBE) s = ".";
     else if (vk == 0xDB) s = "[";
     else if (vk == 0xDD) s = "]";
+    else if (vk == 0xBF) s = "/";    // GOG Df2.exe 0x43f9b0
+    else if (vk == 0xDC) s = "\\";   // GOG 0x43f9b0: SELECT_TARGETED's default
+    else if (vk == 0xDE) s = "'";
     else if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) s = std::string(1, char(vk));
     if (m) {
         if (vk) s += " " + upper(menuText("OR", "OR")) + " ";
@@ -1076,7 +1098,7 @@ void FrontendDf2::refreshKeys() {
     const D2Button* vsl = btn("but_opt2_vsl");
     const int top = vsl ? vsl->p2 : 0;
     for (int i = 0; i < 10; ++i) {
-        const size_t row = size_t(std::clamp(top + i, 0, 47));
+        const size_t row = size_t(std::clamp(top + i, 0, int(kDf2KeyRows) - 1));
         std::string label = menuText(kDf2Keys[row].label, kDf2Keys[row].label);
         if (!menuText_.find("MENU", kDf2Keys[row].label)) std::replace(label.begin(), label.end(), '_', ' ');
         char n[24];
@@ -1093,7 +1115,7 @@ void FrontendDf2::captureTick() {
     const size_t row = size_t(keyRow_);
     auto at = [&](size_t r, size_t o) { return soldier().get(0x2e0 + 12 * r + o); };
     if (keyMouse_) {
-        for (size_t r = 0; r < 48; ++r)
+        for (size_t r = 0; r < kDf2KeyRows; ++r)
             if (r != row && at(r, 4) == keyMouse_) soldier().set(0x2e4 + 12 * r, 0);
         soldier().set(0x2e4 + 12 * row, keyMouse_);
         remapMessage("REMAP_OK");
@@ -1101,7 +1123,7 @@ void FrontendDf2::captureTick() {
     } else if (!keyQueue_.empty()) {
         const uint32_t vk = keyQueue_.front();
         keyQueue_.pop_front();
-        for (size_t r = 0; r < 48; ++r)
+        for (size_t r = 0; r < kDf2KeyRows; ++r)
             if (r != row && uint32_t(at(r, 0)) == vk) soldier().set(0x2e0 + 12 * r, 0);
         if (df2KeyAllowed(vk)) {
             soldier().set(0x2e0 + 12 * row, int32_t(vk));
@@ -1311,7 +1333,7 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height));
             // Titles of the available missions under their dots (LCD10N; LCD10S selected).
             for (int i = 0; i < 28; ++i) {
-                if (kMissions[i].region != region_ || !missionAvailable(i)) continue;
+                if (kMissions[i].region != region_ || !missionOpen(i)) continue;
                 char name[16];
                 std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
                 const D2Button* dot = btn(name);
@@ -1358,12 +1380,56 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             const float s = 1024.f / float(briefMap_.width);
             blit(briefMap_, float(b.x), float(b.y), mapX_ / s, mapY_ / s, vw / s, vh / s);
         }
-        int n = 1;
-        for (auto [wx, wy] : waypoints_) {
-            const float x = float(b.x) + wx - mapX_, y = float(b.y) + wy - mapY_;
-            if (x >= b.x && x < b.user1 - 8 && y >= b.y && y < b.user2 - 10)
-                text("LCD10S", x, y, std::to_string(n), mnu_.fonts["LCD10S"].fg[0], 2);
+        // GOG Df2.exe 0x43d250 (CD 0x437fd0), event 7: three passes over the
+        // markers of 0x4045e0. sx/sy: the scroll; a point's screen position is
+        // view origin + point - scroll.
+        const int sx = int(mapX_), sy = int(mapY_), w = b.user1 - b.x, h = b.user2 - b.y;
+        auto visible = [&](int x0, int y0, int x1, int y1, int x, int y) { return x >= x0 && x <= x1 && y >= y0 && y <= y1; };   // 0x43d220
+        auto route = [](int marker) { return marker == 1 || marker == 2 || marker == 3; };
+        // 0x46c8e0: frame f of an icon strip of 8 frames stacked vertically, index 0 keyed.
+        auto icon = [&](const char* file, int frame, int x, int y) {
+            const HudImage im = this->file(file);
+            if (!im.texture || frame < 0 || frame >= 8) return;
+            const float fh = float(im.height) / 8.f;
+            blit(im, float(x), float(y), 0, fh * float(frame), float(im.width), fh);
+        };
+        // (1) The route: markers 1-3 joined in order by lines of 0xFFFFE000,
+        // clipped to the view (0x443ea0).
+        {
+            hud().clip(offX_ + float(b.x) * scale_, offY_ + float(b.y) * scale_, float(w) * scale_, float(h) * scale_);
+            bool first = true;
+            float px = 0, py = 0;
+            const Color c = argbColor(0xFFFFE000);
+            for (const MapMarker& mk : mapMarkers_) {
+                if (!route(mk.marker)) continue;
+                const float x = float(mk.x - sx + b.x), y = float(mk.y - sy + b.y);
+                if (!first)
+                    hud().line(offX_ + (px + 0.5f) * scale_, offY_ + (py + 0.5f) * scale_, offX_ + (x + 0.5f) * scale_, offY_ + (y + 0.5f) * scale_,
+                               std::max(1.f, scale_), c);
+                first = false;
+                px = x;
+                py = y;
+            }
+            hud().unclip();
+        }
+        // (2) Every other marker: frame marker-1 of its team's icon (0 green,
+        // 1 blue, 2 red, 3 yellow) at (x-4, y-4) when inside the view.
+        for (const MapMarker& mk : mapMarkers_) {
+            if (route(mk.marker) || !visible(sx, sy, sx + w - 8, sy + h - 8, mk.x - 4, mk.y - 4)) continue;
+            static const char* const kTeamIcon[4] = {"grn_icon.pcx", "blu_icon.pcx", "red_icon.pcx", "yel_icon.pcx"};
+            if (mk.team < 0 || mk.team > 3) continue;
+            icon(kTeamIcon[mk.team], mk.marker - 1, b.x - sx + mk.x - 4, b.y - sy + mk.y - 4);
+        }
+        // (3) Markers 1-3: the running number ("%d", LCD10S, left-aligned) at
+        // (x+4, y-5), then frame marker-1 of the yellow icon at (x-4, y-4).
+        int n = 0;
+        for (const MapMarker& mk : mapMarkers_) {
+            if (!route(mk.marker)) continue;
             ++n;
+            if (visible(sx, sy, sx + w - 16, sy + h - 4, mk.x - 4, mk.y - 4))
+                text("LCD10S", float(b.x - sx + mk.x + 4), float(b.y - sy + mk.y - 5), std::to_string(n), mnu_.fonts["LCD10S"].fg[0]);
+            if (visible(sx, sy, sx + w - 4, sy + h - 4, mk.x - 4, mk.y - 4))
+                icon("yel_icon.pcx", mk.marker - 1, b.x - sx + mk.x - 4, b.y - sy + mk.y - 4);
         }
         rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), 0xCA4409);
     }
@@ -1414,23 +1480,35 @@ void FrontendDf2::refreshCampaign() {
                 if (!soldier().get(0x30 + 4 * size_t(i))) all = false;
             }
         const bool mine = (r < 3 ? 1 : 2) == campaign_;
-        if (D2Button* b = btn(regionBtn[r])) {
-            b->drawstate = mine ? 1 : 4;
-            b->image = std::string(kRegionButton[r]) + (all && any ? "B" : "");
-            b->selected = r == region_;
-            layout(*b);
-        }
+        if (D2Button* b = btn(regionBtn[r])) b->image = std::string(kRegionButton[r]) + (all && any ? "B" : "");
         if (mine && !all && firstOpen < 0) firstOpen = r;
     }
     if (region_ < 0 || (region_ < 3 ? 1 : 2) != campaign_) region_ = firstOpen >= 0 ? firstOpen : (campaign_ == 1 ? 0 : 3);
+    // GOG Df2.exe 0x434800 (CD 0x42fa30): every region and mission button
+    // starts at drawstate 0, unselected. A region of this campaign is selected
+    // when it is the current one and drawn only when available (0x434670: one
+    // of its missions completed or unlocked); a mission dot is drawn only when
+    // available and in this campaign's current region. Drawstate 0 is neither
+    // drawn nor clickable.
+    for (int r = 0; r < 5; ++r) {
+        const bool mine = (r < 3 ? 1 : 2) == campaign_;
+        bool open = false;
+        for (int i = 0; i < 28; ++i)
+            if (kMissions[i].region == r && missionOpen(i)) open = true;
+        if (D2Button* b = btn(regionBtn[r])) {
+            b->drawstate = mine && open ? 1 : 0;
+            b->selected = mine && r == region_;
+            layout(*b);
+        }
+    }
     for (int i = 0; i < 28; ++i) {
         char name[16];
         std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
         if (D2Button* b = btn(name)) {
-            const bool shown = kMissions[i].region == region_;
-            b->drawstate = !shown ? 0 : missionAvailable(i) ? 1 : 4;
+            const bool shown = missionOpen(i) && kMissions[i].campaign == campaign_ && kMissions[i].region == region_;
+            b->drawstate = shown ? 1 : 0;
             b->image = soldier().get(0x30 + 4 * size_t(i)) ? "IMAGEBTN37" : "IMAGEBTN36";
-            b->selected = i == missionSel_;
+            b->selected = shown && i == missionSel_;
             layout(*b);
         }
     }
@@ -1458,7 +1536,7 @@ void FrontendDf2::refreshQuick() {
 void FrontendDf2::loadBriefing() {
     briefLine_ = 0;
     briefMap_ = {};
-    waypoints_.clear();
+    mapMarkers_.clear();
     std::vector<uint8_t> d;
     Mission m;
     if (vfs_.read(bms_ + ".BMS", d)) {
@@ -1472,29 +1550,31 @@ void FrontendDf2::loadBriefing() {
                 RgbaImage im;
                 if (decodeRgbaImage(raw, im)) briefMap_ = hud().makeImage(im.width, im.height, im.rgba);
             }
-            // 0x404390 converts every point to the 1024² picture (0x4045dd..
-            // 0x404639): px = 0x200 + (x16.16 >> 18), py = 0x200 - (y >> 18),
-            // a quarter of the map metres about the centre.
-            auto toPic = [](float x, float y) {
-                const int32_t xi = int32_t(std::lround(x * 65536.f)), yi = int32_t(std::lround(y * 65536.f));
-                return std::pair<float, float>{float(0x200 + (xi >> 18)), float(0x200 - (yi >> 18))};
+            // GOG Df2.exe 0x4045e0 (CD 0x404390), BMS version >= 15 only: the
+            // objects of the four groups in file order whose marker byte
+            // (+0x4C) is set and whose flags byte (+0x0C) & 0x50 is clear, up
+            // to 50, as {marker, x, y, team byte +0x43}. Points go to the 1024²
+            // picture: px = 0x200 + (x16.16 >> 18), py = 0x200 - (y >> 18).
+            auto byteAt = [](const MissionObject& o, int off) {
+                return int8_t(uint8_t(uint32_t(o.raw[off / 4]) >> (8 * (off % 4))));
             };
-            // The player's route (path flag 2).
-            for (const auto& p : m.paths)
-                if (p.flags & 2) {
-                    for (int idx : p.points)
-                        if (const MissionObject* o = m.inGroup(2, idx); o && waypoints_.size() < 50) waypoints_.push_back(toPic(o->x, o->y));
-                    break;
+            int32_t cx = 0, cy = 0;
+            if (m.version >= 15) {
+                for (const auto& o : m.objects) {
+                    const int marker = byteAt(o, 0x4C);
+                    const bool hidden = (uint8_t(byteAt(o, 0x0C)) & 0x50) != 0;
+                    if (marker != 0 && !hidden && mapMarkers_.size() < 50)
+                        mapMarkers_.push_back({marker, 0x200 + (o.raw[4] >> 18), 0x200 - (o.raw[5] >> 18), byteAt(o, 0x43)});
+                    // Centre: the last group-2 object of type 0x1796 = 6038,
+                    // "Briefing Map Center" (0x404796), unless it is a marker
+                    // with flags & 0x50; without one, (0, 0) -> (512, 512).
+                    if (o.group == 2 && o.type == 0x1796 && (marker == 0 || !hidden)) { cx = o.raw[4]; cy = o.raw[5]; }
                 }
-            // Centre: the last group-2 marker of type 0x1796 = 6038, item
-            // 106038 "Briefing Map Center" (0x404546..0x404559); without one
-            // the centre stays at (0, 0) -> the picture's middle (512, 512).
-            float mx = 0, my = 0;
-            for (const auto& o : m.objects)
-                if (o.group == 2 && o.type == 6038) { mx = o.x; my = o.y; }
-            const auto [px, py] = toPic(mx, my);
-            mapX_ = std::clamp(px - 140.f, 0.f, 1024.f - 279.f);
-            mapY_ = std::clamp(py - 160.f, 0.f, 1024.f - 323.f);
+            }
+            // GOG 0x43cdf0: scroll = centre - ((view - 1) >> 1), clamped to
+            // [0, 1024 - view] for the 279x323 view.
+            mapX_ = float(std::clamp(0x200 + (cx >> 18) - (278 >> 1), 0, 1024 - 279));
+            mapY_ = float(std::clamp(0x200 - (cy >> 18) - (322 >> 1), 0, 1024 - 323));
         }
     }
     // Page init (0x4376f0): the ramp cleared, then 0x43778f -> 0x4384f0.
@@ -1732,7 +1812,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
         }
     } else if (cb == "opt2_DeleteKey") { remapMessage("REMAP_SELECT"); keyDelete_ = true; }
     else if (cb == "opt2_Defaults") {
-        for (size_t i = 0; i < 48; ++i) {
+        for (size_t i = 0; i < kDf2KeyRows; ++i) {
             soldier().set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk));
             soldier().set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse));
             soldier().set(0x2e8 + 12 * i, 0);
@@ -2215,7 +2295,7 @@ int FrontendDf2::run() {
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
                 g.bindings.clear();
-                for (size_t i = 0; i < 48; ++i) {
+                for (size_t i = 0; i < kDf2KeyRows; ++i) {
                     const uint32_t vk = uint32_t(soldier().get(0x2e0 + 12 * i)) & 0xFFFF, m = uint32_t(soldier().get(0x2e4 + 12 * i));
                     const uint32_t mask = m == 1 ? 1 : m == 2 ? 2 : m == 3 ? 0x10 : 0;
                     g.bindings.push_back({kDf2Keys[i].game, vk | mask << 16});
