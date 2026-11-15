@@ -23,6 +23,7 @@ public:
     const std::vector<std::string>& text() const { return text_; }
     // Null if the section or key does not exist.
     const std::string* find(const std::string& section, const std::string& key) const;
+    bool hasSection(const std::string& section) const;
     // An entry's second dword: a briefing-map point (u16 x, u16 y), or 0.
     uint32_t position(const std::string& section, const std::string& key) const;
 
