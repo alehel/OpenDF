@@ -513,7 +513,18 @@ First differences from DF1:
     team's speed (the path only fires its events), horn 803 on starting,
     loop 808 (0x42c4a0, 0x401340); carg cars copy the first loco's step and
     rock ±1.4° every 32 m (0x42c440, coupling 0x45bd1f); DF2's veh0 eases its
-    steer by at most 0.18° a tick (0x41efa1);
+    steer by at most 0.18° a tick (0x41efa1) and thinks every 0x20 ticks on
+    a path, 0x40 off it (GOG 0x4237c0). The BRDM (item 102023, graphic
+    number 0x7e7) has a turret gun (GOG 0x423a1e; none with AI flag 1):
+    each think it takes a target through the soldiers' scan (0x417830) drawn
+    against rand, with a pause of 32..95 and a yaw bias scaled by
+    100 / accuracy (0x424680), re-checks the sight line every 0xC0 ticks
+    (0x424780) and aims the turret at the last known point (yaw ±135°,
+    pitch −5.6..45° from the hull, 0x424470); every tick the turret turns
+    0x200000 toward it and, within 0x10000000, fires .50 (mode 53) bursts
+    of 16..47 ticks, one round per 16, pauses 64..127, the bias ×3/4 each
+    time (0x423ac0, 0x424550); `brdm` draws the turret, gun, steered front
+    wheels and the muzzle flash for one frame after a round (0x4295f0);
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up
     (and, INFERRED from the missions, the player's start marker and
     teleport targets that high: the trace found no code that sets the chute
