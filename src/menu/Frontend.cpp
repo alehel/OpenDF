@@ -1034,7 +1034,9 @@ void Frontend::profileDefaults(Profile& p) {
 void Frontend::loadBriefingMap() {
     // 0x440bdc: records of all four groups with map type +0x4C, not hidden
     // (+0x0C bits 0x10/0x40), at most 200; map point (x>>18)+512, 512-(y>>18).
-    // The view starts on the first group-3 "Briefing Map Center" (6038).
+    // The view starts on the "Briefing Map Center" (6038) of group 2 (count
+    // at +0xA0), last match wins, for untyped or visible typed records
+    // (GOG Df.exe 0x44a400, LAB_0044a7a9).
     mapItems_.clear();
     markerOn_ = false;
     mapCenter_[0] = mapCenter_[1] = 512;
@@ -1044,19 +1046,17 @@ void Frontend::loadBriefingMap() {
     if (vfs_.read(n, d) && d.size() >= 0x10C && std::memcmp(d.data(), "BMS", 3) == 0 && d[3] >= 0x0D) {
         auto i32 = [&](size_t o) { int32_t v = 0; if (o + 4 <= d.size()) std::memcpy(&v, &d[o], 4); return v; };
         size_t o = 0x10C;
-        bool centre = false;
         for (int g = 0; g < 4; ++g) {
             const int count = i32(0x98 + 4 * size_t(g));
             for (int k = 0; k < count && o + 0x60 <= d.size(); ++k, o += 0x60) {
                 const int mx = (i32(o + 0x10) >> 18) + 512, my = 512 - (i32(o + 0x14) >> 18);
-                if (g == 3 && !centre && i32(o) == 6038) { centre = true; mapCenter_[0] = mx; mapCenter_[1] = my; }
+                if (g == 2 && i32(o) == 6038 && (d[o + 0x4C] == 0 || !(d[o + 0x0C] & 0x50))) { mapCenter_[0] = mx; mapCenter_[1] = my; }
                 if (d[o + 0x4C] && !(d[o + 0x0C] & 0x50) && mapItems_.size() < 200)
                     mapItems_.push_back({d[o + 0x4C], mx, my, d[o + 0x43]});
             }
         }
     }
-    centreMap(mapCenter_[0], mapCenter_[1]);
-}
+    centreMap(mapCenter_[0], mapCenter_[1]);}
 
 void Frontend::centreMap(int x, int y) {
     // 0x411df0: origin = point - 128 clamped to 0..768, set at once (view,
@@ -1906,7 +1906,12 @@ void Frontend::ownerDraw(MnuButton& b) {
             const bool done = prof().get(0x30 + camp_ * 0x44 + 4 * i) != 0;
             const bool hov = std::abs(mouseX_ - b.x - dx) <= 10 && std::abs(mouseY_ - b.y - dy) <= 10;
             const char* dot = done ? "ImageCampMapFinsDot" : i == mis_ ? "ImageCampMapSeltDot" : hov ? "ImageCampMapPassDot" : "ImageCampMapRegDot";
-            blit(image(dot), float(b.x + dx - 5), float(b.y + dy - 5), 0, 0, 11, 11, false);
+            // Colour-keyed on palette index 0 (GOG Df.exe 0x40a620 -> 0x40e900),
+            // so the round dot's corners show the map.
+            const auto pit = mnu_.images.find(upperCase(dot));
+            const std::string ik = (pit == mnu_.images.end() ? std::string() : upperCase(pit->second)) + "#k";
+            if (!images_.count(ik) && pit != mnu_.images.end()) images_[ik] = hud().loadImage(vfs_, upperCase(pit->second), false, true);
+            blit(images_[ik], float(b.x + dx - 5), float(b.y + dy - 5), 0, 0, 11, 11, false);
             char key[32];
             std::snprintf(key, sizeof key, "STR_VC%02dM%02d", camp_ + 1, i + 1);
             const std::string* nm = campText_.find("Mission Names", key);
@@ -2498,6 +2503,25 @@ int Frontend::run() {
             if (outcome_.won) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
             else text += " ~ ~ ";
             text += body ? *body : "Unable to find mission debriefing text";
+            // One left-to-right, non-recursive {ADD}<key> pass into the 0x1000
+            // buffer (GOG Df.exe 0x41ef80): the key runs to the next space or
+            // the end, that space is dropped, and [Briefing<m>]/<key> (or
+            // "Unable to find '<key>'") is inserted in its place.
+            std::string out;
+            for (size_t i = 0; i < text.size();) {
+                if (text.compare(i, 5, "{ADD}") == 0) {
+                    size_t e = i + 5;
+                    while (e < text.size() && text[e] != ' ') ++e;
+                    const std::string k = text.substr(i + 5, e - i - 5);
+                    const std::string* add = campText_.find(sec, k);
+                    out += add ? *add : "Unable to find '" + k + "'";
+                    i = e < text.size() ? e + 1 : e;
+                } else {
+                    out += text[i++];
+                }
+            }
+            if (out.size() > 0xFFF) out.resize(0xFFF);
+            text = std::move(out);
             if (transitionDone()) {   // teletyped once from init, 1 char/tick (0x4240c3)
                 ensureTty(ttyDebf_, text, 86, 104, 468, 272, "AVA10B", 1);
                 drawTty(ttyDebf_);
