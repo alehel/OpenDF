@@ -4151,8 +4151,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         const std::string dead = df2Text("Misc", "STRMISC11", "You are dead.");
         hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
     } else if (playerDead() && missionResult_ < 0) {
+        // GOG Df.exe 0x426c30: at the view's top ([0x67dba0]) + 20.
         const char* dead = "You Are Dead";
-        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudMessage, s.text());
     }
 
     if (friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
@@ -4180,8 +4181,22 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         drawDf2Top(s);
         drawDf2Bottom(s);
     } else {
+        // Letterbox 2 (GOG Df.exe 0x404ba0 / 0x429580 / 0x426c30): the bars
+        // move in with the view, the top bar to H/8..H/4 and the bottom bar
+        // to 3H/4..7H/8 with their contents and the message lines (placed
+        // from [0x67dbac] / [0x67dbb0] / [0x67dba8], 96 virtual further in);
+        // the outer bands stay black. Drawn here by moving the viewport.
+        const int off = (letterbox_ - 1) * (int(s.h) >> 3);
+        auto shift = [&](int dy) {
+            hud_.end();
+            glViewport(0, dy, int(s.w), int(s.h));
+            hud_.begin(int(s.w), int(s.h));
+        };
+        if (off) shift(-off);
         drawTopBar(s);
+        if (off) shift(off);
         drawBottomBar(s);
+        if (off) shift(0);
     }
     // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
     // multiplied by (255, 255 - v, 255 - v) / 256, a red tint of strength v.
@@ -6212,7 +6227,10 @@ void Game::drawMissionEnd(const Screen& s) {
             hud_.text(s.vx(512) - hud_.textWidth(lines[i], s.text()) / 2, s.vy(top + tops[i]), lines[i], kHudPureGreen, s.text());
         return;
     }
-    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72.5f), y1 = s.y(153.75f), t = s.px();
+    // GOG Df.exe 0x426f20 places it from the view's top [0x67dba0] (96 or,
+    // with letterbox 2, 192 virtual): the panel at +20..+150, the lines at
+    // +40, +80, +110.
+    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.playY + s.vy(20), y1 = s.playY + s.vy(150), t = s.px();
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     hud_.rect(x0, y0, x1 - x0, t, kHudBright);
     hud_.rect(x0, y1 - t, x1 - x0, t, kHudBright);
@@ -6220,9 +6238,9 @@ void Game::drawMissionEnd(const Screen& s) {
     hud_.rect(x1 - t, y0, t, y1 - y0, kHudBright);
     const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
                            "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
-    const float tops[] = {85, 110, 128.75f};
+    const float tops[] = {40, 80, 110};
     for (int i = 0; i < 3; ++i)
-        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.y(tops[i]), lines[i], kHudPureGreen, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.playY + s.vy(tops[i]), lines[i], kHudPureGreen, s.text());
 }
 
 void Game::drawGoals(const Screen& s) {
@@ -6263,7 +6281,7 @@ void Game::drawGoals(const Screen& s) {
         return;
     }
     const float ts = s.text(), sh = s.px();
-    float y = 72.5f;
+    float y = s.playY / s.u + 12.5f;   // GOG Df.exe 0x429160: the view's top [0x67dba0] + 20 virtual
     auto line = [&](const std::string& text, Color c) {
         const float x = s.rx(625) - hud_.textWidth(text, ts);
         hud_.text(x + sh, s.y(y) + sh, text, kHudDark, ts);
