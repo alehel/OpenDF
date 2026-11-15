@@ -48,7 +48,10 @@ bool ItemDefs::parse(const std::string& text) {
         }
         if (!open) continue;
         if (line == "end") {
-            if (cur.id) items_[cur.id] = cur;
+            if (cur.id) {
+                if (items_.empty()) firstId_ = cur.id;   // file order: the 'null' marker
+                items_[cur.id] = cur;
+            }
             open = false;
             continue;
         }
@@ -106,9 +109,14 @@ const ItemDef* ItemDefs::byId(int id) const {
     return it == items_.end() ? nullptr : &it->second;
 }
 
+// Delta Force (GOG 0x4828c0, called by the BMS loader 0x449710 with the raw
+// record type): the ITEMS.DEF parser stores id - 100000 (0x481d18), the lookup
+// scans for the type and returns item index 0 when nothing matches. So the one
+// mistyped `id 3034` ("inhut2", stored as -96966) is never found: BMS type 3034
+// (two objects in C04M05) becomes the first ITEMS.DEF item, the 'null' marker.
 const ItemDef* ItemDefs::byMissionType(uint32_t type) const {
     if (const ItemDef* d = byId(100000 + int(type))) return d;
-    return byId(int(type));
+    return missIsFirst_ ? byId(firstId_) : nullptr;
 }
 
 bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error) {

@@ -41,14 +41,19 @@ class ItemDefs {
 public:
     bool parse(const std::string& text);
     // BMS records store the item id minus 100000. ITEMS.DEF has one item
-    // whose id was typed without the leading 10 (3034), so both are tried.
+    // whose id was typed without the leading 10 (3034); the game never finds
+    // it. A type with no item gives nullptr, or with setMissIsFirst(true)
+    // (Delta Force, GOG 0x4828c0) the first item in the file ('null').
     const ItemDef* byMissionType(uint32_t type) const;
+    void setMissIsFirst(bool on) { missIsFirst_ = on; }
     const ItemDef* byId(int id) const;
     const ItemDef* byName(const std::string& name) const;
     size_t size() const { return items_.size(); }
 
 private:
     std::map<int, ItemDef> items_;
+    int firstId_ = 0;
+    bool missIsFirst_ = false;
 };
 
 constexpr int kItemPlayerStart = 106001;
