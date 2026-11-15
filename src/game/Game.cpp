@@ -1057,6 +1057,11 @@ bool Game::loadMission(int index) {
     wildlife_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
     wildlife_.spawnEffect = [this](int slot, Vec3 at) { spawnEffect(slot, at); };
     wildlife_.bitePlayer = [this](Vec3 from) { hurtPlayer(1, 1, from, 2); };   // 0x455180: hp - 1, kind 1, part 2
+    wildlife_.spawnObject = [this](int id, Vec3 at, float heading) {   // 0x414850 (a bird tree's sparrows)
+        const ItemDef* it = items_.byId(id);
+        const GpuModel* m = it && !it->graphic.empty() ? models_.get(vfs_, it->graphic) : nullptr;
+        return m ? world_.spawn(it, m, at, heading) : -1;
+    };
     // AI rounds leave from the weapon (0x46ad9c; DF2.EXE 0x414f20 the same):
     // the body (no pitch) x the posed right hand (mesh 7) x the held-weapon
     // turn x the mode's hardpoint (+0x90; DF2 +0x30) of its third-person

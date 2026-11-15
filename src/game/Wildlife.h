@@ -1,8 +1,10 @@
 // Delta Force 2's animals (ITEMS.DEF ai_function / move_function, GOG
 // Df2.exe ai table 0x4af100, move table 0x4c37xx): vultures `vult` (think
 // 0x42dfe0, move 0x42e1c0), penguins `peng` (think 0x42f030, move 0x42f430)
-// and fish / piranhas `prnh` (think 0x42db20, move 0x42de00). Each think
-// sets its own interval (+0xFC); the movers run every tick.
+// and fish / piranhas `prnh` (think 0x42db20, move 0x42de00); bird trees
+// `btre` (think 0x42d170, no mover) and the sparrows they flush `spar`
+// (think 0x42d030, move 0x42d0d0). Each think sets its own interval
+// (+0xFC); the movers run every tick.
 #pragma once
 
 #include "../formats/Mission.h"
@@ -26,9 +28,12 @@ public:
     std::function<void(int slot, Vec3 at)> spawnEffect;
     // The piranha's bite (blast kind 4, 0x455180) reached the player: 1 hp.
     std::function<void(Vec3 from)> bitePlayer;
+    // A new object of the item with this id (0x414850), its world object
+    // index or -1 (no such item or model).
+    std::function<int(int id, Vec3 at, float heading)> spawnObject;
 
 private:
-    enum class Kind { Vulture, Penguin, Fish };
+    enum class Kind { Vulture, Penguin, Fish, BirdTree, Sparrow };
     struct Animal {
         int object = -1;
         Kind kind = Kind::Vulture;
@@ -40,7 +45,9 @@ private:
         int32_t speed = 0, want = 0;   // +0x90, +0x9C (16.16 m/s)
         int32_t vx = 0, vy = 0;        // +0x3C, +0x40 (16.16 m a tick, DF x east / y north)
         int32_t vz = 0, az = 0;        // vult +0xC0, peng +0xBC, prnh +0xB0 / +0xB4 (16.16 m a tick)
-        int32_t phase = 0;             // peng +0xB4 (the waddle)
+        int32_t phase = 0;             // peng +0xB4 (the waddle); spar +0xB0 (its swing)
+        bool swingUp = false;          // spar +0xB4
+        int rest = 0;                  // btre +0xB0: thinks left before it can flush again
         int state = 0;                 // peng +0xC0 (0 land .. 4); prnh +0xC0 (jaw / tail flick)
         float homeX = 0, homeZ = 0;    // vult ai+0x64 / +0x68
         int target = -1;               // ai+0x54: world object, -3 the player
@@ -60,6 +67,9 @@ private:
     void fishThink(World& world, AiSystem& ai, Animal& a, const AiSystem::PlayerView& player, bool playerSwimming);
     void fishAttack(World& world, AiSystem& ai, Animal& a, const AiSystem::PlayerView& player);
     void fishMove(World& world, Animal& a);
+    void birdTreeThink(World& world, AiSystem& ai, Animal& a, const AiSystem::PlayerView& player, std::vector<Animal>& flushed);
+    void sparrowThink(World& world, Animal& a);
+    void sparrowMove(World& world, Animal& a);
     bool steer(World& world, const Animal& a, uint32_t& yaw, int32_t& dist, int32_t& radius) const;
     bool nextPoint(World& world, AiSystem& ai, Animal& a);
     void depth(World& world, Animal& a, int32_t z, int32_t band, bool full);
