@@ -199,6 +199,11 @@ private:
     float rangeToAim() const;
     // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
     bool scopeShown() const { return arsenal_.scopeShown(); }
+    // GOG Df2.exe 0x455790: the player not dead (+0x64 & 0x422004), the scope
+    // flag with a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40]
+    // 0; OpenDF's view leaves the player only once he is dead) and not
+    // moving (+0x74 & 0x18): the scope inset is up.
+    bool df2ScopeActive() const { return arsenal_.scopeShown() && !playerDead(); }
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -2984,6 +2989,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
+    // GOG Df2.exe 0x41f150 case 0x61: 0x44c7e0(Shift ? -1 : +1) when
+    // 0x455790 holds (the binding has flag 0x200, so Shift does not block it).
+    case Action::ScopeMag: if (arsenal_.df2() && df2ScopeActive()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
@@ -3599,7 +3607,8 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     // 640-wide original (r = 100), across the inset's width.
     (void)fovY;
     const float size = 2 * r;
-    const int mag = std::max(1, int(arsenal_.zoom()));
+    // GOG Df2.exe 0x4557e0 takes the scope power through 0x44e6a0.
+    const int mag = std::max(1, arsenal_.df2() ? arsenal_.df2ScopeMagnification() : int(arsenal_.zoom()));
     float focal;
     if (df2Hud_.on) {
         // GOG Df2.exe 0x4557e0 (at 0x455830): the FOV is 0x46500000 /
@@ -4091,6 +4100,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the scope power "%2ix" at (700, 480)
+                // in the same colour ([0x67d370]).
+                std::snprintf(buf, sizeof buf, "%2ix", arsenal_.scopePower());
+                hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
             }
         }
         drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab

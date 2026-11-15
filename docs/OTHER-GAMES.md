@@ -482,7 +482,12 @@ First differences from DF1:
     0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
     in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
-    DF1's 28 / mag whole degrees;
+    DF1's 28 / mag whole degrees; in GOG Df2.exe mag is the scope power
+    [0x79a698] in slots 3-5 (0x44e6a0: kept to 2..the mode's scope), set
+    to slot 3's scope at the loadout while 0 (0x44eeb0) and stepped by Scope
+    Mag (scopemag, E, command 0xc2 -> 0x44c7e0; Shift steps down, wrapping
+    2 <-> scope) while 0x455790 holds, shown as "%2ix" at (700, 480) in the
+    zeroing's yellow (0x455be0);
     night vision (key N, on at the start of night missions: 0x44781e) as an
     ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
     scope image green ×4 at night. DF2 has no "Player Health: Easy".

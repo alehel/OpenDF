@@ -421,6 +421,8 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
         slots_[kMountSlot] = 0x37;
         slots_[kMountGlSlot] = 0x38;
     }
+    // 0x44eeb0: the scope power starts as slot 3's mode's scope, once.
+    if (scopePower_ == 0 && slots_[3] > 0) scopePower_ = modes_[size_t(slots_[3])].scope;
     mount_ = -1;
     mountGl_ = false;
     camera_ = -1;

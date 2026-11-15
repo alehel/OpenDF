@@ -206,6 +206,30 @@ public:
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
+    // GOG Df2.exe's scope power [0x79a698]: set to slot 3's mode's scope at
+    // the loadout (0x44eeb0) while still 0 (kept across missions), stepped
+    // by Scope Mag (0x44c7e0, command 0xc2 'scopemag', key E, Shift steps
+    // down; the caller checks 0x455790) between 2 and the held mode's scope,
+    // wrapping: past the scope it goes to 2, under 2 to the scope; nothing
+    // for a mode without one.
+    void scopeMagStep(int d) {
+        const int scope = mode().scope;
+        if (scope == 0) return;
+        const int v = scopePower_ + d;
+        scopePower_ = v > scope ? 2 : v < 2 ? scope : v;
+    }
+    int scopePower() const { return scopePower_; }
+    // 0x44e6a0, the scope inset's magnification (0x4557e0): in slots 3-5 the
+    // power, first kept to 2.. the mode's scope (and stored so), else the
+    // mode's scope.
+    int df2ScopeMagnification() {
+        const int scope = mode().scope;
+        if (current_ < 3 || current_ > 5) return scope;
+        if (scope != 0 && scopePower_ <= 1) scopePower_ = 2;
+        else if (scopePower_ < 0) scopePower_ = 0;
+        if (scopePower_ > scope) scopePower_ = scope;
+        return scopePower_;
+    }
     float zeroElevation() const {
         const auto& e = mode().elevation;
         return current_ >= 3 && current_ <= 5 && zero_ < int(e.size()) ? float(e[size_t(zero_)]) * 65536.f / 4294967296.f * 6.28318531f : 0.f;
@@ -386,6 +410,7 @@ private:
     float clock_ = 0;
     uint64_t debugTick_ = 0;   // ticks run (OPENDF_DEBUGWEAPON)
     int zoomLevel_ = 0;
+    int scopePower_ = 0;   // GOG Df2.exe [0x79a698]
     float flashTimer_ = 0;
     int flashMeshes_ = 0;
     float kick_[3] = {0, 0, 0};
