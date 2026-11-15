@@ -377,7 +377,7 @@ public:
         MissionOutcome o;
         o.played = true;
         o.won = missionResult_ == kPlayerSide;
-        for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
+        o.kills = finalKills_ >= 0 ? finalKills_ : playerKills();
         o.quit = quit_;
         o.crosshairs = crosshair_;
         o.showGun = gunVisible_;
@@ -387,6 +387,14 @@ public:
         o.replayed = replayed_;
         return o;
     }
+    // The player's kills: counted before the objects are freed at the end
+    // of run() (finalKills_), else from the live list.
+    int playerKills() const {
+        int k = 0;
+        for (const auto& w : world_.objects) k += (w.person && w.dead && w.killer == -3) ? 1 : 0;
+        return k;
+    }
+    int finalKills_ = -1;
     // Won attempts left with Space (Delta Force), already recorded.
     bool earlierWin_ = false;
     int earlierKills_ = 0;
@@ -8984,6 +8992,7 @@ int Game::run() {
         }
     }
     leaveMissionFlags();   // the mission loop has ended (GOG Df.exe 0x40420a -> 0x401e70)
+    finalKills_ = playerKills();   // outcome() is read after the objects are gone
     // GL objects must go before the context.
     world_.objects.clear();
     terrainPtr_.reset();

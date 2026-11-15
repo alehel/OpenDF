@@ -887,7 +887,7 @@ int FrontendDf2::wrapped(const std::string& fontName, float x0, float y0, float 
     const int count = breakLines(fontName, int(x1 - x0), s.substr(0, 3999), &lines);
     const float hA = float(f.height);
     float y = y0;
-    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + hA + 3 <= y1; ++i, y += hA + 4) text(fontName, x0, y, lines[i], color);
+    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + hA + 3 <= y1; ++i, y += hA + (cdExe_ ? 3 : 4)) text(fontName, x0, y, lines[i], color);
     return count;
 }
 
@@ -2730,7 +2730,8 @@ int FrontendDf2::run() {
                 // finished run (those replayed with Space first, 0x466ad0 ->
                 // 0x464140, already recorded when the window is then closed):
                 // a single-player win, campaign or quick, adds the kills
-                // (+0x29c) and one completed mission (+0x2a4, every win); a
+                // (+0x29c) and one completed mission (+0x2a4, every win; GOG
+                // only); a
                 // campaign mission ([0x4c3f88], index [0x4c3f70] >= 0) is also
                 // marked done. Nothing on a loss. The flags word goes back
                 // every time (it only changes on a win, 0x464140). +0x2b0 /
@@ -2739,7 +2740,7 @@ int FrontendDf2::run() {
                     if (!won) return;
                     if (fromCampaign_ && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
                     soldier().set(0x29c, soldier().get(0x29c) + kills);
-                    soldier().set(0x2a4, soldier().get(0x2a4) + 1);
+                    if (!cdExe_) soldier().set(0x2a4, soldier().get(0x2a4) + 1);   // CD 0x437550 has no +0x2a4
                 };
                 for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills);
                 if (out.quit) {

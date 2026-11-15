@@ -2569,7 +2569,17 @@ int Frontend::run() {
                     cfg_.set("showgun", outcome_.showGun ? 1 : 0);
                 }
                 if (outcome_.letterbox) cfg_.set("window_size", outcome_.letterbox);   // 0x407980: back to df.cfg
-                if (outcome_.quit) break;
+                if (outcome_.quit) {
+                    // GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 / 0x407980:
+                    // an attempt won and then replayed with Space was recorded
+                    // at once, so it stays recorded when the window is closed.
+                    if (outcome_.earlierWin) {
+                        prof().set(0x70 + camp_ * 0x44, int32_t(flags));
+                        prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
+                        prof().set(0x664, prof().get(0x664) + outcome_.earlierKills);
+                    }
+                    break;
+                }
                 // 0x40e5d4 (GOG Df.exe 0x407de0): only a win records
                 // anything, the mission done and its kills (+0x664; the two
                 // other stats it adds, +0x678 and +0x674, are not kept yet);
