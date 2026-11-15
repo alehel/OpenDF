@@ -78,6 +78,17 @@ Because rol-7 has period 32 on a 32-bit word, the keystream is a fixed
 Standard ZSoft PCX v5, 8 bpp, one plane, RLE, with a 256-colour VGA palette
 after a `0x0C` marker at the end.
 
+DF.EXE also writes PCX: the PrintScreen command (Shift+P in a mission,
+table flag 0x40, command 2; Shift+P in the menus, GOG 0x40d9e0) saves the
+screen to the first free `sshot000.pcx`..`sshot998.pcx` (GOG 0x473eb0;
+the CD's 0x426afc `screen00.pcx`..`screen98.pcx`) in the game folder,
+nothing when all exist. Header 0x0A, 5, 1, 8, window 0, 0, w − 1, h − 1,
+75 dpi, bytes per line the width rounded up to even, palette info 1; an
+8-bit screen as one plane plus the palette, a hi-colour one as three
+planes (R, G, B rows) and no palette. Runs are at most 63 and stop at the
+row's end; a lone byte with its top two bits set goes out as 0xC1, byte.
+OpenDF writes the drawn window that way, 24-bit.
+
 ## TRN terrain descriptor
 
 Text, `key value` per line, `//` comments. Example (`DFG1.TRN`):

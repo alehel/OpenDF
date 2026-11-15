@@ -30,7 +30,7 @@ const ActionName kNames[] = {
     {Action::ThirdPersonL, "3rdPersonl"}, {Action::CameraLeft, "CameraLeft"}, {Action::CameraRight, "CameraRight"},
     {Action::CameraUp, "CameraUp"}, {Action::CameraDown, "CameraDown"}, {Action::CameraZoomIn, "CameraZoomIn"},
     {Action::CameraZoomOut, "CameraZoomOut"}, {Action::FoCamera, "fo"}, {Action::FoNext, "tab"},
-    {Action::ScopeMag, "scopemag"},
+    {Action::ScopeMag, "scopemag"}, {Action::PrintScreen, "PrintScreen"},
 };
 
 // Built-in copy of DF.EXE's defaults (virtual-key code | mouse << 16).
@@ -50,6 +50,7 @@ const Default kDefaults[] = {
     {"CameraLeft", 0x4c}, {"CameraRight", 0xba}, {"CameraUp", 0x50}, {"CameraDown", 0xbe},
     {"CameraZoomIn", 0xdb}, {"CameraZoomOut", 0xdd}, {"fo", 0x78}, {"tab", 0x09},
     {"mapterrain", 0x79}, {"mapelevation", 0x7a},   // F10 / F11 (GOG Df.exe 0x4fc3a8..)
+    {"PrintScreen", 0x50},                          // P, with Shift (flag 0x40)
 };
 
 // Left/right variants of the modifier keys count as the same key.
@@ -221,8 +222,14 @@ Action Controls::df2MouseAction(int mask) const {
     return Action::Count;
 }
 
+Action Controls::shiftActionFor(SDL_Scancode key) const {
+    const SDL_Scancode k = bind_[int(Action::PrintScreen)].key;
+    return k != SDL_SCANCODE_UNKNOWN && (k == key || partner(k) == key) ? Action::PrintScreen : Action::Count;
+}
+
 Action Controls::actionFor(SDL_Scancode key) const {
     for (int a = 0; a < int(Action::Count); ++a) {
+        if (Action(a) == Action::PrintScreen) continue;
         const SDL_Scancode k = bind_[a].key;
         if (k != SDL_SCANCODE_UNKNOWN && (k == key || partner(k) == key)) return Action(a);
     }

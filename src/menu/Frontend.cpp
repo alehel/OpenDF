@@ -178,6 +178,7 @@ private:
     // The CD's 44 key rows and profile version 0x1A, or the GOG Df.exe's 46
     // and 0x1B (its defaults from DFDK.KEY, 0x407040).
     bool gogProfile_ = false;
+    bool printScreen_ = false;   // Shift+P: write the next drawn frame (0x473eb0)
     int keyRows_ = kKeyRowsCd;
     std::array<std::array<uint32_t, 3>, kKeyRowsGog> keyDefaults_{};
     void loadKeyDefaults();
@@ -2198,6 +2199,9 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
         return;
     }
     if (screen_ == Start) { if (leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; } return; }
+    // GOG 0x40d9e0 (CD the same): 'P' with the key word's high half 0x100
+    // (Shift alone) saves the screen (0x473eb0), besides any hot key.
+    if (sym == SDLK_p && (k.keysym.mod & KMOD_SHIFT) && !(k.keysym.mod & (KMOD_CTRL | KMOD_ALT))) printScreen_ = true;
     const MnuMenu* m = mnu_.menu(menu_);
     if (!m) return;
     auto fire = [&](const std::string& name) {
@@ -2738,6 +2742,19 @@ int Frontend::run() {
         hud().end();
         captureTo(lastTex_);
         haveLast_ = true;
+        if (printScreen_) {
+            // Shift+P (GOG 0x40d9e0 -> 0x473eb0, CD 0x426afc): the first free
+            // sshotNNN.pcx / screenNN.pcx; OpenDF writes the drawn window.
+            printScreen_ = false;
+            if (const auto path = freeScreenshotPath(o_.gameDir, gogProfile_); !path.empty()) {
+                std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3), rows(px.size());
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+                for (int y = 0; y < dh; ++y)
+                    std::memcpy(&rows[size_t(y) * size_t(dw) * 3], &px[size_t(dh - 1 - y) * size_t(dw) * 3], size_t(dw) * 3);
+                writePcx24(path, dw, dh, rows.data());
+            }
+        }
         if (!o_.screenshot.empty() && ++frame >= o_.frames) {
             writeScreenshot(dw, dh);
             break;
