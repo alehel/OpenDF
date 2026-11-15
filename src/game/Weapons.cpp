@@ -1066,23 +1066,26 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // stops. A face with none of these (wire fences: WIREFENC /
                     // WIREGATE 'Afencing', FENCEHI 'Abrbwr', 0x8003), or 0x10000000
                     // on a husk, costs nothing (GOG 0x4542ee: effect 5 only) and
-                    // the round goes on at full speed. Every face makes a 5 m
-                    // noise (0x414660 0x50000; 20 m, 0x140000, for an intact
-                    // 0x10000000 face). The round goes on from 0.25 m before
-                    // the hit + 0.375 m; up to 20 hits a tick.
+                    // the round goes on at full speed. Each branch makes its
+                    // own AI noise (0x414660 radius): flesh and wood 5 m
+                    // (0x50000, shared tail 0x454083), metal, stone and armour
+                    // 15 m (0xf0000), bush and canvas 3 m (0x30000), an intact
+                    // 0x10000000 face 20 m (0x140000), none or a husk's
+                    // 0x10000000 face 5 m (0x4542f2). The round goes on from
+                    // 0.25 m before the hit + 0.375 m; up to 20 hits a tick.
                     if (it && (b.flags & 0x1851) == 0) {
                         int cost = 0;
                         const uint32_t m = hit.material;
-                        bool glass = false;
+                        float noise = 5.f;
                         if (it->attrib & 0x40) cost = 100;
-                        else if (m & 0x10000) cost = 200;
+                        else if (m & 0x10000) cost = 200, noise = 15.f;
                         else if (m & 0x20000) cost = 90;
-                        else if (m & 0x40000) cost = 500;
-                        else if (m & 0x80000) cost = 10;
-                        else if (m & 0x04000000) cost = 2000;
-                        else if (m & 0x08000000) cost = 5;
-                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, glass = true;
-                        impacts_.back().noise = glass ? 20.f : 5.f;
+                        else if (m & 0x40000) cost = 500, noise = 15.f;
+                        else if (m & 0x80000) cost = 10, noise = 3.f;
+                        else if (m & 0x04000000) cost = 2000, noise = 15.f;
+                        else if (m & 0x08000000) cost = 5, noise = 3.f;
+                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, noise = 20.f;
+                        impacts_.back().noise = noise;
                         bool goesOn = cost == 0;
                         if (cost > 0) {
                             const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),

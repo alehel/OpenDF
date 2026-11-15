@@ -2908,7 +2908,7 @@ float Game::rangeToAim() const {
     Vec3 eye = player_.eye();
     RayHit hit;
     const float maxRange = 2000.f;
-    if (!world_.raycast(eye, eye + aimDirection() * maxRange, hit)) return -1;
+    if (!world_.raycast(eye, eye + aimDirection() * maxRange, hit, true, -3)) return -1;   // not the player (nor his gun)
     return hit.t * maxRange;
 }
 
@@ -3861,8 +3861,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
     }
     // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
-    // crosshairs on or off.
-    if (!showMap_ && df2Hud_.on) drawDf2TargetId(s, cx, cy, 0);
+    // crosshairs on or off; none in an outside view (returns after the pick
+    // while [0xbf2b40] is set), which OpenDF's camera is once the player is
+    // dead.
+    if (!showMap_ && df2Hud_.on && !playerDead()) drawDf2TargetId(s, cx, cy, 0);
 
     // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
     // bright green border, ticks from r/4 to r/2 in the four directions, the
@@ -5865,7 +5867,7 @@ void Game::drawBinoculars(const Screen& s) {
     const Vec3 eye = player_.eye(), dir = cam.forward();
     RayHit hit;
     float dist = 1e9f;
-    if (world_.raycast(eye, eye + dir * 1100.f, hit)) dist = hit.t * 1100.f * dot(dir, dir);
+    if (world_.raycast(eye, eye + dir * 1100.f, hit, true, -3)) dist = hit.t * 1100.f * dot(dir, dir);   // not the player (nor his gun)
     char buf[32];
     if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "Distance: 1km+");
     else std::snprintf(buf, sizeof buf, "Distance: %3im", int(dist));
@@ -6198,6 +6200,7 @@ int Game::run() {
             // Dead (0x45a234): no more control. The death sequence itself
             // (animation, mission end 0x444d24 / 0x46c9c0) is not done yet.
             if (showMap_ || playerDead()) in = PlayerInput{};
+            in.dead = playerDead();
             // DF2 control word +0x74 speed bits (GOG Df2.exe 0x41efd0): 2 (run)
             // with a move direction and no walk key.
             playerRunning_ = (in.forward != 0 || in.strafe != 0) && !in.walk;

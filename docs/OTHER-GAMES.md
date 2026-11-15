@@ -375,7 +375,7 @@ First differences from DF1:
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
     hits a tick; a face with no impact material, such as the wire fences, or
     glass on a husk costs nothing and the round goes on at full speed, GOG
-    0x453860; every face a 5 m AI noise, intact glass 20 m). Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
+    0x453860; an AI noise per material: flesh, wood and none 5 m, metal, stone and armour 15 m, bush and canvas 3 m, intact glass 20 m). Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
     and speeds, but fragments are ammo 31 and DF2's random generator 0x41ac40
     is reseeded to 0x5FC by every burst (DF1's seed call is empty), so each
     burst has the same pattern about its heading; big blasts 0.2 m up, the

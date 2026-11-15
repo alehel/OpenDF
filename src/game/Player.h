@@ -22,6 +22,7 @@ struct PlayerInput {
     bool walk = false, jump = false;
     bool shooting = false;           // the weapon's refire time is running (DF.EXE [0x93334c] > 0)
     bool up = false, down = false;   // fly mode only
+    bool dead = false;               // the player is dead (+0x64 & 4): DF2's 0x4145a0 lets go of a gun
 };
 
 class Player {
@@ -96,6 +97,7 @@ private:
     // Delta Force 2's person move for the player, one 60 Hz tick (DF2.EXE
     // 0x440cd0 jump key, 0x43f690 move chooser, 0x440400 physics).
     void tickDf2(const PlayerInput& in, World& world);
+    void clampToMount(const World& world);
     bool mounted_ = false;
     Vec3 mountEye_{0, 0, 0};
     void enterWater(float z);

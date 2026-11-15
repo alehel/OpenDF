@@ -955,8 +955,16 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
             }
         }
     }
+    // (OpenDF) The gun the shooter mans is skipped with the shooter: until
+    // the gun's own weapon (GOG Df2.exe 0x44c840 / 0x44f160) is ported, a
+    // gunner fires his personal weapon from the eye on the gun (hardpoint 2
+    // of its posed mesh 1), and its rounds and sight lines would otherwise
+    // hit the gun's own meshes.
+    const int ignoreMount = ignore == -3 ? playerMount
+                            : ignore >= 0 && size_t(ignore) < this->objects.size() ? this->objects[size_t(ignore)].mount
+                                                                                    : -1;
     for (size_t i = 0; objects && i < this->objects.size(); ++i) {
-        if (int(i) == ignore) continue;
+        if (int(i) == ignore || (ignoreMount >= 0 && int(i) == ignoreMount)) continue;
         const auto& o = this->objects[i];
         if (!people && o.person) continue;
         // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m

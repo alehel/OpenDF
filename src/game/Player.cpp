@@ -70,6 +70,10 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
         wrap(world.extent());
         // GOG Df2.exe: the gun's pose follows the player's view, and the
         // view comes from the gun (0x44dd50 -> 0x416e90).
+        // 0x447120 takes the angle input and clamps it in the same pass, so
+        // the view never shows an angle past the limits: the mouse turns the
+        // player every frame, the odd ticks only 30 times a second.
+        if (world.playerMount >= 0) clampToMount(world);
         world.playerYaw = yaw;
         world.playerPitch = pitch;
         mounted_ = world.playerMount >= 0;
@@ -314,6 +318,16 @@ void Player::leaveWater(float z) {
     eyeHeight_ = eyeY - feet.y;
 }
 
+// GOG Df2.exe 0x447120's limits on a gun: the heading within 0x20000000
+// (45 degrees) of the gun's, the pitch within 0x10000000 (22.5 degrees).
+void Player::clampToMount(const World& world) {
+    const WorldObject& g = world.objects[size_t(world.playerMount)];
+    float dy = std::remainder(yaw - g.heading, 2 * 3.14159265f);
+    dy = std::clamp(dy, -3.14159265f / 4, 3.14159265f / 4);
+    yaw = g.heading + dy;
+    pitch = std::clamp(pitch, -3.14159265f / 8, 3.14159265f / 8);
+}
+
 // One tick of DF2.EXE's person move for the player (READ unless marked):
 // the jump key 0x440cd0 and the move chooser 0x43f690 (GOG 0x445980) on odd ticks (the
 // motion they give is stored and repeated on even ticks, 0x440858), then
@@ -333,11 +347,7 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
         // heading is kept within 0x20000000 (45 degrees) of the gun's and
         // the pitch within 0x10000000 (22.5 degrees), and the origin is put
         // back at the gun (0x418300).
-        const WorldObject& g = world.objects[size_t(world.playerMount)];
-        float dy = std::remainder(yaw - g.heading, 2 * 3.14159265f);
-        dy = std::clamp(dy, -3.14159265f / 4, 3.14159265f / 4);
-        yaw = g.heading + dy;
-        pitch = std::clamp(pitch, -3.14159265f / 8, 3.14159265f / 8);
+        clampToMount(world);
         const Vec3 m = world.mountOrigin(world.playerMount, yaw, feet);
         feet.x = m.x;
         feet.z = m.z;
@@ -506,10 +516,12 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
         armory_ = c.armory;
         // GOG Df2.exe 0x4467d0: type-7 volumes (flags 8) -> 0x4145a0 with
         // the control direction (+0x74 & 7, 0x41efd0: the keys held, 0
-        // with none); a new link puts the origin at the gun (0x418300).
+        // with none) and the person's dead flag (+0x64 & 4: the move runs
+        // for the dead player too, and 0x4145a0 then clears both links); a
+        // new link puts the origin at the gun (0x418300).
         const int dir = moving_ ? moveDirection(in.forward, in.strafe) : 0;
         for (int g : c.mounts)
-            if (world.df2Mount(-3, g, dir, false)) {
+            if (world.df2Mount(-3, g, dir, in.dead)) {
                 const Vec3 m = world.mountOrigin(g, yaw, feet);
                 feet.x = m.x;
                 feet.z = m.z;
