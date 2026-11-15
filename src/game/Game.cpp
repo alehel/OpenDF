@@ -193,12 +193,14 @@ private:
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
     // DF1's command gate (GOG Df.exe 0x477d40 entry, CD 0x42d990): the byte
-    // at 0x4fb326 + action id * 0x2c (the command table indexed by the id,
-    // not by entry) drops an action with bit 0 while paused ([0x6e4714]) or
-    // dead (player +0x6c & 4). Of the ids OpenDF has, that is scope (6) and
-    // briefing (0x25); everything else still runs while paused.
+    // at 0x4fb326 (CD 0x4df51e) + action id * 0x2c (the command table indexed
+    // by the id, not by entry) drops an action with bit 0 while paused
+    // ([0x6e4714]) or dead (player +0x6c & 4). Of the ids OpenDF has, that is
+    // scope (6) in both builds and briefing (0x25) in GOG's table only (the
+    // CD's entry 37 there, 'polys', has flag 0); everything else still runs.
     bool df1PauseGated(Action a) const {
-        return (a == Action::Scope || a == Action::Briefing) && (paused_ || playerDead());
+        const bool gated = a == Action::Scope || (a == Action::Briefing && exe_.build() == ExeBuild::Df1Gog);
+        return gated && (paused_ || playerDead());
     }
     // The game commands (DF.EXE 0x42d9c0, GOG Df2.exe 0x41f150); `reverse`
     // is GOG's bit 31 (Shift held, the wheel forward).
@@ -3733,7 +3735,8 @@ void Game::runAction(Action act, bool reverse) {
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
         if (df2Hud_.on) df2NextWaypoint(reverse ? -1 : 1);   // GOG Df2.exe case 0x16: 0x44d280(+-1)
-        else df1StepWaypoint(1);
+        else if (exe_.build() == ExeBuild::Df1Gog) df1StepWaypoint(1);   // GOG 0x484c80
+        else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());   // CD DF.EXE
         break;
     case Action::PrevWaypoint:   // GOG Df.exe only (E, command 0x2f -> 0x484d00); DF2: not traced, nothing
         if (!df2Hud_.on) df1StepWaypoint(-1);
@@ -8160,7 +8163,9 @@ int Game::run() {
                         player_.yaw += e.motion.xrel * sens;
                         player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
                     }
-                } else if (e.type == SDL_MOUSEWHEEL && !df2Hud_.on) {
+                } else if (e.type == SDL_MOUSEWHEEL && !df2Hud_.on && exe_.build() == ExeBuild::Df1Gog) {
+                    // (The CD's in-game mouse hook 0x42f608 returns for the
+                    // 0x100 / 0x200 codes and its table has no 'cycleb'.)
                     // DF1's wheel (GOG Df.exe 0x497a40 case 0x20a): the delta
                     // summed in 120s, one 0x100 per notch forward and 0x200
                     // per notch back; the in-game mouse hook 0x47a150 queues
