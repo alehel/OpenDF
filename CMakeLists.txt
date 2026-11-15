@@ -57,6 +57,7 @@ add_executable(opendf
   src/game/Vehicles.cpp
   src/game/Tracers.cpp
   src/game/Weapons.cpp
+  src/game/TracerLines.cpp
   src/game/Weather.cpp
   src/game/World.cpp
   src/render/Gl.cpp

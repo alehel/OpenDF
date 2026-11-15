@@ -19,6 +19,8 @@
 #include "Vehicles.h"
 #include "Moves.h"
 #include "Weapons.h"
+#include "Tracers.h"
+#include "TracerLines.h"
 #include "Weather.h"
 #include "World.h"
 
@@ -500,6 +502,7 @@ private:
     void tickEffects();
     // Delta Force 2's rain and snow (BMS flag 0x78 bit 3, 0x46ba90).
     Weather weather_;
+    TracerLines tracerLines_;   // DF2 bullet tracers (GOG Df2.exe 0x452610)
     void drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye);
     std::mt19937 effectRng_{1998};
     void spawnImpact(const Impact& hit);
@@ -3408,6 +3411,11 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
+    // DF2's tracers, after the scene (GOG Df2.exe 0x44f8d0 -> 0x452610).
+    if (world_.df2Rules) {
+        arsenal_.ageTracers(ticks_);
+        tracerLines_.draw(proj * view, arsenal_.df2Tracers(), [&](Vec3 p) { return world_.nearest(p, eye); });
+    }
 }
 
 // DF2.EXE 0x46b780, drawn only by the software frame (0x448930, after the
@@ -6684,6 +6692,7 @@ int Game::run() {
                 }
                 sound_.tickDelayed();
                 arsenal_.underwaterRule = mission_.version >= 0x0F;
+                arsenal_.tracersOff = (o_.df2Attributes & 0x80) != 0;   // Options3 TRACERS (GOG Df2.exe 0x45473b)
                 arsenal_.waterLevel = terrain_.waterLevel();
                 tickCharges();
                 // The player as a target: animated hit spheres (0x44dca4).
