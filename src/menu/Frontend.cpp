@@ -2292,13 +2292,16 @@ void Frontend::ownerDraw(MnuButton& b) {
 
 void Frontend::textInput(const char* t) {
     // GOG 0x40d9e0, editing: a character typed without Ctrl clicks (0x413230,
-    // also when the field is full) and is appended upper-cased (0x49bf20).
+    // also when the field is full; CD 0x418350 the same) and is appended,
+    // upper-cased by GOG (0x49bf20); the CD DF.EXE's edit branch (0x406bf8,
+    // LAB_00406ea0) stores it as typed.
     MnuButton* b = mnu_.button(editing_);
     if (!b || (SDL_GetModState() & KMOD_CTRL)) return;
     for (const char* p = t; *p; ++p) {
         if (*p < 32 || *p >= 127) continue;
         ttyClick();
-        if (int(b->text.size()) + 1 < editMax_) b->text += char(std::toupper(static_cast<unsigned char>(*p)));
+        const char c = gogProfile_ ? char(std::toupper(static_cast<unsigned char>(*p))) : *p;
+        if (int(b->text.size()) + 1 < editMax_) b->text += c;
     }
 }
 
