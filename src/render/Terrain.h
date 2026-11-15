@@ -61,6 +61,12 @@ public:
     // x 0x1000 in 16.16 (a step a sixteenth: 0.25 m over 4 m). OpenDF axes
     // (gz = dh/dz), the cell row as df2Gradient's.
     void df1Gradient(float x, float z, float& gx, float& gz) const;
+    // Delta Force 2's sight-line ground (GOG Df2.exe 0x46e740), on that same
+    // word grid [0x535ae8] in GOG's 16.16 axes (x east, y north = -z): the
+    // vertex (x >> 16, y >> 16) << 7, and 0x46e870's bilinear height. Both
+    // keep the detail raise. 0 on Delta Force terrains.
+    int32_t df2SightVertex(int32_t x, int32_t y) const;
+    int32_t df2SightGround(int32_t x, int32_t y) const;
     float mapExtent() const { return size_ * scale.cellSize; }
     // DF.EXE [0x68bfe8]: the water level in metres, 0 when the map has none
     // (0x430d28); every water test is skipped when it is 0.

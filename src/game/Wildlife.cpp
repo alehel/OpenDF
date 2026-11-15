@@ -45,12 +45,12 @@ void WildlifeSystem::init(World& world, const Mission& mission, bool night) {
         WorldObject& o = world.objects[i];
         if (!o.item || o.missionIndex < 0 || o.removed) continue;
         const std::string& f = o.item->aiFunction;
-        if (f != "vult" && f != "peng" && f != "prnh") continue;
+        if (f != "vult" && f != "peng" && f != "prnh" && f != "btre") continue;
         const MissionObject& mo = mission.objects[size_t(o.missionIndex)];
         const auto* rec = reinterpret_cast<const uint8_t*>(mo.raw);
         Animal a;
         a.object = int(i);
-        a.kind = f == "vult" ? Kind::Vulture : f == "peng" ? Kind::Penguin : Kind::Fish;
+        a.kind = f == "vult" ? Kind::Vulture : f == "peng" ? Kind::Penguin : f == "prnh" ? Kind::Fish : Kind::BirdTree;
         a.yaw = a.wantYaw = headingToYaw(o.heading);
         a.homeX = o.pos.x;
         a.homeZ = o.pos.z;
@@ -178,16 +178,22 @@ void WildlifeSystem::depth(World& world, Animal& a, int32_t z, int32_t band, boo
 }
 
 void WildlifeSystem::tick(World& world, AiSystem& ai, const AiSystem::PlayerView& player, bool playerSwimming) {
+    std::vector<Animal> flushed;
     for (auto& a : animals_) {
         WorldObject& o = world.objects[size_t(a.object)];
         if (o.removed) continue;
         if (--a.think <= 0) {
             if (a.kind == Kind::Vulture) vultureThink(world, ai, a, player);
             else if (a.kind == Kind::Penguin) penguinThink(world, ai, a);
+            else if (a.kind == Kind::BirdTree) birdTreeThink(world, ai, a, player, flushed);
+            else if (a.kind == Kind::Sparrow) sparrowThink(world, a);
             else fishThink(world, ai, a, player, playerSwimming);
+            if (o.removed) continue;
         }
+        if (a.kind == Kind::BirdTree) continue;   // no mover; its heading is the object's
         if (a.kind == Kind::Vulture) vultureMove(world, a);
         else if (a.kind == Kind::Penguin) penguinMove(world, a);
+        else if (a.kind == Kind::Sparrow) sparrowMove(world, a);
         else fishMove(world, a);
         static const bool debug = std::getenv("OPENDF_DEBUGWILD") != nullptr;
         if (debug && a.think == 1)
@@ -197,6 +203,99 @@ void WildlifeSystem::tick(World& world, AiSystem& ai, const AiSystem::PlayerView
         o.heading = yawToHeading(a.yaw);
         o.pitch = float(double(a.pitch) / 4294967296.0 * 2 * kPi);
         o.roll = -float(double(a.roll) / 4294967296.0 * 2 * kPi);   // OpenDF's roll is the other way (as the helicopter bank)
+    }
+    for (auto& f : flushed) {
+        WorldObject& o = world.objects[size_t(f.object)];
+        o.heading = yawToHeading(f.yaw);
+        animals_.push_back(f);
+    }
+}
+
+// ---- Bird trees and sparrows ---------------------------------------------
+
+// btre think (GOG Df2.exe 0x42d170), every 0x40 ticks. While its rest
+// count +0xB0 is above 0 it counts down. Else the scan 0x42b070: people
+// (the player too) of another side than the tree's (+0x68), not side 0,
+// alive, at d whole metres of 0x41e880(|dx|, |dy|, |dz|) from the tree's
+// origin (no field of view, no sight line): 5 / d (5 at 0) x move
+// visibility x 8, x 64 if they fired lately, the highest kept. Over 16 it
+// flushes: rest 10, ENV_SPARROW_CALL (0x4C) at the tree and three objects
+// of the last item def with id 0xfd3 (sparrow, 104051; none without one,
+// rest still 10) 4 m above the origin at yaws r1 << 16 + k x 0x40000000 +
+// (r2 & 0xf00) << 16 (rand: one draw thrown away, r1, then r2 for each).
+void WildlifeSystem::birdTreeThink(World& world, AiSystem& ai, Animal& a, const AiSystem::PlayerView& player, std::vector<Animal>& flushed) {
+    const WorldObject& o = world.objects[size_t(a.object)];
+    a.think = 0x40;
+    if (a.rest > 0) { --a.rest; return; }
+    int32_t best = 0;
+    auto consider = [&](Vec3 at, int side, int move, bool fired) {
+        if (side == o.side || side == 0) return;
+        const Vec3 tp = world.nearest(at, o.pos);
+        const int32_t d = approx(fix(tp.x - o.pos.x), fix(tp.z - o.pos.z), fix(tp.y - o.pos.y)) >> 16;
+        if (d >= 0x50000) return;
+        const int32_t inv = d == 0 ? 0x50000 : 0x50000 / d;
+        const int32_t s = mul16(mul16(inv, fix(moveVisibility(move))), fired ? 0x400000 : 0x80000);
+        best = std::max(best, s);
+    };
+    if (player.alive) consider(player.origin, player.side, player.moveNumber, ai.hasFired(-3));
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& q = world.objects[i];
+        if (q.person && q.alive() && !q.removed) consider(q.pos, q.side, q.moveNumber, ai.hasFired(int(i)));
+    }
+    if (best <= 0x100000) return;
+    a.rest = 10;
+    if (!spawnObject) return;
+    if (playSound) playSound(0x4C, o.pos);
+    rnd();
+    uint32_t base = rnd() << 16;
+    for (int k = 0; k < 3; ++k, base += 0x40000000u) {
+        const uint32_t yaw = base + ((rnd() & 0xf00) << 16);
+        const int id = spawnObject(104051, o.pos + Vec3{0, 4.f, 0}, yawToHeading(yaw));
+        if (id < 0) continue;
+        Animal b;
+        b.object = id;
+        b.kind = Kind::Sparrow;
+        b.yaw = b.wantYaw = yaw;
+        b.think = 1;   // 0x414850 zeroes the record: +0xFC = 0
+        flushed.push_back(b);
+    }
+}
+
+// spar think (0x42d030), every 0x10 ticks: the speed +0x90 up by 0x4000
+// while under 3 m/s, the velocity from it and the yaw (as the vulture's);
+// above 100 m (z > 0x640000) it is removed (0x418110).
+void WildlifeSystem::sparrowThink(World& world, Animal& a) {
+    WorldObject& o = world.objects[size_t(a.object)];
+    if (a.speed < 0x30000) a.speed += 0x4000;
+    a.vx = int32_t((double(a.speed) * std::cos(yawRad(a.yaw))) / 64.0);
+    a.vy = int32_t((double(a.speed) * std::sin(yawRad(a.yaw))) / 64.0);
+    if (fix(o.pos.y) > 0x640000) {
+        o.removed = true;
+        o.boxes.clear();
+    }
+    a.think = 0x10;
+}
+
+// spar move (0x42d0d0), every tick: x, y by the velocity, z up by speed >>
+// 7; +0xB0 swings between +-0x18000000 by 0x2000000 a tick (0x3000000
+// under 3 m/s), turning at the ends (+0xB4). (What reads +0xB0 is not
+// located; it is kept, not drawn.)
+void WildlifeSystem::sparrowMove(World& world, Animal& a) {
+    WorldObject& o = world.objects[size_t(a.object)];
+    o.pos.x += unfix(a.vx);
+    o.pos.z -= unfix(a.vy);
+    const float ext = world.extent();
+    o.pos.x -= std::floor(o.pos.x / ext) * ext;
+    o.pos.z -= std::floor(o.pos.z / ext) * ext;
+    place(world, a, unfix(int64_t(fix(o.pos.y)) + (a.speed >> 7)));
+    o.tickVel = {unfix(a.vx), unfix(a.speed >> 7), -unfix(a.vy)};
+    const int32_t r = a.speed >= 0x30000 ? 0x2000000 : 0x3000000;
+    if (a.swingUp) {
+        a.phase += r;
+        if (a.phase > 0x18000000) a.swingUp = false;
+    } else {
+        a.phase -= r;
+        if (a.phase < -0x18000000) a.swingUp = true;
     }
 }
 

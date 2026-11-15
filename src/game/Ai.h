@@ -73,6 +73,13 @@ public:
     // flags 2 plus markFired(): the shooter counts as firing (x6 to be seen)
     // until the flags are cleared (every 0x1f1 ticks); -3 the player.
     void markFired(int object);
+    // Whether `object` (-3 the player) fired lately (+0x6c & 0x4000).
+    bool hasFired(int object) const {
+        if (object == -3) return playerFired_;
+        for (const auto& p : people_)
+            if (p.object == object) return p.fired;
+        return false;
+    }
     // Any other noise (DF2.EXE 0x412840 with flags 0: footsteps, a building
     // collapsing): a box of +-r on all three axes; heard by relaxed soldiers
     // (0x413620, any team, any flags), not turned toward by alert ones
@@ -215,7 +222,9 @@ private:
     std::map<int, uint32_t> reached_;             // team * 128 + path -> point bits
     std::array<int, 64> teamSpeed_{};
     int ticks_ = 0;
-    int noiseClock_ = 0, firedClock_ = 0;   // GOG Df.exe [0x6e4748] / [0x6e4744]
+    // GOG Df.exe [0x6e4748] / [0x6e4744], GOG Df2.exe [0x67fff8] / [0x67fff4]:
+    // process-wide, never reset (see tick).
+    static inline int noiseClock_ = 0, firedClock_ = 0;
     bool playerFired_ = false;
     uint32_t rng_ = 0x5FC;
 };
