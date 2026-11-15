@@ -969,7 +969,7 @@ bool Game::loadMission(int index) {
     df2Map_.entered = false;
     if (exe_.loaded() && !arsenal_.fromExe())
         std::fprintf(stderr, "DF.EXE is not the expected version; using built-in weapon values\n");
-    else if (arsenal_.fromExe()) std::printf(arsenal_.df2() ? "weapon tables read from DF2.EXE\n" : "weapon tables read from DF.EXE\n");
+    else if (arsenal_.fromExe()) std::printf("weapon tables read from %s\n", (arsenal_.df2() ? df2Exe_ : exe_).buildName());
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
                 world_.objects.size());
     return true;
@@ -3837,8 +3837,10 @@ void Game::df2Picture(HudImage& img, int w, int h, double px, double py, double 
 
 int Game::df2TypeCategory(int type) const {
     // The weapon-type table [0x4f05a4] = 0x4C5150, 216 bytes each, +0x94 menu category.
+    // (GOG Df2.exe: 0x4DA4F8, ExeImage::df2().)
     int32_t v = 0;
-    if (type <= 0 || type >= 39 || !df2Exe_.i32(0x4C5150 + uint32_t(type) * 216 + 0x94, v)) return 0;
+    const Df2ExeTables* t = df2Exe_.df2();
+    if (type <= 0 || type >= 39 || !t || !df2Exe_.i32(t->types + uint32_t(type) * 216 + 0x94, v)) return 0;
     return v;
 }
 

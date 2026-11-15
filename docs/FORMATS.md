@@ -234,6 +234,63 @@ camera: 90° horizontal field of view across the 640×362 3D view (about 58.9°
 vertical). Rendering it that way reproduces footage of the original exactly
 (`docs/compare-weapon-original.png`, original left).
 
+## Game executables (CD and GOG builds)
+
+OpenDF reads static tables (weapons, key bindings, sound names, voice sets)
+out of the user's own game executable (`src/core/ExeImage.*`). The executable
+is found next to the PFF archives, any case: the CD's `DFSETUP/DF.EXE` /
+`DF2SETUP/DF2.EXE`, or GOG's `Df.exe` / `Df2.exe` in the game folder (`app/`
+when the GOG installer was unpacked with innoextract). The build is
+recognised by file size and CRC-32; each build has its own set of table
+addresses (`Df1ExeTables` / `Df2ExeTables`). Any other file (another patch
+level, a modified executable) is reported as an unknown build and OpenDF
+uses its built-in values, as when the executable is missing. The GOG release
+is the reference: where its tables differ from the CD's, its values are used.
+
+| Build | Size | CRC-32 |
+|---|---|---|
+| CD `DF.EXE` (v1.00.000) | 1,043,468 | `63B1DB57` |
+| GOG `Df.exe` | 1,102,860 | `7CED8382` |
+| CD `DF2.EXE` | 835,584 | `A0947236` |
+| GOG `Df2.exe` | 921,600 | `4CED7D2C` |
+
+Delta Force (the tables were matched through the code that uses them, CD /
+GOG function):
+
+| Table | CD | GOG | Found through | Differences in GOG's |
+|---|---|---|---|---|
+| player weapon modes (39 × 168) | `0x4E97D0` | `0x4F9934` | `0x470580` / `0x46bfb0` | none |
+| guns (28 × 52) | `0x4E9060` | `0x4F9154` | `0x470580` / `0x46bfb0` | gun 2 magazine 1 (was 0); guns 4-6 (M89 rounds) power 1, falloff 5 (were 0, 10) |
+| loadout rows (28) | `0x4E9610`, 16 bytes | `0x4F9704`, **20 bytes** | `0x470580` / `0x46bfb0`, rows read at r·0x10 / r·0x14 + 4 (GOG `0x484970`) | a fifth word (1-5, not read by OpenDF); the modes are the same |
+| key bindings (44 bytes) | `0x4DF4F8` | `0x4FB300` | `0x41cbc0` / `0x41cd30` | 119 bindings (CD 121) |
+| sounds (0x200 × 40) | `0x4EB194` | `0x4F2EA4` | `0x472e70` / `0x43e340` | ids 451-470 added (`AMAC1`..`AMAC10`, `DMAC1`..`DMAC10`) |
+| voice sets (16 × 12) | `0x4F019C` | `0x4F7EAC` | `0x473f70` / `0x43f5a0` | none |
+
+Delta Force 2:
+
+| Table | CD | GOG | Found through | Differences in GOG's |
+|---|---|---|---|---|
+| weapon modes (57 × 92) | `0x4C7238` | `0x4DC5E0` | `0x46b230` / `0x4758f0` | mode 48 is a weapon (type 13, ammunition 38, item 4138); modes 55/56 changed; flag 0x100 on modes 31, 48 |
+| weapon types (39 × 216) | `0x4C5150` | `0x4DA4F8` | `0x46b230` / `0x4758f0` | none past the names |
+| ammunition | `0x4C4310`, 38 × 96 | `0x4D95B8`, **39 × 100** | `0x46b230` / `0x4758f0` | see below |
+| drag curve (44 × 12) | `0x4C86B8` | `0x4DDA60` | `0x46b230` / `0x4758f0` | none |
+| key bindings (0x200 records) | `0x4A5CA8`, 44 bytes | `0x4B1710`, **0x70 bytes** | `0x41c700` / `0x41e370` | 155 bindings (CD 120): name at +4, key at +0x24 in both; GOG adds a description at +0x30 |
+| sounds (469 used of 1023 × 40) | `0x4B85A8` | `0x4CD7C8` | `0x45da50` / `0x467880` | none |
+| voice sets (22 × 12) | `0x4B70FC` | `0x4CBCC0` | `0x448240` / `0x44f340` | none |
+
+GOG `Df2.exe`'s ammunition records have a word inserted at `+0x0C` (values
+1-10, not identified; OpenDF does not read it), so every CD field from
+`+0x0C` on is 4 bytes later: velocity `+0x10`, power `+0x14`, falloff
+`+0x18`, lifetime `+0x1C`, accuracy `+0x20`, sounds `+0x24..+0x30`, flags
+`+0x34`, drag bands `+0x38..+0x5C`, grains `+0x60`. The flags hold the CD's
+bits 16 higher (the bullet set-up, CD `0x44a6a0` / GOG `0x451ae0`, tests
+`0x1, 0x10, 0x1000, 0x40, 0x800` / `0x10000, 0x100000, 0x10000000, 0x400000,
+0x8000000`); OpenDF shifts them down and keeps the CD's bit values. Values
+that changed: ammunition 4-6 accuracy 3 (was 5) and grains 180 (124); 12, 13
+lifetime 1000 (600); 13 spare magazines 12 (18); 14 2 (3); 29 4 (3); 36 is
+now 200-round magazines (n 2, accuracy 8); 37 40-round magazines (n 2,
+accuracy 7, flags 0x2003); 38 is new.
+
 ## F_SML640.PCX (HUD font)
 
 256×256, one 16-pixel line per 16 characters (line = code / 16, so line 2 is

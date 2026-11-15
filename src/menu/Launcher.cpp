@@ -444,6 +444,14 @@ bool Launcher::tryAdd(std::string path) {
         if ((n == "DFSETUP" || n == "DF2SETUP" || n == "DFLSETUP" || n == "TFDSETUP") && identifyGame(dir.parent_path()) != GameKind::Unknown)
             dir = dir.parent_path();
     }
+    // A GOG installer unpacked with innoextract puts the game in `app`
+    // (Df.exe or Df2.exe next to the PFFs): take that folder.
+    if (identifyGame(dir) == GameKind::Unknown)
+        for (const auto& de : fs::directory_iterator(dir, ec))
+            if (de.is_directory(ec) && upper(de.path().filename().string()) == "APP" && identifyGame(de.path()) != GameKind::Unknown) {
+                dir = de.path();
+                break;
+            }
     for (size_t i = 0; i < entries_.size(); ++i)
         if (fs::equivalent(entries_[i].dir, dir, ec)) {
             sel_ = int(i);

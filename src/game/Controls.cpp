@@ -119,9 +119,12 @@ bool Controls::init(const ExeImage* exe) {
     };
     for (const auto& d : kDefaults) apply(d.name, d.key);
     fromExe_ = false;
-    if (!exe || !exe->loaded()) return false;
+    const Df1ExeTables* t = exe ? exe->df1() : nullptr;
+    if (!t) return false;
     // The table lists "move_forward" with the Up arrow; check that first.
-    constexpr uint32_t kTable = 0x4df4f8, kEntry = 44;
+    // CD 0x4df4f8, GOG Df.exe 0x4fb300 (ExeImage::df1()).
+    const uint32_t kTable = t->keys;
+    constexpr uint32_t kEntry = 44;
     std::vector<std::pair<std::string, uint32_t>> found;
     for (uint32_t i = 0; i < 160; ++i) {
         char name[33] = {};
@@ -145,10 +148,14 @@ bool Controls::init(const ExeImage* exe) {
 }
 
 bool Controls::initDf2(const ExeImage& exe) {
-    if (!exe.loaded()) return false;
-    constexpr uint32_t kTable = 0x4a5cd4, kEntry = 44;
+    const Df2ExeTables* t = exe.df2();
+    if (!t) return false;
+    // CD 0x4a5cd4 (44-byte records), GOG Df2.exe 0x4b1780 (0x70 bytes, 162
+    // bindings); both 0x200 records from 0x4a5ca8 / 0x4b1710 (0x41c700 /
+    // GOG 0x41e370), read here from record 1.
+    const uint32_t kTable = t->keys, kEntry = t->keyRecord;
     std::vector<std::pair<std::string, uint32_t>> found;
-    for (uint32_t i = 0; i < 160; ++i) {
+    for (uint32_t i = 0; i < 0x1FF; ++i) {
         const std::string name = exe.str(kTable + i * kEntry + 4, 32);
         uint32_t key = 0;
         if (!exe.u32(kTable + i * kEntry + 36, key)) break;

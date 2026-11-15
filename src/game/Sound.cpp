@@ -181,10 +181,11 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
     if (df2) {
         // DF2.EXE 0x4B85A8: 469 records of DF1's 40-byte layout, ids below
         // 0x400 (sorted at load by 0x45DA50: the first record of an id wins).
-        if (df2Exe && df2Exe->loaded()) {
+        // (GOG Df2.exe 0x4CD7C8, 0x467880: the same records.)
+        if (const Df2ExeTables* t = df2Exe ? df2Exe->df2() : nullptr) {
             int found = 0;
             for (uint32_t i = 0; i < 469; ++i) {
-                const uint32_t rec = 0x4B85A8 + i * 40;
+                const uint32_t rec = t->sounds + i * 40;
                 uint32_t w = 0, fl = 0;
                 if (!df2Exe->u32(rec, w) || !df2Exe->u32(rec + 0x24, fl)) break;
                 const int id = int(int16_t(w & 0xFFFF));
@@ -200,12 +201,13 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
             for (const auto& s : kDf2Sounds)
                 if (s.id > 0 && s.id < 0x400 && (s.flags & 3) && names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
         fromExe = true;   // (DF2's table either way, not DF1's built-in copy)
-    } else if (exe && exe->loaded()) {
+    } else if (const Df1ExeTables* t = exe ? exe->df1() : nullptr) {
         // 0x200 records of 40 bytes: word id at +0, name at +0xE (22 bytes),
-        // flags at +0x24. The table is sorted by id at load (0x472e70).
+        // flags at +0x24. The table is sorted by id at load (0x472e70). GOG
+        // Df.exe: 0x4F2EA4 (0x43e340), with the AMAC/DMAC voices 451-470 added.
         int found = 0;
         for (uint32_t i = 0; i < 0x200; ++i) {
-            const uint32_t rec = 0x4EB194 + i * 40;
+            const uint32_t rec = t->sounds + i * 40;
             uint32_t w = 0, fl = 0;
             if (!exe->u32(rec, w) || !exe->u32(rec + 0x24, fl)) break;
             const int id = int(int16_t(w & 0xFFFF));
@@ -233,17 +235,18 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
             if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
     }
     for (int i = 0; i < 0x400; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
-    // Voice sets (0x4F019C: 16 sets of 12 sound ids; DF2.EXE 0x4B70FC: 22).
+    // Voice sets (0x4F019C: 16 sets of 12 sound ids; DF2.EXE 0x4B70FC: 22;
+    // GOG Df.exe 0x4F7EAC, Df2.exe 0x4CBCC0, the same ids).
     phrases_.assign(16 * 12, 0);
     bool phrasesOk = false;
     if (df2) {
         sets_ = 22;
         phrases_.assign(22 * 12, 0);
-        if (df2Exe && df2Exe->loaded()) {
+        if (const Df2ExeTables* t = df2Exe ? df2Exe->df2() : nullptr) {
             phrasesOk = true;
             for (uint32_t i = 0; i < 22 * 12; ++i) {
                 int32_t v = 0;
-                if (!df2Exe->i32(0x4B70FC + 4 * i, v)) { phrasesOk = false; break; }
+                if (!df2Exe->i32(t->phrases + 4 * i, v)) { phrasesOk = false; break; }
                 phrases_[i] = v;
             }
             phrasesOk = phrasesOk && phrases_[12 + 1] == 150 && phrases_[16 * 12 + 1] == 700;
@@ -261,11 +264,11 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
                     phrases_[size_t(st * 12 + k)] = (st < 19 ? 700 + 11 * (st - 16) : 740 + 11 * (st - 19)) + k - 1;
             phrasesOk = true;
         }
-    } else if (exe && exe->loaded()) {
+    } else if (const Df1ExeTables* t = exe ? exe->df1() : nullptr) {
         phrasesOk = true;
         for (uint32_t i = 0; i < 16 * 12; ++i) {
             int32_t v = 0;
-            if (!exe->i32(0x4F019C + 4 * i, v)) { phrasesOk = false; break; }
+            if (!exe->i32(t->phrases + 4 * i, v)) { phrasesOk = false; break; }
             phrases_[i] = v;
         }
         phrasesOk = phrasesOk && phrases_[12 + 1] == 150;
