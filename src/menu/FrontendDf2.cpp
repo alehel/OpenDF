@@ -2520,7 +2520,7 @@ int FrontendDf2::run() {
     saveDir_ = exe.empty() ? o_.gameDir : exe.parent_path();
     if (ExeImage im; !exe.empty() && im.load(exe, nullptr)) cdExe_ = im.build() == ExeBuild::Df2Cd;
     loadSoldiers();
-    cfg_ = DfConfig::df2();   // DF2.EXE's own keys (0x436ab0 / 0x436cd0)
+    cfg_ = DfConfig::df2(!cdExe_);   // DF2.EXE's own keys (CD 0x436ab0 / 0x436cd0, GOG 0x43bae0 / 0x43bd10)
     cfg_.load(saveDir_ / "df2.cfg");
     audio_.openDevice();
     {
