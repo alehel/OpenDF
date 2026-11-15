@@ -3911,6 +3911,30 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     terrain_.ringScale = insetFocal_ > 0 ? insetFocal_ / 320.f : zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
     terrain_.skyTicks = arsenal_.df2() ? -1.f : float(missionSteps_);   // DF1 cloud drift (GOG Df.exe 0x489980)
+    // DF1 sky gradient (GOG Df.exe 0x48c990): the view's FOV +0x4c and width
+    // (+0x3c - +0x34 + 1) set the step per row, its focal the horizon row;
+    // here at 640 scale. Main view 90 degrees across 640; binoculars 22
+    // (0x40423d); the scope inset 28 / power across 200 (0x466090).
+    {
+        const float modeK = 640.f / float(hudMode_ ? hudMode_ : 640);
+        if (scopeInset) {
+            terrain_.df1SkyFov = 28 / std::max(1, int(arsenal_.zoom()));
+            terrain_.df1SkyW = 200;
+            terrain_.df1SkyF = scopeFocal_ * modeK;
+        } else if (insetFocal_ > 0) {
+            terrain_.df1SkyFov = 90;
+            terrain_.df1SkyF = insetFocal_ * modeK;
+            terrain_.df1SkyW = std::max(1, int(std::lround(2.f * terrain_.df1SkyF)));
+        } else if (zoomView) {
+            terrain_.df1SkyFov = 22;
+            terrain_.df1SkyW = 640;
+            terrain_.df1SkyF = scopeFocal_ * modeK;
+        } else {
+            terrain_.df1SkyFov = 90;
+            terrain_.df1SkyW = 640;
+            terrain_.df1SkyF = 320.f;
+        }
+    }
     // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
     // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
     // inset 2.5 under magnification 5, else 5.0, and 2.5 (0x466090). Delta

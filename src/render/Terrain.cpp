@@ -174,7 +174,7 @@ in vec2 vNdc;
 uniform mat4 uInvRot;
 uniform vec2 uTan;
 uniform vec3 uEye;
-uniform float uCloudH, uHorizon, uPitchTan, uTime;
+uniform float uCloudH, uHorizon, uPitchTan, uTime, uSkyF, uSkyStepF;
 uniform bool uDf2, uNoSky;
 uniform vec3 uPal[17];
 uniform sampler2D uClouds, uGrad;
@@ -210,11 +210,12 @@ void main() {
         oColor = vec4(sky, 1.0);
         return;
     }
-    // Gradient (0x43b930): index L = 2·horizon per 640-scale row above the
-    // horizon row (centre + tan(pitch)·F + 5); colours 0..15 interpolated
-    // in linear space, 16 sub-steps each.
-    float rows = 320.0 * (v.y / -v.z + uPitchTan) + 5.0;
-    float L = clamp(rows * 2.0 * uHorizon, 0.0, 255.0);
+    // Gradient (0x43b930, GOG Df.exe 0x48c990): index L = s per 640-scale
+    // row above the horizon row (centre + tan(pitch)·F + 5), s from the
+    // view's FOV and width (2·horizon in the 90-degree main view); colours
+    // 0..15 interpolated in linear space, 16 sub-steps each.
+    float rows = uSkyF * (v.y / -v.z + uPitchTan) + 5.0;
+    float L = clamp(rows * uSkyStepF, 0.0, 255.0);
     int kk = int(L) >> 4;
     float j = mod(floor(L), 16.0) / 16.0;
     vec3 sky = kk == 0 ? dec(uPal[0]) : mix(dec(uPal[kk - 1]), dec(uPal[min(kk, 15)]), j);
@@ -1336,6 +1337,16 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             glUniform1i(glGetUniformLocation(progSky_, "uKMax"), int((int64_t(256) << 16) / st + 1));
             glUniform4f(glGetUniformLocation(progSky_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
         }
+    }
+    if (!gen2_) {
+        // GOG Df.exe 0x48c990: s = ((((fov << 16) / W) << 16) / 0x2400 ·
+        // 0x20000 >> 16) · horizon >> 16 per row (2·horizon at 90 / 640).
+        int64_t st = (int64_t(df1SkyFov) << 16) / std::max(1, df1SkyW);
+        st = (st << 16) / 0x2400;
+        st = (st * 0x20000) >> 16;
+        st = (st * int64_t(desc_.horizon * 65536.f)) >> 16;
+        setF(progSky_, "uSkyStepF", float(st) / 65536.f);
+        setF(progSky_, "uSkyF", df1SkyF);
     }
     // Delta Force: 0x485610 -> 0x489980 with the step count [0x67dbf4].
     setF(progSky_, "uTime", !gen2_ && skyTicks >= 0.f ? skyTicks : float(SDL_GetTicks()) * 60.f / 1000.f);

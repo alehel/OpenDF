@@ -147,6 +147,10 @@ public:
     // 0 at mission start (0x405170), one per step (0x4043b3), so it stops
     // while paused); below 0 the drift runs on the wall clock (Delta Force 2).
     float skyTicks = -1.f;
+    // Delta Force's sky gradient view (GOG Df.exe 0x48c990, 640 scale): FOV
+    // in degrees (view +0x4c), width in pixels, focal length.
+    int df1SkyFov = 90, df1SkyW = 640;
+    float df1SkyF = 320.f;
     // Delta Force 2 water (DF2.EXE 0x4670a0/0x466b60): drawn before the
     // objects while the camera is above it, after them below it.
     bool df2Water() const { return gen2_ && hasWater_; }
