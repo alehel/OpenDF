@@ -216,6 +216,13 @@ private:
     TextTable campText_;                  // DFCAMPxx.BIN
     TextTable wpnText_;                   // Delta Force 2: DF2WPN.BIN (waypoint names)
     TextTable menuText_;                  // DFMENU.BIN
+    // Delta Force's loading screen (GOG Df.exe 0x4038b0 at 0x403ae4):
+    // df_wait.pcx, then DFGAME.BIN "Loading Text" lines one by one as the
+    // mission loads (0x403b4c..0x403ede). Only for the first load.
+    bool loadingScreen_ = false;
+    HudImage loadingWait_;
+    std::vector<std::string> loadingLines_;
+    void loadingLine(const char* key);
     TextTable gameTable_;                 // DFGAME.BIN by section and key
     // Placed charges: satchels (schg), claymores (clay radio, cly2 motion).
     struct Charge { int object; int item; int fuse; };
@@ -743,11 +750,13 @@ bool Game::loadMission(int index) {
     std::vector<uint8_t> raw;
     std::string err;
     const std::string& name = missions_[index];
+    loadingLine("STRLTEXT1");   // before the BMS load 0x449c70 (0x403b4c)
     if (!vfs_.read(name + ".BMS", raw) || !parseMission(raw, mission_, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
     }
     dropMultiplayerRecords(mission_, items_);   // single player (GOG Df2.exe 0x403790, GOG Df.exe 0x449710)
+    loadingLine("STRLTEXT4");   // after it and 0x405210 (0x403bdd)
     {
         // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
@@ -778,6 +787,7 @@ bool Game::loadMission(int index) {
         return false;
     }
     current_ = index;
+    loadingLine("STRLTEXT5");   // after 0x402ec0 / 0x4633f0 (0x403c36)
     // Testing: OPENDF_HEIGHTSCALE overrides metres per elevation step.
     if (const char* hs = std::getenv("OPENDF_HEIGHTSCALE")) terrain_.scale.heightScale = float(std::atof(hs));
     world_.terrain = &terrain_;
@@ -809,6 +819,7 @@ bool Game::loadMission(int index) {
     // attributes 0x10 ([0x653000], read by the aim 0x415f16).
     ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
+    loadingLine("STRLTEXT6");   // after the object passes (0x403dd4)
     lights_.clear();
     for (size_t i = 0; i < world_.objects.size(); ++i) {
         WorldObject& o = world_.objects[i];
@@ -947,6 +958,7 @@ bool Game::loadMission(int index) {
             return m ? &m->points : nullptr;
         };
     }
+    loadingLine("STRLTEXT7");   // 0x403e32
     // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
     {
         const ItemDef* soldier = items_.byId(mission_.version >= 0x0F ? playerItem_ : kItemPlayerSoldier);
@@ -981,6 +993,7 @@ bool Game::loadMission(int index) {
         }
     }
     buildRoute();
+    loadingLine("STRLTEXT8");   // 0x403e71
     // Powerups (attrib 0x20: ammo and medical crates) are removed at the start
     // in single player (0x402aa4, unless option bit 8).
     if (!(o_.attributes & 0x800))
@@ -1140,6 +1153,8 @@ bool Game::loadMission(int index) {
         missionNumber_ = 0;
         std::sscanf(name.c_str(), "C%dM%d", &c, &missionNumber_);
     }
+    loadingLine("STRLTEXT9");   // 0x403eaf, the last one
+    loadingScreen_ = false;
     script_.load(mission_);
     teamHits_.fill(0);   // GOG Df2.exe 0x41b620
     scriptClock_ = 0;
@@ -1329,6 +1344,39 @@ void Game::useHudMode(int modeW) {
     std::snprintf(name, sizeof name, "F_SML%d.PCX", std::min(modeW, 800));
     std::string err;
     if (!hud_.loadFont(vfs_, name, &err)) std::fprintf(stderr, "%s\n", err.c_str());
+}
+
+void Game::loadingLine(const char* key) {
+    // GOG Df.exe 0x4038b0: df_wait.pcx scaled nearest to the display mode
+    // (0x4037b0) and presented; then each step draws its 'Loading Text'
+    // line in green at (50, 150 + 20 k) display pixels and presents
+    // (0x472b70, 0x496c50). OpenDF shows the mode's 4:3 area centred.
+    if (!loadingScreen_) return;
+    if (!loadingWait_.texture) {
+        loadingWait_ = hud_.loadImage(vfs_, "DF_WAIT.PCX", false);
+        if (!loadingWait_.texture) { loadingScreen_ = false; return; }
+        glBindTexture(GL_TEXTURE_2D, loadingWait_.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        loadingLines_.clear();
+    }
+    const std::string* t = gameTable_.find("Loading Text", key);   // DFGAME.BIN (0x404cf0)
+    loadingLines_.push_back(t ? *t : std::string());
+    int dw, dh;
+    SDL_GL_GetDrawableSize(win_, &dw, &dh);
+    const float u = float(dh) / 480.f, x0 = (float(dw) - 640.f * u) * 0.5f;
+    const int modeW = dh >= 768 ? 1024 : dh >= 600 ? 800 : 640;
+    useHudMode(modeW);
+    const float px = u * 640.f / float(modeW);   // one display-mode pixel
+    glViewport(0, 0, dw, dh);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    hud_.begin(dw, dh);
+    hud_.image(loadingWait_.texture, x0, 0, 640.f * u, 480.f * u);
+    for (size_t k = 0; k < loadingLines_.size(); ++k)
+        hud_.text(x0 + 50.f * px, (150.f + 20.f * float(k)) * px, loadingLines_[k], kHudPureGreen, px);
+    hud_.end();
+    SDL_GL_SwapWindow(win_);
 }
 
 // Effect slots (DF.EXE table 0xab3400) -> ITEMS.DEF items.
@@ -6301,7 +6349,12 @@ int Game::run() {
     std::string err;
     if (!loadGl(&missing)) { std::fprintf(stderr, "missing OpenGL function %s\n", missing); rc = 1; }
     else if (!models_.init(&err) || !hud_.init(vfs_, &err)) { std::fprintf(stderr, "%s\n", err.c_str()); rc = 1; }
-    else if (!loadMission(int(it - missions_.begin()))) rc = 1;
+    else {
+        // Delta Force (not DF2) shows df_wait.pcx while the mission loads.
+        loadingScreen_ = !vfs_.exists("DF2.PWF");
+        if (!loadMission(int(it - missions_.begin()))) rc = 1;
+        loadingScreen_ = false;
+    }
 
     // Delta Force 2's HUD: its strips and HUD.DEF (Land Warrior and Task
     // Force Dagger have a HUD.DEF too, with other art).
