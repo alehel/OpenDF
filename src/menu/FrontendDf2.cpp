@@ -56,8 +56,19 @@ struct D2Button {
 };
 struct D2Menu { std::string name, background; std::vector<int> buttons; };
 
-// DF2.EXE 0x42e460: records KEY=value, fields split by strtok(", ") (empty
-// fields collapse), attribute letters -> 1 << (letter - 'A').
+// GOG Df2.exe 0x433210 (CD 0x42e460) reads df2.mnu section by section, each
+// key only from its own section and in a fixed order: SOUND in [SOUNDS],
+// ARGB in [ARGBS], FONT in [FONTS], IMAGE in [IMAGES], MENU in [MENUS], AP in
+// [APS] (not used here), BUTTON in [BUTTONS]. The reader (0x47cf60 load,
+// 0x47ce90 labels, 0x47d160 lookup, 0x47d1f0 next record): lines end at CRLF
+// (text after the last one is never read), TAB becomes a space, a label is a
+// line "[" + [A-Z_0-9]+ and its section runs from the next line to the next
+// line starting with '['. A record is "%[^\n\r=]=%[^\n\r;]": the key loses
+// its trailing spaces (not leading ones) and is compared case-insensitively;
+// the value loses its leading spaces, is cut at 255 characters and loses its
+// trailing spaces. Fields are then split by strtok(", ") (empty fields
+// collapse), attribute letters -> 1 << (letter - 'A'). OpenDF also accepts a
+// bare LF as a line end.
 struct D2Mnu {
     std::map<std::string, std::string> sounds;   // name -> file
     std::map<std::string, uint32_t> colors;
@@ -74,69 +85,117 @@ struct D2Mnu {
         return a;
     }
 
+    static bool ieq(const std::string& a, const char* b) {
+        size_t i = 0;
+        for (; i < a.size() && b[i]; ++i)
+            if (std::toupper(static_cast<unsigned char>(a[i])) != std::toupper(static_cast<unsigned char>(b[i]))) return false;
+        return i == a.size() && !b[i];
+    }
+
     bool parse(const std::string& text, const TextTable& menuText) {
-        std::istringstream in(text);
-        std::string line;
-        while (std::getline(in, line)) {
-            if (auto c = line.find(';'); c != std::string::npos) line.resize(c);
-            const size_t eq = line.find('=');
-            if (eq == std::string::npos) continue;
-            const std::string key = upper(line.substr(0, eq));
-            std::vector<std::string> f;
-            std::string cur;
-            for (char ch : line.substr(eq + 1)) {
-                if (ch == ',' || ch == ' ' || ch == '\t' || ch == '\r') {
-                    if (!cur.empty()) f.push_back(cur);
-                    cur.clear();
-                } else {
-                    cur += ch;
-                }
-            }
-            if (!cur.empty()) f.push_back(cur);
-            auto at = [&](size_t i) { return i < f.size() ? f[i] : std::string(); };
-            auto num = [&](size_t i) { return std::atoi(at(i).c_str()); };
-            if (key == "SOUND" && f.size() >= 2) sounds[upper(f[0])] = f[1];
-            else if (key == "ARGB" && f.size() >= 5)
-                colors[upper(f[0])] = uint32_t(num(1)) << 24 | uint32_t(num(2)) << 16 | uint32_t(num(3)) << 8 | uint32_t(num(4));
-            else if (key == "FONT" && f.size() >= 8) {
-                D2Font fo;
-                fo.file = f[1];
-                const size_t idx[3] = {2, 4, 6};
-                for (int k = 0; k < 3; ++k)
-                    if (auto it = colors.find(upper(f[idx[k]])); it != colors.end()) fo.fg[k] = it->second;
-                fonts[upper(f[0])] = fo;
-            } else if (key == "IMAGE" && f.size() >= 2) {
-                images[upper(f[0])] = {f[1], attrib(at(2)), std::max(1, num(3))};
-            } else if (key == "MENU" && f.size() >= 3) {
-                menus[upper(f[0])] = {f[0], upper(f[2]), {}};
-            } else if (key == "BUTTON" && f.size() >= 20) {
-                D2Button b;
-                b.name = f[0];
-                b.menu = upper(f[1]);
-                b.type = num(3);
-                b.attrib = attrib(f[4]);
-                if (upper(f[5]) != "NULL") {
-                    const std::string* t = menuText.find("MENU", upper(f[5]));
-                    b.text = t ? *t : "??TTID??";
-                }
-                b.mnuText = b.text;
-                b.callback = upper(f[6]) == "NULL" ? "" : f[6];
-                b.x = num(7);
-                b.y = num(8);
-                b.font = upper(f[9]) == "NULL" ? "" : upper(f[9]);
-                b.image = upper(f[10]) == "NULL" ? "" : upper(f[10]);
-                b.p1 = num(11);
-                b.p2 = num(12);
-                b.p3 = num(13);
-                b.drawstate = num(14);
-                b.hot1 = num(15);
-                b.hot2 = num(16);
-                b.zorder = num(17);
-                b.user1 = num(18);
-                b.user2 = num(19);
-                buttons.push_back(b);
-            }
+        std::vector<std::string> lines;
+        for (size_t pos = 0;;) {
+            const size_t nl = text.find('\n', pos);
+            if (nl == std::string::npos) break;   // 0x47cf60: an unterminated last line is not read
+            std::string l = text.substr(pos, nl - pos);
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            for (auto& c : l)
+                if (c == '\t') c = ' ';
+            if (l.size() > 255) l.resize(255);    // 0x47d0e0 copies at most 0xff
+            lines.push_back(std::move(l));
+            pos = nl + 1;
         }
+        std::map<std::string, size_t> labels;    // 0x47ce90: label -> first line of its section
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const std::string& l = lines[i];
+            size_t n = 1;
+            while (n < l.size() && ((l[n] >= 'A' && l[n] <= 'Z') || (l[n] >= '0' && l[n] <= '9') || l[n] == '_')) ++n;
+            if (!l.empty() && l[0] == '[' && n > 1) labels.emplace(l.substr(1, n - 1), i + 1);
+        }
+        std::vector<std::string> f;
+        auto section = [&](const char* label, const char* key, const std::function<void()>& record) {
+            auto it = labels.find(label);
+            if (it == labels.end()) return;
+            for (size_t i = it->second; i < lines.size(); ++i) {
+                const std::string& l = lines[i];
+                if (!l.empty() && l[0] == '[') break;   // "[%s" (0x4de944) ends the section
+                const size_t eq = l.find('=');
+                if (eq == std::string::npos || eq == 0) continue;
+                std::string k = l.substr(0, eq);
+                while (!k.empty() && k.back() == ' ') k.pop_back();
+                if (!ieq(k, key)) continue;
+                std::string v = l.substr(eq + 1, l.find(';', eq + 1) - (eq + 1));
+                const size_t first = v.find_first_not_of(' ');
+                v.erase(0, first == std::string::npos ? v.size() : first);
+                while (!v.empty() && v.back() == ' ') v.pop_back();
+                f.clear();
+                std::string cur;
+                for (char ch : v) {
+                    if (ch == ',' || ch == ' ') {
+                        if (!cur.empty()) f.push_back(cur);
+                        cur.clear();
+                    } else {
+                        cur += ch;
+                    }
+                }
+                if (!cur.empty()) f.push_back(cur);
+                record();
+            }
+        };
+        auto at = [&](size_t i) { return i < f.size() ? f[i] : std::string(); };
+        auto num = [&](size_t i) { return std::atoi(at(i).c_str()); };
+        section("SOUNDS", "SOUND", [&] {
+            if (f.size() >= 2) sounds[upper(f[0])] = f[1];
+        });
+        section("ARGBS", "ARGB", [&] {
+            if (f.size() >= 5)
+                colors[upper(f[0])] = uint32_t(num(1)) << 24 | uint32_t(num(2)) << 16 | uint32_t(num(3)) << 8 | uint32_t(num(4));
+        });
+        section("FONTS", "FONT", [&] {
+            if (f.size() < 8) return;
+            D2Font fo;
+            fo.file = f[1];
+            const size_t idx[3] = {2, 4, 6};
+            for (int k = 0; k < 3; ++k)
+                if (auto it = colors.find(upper(f[idx[k]])); it != colors.end()) fo.fg[k] = it->second;
+            fonts[upper(f[0])] = fo;
+        });
+        section("IMAGES", "IMAGE", [&] {
+            if (f.size() >= 2) images[upper(f[0])] = {f[1], attrib(at(2)), std::max(1, num(3))};
+        });
+        section("MENUS", "MENU", [&] {
+            if (f.size() >= 3) menus[upper(f[0])] = {f[0], upper(f[2]), {}};
+        });
+        section("BUTTONS", "BUTTON", [&] {
+            if (f.size() < 20) return;
+            D2Button b;
+            b.name = f[0];
+            b.menu = upper(f[1]);
+            b.type = num(3);
+            b.attrib = attrib(f[4]);
+            if (upper(f[5]) != "NULL") {
+                // 0x4338d0: a key missing from DF2.BIN's MENU section reads
+                // "??<key>??" (0x4c3e48), the key as the record writes it.
+                const std::string* t = menuText.find("MENU", upper(f[5]));
+                b.text = t ? *t : "??" + f[5] + "??";
+            }
+            b.mnuText = b.text;
+            b.callback = upper(f[6]) == "NULL" ? "" : f[6];
+            b.x = num(7);
+            b.y = num(8);
+            b.font = upper(f[9]) == "NULL" ? "" : upper(f[9]);
+            b.image = upper(f[10]) == "NULL" ? "" : upper(f[10]);
+            b.p1 = num(11);
+            b.p2 = num(12);
+            b.p3 = num(13);
+            b.drawstate = num(14);
+            b.hot1 = num(15);
+            b.hot2 = num(16);
+            b.zorder = num(17);
+            b.user1 = num(18);
+            b.user2 = num(19);
+            buttons.push_back(b);
+        });
         // GOG Df2.exe 0x433210 (CD 0x42e460): 0x432ba0 first qsorts all the
         // buttons by name (_strcmpi), then 0x4330a0 (CD 0x42e2f0) appends
         // them to their menus' lists in that order and 0x433040 (CD
