@@ -430,6 +430,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             else v.rotor = std::max(v.rotor - float(0x20000), 0.f);
         }
         if (!world.df2Rules) v.probeTimer += 8;   // ai+0x2c += the think interval (0x451115); DF2: in df2Altitude
+        if (!world.df2Rules) v.losTimer += 8;     // ai+0x40 (0x45111b), the door gun's sight re-check
     }
     const bool lift = v.rotor >= float(0x14000000);
     const float unit = 1.f / 65536.f;   // m per tick
@@ -713,7 +714,9 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         ai.markSpotted(o.team, id == -3 ? player_.team : world.objects[size_t(id)].team);
         v.gunTarget = id;
         v.lastKnown = at;
-        v.seen = true;
+        // Only "dead seen" (0x40) is cleared (GOG Df.exe 0x450cb3, Df2.exe
+        // 0x42bff0); "in sight" (0x80) keeps its value, so a target taken
+        // while it is clear is aimed at the spot first seen until a re-check.
         v.deadSeen = false;
         v.pause = int(rnd() & 0x3F) + 0x20;
         const int r = int((rnd() & 0xFFFF) << 8) - 0x800000;
@@ -722,9 +725,10 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         v.giveUp = 0;
         return;
     }
-    // Tracking (0x47bf0c), with lift.
+    // Tracking (0x47bf0c), with lift. Delta Force's timer ai+0x40 runs
+    // every think, lift or not (GOG Df.exe 0x45111b, in fly()).
     if (v.rotor >= float(0x14000000)) {
-        v.losTimer += 8;
+        if (world.df2Rules) v.losTimer += 8;
         if (v.losTimer > 0xBA) {
             v.losTimer = 0;
             v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
