@@ -51,6 +51,11 @@ enum class Action {
     // GOG Df.exe: the audio-macro box (AudioMacros, A, id 0x2b; 0x477d40
     // toggles [0x67db90]). Not in the CD build.
     AudioMacros,
+    // GOG Df.exe: cycleb (command 0xc0, no default key: 0x484b70(-1)) and
+    // the single-player cheat commands (flags 0x100000, no key):
+    // hitmewithyourbestshot 0x78 (refill), takeittothelimit 0x79 (infinite
+    // ammunition), raindropskeepfallinonmyhead 0x7c (8 fire missions).
+    CycleBack, CheatRefill, CheatInfiniteAmmo, CheatFireMissions,
     Count
 };
 

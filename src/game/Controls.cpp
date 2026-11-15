@@ -32,6 +32,8 @@ const ActionName kNames[] = {
     {Action::CameraZoomOut, "CameraZoomOut"}, {Action::FoCamera, "fo"}, {Action::FoNext, "tab"},
     {Action::ScopeMag, "scopemag"}, {Action::PrintScreen, "PrintScreen"}, {Action::PicInPic, "pinp"},
     {Action::AudioMacros, "AudioMacros"},
+    {Action::CycleBack, "cycleb"}, {Action::CheatRefill, "hitmewithyourbestshot"},
+    {Action::CheatInfiniteAmmo, "takeittothelimit"}, {Action::CheatFireMissions, "raindropskeepfallinonmyhead"},
 };
 
 // Built-in copy of DF.EXE's defaults (virtual-key code | mouse << 16).
