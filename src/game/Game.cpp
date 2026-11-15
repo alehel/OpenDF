@@ -3073,6 +3073,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
         arsenal_.tracers().draw(view, pass ? projNear : projFar, [&](Vec3 p) { return world_.nearest(p, eye); });
     }
     glDepthRange(0.0, 1.0);
+    terrain_.drawWaterTint(eye);   // Delta Force 2, camera under water (0x44fcb0)
 }
 
 // One depth pass of drawWorld: the terrain, the objects, the effects and

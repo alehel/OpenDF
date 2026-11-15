@@ -869,14 +869,38 @@ float Terrain::cellHeight(float x, float z) const {
     return float(heights_[size_t(iz) * size_ + size_t(ix)]) * scale.heightScale;
 }
 
+void Terrain::drawWaterTint(Vec3 eye) {
+    // Delta Force 2 (GOG Df2.exe 0x44f8d0 -> 0x44fcb0(view, [0x5386e8],
+    // 0x80); D3D 0x44fa80 -> 0x44fda0): the camera at or below the level,
+    // the whole 3D view (the weapon, the fog and the weather included) is
+    // blended 50 % toward the water colour, as the frame's last step.
+    if (!gen2_ || !hasWater_ || eye.y > desc_.waterHeight * scale.heightScale) return;
+    glUseProgram(progWater_);
+    glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 1);
+    glUniform1i(glGetUniformLocation(progWater_, "uTint"), 1);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
+    setV3(progWater_, "uWaterColor", {waterColor_.r / 255.f, waterColor_.g / 255.f, waterColor_.b / 255.f});
+    glBindVertexArray(waterVao_);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBindVertexArray(0);
+}
+
 void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks) {
     if (!hasWater_) return;
     const float level = desc_.waterHeight * scale.heightScale;
     if (gen2_) {
         // Delta Force 2: one plane at the level out to min(2^fog_level m,
         // 2047 m) (0x4670b7..0x4670d4; 2047 m with fog off), depth-tested
-        // and writing depth; seen from below as well, then the under-water
-        // tint over the whole view (camera at or below the level). The
+        // and writing depth; seen from below as well (the under-water tint
+        // is drawWaterTint, at the end of the frame). The
         // software water (0x466b60) writes its depth: each span (0x485e17)
         // has one z, the row's view depth in 16.16 m (0x466de0, up to
         // 0x7ff0000), stored where nearer, so the fog pass 0x4485b0 fogs it
@@ -900,15 +924,6 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_CULL_FACE);
         glDrawArrays(GL_TRIANGLES, 0, 6);
-        if (eye.y <= level && pass != Pass::Far) {
-            glUniform1i(glGetUniformLocation(progWater_, "uTint"), 1);
-            glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
-            glDisable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_DEPTH_TEST);
-        }
         glDisable(GL_BLEND);
         glBindVertexArray(0);
         return;

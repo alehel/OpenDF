@@ -65,6 +65,8 @@ public:
     int surfaceAt(float x, float z) const;
     // Water, after everything else is drawn (DF.EXE 0x43bfd8); `ticks` drives the waves.
     void drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks);
+    // Delta Force 2's under-water tint over the whole 3D view (0x44fcb0), last.
+    void drawWaterTint(Vec3 eye);
     float saturationFactor() const { return gen2_ ? desc_.saturation / 128.f : 1.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
