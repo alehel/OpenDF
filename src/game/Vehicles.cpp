@@ -57,7 +57,6 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         Vehicle v;
         v.object = int(i);
         v.helo = f == "helo";
-        if (v.helo) std::fprintf(stderr, "DBGH helo side %d flags %x\n", o.side, unsigned(mo.raw[3]));
         v.kind = v.helo ? Kind::Helo : mv == "herc" ? Kind::Herc : mv == "boat" ? Kind::Boat : mv == "loco" ? Kind::Loco
                : mv == "carg" ? Kind::Car : Kind::Veh0;
         const uint32_t fl = uint32_t(mo.raw[3]);
@@ -880,7 +879,6 @@ void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& sho
         sound.play(g.sounds[0], muzzle);
         const float range = sound.range(g.sounds[0]);
         if (shots.df2() || range > 0) ai.noise(muzzle, range * 0.5f, o.side, 2);
-        std::fprintf(stderr, "DBGDG helo %d fires, noise %.1f\n", v.object, range * 0.5f);
     }
     if (!(g.flags & 0x80)) ai.markFired(v.object);
 }
