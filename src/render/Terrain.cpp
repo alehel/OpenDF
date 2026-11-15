@@ -89,12 +89,26 @@ void main() {
         ivec2 cell = ivec2(mod(floor(vCell), uMapSize));
         float tile = min(texelFetch(uDetailIdx, cell, 0).r * 255.0, uTiles - 1.0);
         vec3 duv = vec3(fract(vCell), tile);
-        float sh = texture(uDetailShade, duv).r * 255.0;
-        if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
-        else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
-        vec4 dc = texture(uDetailColor, duv);
-        if (uAlphaDetail) col = mix(col, post(dc.rgb), dc.a);   // Delta Force 2
-        else if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
+        if (uAlphaDetail) {   // Delta Force 2
+            vec4 dc = texture(uDetailColor, duv);
+            col = mix(col, post(dc.rgb), dc.a);
+            oColor = vec4(col, 1.0);
+            return;
+        }
+        // Delta Force (GOG Df.exe 0x489ff0): the tile texel's raw shade s
+        // and colour d; s == 0: d's colour replaces the ground (none: as
+        // is); otherwise shade, then d averaged 50/50.
+        ivec3 dsz = textureSize(uDetailShade, 0);
+        ivec3 dt = ivec3(min(ivec2(fract(vCell) * vec2(dsz.xy)), dsz.xy - 1), int(tile));
+        float sh = texelFetch(uDetailShade, dt, 0).r * 255.0;
+        vec4 dc = texelFetch(uDetailColor, dt, 0);
+        if (sh < 0.5) {
+            if (dc.a > 0.5) col = post(dc.rgb);
+        } else {
+            if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
+            else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
+            if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
+        }
         oColor = vec4(col, 1.0);
         return;
     }
@@ -582,7 +596,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             const Rgb& c = dPal[dC.pixels[i]];
             dcRgba[i * 4] = c.r; dcRgba[i * 4 + 1] = c.g; dcRgba[i * 4 + 2] = c.b;
             dcRgba[i * 4 + 3] = dC.pixels[i] ? 255 : 0;
-            dsRg[i * 2] = dS.pixels[i] ? dS.pixels[i] : 120;
+            dsRg[i * 2] = dS.pixels[i];   // raw: 0 means the detail colour replaces (0x489ff0)
             dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 128;
         }
     } else {
