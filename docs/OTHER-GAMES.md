@@ -265,7 +265,28 @@ First differences from DF1:
     powcamp guard tower: under the CD rules climbed 27.5 to 32.9 m and
     stepped onto it; under GOG's the guard aims level and stays at the foot). Type 6 volumes set +0x64 & 0x1000000: the
     armory (item 103099 `armory`, model AMMODUMP, in the multiplayer maps;
-    KHUFU and TAVERN have one too). READ quirks kept: the sum of a mesh is
+    KHUFU and TAVERN have one too). Emplaced guns (GOG Df2.exe 1.06.15
+    only; the CD build pushes type 7 like any solid volume): ITEMS.DEF
+    attrib `EWeap` (0x8000; `4Team` is 0x4000, 0x422cca / 0x422cfa) marks
+    50Cal_S/K/K0/K2/P/B and glaunch; their seat is a type-7 volume, which
+    sets flags 8 and does not push (0x447450). The person move calls
+    0x4145a0(person, gun) for it (0x4467d0): with the gun EWeap and the
+    person on nothing or this gun, a control direction 3..5 (keys held
+    back, 0x41efd0) or either dead/destroyed clears both links (person
+    +0x8c, gun +0xF8); else, if nobody's +0x8c is this gun, it links them
+    and puts the person's origin at the gun plus hardpoint 0 turned by his
+    heading (0x418300). Linked, the chooser plays 107 Crouched_EWeap
+    (0x445980; speed 0 in PLAYANIM.ANM, absent from the enemies'), the
+    player's heading stays within 45 degrees of the gun's and the pitch
+    within 22.5, re-placed every chooser tick (0x447120), the view comes
+    from hardpoint 2 through the gun's posed mesh 1 with the player's
+    angles (0x44dd50 -> 0x416e90), and the gun's "ewpn" pose (0x450c60)
+    turns meshes 1 and 2 about hardpoint 1 by the gunner's heading less
+    the gun's and his pitch. A destroyed gun lets go (0x4467d0's end).
+    Not done: the gun's own weapon (HUD slots 11 / 12, 0x44c840 /
+    0x44f160) and the multiplayer mount 0x4183d0. Only TKH_G21 places
+    guns (two 50Cal_K); walking into one there seats the player.
+    READ quirks kept: the sum of a mesh is
     cleared only when a point reaches the mesh box, so a mesh no point
     reaches adds the previous mesh's push again. DF2 has no DF1 mover box
     (World::resolve does nothing under DF2 rules) and no face ground: the

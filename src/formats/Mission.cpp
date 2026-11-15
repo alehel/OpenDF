@@ -62,7 +62,10 @@ bool ItemDefs::parse(const std::string& text) {
                                                                         {"noak", 0x80},
                                                                         // Delta Force 2 (DF2.EXE 0x41e020, strings 0x4ab5b8)
                                                                         {"notool", 0x100}, {"snap", 0x200}, {"pfoil", 0x400},
-                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000}};
+                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000},
+                                                                        // GOG Df2.exe only (0x422cca / 0x422cfa): 4Team,
+                                                                        // and EWeap, the emplaced guns (0x4145a0)
+                                                                        {"4team", 0x4000}, {"eweap", 0x8000}};
                 for (const auto& b : bits)
                     if (a == b.first) cur.attrib |= b.second;
             }

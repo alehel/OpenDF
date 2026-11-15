@@ -810,6 +810,13 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 p.gait = -1;
             }
         }
+        // GOG Df2.exe 0x445980 (the chooser of 0x4467d0's odd ticks): a
+        // person manning an emplaced gun (+0x8c) plays 107 Crouched_EWeap
+        // (speed 0; not in the enemies' .ANMs: no motion either).
+        if (world.df2Rules && (ticks_ & 1) && !o.chute && o.mount >= 0) {
+            world.requestMove(o, 107);
+            if (o.moveNumber != 107) o.moveNumber = 107;
+        }
         // Movement (0x436158): the move's .ANM speed along the heading (not
         // while on a DF2 parachute).
         if (o.moves && o.moveNumber >= 0 && !o.chute) {

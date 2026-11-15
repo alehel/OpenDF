@@ -3019,6 +3019,13 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
         }
+        if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "ewpn" && v.lod < int(v.o->model->lods.size())) {
+            // GOG Df2.exe 0x450c60: a manned emplaced gun turns meshes 1 and
+            // 2 by its gunner's view (World::ewpnPose).
+            models_.drawPosed(*v.o->model, v.lod, v.o->matrix(v.at),
+                              world_.ewpnPose(*v.o, v.o->model->lods[size_t(v.lod)].meshParent.size()));
+            continue;
+        }
         if (v.o->chr && !v.o->anim.angles().empty()) {
             const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);

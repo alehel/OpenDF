@@ -48,11 +48,15 @@ public:
     // and Swimming poses (PLAYER01.CHR animations 134 / 133).
     float floatOrigin = 0.1489f, swimOrigin = 0.3184f;
 
-    void update(float dt, const PlayerInput& in, const World& world);
+    // `world` is changed only by GOG Df2.exe's emplaced-gun links (0x4145a0).
+    void update(float dt, const PlayerInput& in, World& world);
+    // GOG Df2.exe: manning an emplaced gun (+0x8c): the eye is the gun's
+    // (0x416e90 instead of the normal view, 0x44dd50).
     // Delta Force: the Crouch / Prone / Stand commands are latched (GOG
     // Df.exe 0x477d40: 0xa1 [0xc23a04], 0xa2 [0xc23a08], 0xa4 [0xc23a0c])
     // and taken in update's on-ground branch (0x488200).
     void requestStance(Stance s) { (s == Stance::Crouch ? reqCrouch_ : s == Stance::Prone ? reqProne_ : reqStand_) = true; }
+    bool mounted() const { return mounted_; }
     float landOrigin() const;
     // Effect slots spawned since the last call (water entry splash), with
     // their position.
@@ -66,7 +70,7 @@ public:
     // Position in mission coordinates: metres, x east, y north.
     double missionX() const { return feet.x + double(wrapX_) * wrapExtent_; }
     double missionY() const { return -(feet.z + double(wrapZ_) * wrapExtent_); }
-    Vec3 eye() const { return inWater_ ? Vec3{feet.x, originY_ + eyeOffset_, feet.z} : Vec3{feet.x, feet.y + eyeHeight_, feet.z}; }
+    Vec3 eye() const { return mounted_ ? mountEye_ : inWater_ ? Vec3{feet.x, originY_ + eyeOffset_, feet.z} : Vec3{feet.x, feet.y + eyeHeight_, feet.z}; }
     Vec3 forward() const;
     // Body origin (the pelvis; DF.EXE's object z): what blasts measure to.
     Vec3 origin() const { return inWater_ ? Vec3{feet.x, originY_, feet.z} : Vec3{feet.x, feet.y + landOrigin(), feet.z}; }
@@ -89,7 +93,9 @@ private:
     void updateInWater(float dt, const PlayerInput& in, const World& world, float water);
     // Delta Force 2's person move for the player, one 60 Hz tick (DF2.EXE
     // 0x440cd0 jump key, 0x43f690 move chooser, 0x440400 physics).
-    void tickDf2(const PlayerInput& in, const World& world);
+    void tickDf2(const PlayerInput& in, World& world);
+    bool mounted_ = false;
+    Vec3 mountEye_{0, 0, 0};
     void enterWater(float z);
     void leaveWater(float z);
     float df2Clock_ = 0;
