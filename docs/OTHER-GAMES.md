@@ -149,7 +149,10 @@ First differences from DF1:
     `ELEVATION` (0x442c30) with names per waypoint record +0x58 from
     `DF2WPN.BIN` "WPNames"; the player's name (0x441b20); the radar: the
     colour map north-up at 1.6 m a pixel at 640 (scale as the command map),
-    route lines, objects by their marker shape, GPS soldiers, the player, the
+    route lines, objects by their marker shape, GPS soldiers, the player
+    (colours as the command map's, GOG 0x4273b0: the player 0xff8000, its
+    side's people green, other sides' people red, other objects by side 0
+    green, 1 0x1040ff, 2 red, 3 yellow, 4 0xff027f), the
     next-waypoint dot on the `map_radius` ring (0x421510, 0x4226c0,
     0x443850); the top strip: the last three of two 40-line histories
     (system and chat), each line in its own colour, no timeout (0x442170);
@@ -636,31 +639,53 @@ First differences from DF1:
   - **command map** (key C; 0x40b370): instead of the 3D view, a 640×480
     mouse screen (scaled into the window; the background tiles continue past
     its sides): CTILE2 background, CTILE panels with DF2_EDGE/DF2_CRNR frames
-    3 px outside, the last three chat/system lines, the tabs (Cmap
-    CMAP_MENU000-004, F_LG640, 0xff9020 / 0x603000, clickable); Map tab: the
+    3 px outside, the last three chat/system lines, the six tabs of GOG's
+    table 0x4af9e0 (Map, VON, Players, Team, Weapons, Mission: Cmap
+    CMAP_MENU000, the literal "VON", CMAP_MENU001-004; F_LG640, 0xff9020 /
+    0x603000, laid out from x 40 with the rest up to 984 shared six ways,
+    0x40bda0, clickable on their text, 0x40d860; the CD's table has five);
+    Map tab: the
     radar picture at the radar's scale in (48,200)-(640,656), 100 m grid in
-    orange with white labels (columns x/100+10 as letters, rows 10 − y/100),
-    route lines, double-size blips with a black outline, waypoint names, the
+    orange with white labels (columns x/100+10 as letters, negative ones
+    wrapped by 702, rows 10 − y/100),
+    route lines, double-size blips with a black outline in GOG's colours
+    (0x4273b0: the player 0xff8000, its side's people green, other sides'
+    people red; other objects by side), with Names every named blip's +0x54
+    name (PeopleNames / WPNames, the soldier name, W waypoint names) at
+    (x + size, y) in each outline pass's colour (0x427904), the
     toggle buttons (Gridlines, Names, People, Waypoints, Vehicles, Buildings:
     END1/MIDL/END2, text 0xff9020 on / 0x683000 off; every text button
     draws frame 1 under the mouse and 2 while held there, GOG 0x40c8a0 /
     0x40cae0), the icon buttons, + / −
     zoom, >< re-centre, right-drag pan, the DF2CURSA / DF2CROSA cursors in
-    green; Mission tab: MBBRIEF in 0xc06000; Team tab (0x40f190): the side-1
-    soldiers (player first) as Name/Plan/Weapon rows, picked there or by
+    green; Mission tab (0x412bb0): MBBRIEF through the text box 0x40c310
+    in (64,216)-(608,704), 0xc06000, wrapped at spaces / '~' / CR / LF,
+    lines the 'A' glyph height + 2 apart, empty segments not drawn,
+    clipped at the bottom, scrolled by its bar (608, 0..count+1 page 18),
+    then "Game Settings\rn/a" unwrapped in (704,216)-(960,704) with its own
+    bar at 944 (READ quirk: a line cut by width at a CR/LF/'~' loses the
+    first letter of the next word, "ituation."); VON (0x40f5b0) and
+    Players (0x40fb70): the players (the player alone in single player),
+    16 numbered rows from y 240, the VON or Receive/Waypoints/Mute/Text
+    chat headings, no per-row buttons on the player's own row; Team tab
+    (0x410060): the side-1
+    soldiers (player first) as Name/Weapon/Plan rows from y 240 (14
+    rows, headings Name at 80, Weapon centred at 288, Plan at 464, y 204),
+    each row hit only on its number-less name rect (0x40d790), picked there or by
     clicking them on the map (0x422640); a teammate's four orders (Cmap
     CMAP_BTN_NOORDER/HPHF/HPCM/HP) set the AI byte +0xBB and answer with
     STRMISC34..37 in green (0x4113b0 -> 0x403380); the player's plans are
-    shown (multiplayer only). All five tabs show in single player. One
+    shown (multiplayer only). All six tabs show in single player. One
     selection ([0xbcb424]) is shared by Map picks (the nearest blip drawn
     last frame within 1000 px², 0x422640), Players rows and Team rows; the
     selected blip blinks (outline its colour halved, colour | 0x808080 while
     (frame + 8) & 0x20). The selected-object panel at (684,200) (0x40e190:
     Selected/name/team/grid/Plan/Weapons for the player and squad;
-    Waypoint/Building/Vehicle with name and grid 0x422d60) and its action
+    Waypoint/Building/Vehicle with name and grid 0x427a60: 16.16 fixed
+    point, columns wrapped by 70200 m, rows by 10000 m) and its action
     buttons from (688,696) upward (0x40dd50: Bozo Filter and Send Message to
     as no-ops, Set as my Waypoint, Delete, Rename) on the Map, Players and
-    Team tabs. The W tool (0x411250, one-shot; the W button made with state 0
+    VON, Players and Team tabs. The W tool (0x411250, one-shot; the W button made with state 0
     on every Map visit; the white DF2WCURA cursor anywhere on the Map tab):
     a click on the map makes a player waypoint "WP" (item 6089, 128-slot pool
     0xd34dc0 cleared at mission load; full: nothing made) at the clicked
@@ -673,9 +698,8 @@ First differences from DF1:
     WAYPOINT). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
     Escape clears first): the green ramp 0x4aecdc, also on the HUD radar, no
     water blend; contours ({{{, map only): 0x00ff00 where H >> 12 changes
-    from the previous pixel of the row or the pixel south. The Players tab
-    (the player alone in single player: number, name, red brackets when
-    selected; headings; scroll bar arrows). The Weapons tab (0x40fbe0):
+    from the previous pixel of the row or the pixel south. The mission
+    route keeps up to 16 points (GOG 0x459740; DF1 8). The Weapons tab (0x40fbe0):
     current and requested loadout with WEAP640 pictures by type (0x4434e0),
     < > cycling through types the slot's category mask allows (0x4a4c88),
     the button rows' quirk (empty slots share a row); Request Weapons is
