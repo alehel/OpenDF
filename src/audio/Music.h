@@ -28,11 +28,13 @@ public:
     void setVolume(int v) { master_ = v; }   // cd_volume, 0..255
     // DF.EXE's integer units for Audio's DF mixer: (pcm − 128) · ((V >> 1) >> shift).
     void setIntegerUnits(bool on) { integer_ = on; }
-    // Delta Force 2's VM and music engine: the switch opcode 0x35
-    // (0x48b610) and the script's setVolume / fadeTo (0x33 8 / 9, 0x48b74a /
-    // 0x48b75c), whose fade moves over one stem (0x46bf86); the stream
-    // volume, set as each block is queued (0x46c050 -> 0x470cf0, applied to
-    // the whole ring by 0x4a0372), is master · fade >> 8 (0x46bfd0).
+    // Delta Force 2's VM: the switch opcode 0x35 (0x48b610). Both games:
+    // the script's setVolume / fadeTo (0x33 8 / 9; GOG Df.exe 0x4c4fa0 /
+    // 0x4c4fe0, DF2.EXE 0x48b74a / 0x48b75c), whose fade moves over one
+    // stem (0x4c4ca0, 0x46bf86); the stream volume, set as each block is
+    // queued (GOG Df.exe 0x4c4d20 -> 0x494810, DF2.EXE 0x46c050 ->
+    // 0x470cf0, applied to the whole ring by 0x4b52dd / 0x4a0372), is
+    // master · fade >> 8.
     void setDf2(bool on) { df2_ = on; }
     // Once per menu frame (0x4b8490 from the menu loop 0x406bf8): queues
     // at most one block while fewer than 13 are queued, or, when the stem

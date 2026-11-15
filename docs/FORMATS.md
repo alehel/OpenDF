@@ -534,7 +534,10 @@ switches on Var01 (0→5, 1→6, 2/3→7, 4→5, 5→8, 6→9, 7→10, 8/9→7, 
 random stems with switches. `0x33 8` setVolume and `0x33 9` fadeTo (0x48b74a / 0x48b75c → 0x46c240
 / 0x46c280) set the fade and its target (0..255, 16.16); when a stem starts the step is
 (target − fade) / (size / blockSize) (0x46bf86), and each queued block sets the stream volume to
-master · fade >> 8 before stepping (0x46c050; the volume applies to the whole ring, 0x4a0372). The
+master · fade >> 8 before stepping (0x46c050; the volume applies to the whole ring, 0x4a0372).
+DF.EXE does the same (GOG Df.exe 0x4c4fa0 / 0x4c4fe0, 0x4c4ca0, 0x4c4d20 -> 0x494810 / 0x4b52dd):
+with the fade full the stream volume is (255 · cd_volume) >> 8; its sub-ops 2..7 push their own
+number and pop nothing (0x4b705d). The
 menus write Var01 every frame from the current state (0x43cc20 from the main loop 0x45ecd8):
 Campaign 1, MultiPlayer / JoinMultiPlayer / NovaWorld 2 (10 with 0x4cdf4c), Options1/2 3,
 ChooseSoldier 4, Credits 5, MissionBriefing 6, ChangeGear 7, HostMultiPlayer 8, HostOptions1 9,
