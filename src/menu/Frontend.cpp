@@ -2421,6 +2421,7 @@ int Frontend::run() {
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
                 g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
+                g.letterbox = std::clamp(cfg_.get("window_size"), 1, 2);   // 0x407a90, 0x404ba0
                 // 0x41cca0: the profile's 44 bindings over the game table;
                 // mouse 1/2/3 -> mask 1/2/0x10; Fire also sets attack_2.
                 g.bindings.clear();
@@ -2436,6 +2437,7 @@ int Frontend::run() {
                 runGame(vfs_, g, &outcome_, &flags);
                 missionPlayed_ = true;
                 audio_.setDfMixer(true, false);
+                if (outcome_.letterbox) cfg_.set("window_size", outcome_.letterbox);   // 0x407980: back to df.cfg
                 if (outcome_.quit) break;
                 // 0x40e5d4: a win marks the mission done, kills add up; the
                 // flags are kept only on a win.

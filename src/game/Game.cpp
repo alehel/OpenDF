@@ -141,7 +141,7 @@ std::string missionName(const std::string& title) {
 
 class Game : public ScriptHost {
 public:
-    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o) {}
+    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o), letterbox_(std::clamp(o.letterbox, 1, 2)) {}
     int run();
 
     // ScriptHost: what the mission's events can see and do.
@@ -309,6 +309,7 @@ public:
         o.won = missionResult_ == kPlayerSide;
         for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
         o.quit = quit_;
+        o.letterbox = letterbox_;
         return o;
     }
 private:
@@ -694,7 +695,9 @@ private:
     // [0x66f978]; Delta Force 2 [0x67d3a4] (GOG Df2.exe): 0 off, 1 names,
     // 2 abbreviated (glyph 4).
     int friendlyTags_ = 0;
-    int letterbox_ = 1;                   // lbsize (0x404650): 1 or 2 eighths of the height per band
+    // lbsize (0x404650): 1 or 2 eighths of the height per band; df.cfg
+    // window_size ([0x4ced38] -> [0x67f4f8] at 0x407a90, clamped by 0x404ba0).
+    int letterbox_ = 1;
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
     std::deque<std::pair<std::string, Color>> history_;   // the 16 latest messages and their colours (ring 0x68a280, +0x78)
     void drawOldMessages(const Screen& s);
@@ -4133,7 +4136,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
     } else if (playerDead() && missionResult_ < 0) {
         const char* dead = "You Are Dead";
-        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(0x14), dead, kHudMessage, s.text());   // dba0 + 0x14
     }
 
     if (friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
@@ -4161,8 +4164,16 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         drawDf2Top(s);
         drawDf2Bottom(s);
     } else {
+        // GOG Df.exe 0x404ba0 / 0x426c30 / 0x429580: the bars keep their
+        // height and sit against the 3D view; with letterbox 2 the top block
+        // is drawn from dbac (H/8 lower) and the bottom block, messages
+        // included (db9c = H - H/8), from dbb0, the outer eighths black.
+        const float shift = o_.noHud ? 0.f : float(letterbox_ - 1) * s.h / 8.f;
+        hud_.shiftY(shift);
         drawTopBar(s);
+        hud_.shiftY(-shift);
         drawBottomBar(s);
+        hud_.shiftY(0);
     }
     // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
     // multiplied by (255, 255 - v, 255 - v) / 256, a red tint of strength v.

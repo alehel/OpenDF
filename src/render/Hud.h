@@ -60,6 +60,8 @@ public:
 
     void begin(int width, int height);
     void end();
+    // Draws what follows `dy` pixels lower (until begin or the next call).
+    void shiftY(float dy);
 
     // Text at integer `scale`; returns the advance in pixels.
     float text(float x, float y, const std::string& s, Color c, float scale = 1);
@@ -99,7 +101,7 @@ private:
     void quad(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, Color c);
 
     GLuint prog_ = 0, vao_ = 0, vbo_ = 0, font_ = 0;
-    GLint locScreen_ = -1, locMode_ = -1, locCircle_ = -1, locThickness_ = -1;
+    GLint locScreen_ = -1, locMode_ = -1, locCircle_ = -1, locThickness_ = -1, locShiftY_ = -1;
     int width_ = 0, height_ = 0;
     int mode_ = -1;
     GLuint texture_ = 0;

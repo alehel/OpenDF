@@ -18,6 +18,7 @@ layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUv;
 layout(location = 2) in vec4 aColor;
 uniform vec2 uScreen;
+uniform float uShiftY;   // moves everything drawn down by this many pixels
 out vec2 vUv;
 out vec4 vColor;
 out vec2 vPos;
@@ -25,7 +26,7 @@ void main() {
     vUv = aUv;
     vColor = aColor;
     vPos = aPos;
-    gl_Position = vec4(aPos.x / uScreen.x * 2.0 - 1.0, 1.0 - aPos.y / uScreen.y * 2.0, 0.0, 1.0);
+    gl_Position = vec4(aPos.x / uScreen.x * 2.0 - 1.0, 1.0 - (aPos.y + uShiftY) / uScreen.y * 2.0, 0.0, 1.0);
 }
 )";
 
@@ -87,6 +88,7 @@ bool Hud::init(Vfs& vfs, std::string* error) {
     locMode_ = glGetUniformLocation(prog_, "uMode");
     locCircle_ = glGetUniformLocation(prog_, "uCircle");
     locThickness_ = glGetUniformLocation(prog_, "uThickness");
+    locShiftY_ = glGetUniformLocation(prog_, "uShiftY");
     glUseProgram(prog_);
     glUniform1i(glGetUniformLocation(prog_, "uTex"), 0);
     glUseProgram(0);
@@ -340,6 +342,7 @@ void Hud::begin(int width, int height) {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(prog_);
     glUniform2f(locScreen_, float(width), float(height));
+    glUniform1f(locShiftY_, 0.f);
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glActiveTexture(GL_TEXTURE0);
@@ -404,6 +407,11 @@ void Hud::flush() {
     glBufferData(GL_ARRAY_BUFFER, std::ptrdiff_t(verts_.size() * sizeof(Vertex)), verts_.data(), GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, GLsizei(verts_.size()));
     verts_.clear();
+}
+
+void Hud::shiftY(float dy) {
+    flush();
+    glUniform1f(locShiftY_, dy);
 }
 
 void Hud::setMode(int mode, GLuint texture) {

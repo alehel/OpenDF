@@ -63,6 +63,9 @@ struct GameOptions {
     // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
     // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
     int displayGamma = 128;
+    // df.cfg DISPLAY window_size: the letterbox, 1 or 2 eighths of the
+    // height per band (GOG Df.exe 0x407a90 -> [0x67f4f8], 0x404ba0 clamps).
+    int letterbox = 1;
     // The soldier's key bindings (profile +0x6a0), applied over the game
     // table at mission start (0x41cca0): DF.EXE name, VK | mouse mask << 16.
     std::vector<std::pair<std::string, uint32_t>> bindings;
@@ -76,6 +79,7 @@ struct MissionOutcome {
     bool won = false;        // side 1 won
     int kills = 0;           // people the player killed
     bool quit = false;       // the window was closed: leave the program (exit code 2)
+    int letterbox = 0;       // the letterbox at the end (0x407980 -> df.cfg window_size); 0 = not played
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when
