@@ -151,6 +151,7 @@ public:
     void showText(int id) override;
     void radio(int id) override;
     void endMission(int winnerSide) override;
+    void leaveMissionFlags();
     bool squadMembers() const override {
         return mission_.version >= 0x0F ? !(o_.df2Attributes & 0x20) : !(o_.attributes & 0x200);
     }
@@ -2732,6 +2733,15 @@ void Game::endMission(int winnerSide) {
     if (missionResult_ < 0) missionResult_ = winnerSide;
 }
 
+// Leaving a mission (GOG Df.exe 0x401e70, from the mission loop's end 0x40420a
+// and the Space replay 0x404ed2; GOG Df2.exe 0x45a870): in single player the
+// live campaign flags become the saved ones when side 1 has won ([0x67f718]
+// == 1). Its flag-4 event pass (0x42eba0) is gated on [0x67f528], network
+// state that single player keeps at 0 (0x41e2e0), so it is not done here.
+void Game::leaveMissionFlags() {
+    if (missionResult_ == kPlayerSide) savedCampaignFlags() = campaignFlags();
+}
+
 void Game::closeQuitBox() {
     quitBox_ = false;
     if (quitFreedMouse_) {   // (OpenDF) take the mouse back
@@ -2770,7 +2780,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
         }
-        if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
+        if (k.keysym.sym == SDLK_SPACE) { leaveMissionFlags(); loadMission(current_); return; }
     }
     // DF2's command-map name prompt takes the keyboard while it is open.
     if (df2Hud_.on && showMap_ && df2Map_.prompt) { df2MapKey(k); return; }
@@ -6801,6 +6811,7 @@ int Game::run() {
             }
         }
     }
+    leaveMissionFlags();   // the mission loop has ended (GOG Df.exe 0x40420a -> 0x401e70)
     // GL objects must go before the context.
     world_.objects.clear();
     terrainPtr_.reset();
