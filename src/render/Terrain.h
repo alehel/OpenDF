@@ -56,6 +56,11 @@ public:
     // (0x46e0f0; the ground 0x46e950 takes it off again). In metres a metre,
     // OpenDF axes (gz = dh/dz). 0 on Delta Force terrains.
     void df2Gradient(float x, float z, float& gx, float& gz) const;
+    // Delta Force's (GOG Df.exe 0x47e5d0, CD 0x4332ac): at the cell holding
+    // (x, z), no interpolation, the raw height bytes' change over +-2 cells,
+    // x 0x1000 in 16.16 (a step a sixteenth: 0.25 m over 4 m). OpenDF axes
+    // (gz = dh/dz), the cell row as df2Gradient's.
+    void df1Gradient(float x, float z, float& gx, float& gz) const;
     float mapExtent() const { return size_ * scale.cellSize; }
     // DF.EXE [0x68bfe8]: the water level in metres, 0 when the map has none
     // (0x430d28); every water test is skipped when it is 0.

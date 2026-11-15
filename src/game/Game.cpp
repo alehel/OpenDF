@@ -3850,12 +3850,19 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         // 0x42e8f4, DF2.EXE 0x41d000). With the box open, Y runs command 3
         // "exit" (DF.EXE 0x42e91a -> 0x42e40e: [0x66f9a8] = 1, the mission
         // loop ends into the Post Menu, as Enter on the end panel), N shuts
-        // the box. DF.EXE compares the virtual keys 'Y' / 'N'; DF2.EXE the
-        // first characters of DF2GAME.BIN Misc STRMISC09 / STRMISC10
+        // the box. The CD DF.EXE compares the virtual keys 'Y' / 'N' (GOG:
+        // below); DF2.EXE the first characters of DF2GAME.BIN Misc STRMISC09 / STRMISC10
         // ([0xa75380] / [0xa75384], default 'Y' / 'N', 0x41c76b). Any other
         // key is not taken: it goes on to the commands (Escape, Pause), and
         // the end panel's Enter / Space (0x42e964) are not reached.
         auto keyOf = [&](const char* key, char def) {
+            if (exe_.build() == ExeBuild::Df1Gog) {
+                // GOG Df.exe 0x47a300: [0xbd4820] / [0xbd4824] 'Y' / 'N', each
+                // replaced by the first byte of DFGAME.BIN Misc STRMISC09 /
+                // STRMISC10 when there is one; 0x4790a0 compares the VK.
+                const std::string* t = gameTable_.find("Misc", key);
+                return t && !t->empty() ? (*t)[0] : def;
+            }
             const std::string t = df2Hud_.on ? df2Text("Misc", key, "") : std::string();
             return t.empty() ? def : char(std::toupper(static_cast<unsigned char>(t[0])));
         };
@@ -8933,6 +8940,7 @@ int Game::run() {
                     continue;
                 }
                 spawnEffect(sp.slot, sp.pos);
+                if (sp.sound) playSound(sp.sound, sp.pos);   // DF1 splash 0x8A (GOG Df.exe 0x4877d6)
             }
             bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
             if (paused_)
