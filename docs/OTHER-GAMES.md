@@ -455,8 +455,11 @@ First differences from DF1:
     for explosives) noise, no impact effect; the panes stay drawn (+0x78 has
     no draw reader). Not yet: the glass shards (0x414a90: min(100, area·20)
     of 107047..107049, ai `gdeb`), the blast's flag-2 mesh pass, and the
-    staged palm trees (0x42ed40 / 0x429e40 / 0x42eae0: palmsection /
-    palmdebris pieces, sounds 0x12E / 300); the owner of a vehicle's or
+    palm trees' hit stages (0x42ed40: hit part 0/1 into +0xB4, 2 into
+    +0xB8, over 10 -> 0x429e40(part); 0x42eae0 / 0x42eed0: the falling
+    palmsection, sounds 0x12E / 303); a palm at hp <= 0 does throw its
+    palmdebris pieces with sound 300 (0x429e40(-1), as GOG Df.exe's
+    0x44e6b0(-1); DF2's gdeb mover 0x42e6a0 is DF1's); the owner of a vehicle's or
     charge's own detonate / fragment chain (0x414960) is not passed on
     either (the boat's five big blasts take its +0xF8). The bld2
     crush (0x45cd80) takes 100 hp from people, every item-list object and

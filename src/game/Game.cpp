@@ -2724,8 +2724,9 @@ void Game::tickEffects() {
             continue;
         }
         if (e.debris) {
-            // gdeb (GOG Df.exe 0x453530): position += velocity; the yaw's top
-            // byte +1, the pitch's high word + 0x380, the roll's top byte +7;
+            // gdeb (GOG Df.exe 0x453530; Df2.exe 0x42e6a0 the same):
+            // position += velocity; the yaw's top byte +1, the pitch's high
+            // word + 0x380, the roll's top byte +7;
             // while the ground (0x47df40) is below it, vz -= 0x134; at or
             // above it the piece is deleted (0x45da30).
             e.pos = e.pos + e.dvel;
@@ -8439,6 +8440,12 @@ int Game::run() {
                 if (mission_.version < 0x0F && world_.objects[size_t(i)].item) {
                     const std::string& f = world_.objects[size_t(i)].item->aiFunction;
                     if (f == "wdsm" || f == "wdmd" || f == "cact" || f == "palm") woodDebris(i);
+                } else if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "palm") {
+                    // Delta Force 2's palm (GOG Df2.exe 0x42ed40) at hp <= 0:
+                    // 0x429e40(-1), the same pieces, counts, items 0xfe0..0xfe4
+                    // and sound 300 as GOG Df.exe's 0x44e6b0(-1), with DF2's
+                    // gdeb mover 0x42e6a0 equal to DF1's; then flags |= 0xc.
+                    woodDebris(i);
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
