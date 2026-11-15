@@ -23,7 +23,8 @@ public:
     // Starts animation `anim` at frame 0, blending from the current pose.
     void start(const Chr& chr, int anim);
     // One animation tick; returns the event byte of a frame that just
-    // ended (0 if none): 0x40-0x43 footsteps, 0x12-0x16 voices.
+    // ended (0 if none): 0x40-0x43 footsteps, 0x12-0x16 voices. Delta Force
+    // 2 (KSA bodies, GOG Df2.exe 0x423380): the frame just entered.
     int tick(const Chr& chr);
 
     int animation() const { return anim_; }

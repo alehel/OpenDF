@@ -1999,6 +1999,22 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, i
     if (surface == 0 && smoke) smokeGens_.push_back({at, 0, 0});
 }
 
+// Delta Force 2 (GOG Df2.exe 0x451090, the person pose handler): a person
+// airborne (+0x64 & 0x2000) and not +0x64 & 0x40 (no writer in single
+// player: only the network update copies the low byte) is drawn in frame 0
+// of the animation its move table maps move 130 (Jumping_1HW, +0xe3c) to,
+// whatever move it plays. False (turns untouched) otherwise.
+static bool df2AirbornePose(const Chr& chr, const AnimDefs* moves, std::vector<std::array<float, 3>>& turns) {
+    const AnimMove* mv = moves && chr.ksa() ? moves->find("Jumping_1HW") : nullptr;
+    const ChrAnimation* a = mv ? chr.animation(mv->animation) : nullptr;
+    if (!a || a->frames.empty()) return false;
+    const ChrFrame& f = a->frames.front();
+    turns.assign(f.angles.size(), {0, 0, 0});
+    for (size_t p = 0; p < f.angles.size(); ++p)
+        for (int k = 0; k < 3; ++k) turns[p][size_t(k)] = f.angles[p][size_t(k)] / 256.f;
+    return true;
+}
+
 // A person's pose (0x44ca34): per 3DI mesh (= .CHR part), the part's
 // rotation from the animation about the mesh pivot; each pivot carried by
 // its parent mesh's matrix. Model axes: OpenDF's (x forward, y up, z right);
@@ -2414,11 +2430,13 @@ Game::Effect* Game::spawnSmk2(Vec3 at, bool dust, float dx, float dz, int t) {
         e.maxSize = 0x20000;
     }
     // Colour: lerp((0x73, 0x58, 0x39) -> 0, t / 256) | 1 (0x413e40), plus
-    // (rand · 17) & 0x0f0f0f (0x4141dd); then 0x411f70: the scene colour
-    // grade 0x411ec0 (y = (R + 2G + B) >> 2, saturation [0xbba8ac] about y,
-    // then the per-channel tables built by 0x411d50; the grade the terrain
-    // and the model colours get, 0x43f27d). OpenDF applies that grade when
-    // drawing (the model shader's post() on the replacing colour).
+    // (rand · 17) & 0x0f0f0f (0x4141dd); then 0x411f70 (GOG Df2.exe
+    // 0x413c50 from 0x415de0 / 0x415f70): the runtime colour grade (y =
+    // (R + 2G + B) >> 2, saturation about y, the per-channel tables). After
+    // the load that is no longer the TRN grade: 0x466ba0 resets it to the
+    // df2.cfg gamma with saturation and filters 0x80 (0x4658f0 -> 0x4666c0),
+    // so at saturation 128 only the gamma table applies. Graded here, drawn
+    // raw.
     const int tt = std::clamp(t, 0, 255);
     uint32_t c = (uint32_t(0x73 - 0x73 * tt / 256) << 16) | (uint32_t(0x58 - 0x58 * tt / 256) << 8) | uint32_t(0x39 - 0x39 * tt / 256) | 1u;
     const uint32_t r = shrapRand();
@@ -2426,6 +2444,8 @@ Game::Effect* Game::spawnSmk2(Vec3 at, bool dust, float dx, float dz, int t) {
     e.tint[0] = uint8_t(c >> 16);
     e.tint[1] = uint8_t(c >> 8);
     e.tint[2] = uint8_t(c);
+    if (const auto& lut = terrain_.df2RuntimeTable(); lut.size() == 256 * 3)
+        for (int ch = 0; ch < 3; ++ch) e.tint[ch] = lut[size_t(e.tint[ch]) * 3 + size_t(ch)];
     if (std::getenv("OPENDF_DEBUGHITS")) std::fprintf(stderr, "smk2 %s size %.2f at (%.1f %.1f %.1f) frames %d tint %d %d %d\n", dust ? "dust" : "smoke", e.size / 65536.f, at.x, at.y, at.z, e.frames, e.tint[0], e.tint[1], e.tint[2]);
     effects_.push_back(e);
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());
@@ -4422,7 +4442,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     // Terrain rings scale with the original's focal length: F = 320 per 640
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = insetFocal_ > 0 ? insetFocal_ / 320.f : zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
-    terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
+    // view+0x4c (0x40423d binoculars); Delta Force 2: 22.5 in 16.16 (GOG Df2.exe 0x465f90 stores 0x168000; CD 22).
+    terrain_.df2FovDeg = binoculars_ && !playerDead() ? (arsenal_.df2() ? 22.5f : 22.f) : 90.f;
     terrain_.skyTicks = arsenal_.df2() ? -1.f : float(missionSteps_);   // DF1 cloud drift (GOG Df.exe 0x489980)
     // DF1 sky gradient (GOG Df.exe 0x48c990): the view's FOV +0x4c and width
     // (+0x3c - +0x34 + 1) set the step per row, its focal the horizon row;
@@ -4751,7 +4772,9 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             continue;
         }
         if (v.o->chr && !v.o->anim.angles().empty()) {
-            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
+            std::vector<std::array<float, 3>> air;
+            const bool inAir = world_.df2Rules && v.o->airborne && df2AirbornePose(*v.o->chr, v.o->moves, air);   // GOG 0x451090
+            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, inAir ? air : v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);
             models_.drawPosed(*v.o->model, v.lod, body, pose);
             // DF2: the parachute over a falling person (0x4153b0): `parachut`
@@ -4823,7 +4846,10 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
                 body.pos = player_.inWater() ? player_.origin() : player_.feet + Vec3{0, playerBody_.originHeight(playerChr_), 0};
                 body.heading = player_.yaw;
                 const Mat4 m = body.matrix(world_.nearest(body.pos, eye));
-                const auto pose = personPose(*bm, 0, playerChr_, playerBody_.angles(), player_.pitch);
+                std::vector<std::array<float, 3>> air;
+                const bool inAir = world_.df2Rules && player_.airborne() && !player_.chute && !player_.inWater() &&
+                                   df2AirbornePose(playerChr_, &playerMoves_, air);   // GOG 0x451090
+                const auto pose = personPose(*bm, 0, playerChr_, inAir ? air : playerBody_.angles(), player_.pitch);
                 models_.drawPosed(*bm, 0, m, pose);
                 if (const int item = arsenal_.heldItemAt(arsenal_.modeIndex()); item > 0 && pose.size() > 7)
                     if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
@@ -4911,7 +4937,9 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             const float a = e.alpha > 0xff0000 ? 1.f : float(std::max(e.alpha >> 16, 1)) / 255.f;
             auto draw = [this, m, a, frame, tint = std::array<uint8_t, 3>{e.tint[0], e.tint[1], e.tint[2]}, fireball = e.fireball,
                          model = e.model] {
-                models_.setTint(tint[0] / 255.f, tint[1] / 255.f, tint[2] / 255.f, a, true, fireball);
+                // The dust and smoke colours were graded at spawn (0x413c50),
+                // the fireballs' never are (0x42abc0): both drawn raw.
+                models_.setTint(tint[0] / 255.f, tint[1] / 255.f, tint[2] / 255.f, a, true, true);
                 glEnable(GL_BLEND);
                 // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
                 // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
@@ -5041,10 +5069,11 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     }
 }
 
-// DF2.EXE 0x46b780, drawn only by the software frame (0x448930, after the
-// fog pass, so unfogged); the D3D frame 0x448980 has no call to it, so in
-// D3D mode DF2 drew no rain or snow (the simulation and the splashes still
-// ran). OpenDF draws what the software renderer showed.
+// GOG Df2.exe 0x475e40 (DF2.EXE 0x46b780), drawn by both frames: the
+// software frame 0x44f8d0 after the fog pass (so unfogged) and the D3D frame
+// 0x44fa80 after the tracers 0x452610. Snow is scaled 0x20000 (2.0) in
+// software and 0x100000 in D3D ([0xa6de88] == 2); the CD build's D3D frame
+// (0x448980) had no call to it. OpenDF draws the software look.
 void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     if (!weather_.type()) return;
     if (weather_.type() == 1) {
@@ -9453,7 +9482,7 @@ int Game::run() {
                 // at speed bits ((+0x74 >> 3) & 3) zero (0x43f74f, 0x43f7a3,
                 // 0x43f886, each then testing the mode's 0x200); moving keeps
                 // the slot but lowers them. The frame (0x45c7e2) gives the
-                // view FOV 22 and the offset only in those moves and not in
+                // view FOV 22 (GOG 0x465f90: 22.5) and the offset only in those moves and not in
                 // an outside view ([0xbba840]); the offset is picked anew on
                 // the first frame of each raise ([0x4d2e78], 0x45c809 /
                 // 0x45c869 -> 0x4481e0). INFERRED: speed bits non-zero
@@ -9622,7 +9651,11 @@ int Game::run() {
                 trackMapPositions();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
                 else tickDf1Lights();
-                // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
+                // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick,
+                // spawning around the player object's origin +0x24..+0x2c
+                // whatever the camera (GOG Df2.exe 0x464d8b..0x464d9e ->
+                // 0x476170; the CD build used the last frame's eye).
+                weather_.setCamera(player_.origin());
                 weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
                               [this](Vec3 at) { spawnEffect(17, at); });
                 // DF2 fall damage (0x43f600, GOG 0x4458f0, single player): n =
@@ -10050,15 +10083,18 @@ int Game::run() {
             // 3D view between the two HUD bars.
             glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
             // Focal length W/2 per 640 of width (FOV 90 across, 0x404489), or
-            // the binoculars' FOV 22 (0x40423d); the letterbox crops the height.
-            const float tanHalfX = binoculars_ && !playerDead() && outsideView() == 0 ? std::tan(11.f * kPi / 180.f) : 1.f;
+            // the binoculars' FOV 22 (0x40423d); Delta Force 2: 22.5 (GOG Df2.exe
+            // 0x465f90: 0x168000 in 16.16, halved by 0x4048b0; the CD build 22).
+            // The letterbox crops the height.
+            const float binoHalfDeg = arsenal_.df2() ? 11.25f : 11.f;
+            const float tanHalfX = binoculars_ && !playerDead() && outsideView() == 0 ? std::tan(binoHalfDeg * kPi / 180.f) : 1.f;
             const float fovY = 2.f * std::atan(tanHalfX * std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
             viewFovY_ = 2.f * std::atan(std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
             Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, kFarPlane);
             // With the binoculars up the camera carries their random offset (0x404246).
             Player cam = player_;
             if (binoculars_) { cam.yaw += binoYaw_; cam.pitch += binoPitch_; }
-            // Binoculars: FOV 22 across the mode's width (0x40423d), F = (W/2) / tan 11.
+            // Binoculars: FOV 22 (DF2 22.5) across the mode's width (0x40423d), F = (W/2) / tan(FOV/2).
             if (binoculars_) scopeFocal_ = 320.f / tanHalfX * (df2Hud_.on ? 1.f : float(hudMode_ ? hudMode_ : 640) / 640.f);
             Mat4 view = outsideView() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
@@ -10071,8 +10107,6 @@ int Game::run() {
                 if (df2Hud_.on) gunInWorld_ = &s;
                 if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead() && outsideView() == 0);
                 gunInWorld_ = nullptr;
-                // The weather spawns around the last rendered frame's camera (0x46b780's end).
-                weather_.setCamera(viewEye());
                 if (df2Hud_.on && showMap_) {
                     glViewport(0, 0, dw, dh);
                 } else if (df2Hud_.on) {
