@@ -36,7 +36,9 @@ struct WorldObject {
     float fall = 0;                    // 0..1 while a killed person falls
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
     bool wrecked = false;              // destroyed, husk shown
-    int detonate = -1;                 // explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0)
+    // Explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0; GOG Df.exe
+    // 0x45bf80: in DF1 it stays drawn and hittable meanwhile, flag 4).
+    int detonate = -1;
     // Delta Force `gnrc` objects (GOG Df.exe 0x4533f0): ticks until a
     // destroyed one goes off (flags 4 set, model still intact); 0 = at the
     // next tick (hit again while waiting), -1 = idle or done.
@@ -50,7 +52,7 @@ struct WorldObject {
     double missionX = 0, missionY = 0;
     // A gnrc object waiting to go off has flag 4 already: counted as gone
     // (0x44a200), though still in blasts and hit by rounds.
-    bool alive() const { return !dead && !removed && !wrecked && gnrcTimer < 0; }
+    bool alive() const { return !dead && !removed && !wrecked && gnrcTimer < 0 && detonate < 0; }
     // People: the .CHR hit spheres of their current pose (standing until
     // there is AI), centre in model axes (x forward, y left, z up) relative
     // to the body origin, and radius; metres.

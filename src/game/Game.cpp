@@ -2160,6 +2160,12 @@ void Game::tickEffects() {
     for (auto& o : world_.objects)
         if (o.detonate > 0 && --o.detonate == 0) {
             o.detonate = -1;
+            if (!world_.df2Rules && !o.removed) {
+                // GOG Df.exe 0x45bfe9 -> 0x4471d0: the record is cleared; the
+                // queued blast (0x4657d0) meets it gone.
+                o.removed = true;
+                world_.refreshBoxes(o);
+            }
             detonate(o.pos, 10, o.heading);
         }
     for (size_t i = 0; i < world_.objects.size(); ++i) {

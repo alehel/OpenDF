@@ -1093,6 +1093,22 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.gnrcTimer = 0x20;
         return o.item->name + " destroyed";
     }
+    if (!df2Rules && o.item && o.item->aiFunction == "brrl") {
+        // GOG Df.exe 0x45bf80, the barrel's think and damage handler (the
+        // damage 0x464c50 and the blasts call it without a flags & 4 test):
+        // with flag 4 set it goes off at once (0x446fb0, 10 fragments), the
+        // smoke generator (0x447610) and the record cleared (0x4471d0);
+        // otherwise at hp <= 0 flags |= 4 and the think in 10 ticks. Until
+        // then the barrel stays drawn and is still hit by rounds and blasts.
+        if (o.detonate > 0) { o.detonate = 1; return {}; }   // goes off at the next tick
+        if (o.hp <= 0) return {};
+        o.hp -= amount;
+        if (o.hp > 0) return {};
+        o.hp = 0;
+        o.detonate = 10;
+        destroyed_.push_back(index);
+        return o.item->name + " destroyed";
+    }
     if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
     if (o.hp > 0) return {};
@@ -1156,7 +1172,7 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
     const Vec3 target = at + Vec3{0, 0.5f, 0};
     for (size_t i = 0; i < objects.size(); ++i) {
         WorldObject& o = objects[i];
-        if (!o.alive() && o.gnrcTimer <= 0) continue;   // a waiting gnrc object (0x4533f0) still takes it
+        if (!o.alive() && o.gnrcTimer <= 0 && o.detonate <= 0) continue;   // a waiting gnrc object (0x4533f0) or barrel (0x45bf80) still takes it
         const Vec3 p = nearest(o.pos, at);
         if (o.person) {
             const float r = radius + 1.f;
@@ -1187,7 +1203,7 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
         }
         // A destroyed Delta Force gnrc object waiting to go off (flag 4, no
         // husk yet) is still in the blast and fires at once (0x4533f0).
-        if ((o.hp <= 0 && o.gnrcTimer <= 0) || !o.model) continue;
+        if ((o.hp <= 0 && o.gnrcTimer <= 0 && o.detonate <= 0) || !o.model) continue;
         const std::string& type = o.item ? o.item->type : std::string();
         const float h = o.model->flatRadius, v = o.model->height;
         float d;
