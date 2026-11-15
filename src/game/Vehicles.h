@@ -113,7 +113,7 @@ private:
     void fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void df2Altitude(World& world, Vehicle& v, bool hadTarget, int attackShift, float attackH, float attackBand);
     float heloProbe(const World& world, const Vehicle& v) const;
-    void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound);
+    void doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& shots, SoundSystem& sound);
     void heloTargeting(World& world, AiSystem& ai, Vehicle& v);
     void brdmThink(World& world, AiSystem& ai, Vehicle& v);
     void brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& shots, SoundSystem& sound);

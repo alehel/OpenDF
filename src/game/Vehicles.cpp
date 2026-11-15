@@ -57,6 +57,7 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         Vehicle v;
         v.object = int(i);
         v.helo = f == "helo";
+        if (v.helo) std::fprintf(stderr, "DBGH helo side %d flags %x\n", o.side, unsigned(mo.raw[3]));
         v.kind = v.helo ? Kind::Helo : mv == "herc" ? Kind::Herc : mv == "boat" ? Kind::Boat : mv == "loco" ? Kind::Loco
                : mv == "carg" ? Kind::Car : Kind::Veh0;
         const uint32_t fl = uint32_t(mo.raw[3]);
@@ -760,7 +761,7 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
 // outside the gun's limits; +-0x200000 error on yaw and pitch, the bias on
 // yaw, then the gun's own spread (gun 14 accuracy 4: (0x8000 - rand) x 90
 // each, 0x46af90).
-void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound) {
+void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& shots, SoundSystem& sound) {
     WorldObject& o = world.objects[size_t(v.object)];
     const float turn = 2 * kPi / 4294967296.f;
     const HeloType type = heloType(world, o);
@@ -819,7 +820,17 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     p.shooter = v.object;
     if (shots.df2()) p.gun = md.gun;
     shots.addProjectile(p);
-    if (g.sounds[0] > 0) sound.play(g.sounds[0], muzzle);
+    // The round goes through the soldiers' spawn as the BRDM's (GOG Df.exe
+    // 0x450830 -> 0x45ea00 -> 0x46fb40 -> 0x462f20; Df2.exe 0x416a30 ->
+    // 0x407000 -> 0x451ae0): the sound and a noise of half its range
+    // (0x4630fd, DF1 only when the range is not 0), the gunner marked firing.
+    if (g.sounds[0] > 0) {
+        sound.play(g.sounds[0], muzzle);
+        const float range = sound.range(g.sounds[0]);
+        if (shots.df2() || range > 0) ai.noise(muzzle, range * 0.5f, o.side, 2);
+        std::fprintf(stderr, "DBGDG helo %d fires, noise %.1f\n", v.object, range * 0.5f);
+    }
+    if (!(g.flags & 0x80)) ai.markFired(v.object);
 }
 
 // The BRDM's gun point (GOG Df2.exe 0x4243a0): Obj * T(hp0) * Rz(turret
@@ -1020,7 +1031,7 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
                          o.heading * 57.3f, v.rotor / 1e6f, v.mode, v.gunTarget, v.gunYaw * 57.3f, v.gunTgtYaw * 57.3f);
         if (v.helo) {
             fly(world, ai, v, teamSpeed);
-            doorGun(world, v, shots, sound);
+            doorGun(world, ai, v, shots, sound);
         } else if (v.kind == Kind::Loco || v.kind == Kind::Car) {
             driveTrain(world, ai, v, teamSpeed);
         } else {
