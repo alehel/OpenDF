@@ -290,7 +290,33 @@ public:
     int rounds() const { return mag_[size_t(mode().gun)]; }
     int spares() const { return spares_[size_t(mode().gun)]; }
 
-    float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
+    float zoom() const { return !zoomed() ? 1.f : df2_ ? float(df2Zoom()) : float(mode().scope); }
+    // GOG Df2.exe 0x44e6a0 (from the scope view, 0x4557e0): the mode's
+    // scope (+0x38), but for slots 3-5 the magnification [0x79a698], set to
+    // 2 when it is under 2 (scope non-zero), 0 when negative, and lowered to
+    // the scope when above it (kept so).
+    int df2Zoom() const {
+        const int scope = mode().scope;
+        if (current_ < 3 || current_ > 5) return scope;
+        if (scope != 0 && df2Mag_ <= 1) df2Mag_ = 2;
+        else if (df2Mag_ < 0) df2Mag_ = 0;
+        if (df2Mag_ > scope) df2Mag_ = scope;
+        return df2Mag_;
+    }
+    int df2Magnification() const { return df2Mag_; }
+    // GOG Df2.exe 0x44e7f0 (mission start) clears [0x79a2c0..0x79aaa0],
+    // the magnification with it, before 0x44eeb0; Request Weapons (0x44eeb0
+    // alone) keeps it.
+    void clearMagnification() { df2Mag_ = 0; }
+    // GOG Df2.exe 0x44c7e0 (command scopemag, E; Shift+E steps down): only
+    // while the scope shows (0x455790) and the mode has a scope: +d, past
+    // the scope back to 2, under 2 to the scope.
+    void scopeMagStep(int d) {
+        const int scope = mode().scope;
+        if (!scopeShown() || scope == 0) return;
+        const int m = df2Mag_ + d;
+        df2Mag_ = m > scope ? 2 : m < 2 ? scope : m;
+    }
     // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40:
     // the held mode's +0x3C & 1 and [0x7655f4]; the binoculars, mode 47,
     // have no such bit, so holding them hides the scope and it comes back
@@ -379,6 +405,7 @@ private:
     Df2Loadout df2Lo_;
     void refillDf2Gog();
     int gear_ = 0, zero_ = 0;
+    mutable int df2Mag_ = 0;   // GOG Df2.exe [0x79a698]
     struct DragPoint { int64_t x, y, slope; };
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick

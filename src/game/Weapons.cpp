@@ -438,6 +438,9 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     current_ = 3;
     if (!slots_[3]) cycle();
     zoomLevel_ = 0;
+    // GOG Df2.exe 0x44eeb0: the scope magnification [0x79a698] starts as
+    // the slot-3 mode's scope (+0x38) when it is 0; it is kept otherwise.
+    if (df2Mag_ == 0) df2Mag_ = modes_[size_t(slots_[3])].scope;
     cooldown_ = reloadTicks_ = burstLeft_ = 0;
     pressed_ = false;
     clock_ = flashTimer_ = 0;

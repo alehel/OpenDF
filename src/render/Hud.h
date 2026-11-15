@@ -67,6 +67,9 @@ public:
 
     // Text at integer `scale`; returns the advance in pixels.
     float text(float x, float y, const std::string& s, Color c, float scale = 1);
+    // Delta Force 2 draws its text without the dark shadow (GOG Df2.exe
+    // 0x41bb90 writes each glyph pixel once, in the colour).
+    void setTextShadow(bool on) { textShadow_ = on; }
     float textWidth(const std::string& s, float scale = 1) const;
     float lineHeight(float scale = 1) const { return 13 * scale; }
 
@@ -112,6 +115,7 @@ private:
     float glyphX_[256] = {}, glyphW_[256] = {};   // source column and width per character
     SheetFont sheetHud_;          // loadSheetHudFont's font
     bool useSheetHud_ = false;    // text() draws sheetHud_
+    bool textShadow_ = true;
 };
 
 } // namespace df

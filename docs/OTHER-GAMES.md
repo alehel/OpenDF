@@ -138,8 +138,8 @@ First differences from DF1:
     body pre-test and nearest-along-the-ray rule are DF1's;
   - **DF2's own HUD** (DF2.EXE 0x442940; full notes in the tracing specs):
     the 3D view is only the rows between two opaque bitmap strips
-    (`DHT%iG`/`DHB%iG`, 0x45cb40); every position per display mode from
-    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000; the weapon,
+    (`DHT%iG`/`DHB%iG`, 0x45cb40; drawn before every overlay box, GOG 0x448fd0); every position per display mode from
+    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000, all DF2 text without a shadow (GOG 0x41bb90); the HUD font f_sml%i (i = min(width, 800)) is a band sheet (GOG 0x465a20 -> 0x41ba90 flag 2, 0x41b9a0 / 0x41b8a0: F_SML640 277x240, 15-row bands), undefined characters drawn as glyph 0; the weapon,
     stance, carried-item and radar-frame images through a fixed amber ramp
     (index i → (i·255>>8, i>>1, 0)) added onto the strip (0x450c10, saturating);
     weapon icon by mode from a 22-frame sheet (0x443370); weapon name from
@@ -156,7 +156,7 @@ First differences from DF1:
     the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
     (0x45a9e0); target identification (GOG 0x4642b0, scope 0x455be0,
     pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
-    first object of the player's side or side 0 along the aim within the
+    first person (organics table) of the player's side or side 0 along the aim within the
     centre's range + 2 m and 2 m of the ray gets, if on the player's side,
     four red diagonal ticks at the crosshair corners (scope: ±r/2 to ±r/4),
     and, if it has a name (object +0x54 from 0x403790: DF2WPN.BIN `PeopleNames` STRNAME%03i of
@@ -507,6 +507,18 @@ First differences from DF1:
     the mouse turns the camera instead of the player (0x41eb50 -> commands
     0x35..0x38, cases 0x29..0x2c). Mode flag 0x100 (modes 31, 48) hides the
     first-person model once no clip or chambered one is left (0x44ea10).
+    The Forward Observer (GOG 0x41f150 case 0x14, fo F11: night vision
+    off, [0x79a6a8] toggled; N turns it off, case 0x27): with the camera's
+    inset off and the scope not shown, 0x456670 draws its target's view
+    ([0x79a6ac], the player at mission start, 0x44e7f0) in the same
+    rectangle (x rounded down to 4) from the target's origin raised by the
+    player's eye offset [0x79a688], its yaw and pitch, 90 degrees across,
+    the target itself not drawn; 0x4559d0(1) outlines it in 0xff8000 and
+    writes the target's name at (x0 + 10, y1 + 10); a target no longer in
+    use turns it off, none while the player is dead or the target on
+    another side. Tab (case 0x15, 0x44e590) picks the next person in use on
+    the player's side with item attrib 8 (FO), wrapping; none: no target.
+    OpenDF counts the player's own table entry as before the first person.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
@@ -520,12 +532,17 @@ First differences from DF1:
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
     0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
-    in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), half of it with the
+    in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), mag for slots 3-5
+    the kept magnification [0x79a698] (E / Shift+E step it 2..scope with
+    wraparound while scoped, 0x44c7e0; cleared at mission start, 0x44e7f0,
+    then the slot-3 scope, 0x44eeb0; clamped by 0x44e6a0; shown as "%2ix" at (700, 480) in
+    yellow), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
     DF1's 28 / mag whole degrees;
     night vision (key N, on at the start of night missions: 0x44781e) as an
-    ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
-    scope image green ×4 at night. DF2 has no "Player Health: Easy".
+    ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450), not
+    while the scope shows (GOG 0x465fde); the scope image green ×4 while the
+    night vision is on (GOG 0x455be0, [0x79a7fc]). DF2 has no "Player Health: Easy".
   - **front end** (`opendf --game games/DF2 play`; src/menu/FrontendDf2.cpp;
     DF2.EXE states 0x45ec40): DF2.MNU parsed as 0x42e460 does ([SOUNDS]
     [ARGBS] [FONTS] [IMAGES] [MENUS] [BUTTONS], strtok fields, attribute
@@ -597,7 +614,7 @@ First differences from DF1:
     1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
-    attack_1 and attack_2 (GOG 0x441140; PrintScreen, scopemag and the Von*
+    attack_1 and attack_2 (GOG 0x441140; PrintScreen and the Von*
     commands have no game-side action in OpenDF yet). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
@@ -649,7 +666,7 @@ First differences from DF1:
     0xd34dc0 cleared at mission load; full: nothing made) at the clicked
     ground point, selects it and opens the "Type in a name" prompt (16
     chars, the darkened box 0x4422b0); held left drags waypoints, mission
-    ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show on the map and the HUD radar as
+    ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show in the 3D view (GOG 0x450070: a green line one metre tall straight up the screen, the name centred 15 pixels above), on the map and the HUD radar as
     green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
     (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
     list; W returns to the list at entry 1, 0x446700; a deleted one shows NO
@@ -829,7 +846,7 @@ First differences from DF1:
     still carries DF1's ANIMMGR KDV player (its strings at file 0x87d9f),
     but DF2 ships no KDV file.
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
-    flags}; GOG Df2.exe 0x4b1738, 112-byte entries, name +0x4C, key +0x6C), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
+    flags}; GOG Df2.exe 0x4b1738, 112-byte entries, name +0x4C, key +0x6C), with scopeinc X, scopedec Z, NVG N and scopemag E added to OpenDF's actions.
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:

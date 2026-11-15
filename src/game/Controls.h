@@ -36,8 +36,11 @@ enum class Action {
     // held camera keys (0x19a..0x19f: L ; P . [ ]).
     FirstPerson, ThirdPersonP, ThirdPersonW, ThirdPersonL,
     CameraLeft, CameraRight, CameraUp, CameraDown, CameraZoomIn, CameraZoomOut,
-    // Delta Force: the FO camera inset (fo, F9, id 0x1e) and its next
-    // team-mate (tab, Tab, id 0x1f) (GOG Df.exe 0x477d40).
+    // GOG Df2.exe: the scope magnification (scopemag, E; Shift+E down).
+    ScopeMag,
+    // The FO camera inset and its next team-mate: Delta Force fo (F9, id
+    // 0x1e) / tab (Tab, id 0x1f) (GOG Df.exe 0x477d40); GOG Df2.exe's
+    // Forward Observer fo (F11) / tab (Tab).
     FoCamera, FoNext,
     Count
 };

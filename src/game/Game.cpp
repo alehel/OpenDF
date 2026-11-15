@@ -214,6 +214,12 @@ private:
     const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
     bool foPlayer_ = false;                     // the FO inset is the player's own view: his body not drawn
     float insetFocal_ = 0;                      // an inset's own focal length for rings and LODs (0 = none)
+    // GOG Df2.exe's Forward Observer shares them: the inset flag [0x79a6a8]
+    // (foOn_) and its target [0x79a6ac] (foTarget_: -1 the player, 0x44e7f0
+    // sets it so, -2 none, else a world object), the body not drawn
+    // ([0xbf2b44], hideObject_).
+    void df2FoNext();
+    void drawDf2FoInset(const Screen& s);
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -845,6 +851,7 @@ private:
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
     void drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawDf2Waypoints3d(const Screen& s, const Mat4& viewProj);
     // Delta Force 2's name of an object (+0x54): the mission record +4 as
     // DF2WPN.BIN PeopleNames STRNAME%03i, at most 15 characters (GOG
     // Df2.exe 0x403790); people only (+0xc, their AI record, is set).
@@ -1072,6 +1079,7 @@ bool Game::loadMission(int index) {
                 const std::string* t = gameTable_.find("HudGuns", key);
                 hudGuns.push_back(t ? *t : std::string());
             }
+            arsenal_.clearMagnification();   // GOG Df2.exe 0x44e7f0
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
@@ -1103,6 +1111,9 @@ bool Game::loadMission(int index) {
         // DF2.EXE 0x44781e: night missions (header flag 0x100000) start with
         // the night vision on.
         nvg_ = mission_.version >= 0x0F && (mission_.lightFlags & 0x10);
+        // GOG Df2.exe 0x44e7f0: the Forward Observer off, its target the player.
+        foOn_ = false;
+        foTarget_ = -1;
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
@@ -3488,7 +3499,6 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // Debug keys (not in the original): N free flight (Ctrl+N in DF2, where N
     // is the night vision).
     if (k.keysym.sym == SDLK_n && (!df2Hud_.on || (k.keysym.mod & KMOD_CTRL))) { player_.fly = !player_.fly; return; }
-    (void)shift;
     // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
     if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
@@ -3618,11 +3628,27 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
     // GOG Df.exe 0x477d40: fo toggles [0xc23a34]; tab, while it is on, picks
     // the next team-mate (0x484a50). Delta Force only.
-    case Action::FoCamera: if (!df2Hud_.on) foOn_ = !foOn_; break;
-    case Action::FoNext: if (!df2Hud_.on && foOn_) foNext(); break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
-    case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
+    // DF2 action 51, [0x765740]; GOG Df2.exe 0x41f150 case 0x27 also turns
+    // the Forward Observer off.
+    case Action::NightVision: if (df2Hud_.on) { foOn_ = false; nvg_ = !nvg_; } break;
+    // GOG Df2.exe 0x41f150 case 0x14 (fo, F11): night vision off, the
+    // Forward Observer toggled; case 0x15 (tab, Tab): the next team-mate
+    // while it is on (0x44e590; single player).
+    // fo / tab: Delta Force's FO camera (GOG Df.exe 0x477d40 ids 0x1e / 0x1f
+    // -> 0x484a50); Delta Force 2's Forward Observer (GOG Df2.exe 0x41f150
+    // cases 0x14 / 0x15 -> 0x44e590), which also turns the night vision off.
+    case Action::FoCamera:
+        if (df2Hud_.on) nvg_ = false;
+        foOn_ = !foOn_;
+        break;
+    case Action::FoNext:
+        if (foOn_) { if (df2Hud_.on) df2FoNext(); else foNext(); }
+        break;
+    // GOG Df2.exe 0x41f150 case 0x61 -> 0x44c7e0: E steps the scope
+    // magnification up, Shift+E down.
+    case Action::ScopeMag: if (arsenal_.df2()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
         // follows the raised move, set each tick (Game::run, 0x45c7e2).
@@ -4325,8 +4351,9 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
-    // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.
-    if (df2Hud_.on && (mission_.lightFlags & 0x10)) {
+    // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
+    // the scope image is green only, ×4 (paddusb twice, & 0xff00).
+    if (df2Hud_.on && nvg_) {
         hud_.begin(int(s.w), int(s.h));
         hud_.nightVision(cx, cy, r, 1.f);
         hud_.end();
@@ -4465,6 +4492,79 @@ void Game::drawFoInset(const Screen& s) {
     hud_.end();
 }
 
+// GOG Df2.exe 0x44e590 (Tab with the Forward Observer on): from the entry
+// after the current target (the start when there is none) to the end of
+// the organics table, then from the start up to the current one, the
+// first person in use on the player's side whose item has attrib 8 (FO)
+// and not +0x64 & 2; none: no target. INFERRED: the player's own entry
+// counts as before the first world person.
+void Game::df2FoNext() {
+    auto ok = [&](const WorldObject& o) {
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int cur = foTarget_ >= 0 && foTarget_ < n && !world_.objects[size_t(foTarget_)].removed ? foTarget_ : -1;
+    for (int i = cur + 1; i < n; ++i)
+        if (ok(world_.objects[size_t(i)])) { foTarget_ = i; return; }
+    for (int i = 0; i <= cur; ++i)
+        if (ok(world_.objects[size_t(i)])) { foTarget_ = i; return; }
+    foTarget_ = -2;
+}
+
+// GOG Df2.exe 0x465fde -> 0x456670 / 0x4559d0(1): the Forward Observer
+// inset, not on the scoped path and not while the video camera's inset is
+// on ([0x79a6b4] first). No target (or one no longer in use) turns it off.
+// Unless the player is dead (+0x64 & 4) or the target is on another side:
+// the target's view from its origin raised by the player's own eye offset
+// ([0x79a688]) with its yaw and pitch (+0x30 / +0x34), FOV 0x5a0000 (90
+// degrees across), into x 0x2c0..0x3c0, y view top + 0x40..+0x100 of the
+// 1024x768 frame, x rounded down to 4 pixels, the target itself not drawn
+// ([0xbf2b44]); then a one-pixel 0xff8000 outline and the target's name
+// (+0x54) at (x0 + 10, y1 + 10) in frame pixels (0x4577f0 flag 0).
+void Game::drawDf2FoInset(const Screen& s) {
+    if (!foOn_ || arsenal_.cameraView() || scopeShown() || showMap_) return;
+    const WorldObject* t = nullptr;
+    if (foTarget_ >= 0) {
+        if (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed) { foOn_ = false; return; }
+        t = &world_.objects[size_t(foTarget_)];
+    } else if (foTarget_ != -1) {
+        foOn_ = false;
+        return;
+    }
+    if (playerDead() || (t && t->side != kPlayerSide)) return;
+    const float k = s.art();
+    const float x0 = std::floor(std::floor(s.vx(0x2c0) / k) / 4.f) * 4.f * k, x1 = std::floor(std::floor(s.vx(0x3c0) / k) / 4.f) * 4.f * k;
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeUp = player_.eye().y - player_.origin().y;
+    const Vec3 eye = t ? t->pos + Vec3{0, eyeUp, 0} : player_.eye();
+    const float yaw = t ? t->heading : player_.yaw, pitch = t ? t->aimPitch : player_.pitch;
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hideObject_ = t;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    hideObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float px = std::max(1.f, k);
+    hud_.rect(x0, y0, w, px, kDf2Amber);
+    hud_.rect(x1, y0, px, h + px, kDf2Amber);
+    hud_.rect(x0, y1, w, px, kDf2Amber);
+    hud_.rect(x0, y0, px, h, kDf2Amber);
+    const std::string name = t ? df2PersonName(*t) : o_.soldierName;
+    hud_.text(x0 + 10.f * k, y1 + 10.f * k, name, kDf2Amber, s.text());
+    hud_.end();
+}
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
     // DF.EXE 0x401de4: no fill; dark green scanlines every 2 pixels from
     // y1 + 2, then a one-pixel outline in the HUD green.
@@ -4905,6 +5005,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.end();
         return;
     }
+    // GOG Df2.exe 0x465fde: the friendly tags (0x44fe70) before the
+    // crosshair and target identification (0x4642b0).
+    if (!showMap_ && friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
+    if (!showMap_ && df2Hud_.on) drawDf2Waypoints3d(s, viewProj);   // 0x450070
     if (showMap_) drawCommandMap(s);
     else if (crosshair_ && df2Hud_.on) {
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
@@ -4989,6 +5093,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the magnification "%2ix" ([0x79a698])
+                // at (700, 480) in the same yellow ([0x67d370]).
+                std::snprintf(buf, sizeof buf, "%2dx", arsenal_.df2Magnification());
+                hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
             }
         }
         drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
@@ -5030,6 +5138,15 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         drawDf1TargetId(s, zx, zy, r);   // GOG Df.exe 0x466090 (0x46662c)
     }
 
+    // GOG Df2.exe 0x448fd0: the top (0x448770) and bottom (0x448620) panels
+    // first, then the breath bar, dead text, goals, help, boxes, messages
+    // and pause over them.
+    if (df2Hud_.on) {
+        drawDf2Strips(s);
+        drawDf2Top(s);
+        drawDf2Bottom(s);
+    }
+
     if (showGoals_) drawGoals(s);
     // The end panel is not drawn while the End Mission box is open (DF.EXE
     // 0x48309b, DF2.EXE 0x441660).
@@ -5048,8 +5165,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudMessage, s.text());
     }
 
-    if (friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
-    else if (friendlyTags_) drawFriendlyTags(s, viewProj);
+    if (friendlyTags_ && !df2Hud_.on) drawFriendlyTags(s, viewProj);
     if (binoculars_ && !playerDead()) drawBinoculars(s);
     // Delta Force 2's breath bar (0x441540) while the air count is not 0, in
     // the virtual 1024x768 space: half-width w = 100 - air*100/2880 about
@@ -5071,11 +5187,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (paused_) drawPaused(s);
     if (quitBox_) drawQuitBox(s);
 
-    if (df2Hud_.on) {
-        drawDf2Strips(s);
-        drawDf2Top(s);
-        drawDf2Bottom(s);
-    } else {
+    if (!df2Hud_.on) {
         // Letterbox 2 (GOG Df.exe 0x404ba0 / 0x429580 / 0x426c30): the bars
         // move in with the view, the top bar to H/8..H/4 and the bottom bar
         // to 3H/4..7H/8 with their contents and the message lines (placed
@@ -6953,15 +7065,16 @@ std::string Game::df2PersonName(const WorldObject& o) const {
 const WorldObject* Game::df2AimPick(float range) const {
     // GOG Df2.exe 0x4189b0: from the player's origin 0.75 m up along its yaw
     // and pitch (the player's pitch lowered by the zeroing, weapon table
-    // +0x98), the first object in the table (slot in use, not +0x64 & 2, not
-    // the player, side the player's or 0) whose distance along the ray is
+    // +0x98), the first entry of the organics table (people only, to
+    // [0xc310a4]: slot in use, not +0x64 & 2, not the player, side the
+    // player's or 0; no alive test) whose distance along the ray is
     // in (1/256 m, range] and whose miss (0x41e880's approximate length)
     // is at most 2 m.
     const Vec3 from = player_.origin() + Vec3{0, 0.75f, 0};
     const float pitch = player_.pitch - arsenal_.zeroElevation();
     const Vec3 dir{std::cos(pitch) * std::sin(player_.yaw), std::sin(pitch), -std::cos(pitch) * std::cos(player_.yaw)};
     for (const auto& o : world_.objects) {
-        if (o.removed || (o.side != kPlayerSide && o.side != 0)) continue;
+        if (!o.person || o.removed || (o.side != kPlayerSide && o.side != 0)) continue;
         const Vec3 d = world_.nearest(o.pos, from) - from;
         const float along = dot(d, dir);
         if (along <= 1.f / 256.f || along > range) continue;
@@ -7104,6 +7217,33 @@ void Game::drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj) {
         const float ty = uy - s.vy(25);
         const std::string label = friendlyTags_ == 2 ? std::string(1, '\x04') : name;
         hud_.text(px - hud_.textWidth(label, s.text()) / 2, ty, label, kHudPureGreen, s.text());
+    }
+}
+
+void Game::drawDf2Waypoints3d(const Screen& s, const Mat4& viewProj) {
+    // GOG Df2.exe 0x465fde -> 0x450070, every frame: each pool waypoint in
+    // use (item_index, +0x6e set, a name at +0x54) whose camera depth is at
+    // least the near plane ([0xc30fc8]): a green (0x00ff00) line straight up
+    // the screen from its projected position, focal / depth pixels long (one
+    // metre), and its name centred 15 pixels above the line's top (0x4577f0
+    // flag 2, frame pixels, no clip).
+    const Vec3 eye = viewEye();
+    // The focal length in window pixels: the y row of viewProj is the
+    // projection's y scale times the view's (unit) up row.
+    const float fy = std::sqrt(viewProj.at(1, 0) * viewProj.at(1, 0) + viewProj.at(1, 1) * viewProj.at(1, 1) +
+                               viewProj.at(1, 2) * viewProj.at(1, 2)) * 0.5f * s.playH;
+    const float t = std::max(1.f, s.art());
+    for (const Df2Waypoint& w : df2Wps_) {
+        if (!w.used || w.name.empty()) continue;
+        const Vec3 p = world_.nearest(Vec3{float(w.x), w.z, float(-w.y)}, eye);
+        const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
+        const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
+        const float cw = viewProj.at(3, 0) * p.x + viewProj.at(3, 1) * p.y + viewProj.at(3, 2) * p.z + viewProj.at(3, 3);
+        if (cw <= 0.1f) continue;   // the near plane
+        const float px = (cx / cw * 0.5f + 0.5f) * s.w, py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH;
+        const float top = py - fy / cw;
+        hud_.rect(px, top, t, py - top, kHudPureGreen);
+        hud_.text(px - hud_.textWidth(w.name, s.text()) / 2, top - 15.f * s.art(), w.name, kHudPureGreen, s.text());
     }
 }
 
@@ -7330,6 +7470,10 @@ int Game::run() {
     // Force Dagger have a HUD.DEF too, with other art).
     if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
         df2Hud_.on = df2Hud_.def.parse(def);
+    // GOG Df2.exe 0x41bb90 (through 0x4577a0 / 0x4577f0, 0x41be40 /
+    // 0x41bdf0): plain glyph pixels in the colour, no shadow pass; the
+    // goals' shadow is its own +1,+1 draw (0x448b10).
+    if (df2Hud_.on) hud_.setTextShadow(false);
     // GOG Df2.exe 0x466ba0: a fresh mission start (param 0, 0x465322) sets the
     // friendly tags to 1 (names); the Space replay (0x466ad0) keeps them.
     if (df2Hud_.on) friendlyTags_ = 1;
@@ -8134,8 +8278,11 @@ int Game::run() {
                     // (0x449450), then the weapon pass (0x448980).
                     drawZoomInset(s, view, fovY);
                     drawCameraInset(s);
+                    drawDf2FoInset(s);
                     glViewport(0, 0, dw, dh);
-                    if (nvg_ && !showMap_) {
+                    // GOG Df2.exe 0x465fde: the scoped path (0x455be0 at
+                    // 0x4662dd, JMP 0x4662ef) skips the night vision 0x450550.
+                    if (nvg_ && !showMap_ && !scopeShown()) {
                         hud_.begin(dw, dh);
                         hud_.nightVision(s.w * 0.5f, s.playY + s.playH * 0.5f, float(s.modeW) * 5.f / 32.f * s.art());
                         hud_.end();

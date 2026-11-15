@@ -199,6 +199,10 @@ SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
         }
         y0 = y1 + 2;
     }
+    // GOG Df2.exe 0x41bb90: a character with no glyph (entry byte +5 clear)
+    // is drawn as glyph 0.
+    for (int c = 1; c < 256; ++c)
+        if (f.glyphs[c].w == 0) f.glyphs[c] = f.glyphs[0];
     f.tex = makeImage(W, H, rgba);
     f.ok = f.height > 0;
     return f;
@@ -473,7 +477,7 @@ float Hud::text(float x, float y, const std::string& s, Color c, float scale) {
     }
     setMode(1, font_);
     const float start = x;
-    for (int pass = 0; pass < 2; ++pass) {
+    for (int pass = textShadow_ ? 0 : 1; pass < 2; ++pass) {
         // Pass 0 draws a 1-pixel dark shadow so text reads on any background.
         float px = start + (pass == 0 ? scale : 0), py = y + (pass == 0 ? scale : 0);
         Color col = pass == 0 ? Color{0, 0, 0, c.a * 0.8f} : c;
