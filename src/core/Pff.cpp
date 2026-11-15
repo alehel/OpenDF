@@ -97,6 +97,11 @@ bool Vfs::mount(const fs::path& archive, std::string* error) {
     auto a = std::make_unique<PffArchive>();
     if (!a->open(archive, error)) return false;
     for (size_t i = 0; i < a->entries().size(); ++i) index_[a->entries()[i].name] = {a.get(), i};
+    // The GOG Delta Force (Df.exe 1.00.03.03p) is the only release whose
+    // DFBASE.PFF carries DFDK.KEY; it also ships its text defs scrambled.
+    if (toUpper(archive.filename().string()) == "DFBASE.PFF")
+        for (auto& e : a->entries())
+            if (e.name == "DFDK.KEY") df1Scrambled_ = true;
     archives_.push_back(std::move(a));
     return true;
 }
@@ -143,6 +148,15 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
     return exists("DF.PFF") || mounted > 0;
 }
 
+// The files GOG Df.exe reads through 0x456720 with the scramble key.
+static bool isDf1ScrambledName(const std::string& upper) {
+    auto endsWith = [&](const char* ext) {
+        const size_t n = std::strlen(ext);
+        return upper.size() >= n && upper.compare(upper.size() - n, n, ext) == 0;
+    };
+    return upper == "ITEMS.DEF" || upper == "LOOP.DEF" || endsWith(".ANM");
+}
+
 bool Vfs::exists(const std::string& name) const { return index_.count(toUpper(name)) != 0; }
 
 bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
@@ -161,6 +175,20 @@ bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
             b ^= uint8_t(st);
         }
         out.swap(body);
+    } else if (df1Scrambled_ && !out.empty() && isDf1ScrambledName(it->first)) {
+        // GOG Df.exe scrambles the same kind of files with no header: init
+        // (GOG Df.exe 0x401050) sets the key 0x4960552, and the text-def
+        // reader (0x456720) hands it to 0x456eb0 for ITEMS.DEF (0x4827a0),
+        // LOOP.DEF (0x43edb0) and the .ANM move lists (0x42d100/0x42d200),
+        // which reverses the whole buffer and XORs the same stream.
+        // TRN, MNU, KEY and SCR files are read with key 0 and stay plain.
+        std::reverse(out.begin(), out.end());
+        uint32_t st = 0x04960552;
+        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+        for (auto& b : out) {
+            st = rol(rol(st, 11) + st, 4) ^ 1;
+            b ^= uint8_t(st);
+        }
     }
     return true;
 }

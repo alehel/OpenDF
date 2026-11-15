@@ -58,6 +58,7 @@ private:
     struct Ref { PffArchive* archive; size_t index; };
     std::vector<std::unique_ptr<PffArchive>> archives_;
     std::unordered_map<std::string, Ref> index_;
+    bool df1Scrambled_ = false; // GOG Delta Force data: headerless scrambled defs
 };
 
 std::string toUpper(std::string s);
