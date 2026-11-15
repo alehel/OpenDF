@@ -347,12 +347,18 @@ private:
     // that repeat their interrupt_sound_id.
     // section: the BMS group (0x436c74 visits 1 every 32 ticks, 2 every 64);
     // slot: the record's index in its group.
-    struct Ambient { int object; int wait; int section; int slot; };
+    // DF2's sound markers (snd0..snd3, no graphic, so no world object) have
+    // object -1 and play at `at`, their record's place.
+    struct Ambient { int object; int wait; int section; int slot; Vec3 at{}; const ItemDef* item = nullptr; };
     // The C runtime's rand (Watcom 0x49153c, never seeded: 1), which DF.EXE
     // draws ambience waits from (shared there with ~150 other callers).
     uint32_t crtSeed_ = 1;
     int crtRand() { crtSeed_ = crtSeed_ * 0x41C64E6Du + 0x3039u; return int((crtSeed_ >> 16) & 0x7FFF); }
     std::vector<Ambient> ambients_;
+    // GOG Df2.exe 0x403790's think counter ([0x4df9b0], 0 at start, never
+    // reset): every record it creates takes counter % 60 as its first think
+    // wait, then the counter goes up 11.
+    int df2ThinkCounter_ = 0;
     // DF2's ambient loop markers ("Sound: loop" items): mission record,
     // sound id, place (GOG Df2.exe 0x465330, attached through 0x4682b0 at
     // mission load).
@@ -1018,9 +1024,12 @@ bool Game::loadMission(int index) {
         briefPage_ = 0;
     }
     {
-        // Radio dialogs: the mission header names the set ("dfdlg02").
+        // Radio dialogs: the mission header names the set ("dfdlg02"). DF2
+        // replaces whatever follows the first '.' with "dbf" (GOG Df2.exe
+        // 0x4679c0 -> 0x46a920) and cuts the name there for the .pwf / .bin
+        // (0x4191a0), so a header "Dfdlgco.scr" loads DFDLGCO.
         std::vector<uint8_t> raw;
-        const std::string set = toUpper(mission_.dialogue);
+        const std::string set = toUpper(mission_.version >= 0x0F ? mission_.dialogue.substr(0, mission_.dialogue.find('.')) : mission_.dialogue);
         dialogs_ = DialogIndex{};
         dialogText_.clear();
         activeDialogs_.clear();
@@ -1030,7 +1039,8 @@ bool Game::loadMission(int index) {
             const auto& o = world_.objects[i];
             if (!o.item || o.item->interruptSound <= 0) continue;
             const std::string& f = o.item->aiFunction;
-            // Delta Force 2 adds snd3 (random ambient markers, 0x402730) and
+            // Delta Force 2 adds snd3 (random ambient markers, GOG Df2.exe
+            // 0x402910; graphic-less ones are handled below) and
             // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0).
             if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
                 o.missionIndex >= 0) {
@@ -1038,6 +1048,34 @@ bool Game::loadMission(int index) {
                 // up 11 per object loaded, in file order.
                 const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
                 ambients_.push_back({int(i), (11 * o.missionIndex) % 60, mo.group, mo.indexInGroup});
+            }
+        }
+        // DF2's sound markers ("Sound: ..." items, ai_function snd0..snd3,
+        // GOG Df2.exe name table 0x4af120): no graphic, so not in
+        // world_.objects. 0x403e20 creates the records in file order (items,
+        // decorations, markers, organics), 0x403790 skipping the dropped ones
+        // and giving each created one its callback (item +0x84) and the
+        // first wait counter % 60; 0x446550 visits markers[tick & 63] in
+        // steps of 64. The sound plays at the record's absolute place
+        // (terrain + z, 0x465490).
+        if (world_.df2Rules) {
+            std::vector<bool> hasObject(mission_.objects.size(), false);
+            for (const auto& o : world_.objects)
+                if (o.missionIndex >= 0 && size_t(o.missionIndex) < hasObject.size()) hasObject[size_t(o.missionIndex)] = true;
+            const float ext = world_.extent();
+            for (size_t i = 0; i < mission_.objects.size(); ++i) {
+                const MissionObject& mo = mission_.objects[i];
+                if (mo.omitted) continue;
+                const int wait = df2ThinkCounter_ % 60;
+                df2ThinkCounter_ += 11;
+                if (hasObject[i]) continue;
+                const ItemDef* it = items_.byMissionType(mo.type);
+                if (!it || it->interruptSound <= 0) continue;
+                const std::string& f = it->aiFunction;
+                if (f != "snd0" && f != "snd1" && f != "snd2" && f != "snd3") continue;
+                Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
+                at.y = terrain_.heightAt(at.x, at.z) + mo.z;
+                ambients_.push_back({-1, wait, mo.group, mo.indexInGroup, at, it});
             }
         }
         // DF2 attaches a LOOP.DEF loop to every loop marker item (GOG Df2.exe
@@ -6724,6 +6762,27 @@ int Game::run() {
                         --a.wait;
                     }
                     if (!think) continue;
+                    if (a.object < 0) {
+                        // DF2 sound markers (GOG Df2.exe 0x4027f0 snd0, 0x402850
+                        // snd1, 0x4028b0 snd2, 0x402910 snd3): the sound at the
+                        // marker, then the next wait from 0x41ea20 (r, 16 bits):
+                        // ((r*6 >> 16) + 20) * 64, ((r*4 >> 16) + 8) * 64,
+                        // ((r*2 >> 16) + 3) * 64; snd3 (item +0xe0 >> 4) +
+                        // ((r * item +0xe8) >> 16 >> 10), +0xe0 being
+                        // atoi(acceleration) << 10 and +0xe8 axle_dist in 16.16
+                        // (the DF2 parser 0x422580 / 0x4226a3).
+                        const std::string& f = a.item->aiFunction;
+                        playSound(a.item->interruptSound, a.at);
+                        const int64_t r = int64_t(shrapRand());
+                        if (f == "snd3") {
+                            const int64_t axle = int64_t(double(a.item->axleDist) * 65536.0);
+                            a.wait = ((int(a.item->acceleration) << 10) >> 4) + (int32_t(uint32_t(uint64_t(r * axle) >> 16)) >> 10);
+                        } else {
+                            const int k = f == "snd0" ? 6 : f == "snd1" ? 4 : 2, add = f == "snd0" ? 20 : f == "snd1" ? 8 : 3;
+                            a.wait = (int((r * k) >> 16) + add) * 64;
+                        }
+                        continue;
+                    }
                     const auto& o = world_.objects[size_t(a.object)];
                     const std::string& f = o.item->aiFunction;
                     Vec3 at = o.pos;
@@ -6734,7 +6793,7 @@ int Game::run() {
                     const int r = crtRand() * 2;
                     a.wait = f == "snd0" ? (((r * 6) >> 16) + 20) << 6 : f == "snd1" ? (((r * 4) >> 16) + 8) << 6
                            : f == "snd2" ? (((r * 2) >> 16) + 3) << 6 : ((r >> 14) + 5) << 6;
-                    // snd3 (0x402730): acceleration·64 + rand·axle_dist·64 ticks
+                    // snd3 (GOG Df2.exe 0x402910): acceleration·64 + rand·axle_dist·64 ticks
                     // ((rand · (axle << 16)) >> 26 + (acc << 10) >> 4).
                     if (f == "snd3")
                         a.wait = int((int64_t(r & 0xFFFF) * int64_t(o.item->axleDist * 65536.f)) >> 26) + int(o.item->acceleration * 64.f);

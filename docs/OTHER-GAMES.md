@@ -560,8 +560,13 @@ First differences from DF1:
     Make Permanent, voice buttons, received waypoints, the start countdown).
     Testing: OPENDF_CMAPTAB opens a tab, OPENDF_CMAPTEST scripts map clicks,
     keys and typing.
-  - **item behaviours** (DF2.EXE ai table 0x4a4030): snd3 ambient markers
-    (acceleration·64 + rand·axle_dist·64 ticks, at the marker, 0x402730);
+  - **item behaviours** (DF2.EXE ai table 0x4a4030): the "Sound: ..." markers
+    snd0..snd3 (GOG Df2.exe 0x4027f0, 0x402850, 0x4028b0, 0x402910; CD
+    0x402730 for snd3): graphic-less records in the markers table, visited
+    every 64 ticks (0x446550), first wait counter % 60 (0x403790, +11 a
+    record, never reset), the sound at the marker, then 20..25 / 8..11 /
+    3..4 × 64 ticks, snd3 int(acceleration)·64 + r·axle_dist·64 ticks, r
+    from the shared generator 0x41ea20;
     bld2 buildings (their sound as dec0's; destroyed: everyone and every
     vehicle within the model's ±flat radius / ±height loses 100 hp, then 64
     steps one per 8 ticks: two rubble bursts a step (effect 0x13 = item 7030,
