@@ -7079,11 +7079,17 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
         for (size_t i = 0; i < b.size(); ++i)
             if (in(688, 696 - 32 * float(i), V(280))) { df2Action(b[i].second); return; }
     }
-    if (m.tab >= 1 && m.tab <= 3) {
+    {
         // A list row (0x40c1e0 -> 0x40d790): the first row whose rect holds
-        // the mouse, edges included, is selected (0x40c5b0).
+        // the mouse, edges included, is selected (0x40c5b0). GOG tests the
+        // last list built ([0xbfaee4], written only by the VON, Players and
+        // Team pages and reset by neither a tab switch nor a mission start)
+        // on every tab, so its rows stay live on Map, Weapons and Mission
+        // (READ quirk); a selection the mission no longer has is skipped.
+        // (OpenDF tests it before the tab's own click instead of after it;
+        // the row's selection wins either way.)
         for (const auto& r : m.rows)
-            if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) { df2Select(r.sel); return; }
+            if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1 && df2SelValid(r.sel)) { df2Select(r.sel); return; }
     }
     if (m.tab == 3) {
         // Team tab: a teammate's order buttons.
@@ -8851,8 +8857,10 @@ int Game::run() {
             // reloads the fonts for the new width (0x45cbfa -> 0x45c0a0:
             // f_sml%i and f_LG%i, i = min(width, 800)) and the HUD strips
             // (0x45cc06 -> 0x443bd0). So the map's text is F_SML640 /
-            // F_LG640 at any display mode.
-            useHudMode(df2Hud_.on && showMap_ ? 640 : s.modeW);
+            // F_LG640 at any display mode. GOG Df2.exe 0x4673b0 switches to
+            // index 4 only from a lower mode ([0xa6de8c] < 4), so with OpenDF's
+            // 640 / 800 / 1024 modes its map keeps the display mode.
+            useHudMode(df2Hud_.on && showMap_ && !arsenal_.df2Gog() ? 640 : s.modeW);
             // GOG Df.exe 0x404640, every frame: with the player dead the map
             // flag [0x67db80] is cleared and the normal view drawn.
             if (!df2Hud_.on && showMap_ && playerDead()) showMap_ = false;
