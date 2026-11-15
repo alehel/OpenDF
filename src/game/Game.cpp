@@ -3351,7 +3351,8 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
                 body.model = bm;
                 body.pos = deadBodyOrigin();
                 body.heading = deadYaw_;
-                models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()));
+                models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()),
+                                  arsenal_.df2() ? 0 : o_.faceVariant);   // +0x98 (0x4829f0 -> 0x481356)
             }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.
     const float camYaw = std::atan2(fwd.x, -fwd.z);

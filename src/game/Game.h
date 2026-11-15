@@ -45,6 +45,11 @@ struct GameOptions {
     std::string soldierName;
     bool mixerHook = true;               // DF1: the mixer's mode-3 hook (on from start-up until a mission has ended)
     bool female = false;                 // the soldier's face is a female one (profile +0x640 >= 8)
+    // The player's person variant (organic +0x98): GOG Df.exe 0x407a90 reads
+    // [0x67f430] from the face table 0x4d0490 (stride 0x84) by profile
+    // +0x640, 0x4829f0 stores it; the person draw (0x481330) puts it in the
+    // animated-material slot 1.
+    int faceVariant = 0;
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.
     int gpsIcons = 1;

@@ -2414,6 +2414,12 @@ int Frontend::run() {
                 g.sidearm = sidearmName(prof().get(0x680));
                 g.soldierName = prof().name();
                 g.female = prof().get(0x640) >= 8;
+                {
+                    // 0x407a90: the face table 0x4d0490 (+0x00 of each 0x84 record).
+                    static const int kFaceVariant[13] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 0, 0};
+                    const int face = prof().get(0x640);
+                    g.faceVariant = face >= 0 && face < 13 ? kFaceVariant[face] : 0;
+                }
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;

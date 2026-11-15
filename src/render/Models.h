@@ -17,6 +17,7 @@ struct GpuModel {
     struct Batch {
         GLint first; GLsizei count; int texture; float color[3]; int blend;
         uint32_t flags; int material, mesh; float specular; int specularPower; float fullbright; bool doubleSided;
+        int slot;   // the front material's signed +0x1F
     };
     struct Lod {
         GLuint vao = 0, vbo = 0; std::vector<Batch> batches; float min[3], max[3]; int triangles = 0;
@@ -24,6 +25,8 @@ struct GpuModel {
         bool animated = false;                        // see ModelLod
         std::vector<std::array<float, 3>> points;     // this LOD's hardpoints (OpenDF axes)
         std::vector<int> materialTextures;
+        std::vector<ModelMaterial> materials;         // see ModelLod
+        bool df1 = false;                             // a Delta Force (not v8) model
         std::vector<int> meshParent;                  // see ModelLod
         std::vector<std::array<float, 3>> meshPivot;
         std::vector<float> meshRadius;
@@ -83,8 +86,10 @@ public:
     // of `flash` is set, no others; `frame` (animated materials) applies to
     // the flash meshes. Otherwise `frame` is the whole model's frame.
     void draw(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, int flash = 0, int frame = 0);
-    // A posed person: each mesh drawn with model x meshes[mesh].
-    void drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes);
+    // A posed person: each mesh drawn with model x meshes[mesh]; `frame`
+    // as for draw (a Delta Force person: its +0x98 variant, GOG Df.exe
+    // 0x481344..0x481356).
+    void drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes, int frame = 0);
     void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, int flash = 0, int frame = 0);
     void end();
     // Multiplies the colour and alpha of what is drawn next; `replace`: the
