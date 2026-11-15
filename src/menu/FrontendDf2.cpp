@@ -3036,7 +3036,7 @@ int FrontendDf2::run() {
                     if (!out.replayed.empty()) soldier().set(flagsAt, int32_t(flags));
                     break;
                 }
-                record(out.won, out.kills, out.df2Zeroing);
+                record(out.won, out.kills, out.played ? out.df2Zeroing : soldier().get(0x5c4));
                 soldier().set(flagsAt, int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;

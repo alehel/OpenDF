@@ -23,6 +23,10 @@ namespace df {
 
 class SoundSystem;
 
+// Delta Force 2's start point on a path for follow-path (GOG Df2.exe
+// 0x4032f0), shared by soldiers and vehicles.
+int df2NearestPoint(const World& world, const Mission& m, const MissionPath& mp, const WorldObject& o);
+
 class AiSystem {
 public:
     // firstThink: per mission record, its first think wait (Delta Force's

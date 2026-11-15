@@ -151,7 +151,14 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
         case 0: break;
         case 2: host.killTeam(p1); break;
         case 4: host.removeTeam(p1); break;
-        case 5: if (p1 >= 0 && p1 < 32) g_flags |= 1u << p1; break;
+        case 5:
+            if (mission_->version >= 0x0F) {
+                // GOG Df2.exe 0x41b6c0: p2 sets or clears bit p1 & 31.
+                const uint32_t b = 1u << (p1 & 31);
+                if (a[4]) g_flags |= b;
+                else g_flags &= ~b;
+            } else if (p1 >= 0 && p1 < 32) g_flags |= 1u << p1;
+            break;
         case 6: host.showText(p1); break;
         case 7: host.radio(p1); break;
         // Only latches the result (GOG Df.exe 0x42e810 -> 0x444ca0(1)); the

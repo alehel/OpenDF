@@ -1173,6 +1173,20 @@ void VehicleSystem::followPath(World& world, int team, int path) {
     // path, from the nearest point; path 0 included (it halts them, pathStep).
     if (team < 3 || !mission_ || path < 0 || path >= int(mission_->paths.size())) return;
     const MissionPath& mp = mission_->paths[size_t(path)];
+    if (world.df2Rules) {
+        // GOG Df2.exe 0x418040: every item of the team with an AI block,
+        // wrecked or not, from the point 0x4032f0 picks; the think timer is
+        // left alone.
+        for (auto& v : vehicles_) {
+            const WorldObject& o = world.objects[size_t(v.object)];
+            if (o.team != team || o.removed) continue;
+            v.pathMode = 1;
+            v.path = path;
+            v.stopped = false;
+            v.waypoint = nearestPathPoint(world, *mission_, mp, o.pos);
+        }
+        return;
+    }
     for (auto& v : vehicles_) {
         WorldObject& o = world.objects[size_t(v.object)];
         if (o.team != team || v.dead) continue;
