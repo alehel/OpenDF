@@ -491,7 +491,7 @@ int cmdView(Vfs& vfs, Options& o) {
                 std::fprintf(stderr, "%s: %s\n", entries[idx].c_str(), e.empty() ? "unreadable" : e.c_str());
                 return false;
             }
-            if (mission.version < 0x0F) dropMultiplayerRecords(mission);   // GOG Df.exe 0x449710
+            dropMultiplayerRecords(mission, items);
             trn = mission.terrain;
             if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
         }

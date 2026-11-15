@@ -138,6 +138,9 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.heading = mo.heading * kPi / 180.f;
         o.lift = mo.z;
         o.person = item->type == "person";
+        // Record +0x36 -> object +0x34 (GOG Df2.exe 0x403790, GOG Df.exe
+        // 0x449710): the body pitch; for people that word is the aim pitch.
+        (o.person ? o.aimPitch : o.pitch) = mo.pitch * kPi / 180.f;
         o.base = o.pos.y;
         // Delta Force 2 (0x45bb10): a person 100 m or more up starts on a
         // parachute.

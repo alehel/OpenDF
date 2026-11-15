@@ -19,7 +19,15 @@
 
 namespace df {
 
-struct AreaBox { double minX = 0, minY = 0, maxX = 0, maxY = 0; bool valid = false; };
+struct AreaBox {
+    double minX = 0, minY = 0, maxX = 0, maxY = 0;
+    bool valid = false;
+    // Delta Force 2 (GOG Df2.exe 0x41b200): the two markers (Mission::objects
+    // indices) and condition flag 8, a height range between their absolute
+    // heights (ground + record z) when either record z is non-zero.
+    int markerA = -1, markerB = -1;
+    bool zRange = false;
+};
 
 // What the script asks of the game.
 class ScriptHost {
@@ -45,6 +53,10 @@ public:
     virtual void teamSpeed(int team, int kmh) { (void)team; (void)kmh; }
     // 0x46ca54: someone of team p1 carries an item whose mission team is p2.
     virtual bool teamCarrying(int team, int itemTeam) const { (void)team; (void)itemTeam; return false; }
+    // Delta Force 2 condition 1/13 (GOG Df2.exe 0x41af30 -> 0x41b150): a
+    // projectile of team `team` has hit an object of `targetTeam` (bit table
+    // 0xabbe00, set by 0x41ac30 from the hit 0x453510, cleared at load 0x41b620).
+    virtual bool teamHit(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
     // Delta Force 2 action 18 (0x416960): every person of `team` to the
     // teleport target (6088) of that team whose record +0x4A is `value`.
     virtual void teleportTeam(int team, int value) { (void)team; (void)value; }

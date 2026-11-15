@@ -1004,6 +1004,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.law = b.flags & 0x40;
                 im.flags = b.flags;
                 im.material = hit.material;
+                im.shooter = b.shooter;
                 impacts_.push_back(im);
                 if (std::getenv("OPENDF_DEBUGHITS")) {
                     std::fprintf(stderr, "hit obj %d part %d mesh %d material %08x at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part,
