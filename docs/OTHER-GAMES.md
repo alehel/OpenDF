@@ -498,7 +498,8 @@ First differences from DF1:
     DF1's 16 plus 17 rain, 18 snow, 19 gex5, 20 boomd, 21/22 parachutes,
     23-27). `OPENDF_TESTBLD2=1` destroys a mission's first bld2 at tick 30
     (testing). The searchlight `slgt` (DF1 has it too, GOG Df.exe 0x4519a0; sweeps ±45° about its placed heading,
-    spots within 22.5° and 1000 m, tracks for 8 thinks, the husk and a
+    spots within 22.5° and 1000 m anyone of another non-zero side (GOG
+    0x42aa10 compares sides, not teams), tracks for 8 thinks, the husk and a
     blast 1 m up when shot; 0x427f30, 0x4281e0, 0x425c70), Land Mine (`mine`
     0x4295f0 when shot or blasted; any person stepping on it, 0x43fc80: a
     blast and a smoke generator 0.5 m up) and wall trigger (`vtrg`
@@ -678,7 +679,11 @@ First differences from DF1:
     origin at the target's origin while it is seen, else the last known
     point with errMul 5, whole-metre distance, the error stored on the
     body; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
-    target sight line from 1 m up to the target's origin (0x401732).
+    target sight line from 1 m up to the target's origin (0x401732), after
+    which (seen or not) the full scan runs and a different best candidate
+    scoring over 0x4000, without a random draw, becomes the target (GOG
+    Df2.exe 0x40197f..0x4019fc, scan 0x417830; the scan gives nothing for
+    a side-0 soldier without flag 0x200).
     Squad Members Off is df2.cfg attributes 0x20 (0x45bf44 → 0x45c460): the
     same four Squad Member items as DF1 are deleted (the ghillie one, 105271,
     stays); enemy AI hard is attributes 0x10 (0x415f16). The player is DF2's `player01` (105300, hp 8) or

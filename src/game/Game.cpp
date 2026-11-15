@@ -2209,7 +2209,7 @@ void Game::tickDf2Items() {
                     pv.team = kPlayerTeam;
                     int id = -1;
                     Vec3 at{0, 0, 0};
-                    const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.team, pv, id, at);
+                    const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.side, pv, id, at);   // by side (GOG 0x42aa10)
                     l.target = -1;
                     // score · perception, a quarter when AI byte +0xb4 is 0
                     // (0x425e8f..0x425eb8).

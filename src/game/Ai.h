@@ -74,7 +74,7 @@ public:
     }
     // Delta Force 2's searchlight scan (0x425c70); yaw and pitch are DF2
     // binary angles (yaw anticlockwise from east). See Ai.cpp.
-    float lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
+    float lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
                     int& bestId, Vec3& bestPos) const;
     // Delta Force's searchlight scan (GOG Df.exe 0x44f540, CD 0x47b074):
     // the same over people of another side (side 0 never), DF's own binary
