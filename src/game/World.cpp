@@ -931,6 +931,19 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         refreshBoxes(o);
         return o.item->name + " down";
     }
+    if (!df2Rules && o.item && o.item->aiFunction == "gnrc") {
+        // GOG Df.exe 0x4533f0 (CD 0x47ee6c), the think and the damage
+        // handler: at hp <= 0 it sets flags 4 and thinks again in 0x20 ticks;
+        // the next run with flag 4 (that think, or at once a further round or
+        // blast) blows it up (0x453270) and only then sets flag 8, the husk.
+        // Game::gnrcExplode does that part.
+        if (o.gnrcTimer > 0) { o.gnrcTimer = 0; return {}; }
+        if (o.hp <= 0 || o.gnrcTimer == 0) return {};
+        o.hp -= amount;
+        if (o.hp > 0) return {};
+        o.gnrcTimer = 0x20;
+        return o.item->name + " destroyed";
+    }
     if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
     if (o.hp > 0) return {};
@@ -941,11 +954,12 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         destroyed_.push_back(index);
         return o.item->name + " destroyed";
     }
-    if (df2Rules && !o.husk && (o.item->aiFunction == "mine" || o.item->aiFunction == "vtrg")) {
+    if (!o.husk && (o.item->aiFunction == "mine" || (df2Rules && o.item->aiFunction == "vtrg"))) {
         // DF2.EXE 0x4295f0 / 0x42a980: flagged destroyed (4, or 0x10C) but
         // not removed; with no husk the model stays drawn (the draw list
         // 0x4490d0 skips only +0x64 & 2, the draw 0x4459f0 takes the husk only
-        // with flag 8 and a husk).
+        // with flag 8 and a husk). Delta Force's mine (GOG Df.exe 0x453220)
+        // also only sets flag 4 (and blows up, see the destroyed loop).
         o.hp = 0;
         o.wrecked = true;
         destroyed_.push_back(index);
@@ -993,7 +1007,7 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
     const Vec3 target = at + Vec3{0, 0.5f, 0};
     for (size_t i = 0; i < objects.size(); ++i) {
         WorldObject& o = objects[i];
-        if (!o.alive()) continue;
+        if (!o.alive() && o.gnrcTimer <= 0) continue;   // a waiting gnrc object (0x4533f0) still takes it
         const Vec3 p = nearest(o.pos, at);
         if (o.person) {
             const float r = radius + 1.f;
@@ -1018,7 +1032,9 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             if (!m.empty()) out.push_back(m);
             continue;
         }
-        if (o.hp <= 0 || !o.model) continue;
+        // A destroyed Delta Force gnrc object waiting to go off (flag 4, no
+        // husk yet) is still in the blast and fires at once (0x4533f0).
+        if ((o.hp <= 0 && o.gnrcTimer <= 0) || !o.model) continue;
         const std::string& type = o.item ? o.item->type : std::string();
         const float h = o.model->flatRadius, v = o.model->height;
         float d;

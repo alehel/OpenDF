@@ -455,8 +455,10 @@ private:
                                         float aimPitch = 0);
     Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
-    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f);
+    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f, bool sound = true);
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
+    void gnrcExplode(int index);   // Delta Force: a destroyed gnrc object goes off (0x453270)
+    float effectScale_ = 0;        // > 0: the next spawnEffect's scale (effect +0x7c set by its caller)
     void spawnPuff(Vec3 at);
     void tickEffects();
     // Delta Force 2's rain and snow (BMS flag 0x78 bit 3, 0x46ba90).
@@ -1179,7 +1181,9 @@ void Game::spawnEffect(int slot, Vec3 pos) {
     const auto& l = m->lods[0];
     // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5.
     std::uniform_real_distribution<float> u(0.5f, 1.5f);
-    effects_.push_back({m, pos, u(effectRng_), 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
+    float scale = u(effectRng_);
+    if (effectScale_ > 0) scale = effectScale_;
+    effects_.push_back({m, pos, scale, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
     if (std::getenv("OPENDF_DEBUGHITS"))
         std::fprintf(stderr, "effect slot %d %s: %d frames x %d ticks at (%.2f %.2f %.2f) radius %.2f\n", slot, item->graphic.c_str(),
                      l.frames, l.ticksPerFrame, pos.x, pos.y, pos.z, m->radius);
@@ -1191,10 +1195,10 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // water), blast type 1 with radius 10 m, and on terrain a smoke generator.
 // Sound 0x32 (0x35 in the water). The LAW out of the water is blast
 // type 3 (`heavy`: objects lose 128 - 16 d).
-void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
+void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound) {
     spawnEffect(surface == 2 ? 4 : 3, at);
     // Delta Force 2 sends these through its speed-of-sound queue (0x45E910).
-    sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
+    if (sound) sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
     for (auto& m : world_.blast(at, radius, heavy)) pushMessage(m);
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
@@ -1380,13 +1384,7 @@ void Game::touchPickups() {
             o.boxes.clear();
             break;
         case 4054:
-            if (world_.df2Rules) { mineContact(int(i)); break; }   // DF2 0x43ff93
-            if (o.hp > 0) {
-                o.hp = 0;
-                o.removed = true;
-                o.boxes.clear();
-                detonate(o.pos + Vec3{0, 1, 0}, 60, o.heading);
-            }
+            mineContact(int(i));   // DF2 0x43ff93, GOG Df.exe 0x488f00 case 0xfd6
             break;
         default: break;
         }
@@ -1966,6 +1964,39 @@ void Game::tickEffects() {
             o.detonate = -1;
             detonate(o.pos, 10, o.heading);
         }
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        WorldObject& o = world_.objects[i];
+        if (o.gnrcTimer > 0) --o.gnrcTimer;
+        if (o.gnrcTimer == 0) gnrcExplode(int(i));
+    }
+}
+
+// A destroyed Delta Force gnrc object goes off (GOG Df.exe 0x4533f0 with
+// flag 4 -> 0x453270, CD 0x47ee6c -> 0x47ecf0): the item's sound, then
+// 0x460a30(owner 0, origin + 1 m, scale n << 14): effect 3 with +0x7c =
+// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a +-200 m noise;
+// a Smoke Generator at origin + 0.5 m (0x447610); then flags |= 8, the husk.
+// The blast is queued in DF.EXE and so meets the husk; here the husk goes
+// first. The table's n: 1001 1, 1002 3, 1039 4, 1040 1, 1041 3, 1042 3,
+// 1044 7, 1046 8, 1048 1, 1049 8, 3008 8, 4015 5, 4019 4. Other gnrc
+// items (3062 vwal crack) leave EBX holding the object's address, an
+// undefined scale; they keep the effect's own random one.
+void Game::gnrcExplode(int index) {
+    WorldObject& o = world_.objects[size_t(index)];
+    o.gnrcTimer = -1;
+    static const std::pair<int, int> kScale[] = {{1001, 1}, {1002, 3}, {1039, 4}, {1040, 1}, {1041, 3}, {1042, 3}, {1044, 7},
+                                                 {1046, 8}, {1048, 1}, {1049, 8}, {3008, 8}, {4015, 5}, {4019, 4}};
+    int n = 0;
+    for (const auto& s : kScale)
+        if (o.item && o.item->id - 100000 == s.first) n = s.second;
+    const Vec3 at = o.pos + Vec3{0, 1.f, 0};
+    const Vec3 smoke = o.pos + Vec3{0, 0.5f, 0};
+    world_.applyHusk(index);   // flags |= 8; the destroyed loop plays the 0x453270 sound
+    effectScale_ = n / 4.f;
+    explode(at, 1, false, 10.f, false);   // surface 1: effect 3, no smoke generator
+    effectScale_ = 0;
+    ai_.noise(at, 200.f, 0, 0);
+    smokeGens_.push_back({smoke, 0, 0});
 }
 
 // DF2.EXE 0x4524d0 -> 0x412b00, the common blast: effect 3 (0x413850),
@@ -2000,6 +2031,10 @@ bool Game::df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const {
     return world_.df2Overlap(o, pts, halves, 2, push, flags);
 }
 
+// Delta Force's touch (GOG Df.exe 0x488f00 case 0xfd6, CD 0x437f60) does
+// the same: 0x446fb0(toucher, the mine's origin, 0 fragments) -> 0x4606b0
+// (effect 3, blast type 1, sound 0x32, +-200 m noise), a Smoke Generator
+// at +0.5 m (0x447610), hp and +0x76 = 0, flags |= 4; the mine stays drawn.
 // A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
 // its hp is above 0, the common blast at the mine with no fragments (owned
 // by the mover), a Smoke Generator 104046 0.5 m above it (0x4531e0 ->
@@ -2012,7 +2047,11 @@ void Game::mineContact(int index) {
     o.hp = 0;
     o.wrecked = true;
     o.radarShape = 0;
-    df2Blast(o.pos, 0, o.heading);
+    if (world_.df2Rules) df2Blast(o.pos, 0, o.heading);
+    else {
+        explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
+        ai_.noise(o.pos, 200.f, 0, 0);
+    }
     smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
 }
 
@@ -5557,6 +5596,16 @@ int Game::run() {
                     if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos); continue; }    // 0x401240 -> 0x4572d0
                     if (f.rfind("bld2", 0) == 0) { startCollapse(i); continue; }   // 0x4028d0
                     if (df2ItemDestroyed(i)) continue;                              // slgt, mine, vtrg
+                }
+                if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "mine") {
+                    // GOG Df.exe 0x453220 (a round or blast, hp <= 0, flag 4
+                    // clear): flags |= 4 and 0x446fb0(killer, origin, 0) ->
+                    // 0x4606b0: effect 3, blast type 1, sound 0x32, +-200 m
+                    // noise, no fragments; no smoke, the mine stays drawn.
+                    const Vec3 at = world_.objects[size_t(i)].pos;
+                    explode(at, 1);
+                    ai_.noise(at, 200.f, 0, 0);
+                    continue;
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {

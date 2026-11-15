@@ -37,6 +37,10 @@ struct WorldObject {
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
     bool wrecked = false;              // destroyed, husk shown
     int detonate = -1;                 // explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0)
+    // Delta Force `gnrc` objects (GOG Df.exe 0x4533f0): ticks until a
+    // destroyed one goes off (flags 4 set, model still intact); 0 = at the
+    // next tick (hit again while waiting), -1 = idle or done.
+    int gnrcTimer = -1;
     // From the mission record: its group in the file (0 moving objects,
     // 1 scenery, 2 markers, 3 people), team (byte +0x48), side (+0x43) and
     // position in mission coordinates.
@@ -44,7 +48,9 @@ struct WorldObject {
     bool mapMarker = false;            // record +0x4C nonzero: shown on the command map
     int radarShape = 0;                // Delta Force 2: obj+0x6E = signed byte record +0x4C (0x403590)
     double missionX = 0, missionY = 0;
-    bool alive() const { return !dead && !removed && !wrecked; }
+    // A gnrc object waiting to go off has flag 4 already: counted as gone
+    // (0x44a200), though still in blasts and hit by rounds.
+    bool alive() const { return !dead && !removed && !wrecked && gnrcTimer < 0; }
     // People: the .CHR hit spheres of their current pose (standing until
     // there is AI), centre in model axes (x forward, y left, z up) relative
     // to the body origin, and radius; metres.
