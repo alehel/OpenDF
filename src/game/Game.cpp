@@ -611,6 +611,7 @@ private:
     void drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye);
     std::mt19937 effectRng_{1998};
     void spawnImpact(const Impact& hit);
+    int terrainClass(Vec3 at) const;   // the terrain class a hit sounds by, 0..11
     void spawnEffect(int slot, Vec3 pos);
     int missionResult_ = -1;              // winning side once the mission has ended
     int missionNumber_ = 0;               // m of CccMmm
@@ -1706,8 +1707,12 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
         // +-5 m noise; 5 sand 0x82/0x83 with +-2 m (0x413a3e); class 0 or 7+
         // (no .CAL, unmatched names): no sound and no noise. The noise goes
         // to 0x412840 with the walker's team and flags 0.
-        if (surface < 1 || surface > 6) return;
-        static const int a[7] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82}, b[7] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83};
+        // GOG Df2.exe 0x415780 goes on to 7 0x88/0x89, 8 and 11 (road, QS)
+        // and 9 (mud) 0x82/0x83, 10 (ice) 0x86/0x87, each with +-5 m; the
+        // CD build stops at 6.
+        if (surface < 1 || surface > (df2Exe_.build() == ExeBuild::Df2Cd ? 6 : 11)) return;
+        static const int a[12] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82, 0x88, 0x82, 0x82, 0x86, 0x82},
+                         b[12] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83, 0x89, 0x83, 0x83, 0x87, 0x83};
         playSound((set1 ? a : b)[surface], origin);
         ai_.noise(origin, surface == 5 ? 2.f : 5.f, team, 0);
         return;
@@ -3013,6 +3018,15 @@ void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
         }
 }
 
+// The terrain class for an impact: DF1 and the DF2 CD build know 1..6
+// (classes above 6 make nothing in DF2 CD 0x413b70, dirt in DF1's clamp);
+// GOG Df2.exe 0x415a60 goes on to 11.
+int Game::terrainClass(Vec3 at) const {
+    const int s = terrain_.surfaceAt(at.x, at.z);
+    if (world_.df2Rules) return (s < 0 || s > (df2Exe_.build() == ExeBuild::Df2Cd ? 6 : 11)) ? 0 : s;
+    return std::clamp(s, 0, 6);
+}
+
 void Game::spawnImpact(const Impact& hit) {
     if (hit.noise > 0) ai_.noise(hit.pos, hit.noise, 0, 0);   // DF2 rounds on object faces (GOG Df2.exe 0x453860)
     if (hit.explosive && hit.armed) {
@@ -3037,9 +3051,14 @@ void Game::spawnImpact(const Impact& hit) {
         if (hit.object == -2) id = SoundSystem::BulletWater;
         else if (hit.object == -3) id = SoundSystem::BulletFlesh;   // the player
         else if (hit.object < 0) {
-            static const int bySurface[7] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
-                                             SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt};
-            id = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+            // GOG Df2.exe 0x415a60 adds 7 dirt, 8 (road) metal 0x37, 9 (mud)
+            // dirt, 10 (ice) sand 0x3a, 11 (QS) dirt; DF1 and the CD build
+            // (0x413b70) stop at 6.
+            static const int bySurface[12] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
+                                              SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt,
+                                              SoundSystem::BulletDirt, SoundSystem::BulletMetal, SoundSystem::BulletDirt,
+                                              SoundSystem::BulletSand, SoundSystem::BulletDirt};
+            id = bySurface[terrainClass(hit.pos)];
         } else {
             const auto& o = world_.objects[size_t(hit.object)];
             if (o.person) id = SoundSystem::BulletFlesh;
@@ -3063,8 +3082,13 @@ void Game::spawnImpact(const Impact& hit) {
     if (hit.object == -2) slot = 2;   // water: "water splash" (0x44fc20)
     else if (hit.object == -3) slot = 16;   // the player: flesh
     else if (hit.object < 0) {
-        static const int bySurface[7] = {0, 5, 7, 9, 13, 8, 6};
-        slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+        static const int bySurface[12] = {0, 5, 7, 9, 13, 8, 6, 5, 11, 5, 9, 5};   // 7..11: GOG 0x415a60
+        const int c = terrainClass(hit.pos);
+        slot = bySurface[c];
+        // DF2's terrain hit (GOG Df2.exe 0x415a60 -> 0x414660, CD 0x413b70
+        // -> 0x412840): a +-r m AI noise, flags 0, by the class.
+        static const float noise[12] = {0, 5, 2, 2, 10, 5, 10, 10, 10, 5, 5, 2};
+        if (world_.df2Rules && noise[c] > 0) ai_.noise(hit.pos, noise[c], 0, 0);
     } else {
         const auto& o = world_.objects[size_t(hit.object)];
         if (o.person || (o.item && (o.item->attrib & 0x40))) slot = 16;

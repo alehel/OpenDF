@@ -1404,10 +1404,15 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 // Whiz-by (0x44f330): the point of this step nearest the listener,
                 // if it lies inside the step and the round is within 40 m of the
                 // listener on both horizontal axes.
+                // GOG Df2.exe 0x4547a2..0x454812: hand and delay grenades (0x10,
+                // 0x1000) never whiz; on each axis the step's start or its end
+                // may be inside the window, and 0x453770 takes 0 <= t < length.
                 const Vec3 d = next - b.pos;
                 const float dd = dot(d, d);
                 const float t = dd > 0 ? dot(listener_ - b.pos, d) / dd : -1;
-                if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
+                if (!(b.flags & 0x1010) && t >= 0 && t < 1 &&
+                    (std::abs(b.pos.x - listener_.x) < 40.f || std::abs(next.x - listener_.x) < 40.f) &&
+                    (std::abs(b.pos.z - listener_.z) < 40.f || std::abs(next.z - listener_.z) < 40.f))
                     sounds_.push_back({0x41, b.pos + d * t});
             } else whiz(b.pos, next, next);
             if (!stopped) tracer(b, next);   // the whole step (0x465273)

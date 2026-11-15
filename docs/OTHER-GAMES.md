@@ -116,7 +116,14 @@ First differences from DF1:
     0x465e5b), read through DF2.EXE's renumbering bug, class(o) =
     cal[remap[remap[o]]] (0x4643a0, 0x466668), copied as the player hears it;
     no .CAL or unmatched names: class 0, silent footsteps (0x4139ae; ±5 m AI
-    noise per step, ±2 m on sand, ±10 m in water);
+    noise per step, ±2 m on sand, ±10 m in water); RD/MD/IE/QS are classes
+    8..11, which only the GOG build sounds (footsteps 0x415780: road/QS/mud
+    0x82/0x83, ice 0x86/0x87; terrain hits 0x415a60: road metal 0x37, mud and
+    QS dirt, ice sand, with AI noise 10/5/5/2 m), the CD build is silent there;
+    terrain hits make an AI noise by class (5/2/2/10/5/10 m for 1..6);
+  - **rotor loops** (GOG 0x42c2da): 502 for the gazelle, Havoc, Hind and
+    Ka-29, 503 for the Black Hawk only; **whiz-by** 0x41 (0x4547a2): never for
+    hand or delay grenades, the step's start or end within 40 m on each axis;
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
     body pre-test and nearest-along-the-ray rule are DF1's;
