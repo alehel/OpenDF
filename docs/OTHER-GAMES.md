@@ -85,7 +85,12 @@ First differences from DF1:
     rest is DF1's layout (DF2.EXE 0x403bd0).
   - **SCR text scrambling** (ITEMS.DEF, LOOP.DEF, .ANM): reversed payload XORed
     with `s = rol(rol(s,11)+s,4) ^ 1` from 0x01234567 (DF2.EXE 0x4614f0),
-    undone in `Vfs::read`.
+    undone in `Vfs::read`. The GOG Delta Force (Df.exe 1.00.03.03p) scrambles
+    the same 13 files in DFBASE.PFF with no header: the whole file reversed,
+    then the same stream from 0x4960552 (GOG Df.exe 0x401050, 0x456720,
+    0x456eb0); `Vfs::read` undoes it when DFBASE.PFF carries DFDK.KEY
+    (only the GOG release does), and the results match the CD files byte
+    for byte.
   - Terrain colour maps as JPEG (libjpeg, optional at build time) or TGA.
 - `opendf --game games/DF2 mission D03M01` (or any `DxxMyy`) loads and plays
   with DF1's rules and built-in tables, now with:
