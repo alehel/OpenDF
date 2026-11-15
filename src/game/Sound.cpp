@@ -176,7 +176,7 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
     df2_ = df2;
     delayed_.clear();
     if (!bank_.load(std::move(data), error)) return false;
-    names_.fill({});
+    names_.fill({}), flags_.fill(0);
     bool fromExe = false;
     if (df2) {
         // DF2.EXE 0x4B85A8: 469 records of DF1's 40-byte layout, ids below
@@ -190,15 +190,15 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
                 const int id = int(int16_t(w & 0xFFFF));
                 const std::string name = df2Exe->str(rec + 0xE, 22);
                 if (id <= 0 || id >= 0x400 || name.empty() || !(fl & 3)) continue;
-                if (names_[size_t(id)].empty()) names_[size_t(id)] = name;
+                if (names_[size_t(id)].empty()) names_[size_t(id)] = name, flags_[size_t(id)] = int(fl);
                 ++found;
             }
             fromExe = found > 400 && names_[801] == "AIR_SUCK";
-            if (!fromExe) names_.fill({});
+            if (!fromExe) names_.fill({}), flags_.fill(0);
         }
         if (!fromExe)
             for (const auto& s : kDf2Sounds)
-                if (s.id > 0 && s.id < 0x400 && (s.flags & 3) && names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
+                if (s.id > 0 && s.id < 0x400 && (s.flags & 3) && names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name, flags_[size_t(s.id)] = s.flags;
         fromExe = true;   // (DF2's table either way, not DF1's built-in copy)
     } else if (exe && exe->loaded()) {
         // 0x200 records of 40 bytes: word id at +0, name at +0xE (22 bytes),
@@ -222,15 +222,15 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
                 }
             }
             if (id <= 0 || id >= 0x200 || name.empty() || !(fl & 3)) continue;
-            if (names_[size_t(id)].empty()) names_[size_t(id)] = name;
+            if (names_[size_t(id)].empty()) names_[size_t(id)] = name, flags_[size_t(id)] = int(fl);
             ++found;
         }
         fromExe = found > 200 && names_[0x32] == "EXPLO_M240HE";
     }
     if (!fromExe) {
-        names_.fill({});
+        names_.fill({}), flags_.fill(0);
         for (const auto& s : kBuiltinSounds)
-            if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name;
+            if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name, flags_[size_t(s.id)] = s.flags;
     }
     for (int i = 0; i < 0x400; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
     // Voice sets (0x4F019C: 16 sets of 12 sound ids; DF2.EXE 0x4B70FC: 22).
@@ -331,6 +331,18 @@ void SoundSystem::sweepLoops() {
     emitters_.erase(std::remove_if(emitters_.begin(), emitters_.end(), [](const Emitter& e) { return !e.seen; }),
                     emitters_.end());
     for (auto& e : emitters_) e.seen = false;
+}
+
+bool SoundSystem::loopReady(int id) {
+    // GOG Df2.exe 0x4682b0: the table record needs the loop flag (2) and a
+    // LOOP.DEF definition whose wav loads (0x4681a0).
+    if (id <= 0 || id >= 0x400 || !(flags_[size_t(id)] & 2) || !audio_ || !vfs_) return false;
+    std::string key = names_[size_t(id)];
+    for (auto& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+    auto it = loopDefs_.find(key);
+    if (it == loopDefs_.end()) return false;
+    const SoundClip* clip = audio_->clip(*vfs_, it->second.file);
+    return clip && !clip->samples.empty();
 }
 
 int SoundSystem::idOf(const std::string& name) const {

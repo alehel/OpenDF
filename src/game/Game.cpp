@@ -341,6 +341,11 @@ private:
     uint32_t crtSeed_ = 1;
     int crtRand() { crtSeed_ = crtSeed_ * 0x41C64E6Du + 0x3039u; return int((crtSeed_ >> 16) & 0x7FFF); }
     std::vector<Ambient> ambients_;
+    // DF2's ambient loop markers ("Sound: loop" items): mission record,
+    // sound id, place (GOG Df2.exe 0x465330, attached through 0x4682b0 at
+    // mission load).
+    struct LoopMarker { int record; int id; Vec3 at; };
+    std::vector<LoopMarker> loopMarkers_;
     struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; };
     std::vector<ActiveDialog> activeDialogs_;
     void tickDialogs();
@@ -943,6 +948,44 @@ bool Game::loadMission(int index) {
                 // up 11 per object loaded, in file order.
                 const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
                 ambients_.push_back({int(i), (11 * o.missionIndex) % 60, mo.group, mo.indexInGroup});
+            }
+        }
+        // DF2 attaches a LOOP.DEF loop to every loop marker item (GOG Df2.exe
+        // 0x465330, called from the mission load 0x466ba0): item type ->
+        // sound id (antloop1/2, zaireloop1/2, nigerloop1/2, iranloop1/2,
+        // kazloop1 for both Kaz markers, nightloop1/2, waterloop1/2). 0x4682b0
+        // keeps only ids with the loop flag and a loadable wav, never the
+        // same object and loop twice, in 1024 slots. The markers have no
+        // graphic, so they are not in world_.objects: the loop sits at the
+        // record's place (terrain + z, as World::build places objects).
+        loopMarkers_.clear();
+        if (sound_.df2()) {
+            const float ext = world_.extent();
+            for (size_t i = 0; i < mission_.objects.size() && loopMarkers_.size() < 0x400; ++i) {
+                const MissionObject& mo = mission_.objects[i];
+                const ItemDef* it = items_.byMissionType(mo.type);
+                if (!it) continue;
+                int id = 0;
+                switch (it->id - 100000) {
+                case 6045: id = 605; break;
+                case 6051: id = 615; break;
+                case 6057: id = 625; break;
+                case 6063: id = 635; break;
+                case 6069: case 6086: id = 645; break;
+                case 6070: id = 650; break;
+                case 6071: id = 651; break;
+                case 6081: id = 666; break;
+                case 6082: id = 606; break;
+                case 6083: id = 616; break;
+                case 6084: id = 626; break;
+                case 6085: id = 636; break;
+                case 6087: id = 667; break;
+                default: break;
+                }
+                if (!id || !sound_.loopReady(id)) continue;
+                Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
+                at.y = terrain_.heightAt(at.x, at.z) + mo.z;
+                loopMarkers_.push_back({int(i), id, at});
             }
         }
         if (!set.empty()) {
@@ -5400,6 +5443,8 @@ int Game::run() {
                 for (const auto& p : arsenal_.projectiles())
                     if (p.flags & 0x40) sound_.setLoop(p.id, rocket, p.pos);
                 vehicles_.sounds(world_, ai_, sound_);
+                // DF2's loop markers (mixed with the others by 0x4683f0).
+                for (const auto& m : loopMarkers_) sound_.setLoop(200000 + m.record, m.id, m.at, 1.f);
                 sound_.sweepLoops();
                 sound_.updateLoops();
             }

@@ -79,6 +79,9 @@ public:
     void sweepLoops();
     // Table id of a sound name (case-insensitive); 0 if none.
     int idOf(const std::string& name) const;
+    // Whether `id` can play as a loop: table flag 2 and a LOOP.DEF
+    // definition whose wav loads (GOG Df2.exe 0x4682b0 / 0x4681a0).
+    bool loopReady(int id);
 
 private:
     struct LoopDef { std::string file; int volume = 255, clip = 255; float maxDistance = 100; };
@@ -97,6 +100,7 @@ private:
     Pwf bank_, dialogs_;
     std::array<SoundDef*, 0x400> byId_{};   // 1024 id slots (DF2: 0x45DA50; DF1 uses 0x200)
     std::array<std::string, 0x400> names_{};
+    std::array<int, 0x400> flags_{};   // the id's table flags (1 PWF definition, 2 LOOP.DEF loop)
     Vec3 listener_{0, 0, 0};
     float listenerYaw_ = 0;
     const Terrain* terrain_ = nullptr;

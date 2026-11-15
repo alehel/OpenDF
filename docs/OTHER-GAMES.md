@@ -96,6 +96,12 @@ First differences from DF1:
     (0x449df0);
   - **sounds** from `DF2.PWF` (DF1's PWF2 format) with DF2's table (0x4B85A8,
     1024 id slots), whole 16-bit WAV samples (DF2 fixed DF1's low-byte bug);
+    a name the bank defines twice plays its first record (GOG Df2.exe
+    0x47b300; DF2.PWF has 8, e.g. GS_M16_SHOT, EXPLO_WATER, SATCHEL_SET);
+    the "Sound: loop" marker items (types 6045..6087) carry their region's
+    LOOP.DEF loop from mission load (0x465330 -> 0x4682b0: antloop, zaireloop,
+    nigerloop, iranloop, kazloop, nightloop, waterloop 1/2), mixed with the
+    other loops (6 loudest every 8 ticks);
   - **terrain detail**: a 64-wide TGA strip of 64×64 tiles blended by their
     alpha, one tile a map cell; the **sky gradient**: all 256 entries of
     column 0 of the TGA sky palette, not interpolated, screen row k above the
