@@ -668,7 +668,9 @@ First differences from DF1:
     loop 808 (0x42c4a0, 0x401340); carg cars copy the first loco's step and
     rock ±1.4° every 32 m (0x42c440, coupling 0x45bd1f); DF2's veh0 eases its
     steer by at most 0.18° a tick (0x41efa1) and thinks every 0x20 ticks on
-    a path, 0x40 off it (GOG 0x4237c0). The BRDM (item 102023, graphic
+    a path, 0x40 off it (GOG 0x4237c0); a destroyed one stops dead where it
+    blew up (the move 0x423ac0 runs only while +0x64 & 4 is clear, the
+    think 0x423865 zeroes +0x9C and +0x3C..+0x50). The BRDM (item 102023, graphic
     number 0x7e7) has a turret gun (GOG 0x423a1e; none with AI flag 1):
     each think it takes a target through the soldiers' scan (0x417830) drawn
     against rand, with a pause of 32..95 and a yaw bias scaled by
@@ -679,6 +681,62 @@ First differences from DF1:
     of 16..47 ticks, one round per 16, pauses 64..127, the bias ×3/4 each
     time (0x423ac0, 0x424550); `brdm` draws the turret, gun, steered front
     wheels and the muzzle flash for one frame after a round (0x4295f0);
+    helicopters by graphic number (item def +0x20): rest height of the
+    origin above the ground Black Hawk 0x7e5 0x37000, Havoc 0x7d5 0x38000,
+    Hind 0x7ec 0x41000, Ka-29 0x7ed 0x34000, others (Gazelle) 0x3f000
+    (0x42ca03); only the Black Hawk turns its door to the target (+22.5° /
+    +67.5°, 0x42b922 / 0x42b969) and starts its gun at -90° (0x42c379); door
+    gun limits Gazelle ±45° yaw, -45..0° pitch, Black Hawk -135..-45° yaw,
+    -16.9..0° pitch, any other type unclamped with no fire refusal (0x42bb5e,
+    0x42bccf); rotor loop 503 for the Black Hawk, 502 for the Gazelle, Havoc,
+    Hind and Ka-29 (0x42c8d4);
+    the altitude is chosen at think time (0x42b520) and applied every tick
+    (0x42c960: z += vz, vz += it, no cap; falling, it lands on max(ground,
+    probe) + rest): floor = max(the object probe 0x445f50 from 3 m under
+    the origin, refreshed every ~8 thinks, the terrain 4 m to each side, the
+    water level), raised by samples 1, 2 and 4 s of speed ahead, the
+    climb/descent ×k (1, 2 after the first raising sample, +1 per further
+    one); the band moves by 0x100 << shift (down when sinking, up
+    otherwise); too low +0x100·k (−0x100 above 0x7ff), too high −0x100·k
+    (+0x100 under −0x7ff), in the band ∓0x80 − 0x4D; 7..11 tail hits climb,
+    12+ −0x134. Hover 8 m / band 1 m, path 18 m / 4 m (shift 1, or the tail
+    hits up to 5); the attack approach (only with lift) 18 m / 4 m shift 4
+    beyond 80 m, else 8 m / 1 m shift 5, 7 in the 8..30 m hover band, by
+    0x41e880's distance; landing, unlifted and destroyed ones fall to /
+    settle on the probe floor (at least the water while intact);
+  - **animals** (src/game/Wildlife.cpp; ai table 0x4af100, move table
+    0x4c37xx): vultures `vult` (think 0x42dfe0 every 0x10 ticks, move
+    0x42e1c0): 3 m/s at 72 m (40 m with a target), at least 20 m above
+    the ground, climbing / sinking speed >> 7 a tick; home again (+ a random
+    0..43.6°) beyond 200 m; ENV_VULTURE_CALL with chance 1/64; the corpse
+    scan 0x42aeb0 (dead people of another side, not side 0, within 90° and
+    999 m, in sight; 100/d × angle, ×2 but the player; × perception, ÷4
+    relaxed) against rand takes a target (spotted 0x41ac00), which it
+    circles (0x42df50: 3 m/s beyond 16 m, else 2 m/s with the yaw
+    +0x18000000); destroyed: ENV_VULTURE_DEATH once, it falls under 0x134 a
+    tick with its momentum and thuds (0x48) and bounces on the ground.
+    Penguins `peng` (think 0x42f030 every 8, move 0x42f430): walk their path
+    (0x4033d0) at 0.5 m/s, which the mover holds whatever the think wants
+    (so one without a path walks straight on), hop into the water when the
+    ground 2 s ahead is under it, dive (splash effect 4 + PENGUIN_INTO_WATER,
+    0x45af50), swim at 2.25 m/s with a random ±22.5° heading now and then,
+    climb out (PENGUIN_OUTOF_WTR) and level off; a waddle roll; destroyed:
+    PENGUIN_DEATH (0x42a9f0) and tipping over. Fish `prnh` (think 0x42db20
+    every 8, move 0x42de00): their path at 1 m/s with a tail-flick burst
+    (+0xC0 = 0x100, the speed + (+0xC0 << 12)) 1/32 of thinks, 0.5 m under
+    the surface (0x42d870); unless AI flag 1 (D05M06's eleven `fishy2` all
+    have it, so they only hang under the surface) the scan 0x42ac80 (people
+    of any side but 0 up to 1 m above the water, within the field of view
+    and 99 m, sight from 1 m up; ×6 swimming, ÷256 otherwise) takes a
+    swimmer, kept while he swims; the attack 0x42d920 lunges by the jaw
+    within 4 m, steers ±0x11000000 off him and within 0.75 m, after its
+    pause, bites with chance 1/8 (blast kind 4, 0x455180: 1 hp from every
+    person within 2 m, the player too) with effect 0x10 and
+    ENV_PIRANHA_BITE every time, backing off at -4 m/s; destroyed: belly
+    up, rising to just under the surface (no husk: it stays drawn).
+    INFERRED: the first think staggered as the markers' (+11 a record % 60);
+    the penguin's flipper / foot phases and the vulture's wing beat (+0xB0)
+    are not drawn;
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
     and the player and teleported teams at a start or teleport marker more
     than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe
@@ -853,7 +911,10 @@ First differences from DF1:
     acquisition; script properties 16-19 set or clear them and 2/3/4/14/15
     can clear; night lowers perception 0.15; alert soldiers no longer turn
     while idle; silent soldiers never radio; DF1's water probe only with the
-    avoid-water bit; any order holds position. Enemies fire through DF2's
+    avoid-water bit; any order holds position; no shot while a friend (the
+    player included) is within 1 m (0x41e880) of the ray from 0.75 m up
+    along the aim, between 1/256 m and the target distance (0x417650,
+    0x401cd7). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
     vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed

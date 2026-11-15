@@ -17,6 +17,7 @@
 #include "KeyMap.h"
 #include "Ai.h"
 #include "Vehicles.h"
+#include "Wildlife.h"
 #include "Moves.h"
 #include "Weapons.h"
 #include "Tracers.h"
@@ -468,6 +469,7 @@ private:
     SoundSystem sound_;
     AiSystem ai_;
     VehicleSystem vehicles_;
+    WildlifeSystem wildlife_;   // DF2's vult / peng / prnh
     // ScriptHost: the AI's conditions and actions.
     bool teamSpotted(int team, int targetTeam) const override { return ai_.spotted(team, targetTeam); }
     // Delta Force 2's "team has hit team" table (GOG Df2.exe 0xabbe00: 64
@@ -928,6 +930,7 @@ bool Game::loadMission(int index) {
     // attributes 0x10 ([0x653000], read by the aim 0x415f16).
     ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
+    wildlife_.init(world_, mission_, ai_.night);
     loadingLine("STRLTEXT6");   // after the object passes (0x403dd4)
     lights_.clear();
     for (size_t i = 0; i < world_.objects.size(); ++i) {
@@ -960,6 +963,9 @@ bool Game::loadMission(int index) {
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
     vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
     vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
+    wildlife_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
+    wildlife_.spawnEffect = [this](int slot, Vec3 at) { spawnEffect(slot, at); };
+    wildlife_.bitePlayer = [this](Vec3 from) { hurtPlayer(1, 1, from, 2); };   // 0x455180: hp - 1, kind 1, part 2
     // AI rounds leave from the weapon (0x46ad9c; DF2.EXE 0x414f20 the same):
     // the body (no pitch) x the posed right hand (mesh 7) x the held-weapon
     // turn x the mode's hardpoint (+0x90; DF2 +0x30) of its third-person
@@ -7732,6 +7738,7 @@ int Game::run() {
                     pv.team = kPlayerTeam;
                     ai_.tick(world_, arsenal_, sound_, pv);
                     vehicles_.tick(world_, ai_, arsenal_, sound_, pv);
+                    wildlife_.tick(world_, ai_, pv, player_.inWater());
                 }
                 // The camera's pivot and base yaw follow the body (0x481184).
                 {

@@ -74,10 +74,13 @@ private:
         int mode = 1;             // 2 path, 1 hover, 0 land
         Vec3 home{0, 0, 0};       // ai+0x54..0x5c: the load position, then each one-way path end
         float bank = 0, yawRate = 0;
-        float floorHeight = 0;    // the controller's last floor (+0xb4 = z - floor)
+        float floorHeight = 0;    // the controller's last floor (DF1 +0xb4 / DF2 +0xCC = z - floor)
         float accel = 0;          // +0xb0: m per tick^2, set by the think, added to vz every tick (DF1)
-        float probe = 0;          // +0xdc: terrain or object face under the hub (0x486fd0)
-        int probeTimer = 0;       // ai+0x2c: think ticks since the probe was refreshed
+        // DF2 (GOG Df2.exe 0x42b520 / 0x42c960): the vertical acceleration
+        // +0xC8 chosen by the think.
+        float vzAccel = 0;
+        float probe = 0;          // DF1 +0xdc (0x486fd0) / DF2 +0xF4 (0x445f50): the surface under the hub
+        int probeTimer = 0;       // DF1 ai+0x2c / DF2 ai+0x3C: think ticks since the probe was refreshed
         int gunTarget = -1;       // ai+0x44: world object, -3 the player
         Vec3 lastKnown{0, 0, 0};  // ai+0x48: aimed and fired at
         Vec3 acquiredAt{0, 0, 0}; // obj+0xBC: own position when the target was taken
@@ -106,6 +109,8 @@ private:
     void drive(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void driveTrain(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
+    void df2Altitude(World& world, Vehicle& v, bool hadTarget, int attackShift, float attackH, float attackBand);
+    float heloProbe(const World& world, const Vehicle& v) const;
     void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound);
     void heloTargeting(World& world, AiSystem& ai, Vehicle& v);
     void brdmThink(World& world, AiSystem& ai, Vehicle& v);

@@ -797,6 +797,32 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         const Vec3 d = to - from;
         const float dd = std::max(dot(d, d), 1e-4f);
         bool blocked = false;
+        if (df2) {
+            // GOG Df2.exe 0x417650(self, dist, 0x10000), called at 0x401cd7:
+            // every organic of the shooter's side (the player too), alive
+            // and not removed, not the shooter; along the ray from 0.75 m
+            // above the origin by the current yaw +0x30 and pitch +0x34, a
+            // projection t in (0xff / 65536 m, dist] and a miss of at most
+            // 1 m by 0x41e880 (max + 11/32 mid + 1/4 min of |dx|, |dy|, |dz|).
+            const Vec3 dir{std::cos(o.aimPitch) * std::sin(o.heading), std::sin(o.aimPitch), -std::cos(o.aimPitch) * std::cos(o.heading)};
+            auto inLine = [&](Vec3 at) {
+                const Vec3 c = world.nearest(at, from);
+                const float t = dot(c - from, dir);
+                if (t <= 0xff / 65536.f || t > dist) return false;
+                const Vec3 m = c - (from + dir * t);
+                float a = std::abs(m.x), b = std::abs(m.y), e = std::abs(m.z);
+                if (a < b) std::swap(a, b);
+                if (a < e) std::swap(a, e);
+                if (b < e) std::swap(b, e);
+                return a + b * 11.f / 32.f + e * 0.25f <= 1.f;
+            };
+            if (player.alive && player.side == o.side && inLine(player.origin)) blocked = true;
+            for (const auto& q : world.objects) {
+                if (blocked) break;
+                if (&q == &o || !q.person || !q.alive() || q.removed || q.side != o.side) continue;
+                if (inLine(q.pos)) blocked = true;
+            }
+        } else
         for (const auto& q : world.objects) {
             if (&q == &o || !q.person || !q.alive() || q.side != o.side) continue;
             const Vec3 c = world.nearest(q.pos, from);

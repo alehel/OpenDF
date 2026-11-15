@@ -1173,12 +1173,13 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         destroyed_.push_back(index);
         return o.item->name + " destroyed";
     }
-    if (!o.husk && (o.item->aiFunction == "mine" || (df2Rules && o.item->aiFunction == "vtrg"))) {
+    if (!o.husk && (o.item->aiFunction == "mine" || (df2Rules && (o.item->aiFunction == "vtrg" || o.item->aiFunction == "prnh")))) {
         // DF2.EXE 0x4295f0 / 0x42a980: flagged destroyed (4, or 0x10C) but
         // not removed; with no husk the model stays drawn (the draw list
         // 0x4490d0 skips only +0x64 & 2, the draw 0x4459f0 takes the husk only
         // with flag 8 and a husk). Delta Force's mine (GOG Df.exe 0x453220)
-        // also only sets flag 4 (and blows up, see the destroyed loop).
+        // also only sets flag 4 (and blows up, see the destroyed loop). A
+        // dead fish (prnh 0x42db20: 0x10C) floats on, belly up.
         o.hp = 0;
         o.wrecked = true;
         destroyed_.push_back(index);
