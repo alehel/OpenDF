@@ -474,8 +474,10 @@ private:
     void buildRoute();
     void updateRoute();
     std::array<int, 64> teamTotal_{}, teamAlive_{};
-    uint32_t teamRecountClock_ = 0;       // GOG Df.exe [0x6e4738], GOG Df2.exe [0x67ffe8] (never reset)
-    uint32_t endCheckClock_ = 0;          // GOG Df.exe [0x6e474c] (never reset)
+    // Plain globals in the EXEs, so process-wide here too (a Game is built
+    // per mission launch): never reset, they run on across missions.
+    static inline uint32_t teamRecountClock_ = 0;   // GOG Df.exe [0x6e4738], GOG Df2.exe [0x67ffe8]
+    static inline uint32_t endCheckClock_ = 0;      // GOG Df.exe [0x6e474c] (written only in 0x443c50)
     void countTeams(bool atStart);
     void drawMissionEnd(const Screen& s);
     void drawGoals(const Screen& s);
@@ -510,14 +512,15 @@ private:
     std::vector<Ambient> ambients_;
     // GOG Df2.exe 0x403790's think counter ([0x4df9b0], 0 at start, never
     // reset): every record it creates takes counter % 60 as its first think
-    // wait, then the counter goes up 11.
-    int df2ThinkCounter_ = 0;
+    // wait, then the counter goes up 11. Process-wide, as the EXE's global.
+    static inline int df2ThinkCounter_ = 0;
     // GOG Df.exe 0x449710's counter [0x4f821c] (0 at start, never reset):
     // every record that passes the single-player filter, in file order over
     // the four groups (0x449c70), takes counter % 60 as its think_timer,
     // then the counter goes up 11. df1FirstThink_: that value per record of
-    // the current mission (-1 for a dropped one).
-    int df1ThinkCounter_ = 0;
+    // the current mission (-1 for a dropped one). Process-wide (0x449710 is
+    // its only writer), so it carries over between launched missions.
+    static inline int df1ThinkCounter_ = 0;
     std::vector<int> df1FirstThink_;
     // DF2's ambient loop markers ("Sound: loop" items): mission record,
     // sound id, place (GOG Df2.exe 0x465330, attached through 0x4682b0 at
