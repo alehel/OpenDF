@@ -55,14 +55,19 @@ open a system dialog.
 - Choosing a setup folder itself stores the game folder above it, the same
   folder `--game` takes (Delta Force keeps its soldier profiles there).
 - GOG releases: the GOG game folder (`Df.exe` / `Df2.exe` next to `Df.pff`,
-  `Dfbase.pff` / `Df2.pff`) is recognised as it is. A GOG installer unpacked
-  with innoextract puts the game in an `app` folder; choosing the folder
-  above it stores `app` (e.g. `games/GOG/DF2` → `games/GOG/DF2/app`).
+  `Dfbase.pff` / `Df2.pff`) is recognised as it is. GOG's offline installer
+  itself is not read; unpacked with innoextract (`innoextract -d
+  games/GOG/DF2 setup_delta_force_2_….exe`) it puts the game in an `app`
+  folder, and choosing the folder above it stores `app` (e.g. `games/GOG/DF2`
+  → `games/GOG/DF2/app`). `--game` takes the `app` folder itself. Each install
+  is run with its own executable's tables and behaviour (CD or GOG build).
 - A folder already in the list is not added twice.
 
 On the very first start (no settings file yet, or an empty list) the launcher
 adds every game it finds in a `games/` folder in the current folder or next
-to the executable, in release order.
+to the executable, in release order. Only the folders directly inside `games/` are
+looked at, so a GOG install kept deeper (`games/GOG/DF2/app`) is added with
+*Add game*.
 
 ## Settings file
 

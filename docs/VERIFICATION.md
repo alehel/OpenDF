@@ -1,8 +1,13 @@
 # What is verified against the original
 
-OpenDF aims to do things the way the original does. **DF.EXE is the
-authority**: values come from its code and data (and the game files it
-reads). A recording of the original is only a cross-check and a hint where
+OpenDF aims to do things the way the original does. **The game's executable
+is the authority** (DF.EXE for Delta Force, DF2.EXE for Delta Force 2; the
+reference builds are GOG's, Delta Force 1.00.03.03p and Delta Force 2
+1.06.15, against which two full audits checked every function, see
+docs/AUDIT-FIXES.md): values come from its code and data (and the game files
+it reads). Where the CD and GOG builds differ, each install gets its own
+build's behaviour. Addresses below are the CD DF.EXE's unless they are marked
+GOG. A recording of the original is only a cross-check and a hint where
 to look; it is never the source of a value DF.EXE can provide. This list
 tracks every value or behaviour and where it comes from. **Original**: read
 from DF.EXE or the game files. **Footage-only**: no code source found yet,
@@ -10,9 +15,12 @@ taken from the recording (to be replaced). **Inferred**: deduced from data,
 plausible but unconfirmed. **Approximation**: OpenDF's own choice, to be
 replaced. Item-by-item HUD/controls audit: docs/AUDIT.md.
 
-Values that live in DF.EXE are read from the user's own copy at start-up
-(`DFSETUP/DF.EXE`); OpenDF keeps built-in copies of them as a fallback for
-when DF.EXE is missing or a different version.
+Values that live in the executable are read from the user's own copy at
+start-up (the CD's `DFSETUP/DF.EXE` / `DF2SETUP/DF2.EXE`, or GOG's `Df.exe` /
+`Df2.exe`; the build is recognised by size and CRC-32, docs/FORMATS.md "Game
+executables"); OpenDF keeps built-in copies of them as a fallback for when the
+executable is missing or an unknown version none of the table sets fits.
+Delta Force 2's own values are listed in docs/OTHER-GAMES.md.
 
 ## Weapons
 
@@ -116,6 +124,8 @@ when DF.EXE is missing or a different version.
 ## Not yet implemented, so not checkable
 
 Multiplayer (screens, network).
+
+## Collision
 
 | Item | Status | Source |
 |---|---|---|

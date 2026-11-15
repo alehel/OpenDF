@@ -1,10 +1,13 @@
 # The other NovaLogic games in `games/`
 
-A first survey (2026-11-14) of what supporting the later Delta Force games
-would involve, and a separate note on Comanche. Everything here was read from
-the files on the discs; nothing is implemented yet. Plan: Delta Force 2, Land
-Warrior and Task Force Dagger in OpenDF; Comanche as a separate application
-(research only here).
+Started as a survey (2026-11-14) of what supporting the later Delta Force
+games would involve, with a separate note on Comanche; the survey sections
+below were read from the files on the discs. Delta Force 2 has since been
+implemented: "Status in OpenDF" records what it does and where each value
+comes from (DF2.EXE; the GOG build, Delta Force 2 1.06.15, is the reference,
+and GOG installs work as well as the CD). Plan: Land Warrior next, then Black
+Hawk Down and Task Force Dagger; Comanche as a separate application (research
+only here).
 
 ## Shared NovaLogic files
 
@@ -26,18 +29,18 @@ Warrior and Task Force Dagger in OpenDF; Comanche as a separate application
 | `TERRAINS.PFF` (PFF3) | 621 3DI, 67 PCX, 50 TGA, 19 CAL, 18 TRN, 18 JPG, DEF |
 | `MISSIONS.PFF`, `AUDIO.PFF` | the shared library (above) |
 | `DF2MUSIC.SBF` | music bank (DF1's `DFMUSIC.SBF` format family) |
-| `DF2.EXE` (835 584 bytes), `DF2MED.EXE` | the game and the mission editor |
+| `DF2.EXE` (835 584 bytes), `DF2MED.EXE` | the game and the mission editor (GOG: `Df2.exe`, 921 600 bytes, in the game folder with `Df2.pff`, `Terrains.pff`, `Df2music.sbf`) |
 
 First differences from DF1:
 - 3DI header version **8** (DF1: 5); BMS version **0x0F** (DF1: 0x0D); TRN is
   the same text format (`terrain_name ...`).
 - The `.DEF` files (`ITEMS.DEF`, `HUD.DEF`, `LOOP.DEF`) are no longer plain
-  text: they start with `SCR` followed by scrambled bytes. A decoder must be
-  found in `DF2.EXE`.
+  text: they start with `SCR` followed by scrambled bytes (decoder found in
+  `DF2.EXE`: "SCR text scrambling" below).
 - New file types: `TGA` textures, `CAL` (terrain, 19 files), `KSA`
   (`PLAYER01.KSA`, probably the character animation replacing `.CHR`).
-- The game data directory is `DF2SETUP/`; OpenDF only looks in `DFSETUP/`
-  today (`Vfs::mountGameDir`, `findGameExe`).
+- The game data directory is `DF2SETUP/` (GOG: the game folder itself);
+  `Vfs::mountGameDir` and `findDf2Exe` look in both.
 
 ## Land Warrior (2000) — `games/DFLW/DFLSETUP`
 
@@ -107,7 +110,8 @@ First differences from DF1:
     without fancy upsampling once the slip is undone. The launcher keeps
     plain libjpeg.
 - `opendf --game games/DF2 mission D03M01` (or any `DxxMyy`) loads and plays
-  with DF1's rules and built-in tables, now with:
+  on DF1's engine with DF2's own rules and DF2.EXE's tables (CD or GOG
+  build; built-in copies when the executable is missing), now with:
   - **soldier animations** from `PLAYER01.KSA` (DF2.EXE 0x41e5e0): 255
     animations of 88-byte frames (15 part angles, pose extents, feet height,
     root motion, event), next-animation/frame continuation, no interpolation;
@@ -1379,10 +1383,11 @@ First differences from DF1:
 
 1. Mount the later layouts: `DF2SETUP/`, `DFLSETUP/`, `TFDSETUP/`, their
    archive names (`DF2.PFF`, `TERRAINS.PFF`, `DFLW.PFF`, `SMALL.PFF`), and the
-   game executable per game.
+   game executable per game (done; Land Warrior's and Task Force Dagger's
+   executables are not read yet).
 2. Delta Force 2 first (closest to DF1): the `SCR` DEF decoder, 3DI v8, BMS
    0x0F differences, TGA textures, `KSA` animation, `CAL` terrain data; then a
-   mission loading in the viewer, then playing.
+   mission loading in the viewer, then playing (done).
 3. Land Warrior: on top of DF2, the new `SAF`/`ENV` formats and its executable.
 4. Pause: Black Hawk Down (2003) is not in `games/` yet. The games most
    likely build on each other, so it comes before Task Force Dagger.

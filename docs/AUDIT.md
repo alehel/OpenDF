@@ -4,7 +4,14 @@ Working list for the audit of 2026-11-13. Every item gets a source (DF.EXE,
 game data, manual, footage) or is listed in VERIFICATION.md as an
 approximation. Status: **ok** = checked against the original, **fixed** =
 was wrong and corrected, **open** = no source found yet (listed as an
-approximation), **todo** = not checked yet.
+approximation), **todo** = not checked yet (X28: checked, not done yet).
+
+This list covers Delta Force's HUD, controls, gameplay and front end; items
+were kept up to date by the two later function-by-function audits against
+the GOG builds (Delta Force 1.00.03.03p, Delta Force 2 1.06.15), which are
+now the reference. Addresses are the CD DF.EXE's unless marked GOG.
+Everything those audits fixed, in both games, is listed in
+[AUDIT-FIXES.md](AUDIT-FIXES.md).
 
 ## Top bar
 

@@ -1,6 +1,8 @@
 # Delta Force file formats
 
-Notes from reverse engineering the US retail CD (v1.00.000, Oct 1998).
+Notes from reverse engineering the US retail CD (v1.00.000, Oct 1998) and
+the GOG release (Df.exe 1.00.03.03p, the reference build since 2026-11).
+Delta Force 2's formats are in docs/OTHER-GAMES.md.
 All integers are little-endian.
 
 ## Disc layout
@@ -17,6 +19,14 @@ All integers are little-endian.
 | `DFSETUP/INTRO.KDV` | 160 MB | intro video (KDV; 30 MB of video, then filler) |
 | `DFSETUP/PACK.EXE` | | archive tool; holds the PFF2 cipher (`/ENCODE`) |
 | `DFSETUP/CMPRSSH0.DLL` | | static-Huffman `compress_buffer`/`expand_buffer`; **not** used for PFF2 |
+
+The GOG release is an installed copy: `Df.exe`, `Dfbase.pff` (637 files; its
+`ITEMS.DEF`, `LOOP.DEF` and `.ANM` files are scrambled, see
+docs/OTHER-GAMES.md "SCR text scrambling"), `Df.pff`, `Dfmusic.sbf` and
+`INTRO.KDV` in one folder. It has no PFF2 packs and none of their files (the
+legacy `.3DO` / `.AI` / `.JIM` library, `AUDIO.PFF`'s WAVs and MIDIs, the award
+videos). Its Delta Force 2
+holds `Df2.exe`, `Df2.pff`, `Terrains.pff`, `Df2music.sbf` and `DF2INTRO.BIK`.
 
 At install time the encrypted PFF2 packs are decoded by `PACK.EXE` and merged
 into the installed `dfbase.pff`. OpenDF instead mounts them all directly, in

@@ -4,14 +4,23 @@ OpenDF can play itself from a timed input script, so test runs can be
 watched live or recorded.
 
 ```
-opendf --game games/DeltaForce mission C02M01 --input tests/runs/insurrection-start.txt --watch          # live window, real time
-opendf --game games/DeltaForce mission C02M01 --input tests/runs/insurrection-start.txt --record run.mp4 # video (needs ffmpeg)
-opendf --game games/DeltaForce mission C02M01 --frames 300 --screenshot shot.ppm                        # one frame, hidden window
+opendf --game games/DeltaForce mission C03M03 --camera 381,-563.5,0,90,0 --input tests/input/c03m03-crate.txt --watch          # live window, real time
+opendf --game games/DeltaForce mission C03M03 --camera 381,-563.5,0,90,0 --input tests/input/c03m03-crate.txt --record run.mp4 # video (needs ffmpeg)
+opendf --game games/DeltaForce mission C02M01 --frames 300 --screenshot shot.ppm                                                # one frame, hidden window
 ```
 
 `--record` runs in fixed 60 Hz steps, so a recording is the same every time;
 `--watch` runs at the real frame rate. Both can be combined. Recordings go
-in `runs/` (not committed).
+in `runs/` (not committed). `--screenshot FILE` writes a binary PPM after
+`--frames N` frames (default 1) from a hidden window at `--size WxH` (on a
+Retina display the file has twice the pixels); it works for `mission`, `play`,
+`launcher`, `models` and the terrain viewer. Screenshot runs never go
+fullscreen and never write `opendf.ini`.
+
+Front-end and mission runs save what the game saves (Delta Force's
+`player0N.ply` and `df.cfg`, Delta Force 2's `df2plyrs.sav` and `df2.cfg`) into
+the game folder, so test against a copy of it (on macOS an APFS clone,
+`cp -c -R`, costs no space).
 
 ## Input scripts
 
@@ -28,8 +37,12 @@ One command per line, `<seconds> <command> [argument]`, `#` starts a comment:
 | `click Left\|Right\|Middle` | (Delta Force 2, GOG table) a mouse button press through the game's mouse dispatch |
 | `end` | finish (the run also finishes after the last command) |
 
-Other test options: `--camera x,y,h,yaw,pitch`, `--weapon SLOT` (0-9, as the keys), `--loadout PRIMARY,KIT,SIDEARM`, `--stance N`,
-`--zoom N`, `--fire`, `--walk`, `--map`, `--kill-enemies`, `--viewmodel-only`, `--no-hud` (the 3D view across the whole window, for screenshots).
+Other test options: `--camera x,y,h,yaw,pitch`, `--weapon SLOT` (0-9, as the keys), `--loadout PRIMARY,KIT,SIDEARM`
+(Delta Force names: primary `M4`, `M40`, `Barrett`, `MP5`, `SAW`; kit `Ammo`, `LAW`, `Satchel`, `Claymore`; sidearm `.45`, `HS22`), `--stance N`,
+`--zoom N`, `--fire`, `--walk`, `--map`, `--kill-enemies`, `--viewmodel-only`, `--no-hud` (the 3D view across the whole window, for screenshots),
+`--name NAME` (the soldier name the HUD shows), `--gps N` (GPS icons: 0 friendly, 1 default, 2 everything).
+The terrain viewer takes `--terrain NAME` and `--spawn` (start walking with the sample objects placed); the launcher
+`--settings FILE` and a start state (docs/LAUNCHER.md "Testing").
 `--attributes N` sets the Difficulty bits for a direct mission run (DF1 df.cfg bits, e.g. 0x200 squad members off; DF2 df2.cfg bits, e.g. 0x20 squad members off, 0x10 enemy AI hard).
 
 Debugging aids: `OPENDF_FPSLOG=1` prints the mission's frame rate to stderr twice a second (as the window title shows it). `OPENDF_DEBUGWEAPON=1` prints the player weapon state (slot, mode, magazine, spares, chamber, cooldown, reload, burst counter, queued sounds) whenever it changes. `OPENDF_DEBUGAI=1` also lists every soldier (side, weapon, position) at the start. `OPENDF_DEBUGHITS=1` prints every bullet hit (object, body
@@ -95,3 +108,41 @@ first tick, e.g. `OPENDF_AIPROP=38:15:0` releases C04M03's Black Hawk guns. `OPE
 soldier allowed on ladders (BMS +0xC & 0x1000) running into the nearest
 ladder (type-4 volume) at tick 30; `=ITEM` only that item's ladders,
 `OPENDF_TESTLADDERWALK=1` walks instead (e.g. D06M11: the powcamp tower).
+
+## Every `OPENDF_*` variable
+
+| Variable | What it does |
+|---|---|
+| `OPENDF_AIPROP="TEAM:SUB:VALUE,..."` | the script's AI-attribute action at the first tick (above) |
+| `OPENDF_AUDIODUMP=FILE` | no audio device; the front end's or intro's sound mixed into FILE (above) |
+| `OPENDF_BINKYUV=FILE` | `opendf bink`: every frame also as raw YUV 4:2:0 |
+| `OPENDF_CMAPTAB=N` | Delta Force 2: the command map opens on tab N (0 Map, 1 VON, 2 Players, 3 Team with the first squad member selected, 4 Weapons, 5 Mission) |
+| `OPENDF_CMAPTEST="FRAME OP ARGS; ..."` | Delta Force 2: scripted command-map input, by frames of the map, 640x480 coordinates: `m X Y` move, `d X Y` / `u X Y` left press / release, `k NAME` key, `t TEXT` typed into the name prompt |
+| `OPENDF_DEBUGAI=1` | lists every soldier at the start, then spots, shots and heard shots |
+| `OPENDF_DEBUGAI2=1` | every candidate an AI scan considers, and whether it is in view and visible |
+| `OPENDF_DEBUGBOX=1` | the collision volumes of each object's model as they are set up |
+| `OPENDF_DEBUGHITS=1` | every bullet hit, effect and, for people, their hit spheres (above) |
+| `OPENDF_DEBUGMESH=MODEL` | the mesh table (vertices, pivot, box, raw words) of MODEL's first level of detail as it loads |
+| `OPENDF_DEBUGMUSIC=1` | each stem the menu music starts |
+| `OPENDF_DEBUGMUZZLE=1` | each AI shot's muzzle offset and heading |
+| `OPENDF_DEBUGOBJ=1` | the mission's objects with their positions |
+| `OPENDF_DEBUGPICK=1` | every pickup item's position against the player's feet, twice a second |
+| `OPENDF_DEBUGPLAYER=1` | the player's state twice a second (above) |
+| `OPENDF_DEBUGRIDE=1` / `=N` | people riding objects / world object N (above) |
+| `OPENDF_DEBUGSWIM=1` | people entering and leaving the water |
+| `OPENDF_DEBUGVEH=1` | each vehicle and helicopter every 120 ticks (path, waypoint, speed, position, heading, rotor, gun) |
+| `OPENDF_DEBUGVIDEO=1` | Delta Force 2: the intro's binkplay command line and what the Bink player did |
+| `OPENDF_DEBUGWEAPON=1` | the player's weapon state whenever it changes |
+| `OPENDF_DEBUGWILD=1` | Delta Force 2's vultures, penguins and fish at each think |
+| `OPENDF_FEEVENTS` / `OPENDF_FE2EVENTS` | scripted input for the Delta Force / Delta Force 2 front end (above) |
+| `OPENDF_FPSLOG=1` | the mission's frame rate to stderr twice a second |
+| `OPENDF_HEIGHTSCALE=M` | metres per terrain elevation step instead of the terrain's own |
+| `OPENDF_INTROKEY=N` / `OPENDF_INTROCLICK=N` | a key press / left click after N intro frames (above) |
+| `OPENDF_LEADTICKS=N` | Delta Force's start screen: menu ticks before DF_LEAD fades in (default 600) |
+| `OPENDF_LOWEST=1` | at mission load, the lowest terrain point and the water level |
+| `OPENDF_NOFLY=1` | a high `--camera` start falls instead of flying (above) |
+| `OPENDF_REARM=1` | Delta Force 2: Request Weapons is accepted anywhere, not only in an armory |
+| `OPENDF_TEAMSPEED="TEAM:KMH,..."` | team speeds at the first tick (above) |
+| `OPENDF_TESTBLD2=1` / `=ITEM` | Delta Force 2: destroys the mission's first `bld2` building (or ITEM's) at tick 30 |
+| `OPENDF_TESTDF2ITEMS=1` | Delta Force 2: places a searchlight, a Land Mine and a wall trigger near the player at tick 30 (no shipped mission has them) |
+| `OPENDF_TESTLADDER=1` / `=ITEM`, `OPENDF_TESTLADDERWALK=1` | Delta Force 2: sends a soldier up the nearest ladder at tick 30 (above) |
