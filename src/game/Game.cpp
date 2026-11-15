@@ -628,6 +628,7 @@ private:
     std::string df2SelName(Df2Sel s) const;
     int df2SelItem(Df2Sel s) const;
     std::string df2MissionName(size_t index) const;
+    std::string df2RecordName(size_t index) const;
     bool df2SelOnPlayerTeam(Df2Sel s) const;
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
@@ -4543,21 +4544,35 @@ std::string Game::df2MissionName(size_t index) const {
     const MissionObject& mo = mission_.objects[index];
     for (const auto& rp : route_)
         if (rp.object == &mo) return rp.name;
-    const ItemDef* it = items_.byMissionType(mo.type);
-    if (it && it->type == "marker") {
-        // Waypoint markers name themselves: record +0x58 -> STRWPNAME%03i (0x403afe).
-        char key[24];
-        std::snprintf(key, sizeof key, "STRWPNAME%03d", mo.raw[0x58 / 4]);
-        if (const std::string* n = wpnText_.find("WPNames", key); n && !n->empty()) return *n;
+    return df2RecordName(index);
+}
+
+// The object name +0x54 as GOG Df2.exe 0x403790 (CD 0x403590) fills it from
+// the mission record: PeopleNames STRNAME%03i of record +4 when that is not 0,
+// then, for item 6005 (0x1775) only, WPNames STRWPNAME%03i of record +0x58;
+// each cut to 15 characters. No display path reads the ITEMS.DEF name, so an
+// object with neither stays empty (the command map shows CMAP_ITEM_UNKNOWN).
+std::string Game::df2RecordName(size_t index) const {
+    if (index >= mission_.objects.size()) return {};
+    const MissionObject& mo = mission_.objects[index];
+    std::string name;
+    char key[24];
+    if (mo.raw[1] != 0) {
+        std::snprintf(key, sizeof key, "STRNAME%03d", mo.raw[1]);
+        if (const std::string* n = wpnText_.find("PeopleNames", key)) name = n->substr(0, 15);
     }
-    return it ? it->name : std::string();
+    if (mo.type == 6005) {
+        std::snprintf(key, sizeof key, "STRWPNAME%03d", mo.raw[0x58 / 4]);
+        if (const std::string* n = wpnText_.find("WPNames", key)) name = n->substr(0, 15);
+    }
+    return name;
 }
 
 std::string Game::df2SelName(Df2Sel s) const {
     std::string n;
     if (!df2SelValid(s)) return n;
     if (s.kind == 1) n = o_.soldierName;
-    else if (s.kind == 2) n = world_.objects[size_t(s.index)].item ? world_.objects[size_t(s.index)].item->name : std::string();
+    else if (s.kind == 2) n = df2PersonName(world_.objects[size_t(s.index)]);
     else if (s.kind == 3) n = df2MissionName(size_t(s.index));
     else n = df2Wps_[size_t(s.index)].name;
     return n.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : n;
@@ -5918,13 +5933,8 @@ void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
 }
 
 std::string Game::df2PersonName(const WorldObject& o) const {
-    if (!o.person || o.missionIndex < 0) return {};
-    const int id = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
-    if (id == 0) return {};
-    char key[24];
-    std::snprintf(key, sizeof key, "STRNAME%03d", id);
-    const std::string* n = wpnText_.find("PeopleNames", key);
-    return n ? n->substr(0, 15) : std::string();
+    // Object +0x54: any object placed from a mission record (0x403790).
+    return o.missionIndex < 0 ? std::string() : df2RecordName(size_t(o.missionIndex));
 }
 
 const WorldObject* Game::df2AimPick(float range) const {

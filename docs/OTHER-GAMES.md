@@ -143,8 +143,8 @@ First differences from DF1:
     first object of the player's side or side 0 along the aim within the
     centre's range + 2 m and 2 m of the ray gets, if on the player's side,
     four red diagonal ticks at the crosshair corners (scope: ±r/2 to ±r/4),
-    and, if it is a named person (DF2WPN.BIN `PeopleNames` STRNAME%03i of
-    record +4), its name in red W·1920/65536 above the top arm (scope: at
+    and, if it has a name (object +0x54 from 0x403790: DF2WPN.BIN `PeopleNames` STRNAME%03i of
+    record +4, item 6005 `WPNames` STRWPNAME%03i of +0x58), its name in red W·1920/65536 above the top arm (scope: at
     the inset centre), with the crosshairs on or off; friendly tags (F,
     GOG 0x41f150 / 0x44fe70 / 0x44fee0): 0 off, 1 names, 2 glyph 4, with
     STRMISC05 / 04 / 33, on (1) at every fresh mission start but kept on a
