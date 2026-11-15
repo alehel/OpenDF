@@ -23,9 +23,12 @@ into the installed `dfbase.pff`. OpenDF instead mounts them all directly, in
 this order: `DFBASE, DF, MISSIONS, AUDIO, VIEWS`. DF.EXE looks a name up in
 `dfbase.pff` first and in `df.pff` only when it is missing there, taking the
 first directory entry of that name (GOG 0x48fc10, 0x48fd00, 0x49e590), so
-with `DFBASE.PFF` mounted the first archive and the first entry win (the one
-name both stock archives hold with different data, `_BACKUP_.PCX`, is never
-read). The later games' archives keep later ones overriding earlier ones.
+with `DFBASE.PFF` mounted the first archive and the first entry win between
+`DFBASE` and `DF` (the one name both stock archives hold with different data,
+`_BACKUP_.PCX`, is never read). The packs override what comes before them, as
+the merge does (it turns a replaced entry into `<DEAD SPACE>`): on the CD,
+`AUDIO.PFF`'s BEEP2, EXPLODE, FIRE and MISSILE.WAV replace `DFBASE.PFF`'s.
+The later games' archives keep later ones overriding earlier ones.
 
 ## PFF archive
 

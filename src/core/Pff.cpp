@@ -158,6 +158,7 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
         if (!findIn(root, "DF2.PFF").empty()) df2 = true;
 
     int mounted = 0;
+    bool haveDfBase = false;
     for (const char* name : kArchives) {
         for (auto& root : roots) {
             fs::path p = findIn(root, name);
@@ -168,14 +169,21 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
             // name up in the primary first and in df.pff only on a miss
             // (0x48fd00), taking the first directory match (0x49e590). So
             // with DFBASE.PFF present the first archive and the first entry
-            // win; the later games keep later archives overriding.
-            if (std::string(name) == "DFBASE.PFF") firstWins_ = true;
+            // win between those two. DF.EXE never opens the CD's PFF2 packs
+            // (MISSIONS, AUDIO, VIEWS): PACK.EXE merges them into the
+            // installed dfbase.pff, the replaced entry becoming '<DEAD
+            // SPACE>', so a pack's copy is the one read and they override as
+            // before (AUDIO.PFF's BEEP2 / EXPLODE / FIRE / MISSILE.WAV). The
+            // later games keep later archives overriding.
             const std::string n = name;
+            if (n == "DFBASE.PFF") haveDfBase = true;
+            firstWins_ = haveDfBase && (n == "DFBASE.PFF" || n == "DF.PFF");
             if (mount(p, &err, df2 && (n == "DF2.PFF" || n == "TERRAINS.PFF"))) ++mounted;
             else if (error) *error += err + "\n";
             break;
         }
     }
+    firstWins_ = false;
     if (mounted == 0 && error) *error += "no PFF archives found under " + gameDir.string();
     return exists("DF.PFF") || mounted > 0;
 }
