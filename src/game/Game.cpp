@@ -44,15 +44,18 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
-// HUD colours: DF.EXE builds them at start-up from these RGB values
-// (0x4027b1; nearest palette entries in 8-bit modes).
+// HUD colours: DF.EXE builds them at start-up (0x4027b1, GOG 0x402b20):
+// in 8-bit modes the nearest palette entries to (0,0,0), (17,60,253),
+// (1,230,1), ...; in true colour (what OpenDF draws) fixed values, of which
+// black (1,1,1), blue (16,64,255) and bright green (1,224,1) differ
+// (DF2.EXE 0x465d60 sets the same black and blue).
 constexpr Color rgb(int r, int g, int b) { return {r / 255.f, g / 255.f, b / 255.f, 1}; }
 const Color kHudWhite = rgb(255, 255, 255);   // 0x66f930
-const Color kHudBlack = rgb(0, 0, 0);         // 0x66f934
+const Color kHudBlack = rgb(1, 1, 1);         // 0x66f934
 const Color kHudPureGreen = rgb(0, 255, 0);   // 0x66f938
-const Color kHudBlue = rgb(17, 60, 253);      // 0x66f93c
+const Color kHudBlue = rgb(16, 64, 255);      // 0x66f93c
 const Color kHudRed = rgb(255, 0, 0);         // 0x66f944
-const Color kHudBright = rgb(1, 230, 1);      // 0x66f94c: crosshair, scope, map grid, route
+const Color kHudBright = rgb(1, 224, 1);      // 0x66f94c: crosshair, scope, map grid, route
 const Color kHudGreen = rgb(1, 129, 1);       // 0x66f950: HUD text and outlines
 const Color kHudDark = rgb(9, 51, 9);         // 0x66f954: box scanlines, text shadow
 // Message text: each message carries its own colour (0x42f400's second
@@ -7191,7 +7194,7 @@ void Game::drawBriefing(const Screen& s) {
     // pass the right edge starts a line; lines before the start line are
     // skipped; stop when the next line would pass the bottom.
     const float x0 = s.vx(200), x1 = s.vx(824), y0 = s.vy(200), y1 = s.vy(568);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.5f});
     const std::string* title = menuText_.find("GroupMainMenu", "HELPMISSIONBRIEFING");
     const std::string t = title ? *title : "Mission Briefing";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(225), t, kHudBright, s.text());
@@ -7407,7 +7410,7 @@ void Game::drawHelp(const Screen& s) {
     // labels at x 40 / keys at 200, right at 540 / 770 (0x4822f4 draws at
     // x + 20, y + 100). Key texts from the soldier's bindings (0x4816a0).
     const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.5f});
     auto label = [&](const char* key) {
         const std::string* t = menuText_.find("GroupMainMenu", key);
         return t ? *t : std::string(key);
@@ -7507,7 +7510,7 @@ void Game::drawPaused(const Screen& s) {
         return;
     }
     const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.5f});
     const char* t = "Game Paused";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
 }
@@ -7525,7 +7528,7 @@ void Game::drawQuitBox(const Screen& s) {
         return;
     }
     const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.5f});
     const char* t = "End Mission? (Y/N)";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
 }
@@ -7552,7 +7555,7 @@ void Game::drawOldMessages(const Screen& s) {
         return;
     }
     const float x0 = s.vx(100), x1 = s.vx(924), y0 = s.vy(100), y1 = s.vy(668);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.5f});
     const char* t = "Messages";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kHudBright, s.text());
     const size_t first = history_.size() < 16 ? 0 : history_.size() - 16;
@@ -7875,9 +7878,10 @@ void Game::drawBinoculars(const Screen& s) {
 
 void Game::drawMissionEnd(const Screen& s) {
     // DF.EXE 0x483094: success if the winner is the player's side. A darkened
-    // panel (0x401b6c) from (128, 116) to (896, 246) virtual, i.e. x 80-560,
-    // y 72.5-153.75, shade level 10 of the 32-step shade table (0x435070:
-    // level r keeps r/31 of the brightness, so 10/31), with a one-pixel
+    // panel (0x401b6c, GOG 0x401ec0) from (128, 116) to (896, 246) virtual,
+    // i.e. x 80-560, y 72.5-153.75: shade level 10 of the 32-step shade table
+    // in 8-bit modes, but in true colour every pixel halved ((p & 0xfefefefe)
+    // >> 1), as on every darkened panel (OpenDF draws true colour), with a one-pixel
     // outline in bright green (0x66f94c); three lines centred at x 512 in
     // green (0x66f938) with tops at 136, 176, 206 virtual.
     const bool won = missionResult_ == kPlayerSide;
@@ -7899,7 +7903,7 @@ void Game::drawMissionEnd(const Screen& s) {
     // with letterbox 2, 192 virtual): the panel at +20..+150, the lines at
     // +40, +80, +110.
     const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.playY + s.vy(20), y1 = s.playY + s.vy(150), t = s.px();
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 0.5f});
     hud_.rect(x0, y0, x1 - x0, t, kHudBright);
     hud_.rect(x0, y1 - t, x1 - x0, t, kHudBright);
     hud_.rect(x0, y0, t, y1 - y0, kHudBright);

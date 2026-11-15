@@ -11,7 +11,7 @@ approximation), **todo** = not checked yet.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | T1 | Bars, borders, dividers | fixed | DF.EXE 0x404650/0x485300: bars H/8 = 60 each (was 59/60), borders at y 0/59/420/479 and both side edges, dividers x 350 / 431, all one pixel in HUD green |
-| T2 | HUD colours | fixed | were eyeballed; now DF.EXE's RGB table (0x4027b1): text/outline (1,129,1), bright (1,230,1), dark (9,51,9), blue (17,60,253), red, white |
+| T2 | HUD colours | fixed | were eyeballed; now DF.EXE's true-colour values (GOG Df.exe 0x402b20, CD 0x4027b1; 8-bit modes take the palette entries nearest to (0,0,0), (1,230,1), (17,60,253) instead): text/outline (1,129,1), bright (1,224,1), dark (9,51,9), blue (16,64,255), black (1,1,1), red, white |
 | T3 | Stance icon | fixed | POS%i of the display mode, 1:1, centred x 50, top 3.75 (0x484c74, 0x4846f8) |
 | T4 | Weapon name | fixed | (75, 10); colour by fire type (GOG Df.exe 0x4843b0, jump table 0x484380): guns red while reloading ([0xc23834]) or with no spares, magazine or chambered round; launchers, knife, claymore, satchel, grenade (2/6/7/9/11) red while the refire time runs ([0xc23830]) or with no spares and nothing chambered; detonator never; designator with no fire missions left; other types no name (was: reload red for all, cooldown only for 7/9, the magazine tested for every type) |
 | T5 | Magazine / rounds boxes, magazine icon | fixed | boxes 75-135 / 140-200; the icon is font character 1 (was a guessed line); boxes have no fill, 2-pixel dark scanlines, HUD-green outline (0x401de4) |
@@ -63,7 +63,7 @@ approximation), **todo** = not checked yet.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | P1 | Goals screen | fixed | no panel (was invented); right-aligned at x 625 from y 72.5, 15.6 apart, shadowed; headings white, goals white / green when met, lose lines white / red when hit (0x485004) |
-| P2 | Mission end panel | fixed | 0x483094: darkened box (128,116)-(896,246) virtual, shade 10 = 10/31 brightness (0x401b6c, 0x435070), bright green outline; text pure green (0,255,0) centred at x 512, tops 136/176/206 virtual. The earlier footage measurement (43 %, bright text) was off |
+| P2 | Mission end panel | fixed | 0x483094: darkened box (128,116)-(896,246) virtual, shade 10 of the shade table in 8-bit modes, half brightness in true colour ((p & 0xfefefefe) >> 1, GOG Df.exe 0x401ec0 / CD 0x401b6c; every darkened panel: briefing, help, paused, quit, messages), bright green outline; text pure green (0,255,0) centred at x 512, tops 136/176/206 virtual. The earlier footage measurement (43 %, bright text) was off |
 
 ## Controls
 
