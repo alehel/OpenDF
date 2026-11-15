@@ -200,10 +200,12 @@ private:
     // at 0x4fb326 (CD 0x4df51e) + action id * 0x2c (the command table indexed
     // by the id, not by entry) drops an action with bit 0 while paused
     // ([0x6e4714]) or dead (player +0x6c & 4). Of the ids OpenDF has, that is
-    // scope (6) in both builds and briefing (0x25) in GOG's table only (the
-    // CD's entry 37 there, 'polys', has flag 0); everything else still runs.
+    // scope (6) and pinp (0x1d, the byte of entry 29, Binoculars) in both
+    // builds and briefing (0x25) in GOG's table only (the CD's entry 37
+    // there, 'polys', has flag 0); everything else still runs.
     bool df1PauseGated(Action a) const {
-        const bool gated = a == Action::Scope || (a == Action::Briefing && exe_.build() == ExeBuild::Df1Gog);
+        const bool gated = a == Action::Scope || a == Action::PicInPic ||
+                           (a == Action::Briefing && exe_.build() == ExeBuild::Df1Gog);
         return gated && (paused_ || playerDead());
     }
     // The game commands (DF.EXE 0x42d9c0, GOG Df2.exe 0x41f150); `reverse`
@@ -226,6 +228,11 @@ private:
     // 0x4829f0), -2 none, else a world object.
     bool foOn_ = false;
     int foTarget_ = -1;
+    // Delta Force's picture-in-picture ([0x67f510], df.cfg picinpic, F8):
+    // in an outside view the scope inset stays and, without it, the
+    // player's own view replaces the FO inset (GOG Df.exe 0x404640 ->
+    // 0x466b70).
+    bool pinp_ = false;
     void foNext();
     void drawFoInset(const Screen& s);
     const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
@@ -251,9 +258,9 @@ private:
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
     // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
-    // DF1 0x404640: the scope inset only in the first-person view of the
-    // living player (pinp, which would keep it in the outside views, is not done).
-    bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || (outsideView() == 0 && !playerDead())); }
+    // DF1 0x404640: the scope inset only for the living player, in the
+    // first-person view or with picture-in-picture on ([0x67f510]).
+    bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || ((outsideView() == 0 || pinp_) && !playerDead())); }
     // GOG Df2.exe 0x455790: none of the player's +0x64 bits 0x422004 (dead,
     // airborne, swimming 0x20000, on a ladder 0x400000), the scope flag with
     // a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40] 0) and not
@@ -386,6 +393,7 @@ public:
         o.quit = quit_;
         o.crosshairs = crosshair_;
         o.showGun = gunVisible_;
+        o.picInPic = pinp_;
         o.earlierWin = earlierWin_;
         o.earlierKills = earlierKills_;
         o.letterbox = letterbox_;
@@ -3878,6 +3886,7 @@ void Game::runAction(Action act, bool reverse) {
     case Action::MapZoomIn: mapScale_ = std::max(0.25f, mapScale_ * 0.9f); break;
     case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
+    case Action::PicInPic: if (!world_.df2Rules) pinp_ = !pinp_; break;   // GOG Df.exe 0x477d40 id 0x1d
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
     case Action::CenterView: player_.pitch = 0; break;
     // DF1 outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193 -> 0x42ac10).
@@ -4615,7 +4624,19 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    // GOG Df.exe 0x466090 looks from the player's eye (+0x24.. raised by
+    // [0xc23a18], his yaw / pitch / roll) also when picture-in-picture keeps
+    // the scope up in an outside view.
+    Mat4 scopeView = view;
+    const Vec3 pEye = player_.eye(), pDir = player_.forward();
+    const bool fromPlayer = !df2Hud_.on && outsideView() != 0;
+    if (fromPlayer) {
+        scopeView = lookDir(pEye, pDir, {0, 1, 0});
+        eyeOverride_ = &pEye;
+        dirOverride_ = &pDir;
+    }
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * scopeView : scopeView, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    if (fromPlayer) eyeOverride_ = dirOverride_ = nullptr;
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
@@ -4697,10 +4718,18 @@ void Game::drawFoInset(const Screen& s) {
     // a one-pixel border in [0x67db5c] (0x472610) and the target's name at
     // (0x2d4, top + 0x114), left-aligned, in [0x67db5c]. With the player as
     // the observer his own body (drawn in the outside views) is left out too.
-    if (!foOn_ || df2Hud_.on || scopeShown() || showMap_) return;
-    if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
-        foOn_ = false;
-        return;
+    // With picture-in-picture in an outside view 0x404640 draws 0x466b70
+    // instead: nothing while dead, else the player's own view (his eye,
+    // yaw, pitch and roll, FOV 90, himself not drawn: [0x6ba3f0] = the
+    // player, [0x6ba3ec] = 0) in the same box and border, with no name.
+    if (df2Hud_.on || scopeShown() || showMap_) return;
+    const bool pinp = pinp_ && outsideView() != 0;
+    if (!pinp) {
+        if (!foOn_) return;
+        if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
+            foOn_ = false;
+            return;
+        }
     }
     if (playerDead()) return;
     const float x0 = float(int(s.vx(0x2c0)) & ~3), x1 = float(int(s.vx(0x3c0)) & ~3);
@@ -4712,11 +4741,11 @@ void Game::drawFoInset(const Screen& s) {
     float yaw, pitch;
     std::string name;
     const WorldObject* target = nullptr;
-    if (foTarget_ < 0) {
+    if (pinp || foTarget_ < 0) {
         eye = player_.origin() + Vec3{0, eyeUp, 0};
         yaw = player_.yaw;
         pitch = player_.pitch;
-        name = o_.soldierName;
+        if (!pinp) name = o_.soldierName;
     } else {
         target = &world_.objects[size_t(foTarget_)];
         eye = target->pos + Vec3{0, target->hip + eyeUp, 0};   // its body origin (+0x24..), not its feet
@@ -8158,6 +8187,7 @@ int Game::run() {
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
         gunVisible_ = o_.showGun;   // GOG 0x407a90: [0x67f514] = showgun
+        pinp_ = o_.picInPic;        // GOG 0x407a90: [0x67f510] = picinpic
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));

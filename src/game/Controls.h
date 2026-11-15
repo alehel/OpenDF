@@ -42,6 +42,9 @@ enum class Action {
     // 0x1e) / tab (Tab, id 0x1f) (GOG Df.exe 0x477d40); GOG Df2.exe's
     // Forward Observer fo (F11) / tab (Tab).
     FoCamera, FoNext,
+    // Delta Force: picture-in-picture (pinp, F8, id 0x1d: GOG Df.exe
+    // 0x477d40 toggles [0x67f510], CD [0x66fa50]).
+    PicInPic,
     Count
 };
 
