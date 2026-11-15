@@ -272,7 +272,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
         if (li == 0) m.height = r.i32(p + 0x24) / 65536.f;
         if (li == 0)
-            for (int k = 0; k < 4; ++k) m.box[k] = r.i32(p + 0x28 + 4 * size_t(k)) / 65536.f;
+            for (int k = 0; k < 6; ++k) m.box[k] = r.i32(p + 0x28 + 4 * size_t(k)) / 65536.f;
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
         lod.animated = r.u16(p + 0x5a) != 0;
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre

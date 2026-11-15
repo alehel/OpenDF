@@ -156,9 +156,10 @@ struct Model3di {
     float radius = 1;                // header +0x60, metres
     float flatRadius = 0;            // header +0x64: LOD 0's largest horizontal vertex radius (blasts, collision reach)
     float height = 0;                // LOD 0 header +0x24: zmax - zmin (model +0x68 at load, 0x43f383)
-    // LOD 0 header +0x28..+0x34: xmin, xmax, ymin, ymax in metres, file axes
-    // (x forward, y left); DF2's bld2 footprint (0x402979).
-    float box[4] = {0, 0, 0, 0};
+    // LOD 0 header +0x28..+0x3c: xmin, xmax, ymin, ymax, zmin, zmax in
+    // metres, file axes (x forward, y left, z up); DF2's bld2 footprint
+    // (0x402979) and the blast's "inside" test (GOG Df2.exe 0x454fab).
+    float box[6] = {0, 0, 0, 0, 0, 0};
     std::vector<Model3diTexture> textures;
     std::vector<ModelLod> lods;
 };

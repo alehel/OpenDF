@@ -39,7 +39,7 @@ struct GpuModel {
     float lodThreshold[4] = {0, 0, 0, 0};
     float headerRadius = 1;            // 3DI header +0x60 (LOD selection)
     float flatRadius = 0, height = 0;  // 3DI header +0x64, LOD 0 header +0x24 (blasts)
-    float box[4] = {0, 0, 0, 0};       // LOD 0 header +0x28..+0x34: xmin xmax ymin ymax, file axes
+    float box[6] = {0, 0, 0, 0, 0, 0};   // LOD 0 header +0x28..+0x3c: xmin xmax ymin ymax zmin zmax, file axes
     // Material +0x12 of the model's largest LOD-0 material: OpenDF hit-tests
     // objects with boxes, not polygons, so this stands in for the hit face's
     // material when choosing the impact effect.

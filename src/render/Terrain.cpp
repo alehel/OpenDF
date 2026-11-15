@@ -1074,6 +1074,33 @@ float Terrain::sightHeight(float x, float z) const {
     return h;
 }
 
+float Terrain::df2RaisedHeight(float x, float z) const {
+    if (size_ == 0) return 0;
+    const float cx = x / scale.cellSize, cz = z / scale.cellSize;
+    const float fx = std::floor(cx), fz = std::floor(cz);
+    const float tx = cx - fx, tz = cz - fz;
+    auto h = [&](long ix, long iz) {
+        ix = ((ix % size_) + size_) % size_;
+        iz = ((iz % size_) + size_) % size_;
+        const size_t i = size_t(iz) * size_t(size_) + size_t(ix);
+        return float(heights_[i]) + (i < detailTop_.size() ? 2.f * float(detailTop_[i]) / 256.f : 0.f);
+    };
+    const long ix = long(fx), iz = long(fz);
+    const float a = h(ix, iz) + (h(ix + 1, iz) - h(ix, iz)) * tx;
+    const float b = h(ix, iz + 1) + (h(ix + 1, iz + 1) - h(ix, iz + 1)) * tx;
+    return (a + (b - a) * tz) * scale.heightScale;
+}
+
+float Terrain::df2RaisedCell(float x, float z) const {
+    if (size_ == 0) return 0;
+    // GOG's cell (x >> 16, y >> 16), y = -z: OpenDF row ceil(z) (see df2Gradient).
+    long ix = long(std::floor(x / scale.cellSize)), iz = long(std::ceil(z / scale.cellSize));
+    ix = ((ix % size_) + size_) % size_;
+    iz = ((iz % size_) + size_) % size_;
+    const size_t i = size_t(iz) * size_t(size_) + size_t(ix);
+    return (float(heights_[i]) + (i < detailTop_.size() ? 2.f * float(detailTop_[i]) / 256.f : 0.f)) * scale.heightScale;
+}
+
 float Terrain::sightMax(float x, float z) const {
     if (sightMax_.empty()) return 0;
     long ix = long(std::floor(x / scale.cellSize)), iz = long(std::floor(z / scale.cellSize));

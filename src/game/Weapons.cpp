@@ -472,11 +472,17 @@ int Arsenal::df2Damage(const Projectile& b) const {
     return e <= 0x190000 ? 1 : int(e / 0x190000);
 }
 
-void Arsenal::df2Drag(Projectile& b, float water) const {
+int64_t Arsenal::df2Speed(const Projectile& b) {
+    const int64_t v[3] = {int64_t(b.vel.x * kTick * 65536.f), int64_t(b.vel.y * kTick * 65536.f), int64_t(b.vel.z * kTick * 65536.f)};
+    return int64_t(std::sqrt(double(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])));
+}
+
+void Arsenal::df2Drag(Projectile& b, float water, int64_t s) const {
     if (b.gun < 0 || b.gun >= int(guns_.size()) || dragCurve_.empty()) return;
     const GunDef& g = guns_[size_t(b.gun)];
     int64_t v[3] = {int64_t(b.vel.x * kTick * 65536.f), int64_t(b.vel.y * kTick * 65536.f), int64_t(b.vel.z * kTick * 65536.f)};
-    const int64_t s = int64_t(std::sqrt(double(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])));
+    // s: the speed at the start of the tick (GOG Df2.exe 0x453860 local_30),
+    // the velocity itself as penetration left it.
     const bool under = water != 0 && b.pos.y < water;
     int64_t c = 0;
     if (under) c = g.waterCoef;
@@ -489,7 +495,10 @@ void Arsenal::df2Drag(Projectile& b, float water) const {
     int64_t k = (f * c) >> 16;
     if (under) k = (k * (0x10000 + (int64_t((water - b.pos.y) * 65536.f) << 16) / 0xa0000)) >> 16;
     k = std::clamp<int64_t>(k, 0, 0x8000);
-    const int64_t wind[3] = {windX_, 0, windZ_};
+    // GOG Df2.exe 0x453860: toward the wind only while above the water
+    // level (water < z); at or below it toward rest.
+    const bool windy = water < b.pos.y;
+    const int64_t wind[3] = {windy ? windX_ : 0, 0, windy ? windZ_ : 0};
     for (int i = 0; i < 3; ++i) v[i] -= ((v[i] - wind[i]) * k) >> 16;
     b.vel = Vec3{float(v[0]), float(v[1]), float(v[2])} * (1.f / (65536.f * kTick));
 }
@@ -868,9 +877,10 @@ void Arsenal::fire(Player& player) {
     // anything else plays its gun +0x2C sound (the same field 0x447070 plays
     // as the dry click) at the shooter and fires nothing; the caller still
     // uses the round, kicks and starts the cooldown (0x44718a..0x44725c).
+    // GOG Df2.exe 0x416a30 also lets mode 0x31 (the delay grenade) through.
     if (underwaterRule && waterLevel != 0 && origin.y < waterLevel) {
         const int m = slots_[size_t(current_)];
-        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29) {
+        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29 && !(df2Gog_ && m == 0x31)) {
             if (g.sounds[3] > 0) sounds_.push_back({g.sounds[3], player.origin(), false});
             return;
         }
@@ -879,6 +889,12 @@ void Arsenal::fire(Player& player) {
     Projectile p;
     p.pos = origin;
     p.vel = dir * (float(g.velocity) * 60.f / 62.f);
+    // GOG Df2.exe 0x451ae0: ammo 0x21 (the delay grenade) fired from under
+    // the water leaves at 1/8 speed (each 16.16 component >> 3).
+    if (df2_ && df2Gog_ && md.gun == 0x21 && waterLevel != 0 && origin.y < waterLevel) {
+        const auto eighth = [](float v) { return float(int32_t(int64_t(v * kTick * 65536.f)) >> 3) / (65536.f * kTick); };
+        p.vel = Vec3{eighth(p.vel.x), eighth(p.vel.y), eighth(p.vel.z)};
+    }
     p.lifetime = g.lifetime;
     // GOG Df2.exe 0x451ae0 (the 0x10000000 branch, CD bit 0x1000): the
     // delay grenade's fuse is the lifetime less (yaw >> 16) & 0x7f, the
@@ -895,14 +911,31 @@ void Arsenal::fire(Player& player) {
     p.gun = md.gun;
     p.orient();
     if (df2_ && (g.flags & 0x400)) {
-        // DF2's shotgun (shot 0x13, 0x44aa10): 12 pellets, heading and pitch
-        // each uniform within ±0x4000000 (±5.625°) of the aim. (DF2 seeds its
-        // generator with the heading; OpenDF's own generator here.)
+        // DF2's shotgun (shot 0x13, CD 0x44aa10, GOG Df2.exe 0x451eb0): the
+        // shared generator seeded with the binary yaw >> 16 (0x41ea10; yaw
+        // anticlockwise from east, pi/2 - OpenDF heading), then 12 pellets,
+        // each two numbers r1, r2 (0x41ea20): yaw (r1 + 0x1f8000) * 0x800 +
+        // (yaw & 0xffff0000), pitch the same with r2 (up to ±0x4000000,
+        // ±5.625°, about the truncated aim); the generator is left so.
         std::uniform_real_distribution<float> u(-1.f, 1.f);
         const float half = 5.625f * kPi / 180.f;
+        const auto toBits = [](double a) { return uint32_t(int64_t(std::llround(a / (2 * kPi) * 4294967296.0))); };
+        const uint32_t yawBits = toBits(double(kPi / 2 - yaw)), pitchBits = toBits(double(pitch));   // after the spread (0x416a30)
+        const bool shared = df2Seed && df2Rand;
+        if (shared) df2Seed(yawBits >> 16);
         for (int i = 0; i < 12; ++i) {
             Projectile q = p;
-            const float y = player.yaw + u(rng_) * half, pt = player.pitch + u(rng_) * half;
+            float y, pt;
+            if (!shared) {
+                y = player.yaw + u(rng_) * half;
+                pt = player.pitch + u(rng_) * half;
+            } else {
+                const uint32_t r1 = df2Rand(), r2 = df2Rand();
+                const uint32_t py = (r1 + 0x1f8000u) * 0x800u + (yawBits & 0xffff0000u);
+                const uint32_t pp = (r2 + 0x1f8000u) * 0x800u + (pitchBits & 0xffff0000u);
+                y = kPi / 2 - float(double(py) / 4294967296.0 * 2 * kPi);
+                pt = float(double(int32_t(pp)) / 4294967296.0 * 2 * kPi);
+            }
             q.vel = Vec3{std::cos(pt) * std::sin(y), std::sin(pt), -std::cos(pt) * std::cos(y)} * (float(g.velocity) * 60.f / 62.f);
             q.id = ++projectileIds_;
             q.orient();
@@ -1170,6 +1203,25 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         const float t = dot(listener_ - s, d) / dd;
         if (t >= 0 && t < 1) sounds_.push_back({0x41, s + d * t});
     };
+    // Delta Force 2's whiz-by (GOG Df2.exe 0x4547a2 -> 0x453770, CD 0x44d146
+    // -> 0x44c200), on every pass, the one that hits included: when the
+    // pass's start s or its end e (the hit point backed off, the water's
+    // +0x6000, or the tick's end) is within 40 m of the listener on x and
+    // the start or the end on the other horizontal axis, sound 0x41 at the
+    // point of s..tickEnd nearest the listener if it lies at 0 <= t < the
+    // remaining length. GOG skips hand and delay grenades (0x10100000, CD
+    // 0x1010); the CD build has no flag test.
+    auto df2Whiz = [&](const Projectile& p, Vec3 s, Vec3 tickEnd, Vec3 e) {
+        if (df2Gog_ && (p.flags & 0x1010)) return;
+        if (!((std::abs(s.x - listener_.x) < 40.f || std::abs(e.x - listener_.x) < 40.f) &&
+              (std::abs(s.z - listener_.z) < 40.f || std::abs(e.z - listener_.z) < 40.f)))
+            return;
+        const Vec3 d = tickEnd - s;
+        const float dd = dot(d, d);
+        if (dd <= 0) return;
+        const float t = dot(listener_ - s, d) / dd;
+        if (t >= 0 && t < 1) sounds_.push_back({0x41, s + d * t});
+    };
     for (auto& b : bullets_) {
         if (!df2_ && !b.tracerSet) { b.tracer = df1TracerColour(b, world); b.tracerSet = true; }
         // DF2 penetration (GOG Df2.exe 0x453860): a tick is up to 20 passes
@@ -1180,15 +1232,22 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         int passes = 0;
         bool resume = false;
         Vec3 resumeEnd{}, tickStart{};
+        // GOG Df2.exe 0x453860 (local_30): the drag band and curve take the
+        // speed at the start of the tick, before any penetration.
+        int64_t tickSpeed = 0;
         // GOG Df2.exe 0x453860 (local_50): rounds with ammo flag 0x200000 (CD
         // 0x20, the fragments) do not skip their shooter (the blast's owner).
         const int skip = df2_ && (b.flags & 0x20) ? -1 : b.shooter;
         int ignore = skip;
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
-            if (!resume) passes = 0, ignore = skip, tickStart = b.pos;
+            if (!resume) {
+                passes = 0, ignore = skip, tickStart = b.pos;
+                tickSpeed = df2Speed(b);
+            }
             const Vec3 next = resume ? resumeEnd : b.pos + b.vel * kTick;
             const bool firstPass = !resume;
             const Vec3 passStart = b.pos;
+            bool whizzed = false;   // DF2: this pass's whiz-by test is done
             if (df2_ && !b.coloured) tracerColour(b, world);
             resume = false;
             RayHit hit;
@@ -1217,6 +1276,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 // and the tick ends 0x6000 further on (0.125 m past the surface),
                 // velocity kept (a delay grenade's zeroed). So rounds go on
                 // under the water and never come back out.
+                // GOG Df2.exe 0x453860 case 4: a delay grenade (0x10000000) backs
+                // off 0x2000 (every hit, 0x453b2c) and, when the point 0x6000 on
+                // is below the level, keeps 1/8 of its velocity (each 16.16
+                // component >> 3, decompile 0x45453d..) instead of stopping.
                 const Vec3 seg = next - b.pos;
                 const float len = std::sqrt(dot(seg, seg));
                 const bool down = b.pos.y > w && next.y < w, up = b.pos.y < w && next.y > w;
@@ -1224,7 +1287,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     const Vec3 u = seg * (1.f / len);
                     const float d = down ? (b.pos.y - w) / std::abs(u.y) : -(w - b.pos.y) / u.y;
                     if (up || !hitSomething || d < hit.t * len) {
-                        const Vec3 at = b.pos + u * (d - 0x4000 / 65536.f);
+                        const float back = (df2Gog_ && (b.flags & 0x1000) ? 0x2000 : 0x4000) / 65536.f;
+                        const Vec3 at = b.pos + u * (d - back);
                         if (b.flags & 0x851) {
                             Impact im{at, -2, -1};
                             im.explosive = true;
@@ -1233,6 +1297,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                             im.shooter = b.shooter;
                             impacts_.push_back(im);
                             recordTracer(b, passStart, at, tickStart);
+                            df2Whiz(b, passStart, next, at);
                             b.age = b.lifetime;
                             break;
                         }
@@ -1243,7 +1308,11 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         stopAt = at + u * (0x6000 / 65536.f);
                         stopped = true;
                         hitSomething = false;
-                        if (b.flags & 0x1000) b.vel = {0, 0, 0};
+                        if ((b.flags & 0x1000) && !df2Gog_) b.vel = {0, 0, 0};
+                        else if ((b.flags & 0x1000) && stopAt.y < w) {
+                            const auto eighth = [](float v) { return float(int32_t(int64_t(v * kTick * 65536.f)) >> 3) / (65536.f * kTick); };
+                            b.vel = Vec3{eighth(b.vel.x), eighth(b.vel.y), eighth(b.vel.z)};
+                        }
                     }
                 }
             } else if (const float w = world.terrain->waterLevel(); w != 0) {
@@ -1260,7 +1329,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             }
             // DF2's delay grenade (flag 0x1000, 0x44ae50): it never goes off on
             // impact; on an object's face it slides off, v -= n·(v·n)·1.07 then
-            // × 0.85; on anything else it stops there.
+            // × 0.85; on a person it stops, on the ground it keeps its
+            // velocity (below).
             // GOG Df2.exe 0x453860 case 1/2 (LAB_00453fe7): with more than 10
             // ticks left it goes on through an intact object's 0x10000000
             // (glass) face, shattering it, with a +-40 m noise.
@@ -1275,6 +1345,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 impacts_.push_back(im);
                 const Vec3 u = normalize(next - b.pos);
                 recordTracer(b, passStart, hit.point - u * (0x2000 / 65536.f), tickStart);
+                df2Whiz(b, passStart, next, hit.point - u * (0x2000 / 65536.f));
+                whizzed = true;
                 const Vec3 from = hit.point + u * (0x4000 / 65536.f);   // 0x2000 back + 0x6000
                 if (dot(next - from, u) > 0 && ++passes < 20) {
                     b.pos = from;
@@ -1286,25 +1358,32 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 hitSomething = false;
             }
             if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object != -2) {
-                const Vec3 dir = normalize(b.vel);
-                b.pos = hit.point - dir * (0x4000 / 65536.f);
-                recordTracer(b, passStart, b.pos, tickStart);
-                if (hit.object >= 0 && !world.objects[size_t(hit.object)].person) {
+                // GOG Df2.exe 0x453860: the pass ends at the hit backed off
+                // 0x2000 (0x453b2c; CD 0x4000, 0x44c2f0) and the tick runs on
+                // as for any round: the whiz-by test, gravity, drag and the
+                // age. With the fuse at ttl < 11 it goes off there (below). On
+                // the ground (case 0) nothing else: the velocity is kept. On a
+                // person (case 3) it stops. On an object (case 1/2) 0x453510
+                // first (hp2 < 0: stopped, ttl 0), then, the fuse still
+                // running, the bounce 0x452300: v -= n·(v·n)·1.07, then × 0.85.
+                const Vec3 u = normalize(next - passStart);
+                stopAt = hit.point - u * ((df2Gog_ ? 0x2000 : 0x4000) / 65536.f);
+                stopped = true;
+                recordTracer(b, passStart, stopAt, tickStart);
+                recorded = true;
+                const bool person = hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person);
+                const bool onObject = hit.object >= 0 && !person;
+                bool fuse = b.lifetime - b.age <= 10;   // ttl < 11, before this tick's decrement
+                const ItemDef* it = onObject ? world.objects[size_t(hit.object)].item : nullptr;
+                if (it && it->damageClass < 0) b.vel = {0, 0, 0}, fuse = true;
+                else if (onObject && !fuse) {
                     const float d = dot(b.vel, hit.normal);
                     b.vel = (b.vel - hit.normal * (d * float(0x111EB) / 65536.f)) * (float(0xD999) / 65536.f);
-                } else {
-                    b.vel = {0, 0, 0};
-                }
-                ++b.age;
-                // GOG Df2.exe 0x453510: an item with hp2 < 0 stops the grenade
-                // (lifetime 0), so it goes off there (0x453860 case 1/2, ttl < 11).
-                const ItemDef* it = hit.object >= 0 ? world.objects[size_t(hit.object)].item : nullptr;
-                if (it && !world.objects[size_t(hit.object)].person && it->damageClass < 0) b.vel = {0, 0, 0}, b.age = b.lifetime;
-                if (b.lifetime - b.age <= 10) {
+                } else if (person) b.vel = {0, 0, 0};
+                if (fuse) {
                     // On an object (0x453f7e) effect 0x14; on the ground or a
                     // person (no blast there) the fuse's burst below.
-                    const bool onObject = hit.object >= 0 && !world.objects[size_t(hit.object)].person;
-                    Impact im{b.pos, onObject ? hit.object : -1, -1};
+                    Impact im{stopAt, onObject ? hit.object : -1, -1};
                     im.explosive = true;
                     im.flags = b.flags;
                     im.shooter = b.shooter;
@@ -1315,7 +1394,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // 0x10000000 bit still set, so 0x4546a8 queues the fuse's
                     // burst as well (kind 1, effect 0x14, sound 0x32).
                     if (!im.timer) {
-                        Impact burst{b.pos, -1, -1};
+                        Impact burst{stopAt, -1, -1};
                         burst.explosive = true;
                         burst.flags = b.flags;
                         burst.shooter = b.shooter;
@@ -1324,7 +1403,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     }
                     b.age = b.lifetime;
                 }
-                continue;
+                hitSomething = false;
             }
             if (hitSomething) {
                 const Vec3 dir = normalize(b.vel);
@@ -1401,6 +1480,9 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     int dmg = 0;
                     if (it && it->damageClass >= 0 && it->type != "building") {
                         if (it->type == "vehicle") dmg = (b.flags & 0x40) ? 64 : (b.flags & 0x11) ? 16 : 0;
+                        // GOG Df2.exe 0x453510: rounds with ammo flag 0x1000000 (CD
+                        // 0x100; GOG ammo 0x17..0x1a) do nothing to `noak` items.
+                        else if ((b.flags & 0x100) && (it->attrib & 0x80)) dmg = 0;
                         else dmg = df2Damage(b);
                     }
                     if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
@@ -1481,6 +1563,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 // record it again.
                 recordTracer(b, passStart, hit.point - normalize(next - passStart) * (0x4000 / 65536.f), tickStart);
                 recorded = true;
+                if (df2_) {
+                    df2Whiz(b, passStart, next, hit.point - normalize(next - passStart) * (0x4000 / 65536.f));
+                    whizzed = true;
+                }
                 if (goesOn && !spent) {
                     // GOG 0x454823..0x454894: the next pass starts 0x2000 past the hit
                     // (0x4000 back + 0x6000); when that is at or past the end
@@ -1512,36 +1598,13 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 }
             }
             if (df2_) {
-                // Whiz-by (0x44f330): the point of this step nearest the listener,
-                // if it lies inside the step and the round is within 40 m of the
-                // listener on both horizontal axes.
-                // GOG Df2.exe 0x4547a2..0x454812: hand and delay grenades (0x10,
-                // 0x1000) never whiz (the CD's 0x44d146 has no flag test); in
-                // both builds on each axis the step's start or its end may be
-                // inside the window, and 0x453770 (CD 0x44c200) takes 0 <= t < length.
-                const Vec3 d = next - b.pos;
-                const float dd = dot(d, d);
-                const float t = dd > 0 ? dot(listener_ - b.pos, d) / dd : -1;
-                if (!(df2Gog_ && (b.flags & 0x1010)) && t >= 0 && t < 1 &&
-                    (std::abs(b.pos.x - listener_.x) < 40.f || std::abs(next.x - listener_.x) < 40.f) &&
-                    (std::abs(b.pos.z - listener_.z) < 40.f || std::abs(next.z - listener_.z) < 40.f))
-                    sounds_.push_back({0x41, b.pos + d * t});
+                if (!whizzed) df2Whiz(b, passStart, next, stopped ? stopAt : next);
             } else whiz(b.pos, next, next);
             if (!stopped) tracer(b, next);   // the whole step (0x465273)
             b.pos = stopped ? stopAt : next;
             if (!recorded) recordTracer(b, passStart, b.pos, tickStart);
-            if (df2_) {
-                // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
-                // for a delay grenade under the water), then drag toward the
-                // wind (the water's coefficient below the surface).
-                const float w = world.terrain->waterLevel();
-                const bool under = w != 0 && b.pos.y <= w;
-                if (!(b.flags & 0x40)) b.vel.y -= ((b.flags & 0x1000) && under ? 0x14 : 0xa7) * 60.f / 65536.f * 60.f * kTick;
-                df2Drag(b, w);
-                if (spent) b.age = b.lifetime;
-            } else if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
-            ++b.age;
-            // The delay grenade explodes (type 1) once its lifetime is 10 or less.
+            // The delay grenade explodes (type 1) once its ttl is below 11
+            // (GOG Df2.exe 0x4546a8, every pass, before the tick's decrement).
             if (df2_ && (b.flags & 0x1000) && b.lifetime - b.age <= 10 && b.age < b.lifetime) {
                 Impact im{b.pos, -1, -1};
                 im.explosive = true;
@@ -1551,6 +1614,17 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 impacts_.push_back(im);
                 b.age = b.lifetime;
             }
+            if (df2_) {
+                // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
+                // for a delay grenade under the water), then drag toward the
+                // wind (the water's coefficient below the surface).
+                const float w = world.terrain->waterLevel();
+                const bool under = w != 0 && b.pos.y <= w;
+                if (!(b.flags & 0x40)) b.vel.y -= ((b.flags & 0x1000) && under ? 0x14 : 0xa7) * 60.f / 65536.f * 60.f * kTick;
+                df2Drag(b, w, tickSpeed);
+                if (spent) b.age = b.lifetime;
+            } else if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
+            ++b.age;
             if (b.pos.y < -1.f) b.age = b.lifetime;
         }
     }

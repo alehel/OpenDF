@@ -42,6 +42,14 @@ public:
     // cell's four corners, each its height plus ceil((tile max - 128) / 16)
     // steps of its own detail tile (0..255 steps, 0.25 m a step).
     float sightMax(float x, float z) const;
+    // Delta Force 2's sight lines (GOG Df2.exe 0x4063d0 -> 0x46e740, CD
+    // 0x406180 -> 0x464710) test the stored word grid [0x535ae8] itself:
+    // the heights raised by twice the cell's detail tile's top elevation
+    // (0x46e0f0). df2RaisedHeight is its bilinear surface (0x46e870);
+    // df2RaisedCell the cell's own word, no interpolation. Rounds and blasts
+    // (0x46e610 / 0x46e950) take the raise off again: heightAt.
+    float df2RaisedHeight(float x, float z) const;
+    float df2RaisedCell(float x, float z) const;
     bool hasSightMap() const { return !sightMax_.empty(); }
     // The nearest cell's raw height, no interpolation (DF.EXE's byte map
     // 0x68c024, e.g. for sound occlusion).
