@@ -2428,6 +2428,9 @@ int FrontendDf2::run() {
                 g.df2Secondary = soldier().get(0x2c0);
                 g.df2Gear = soldier().get(0x2c4);
                 g.df2Grenade = soldier().get(0x2c8);
+                // GOG Df2.exe 0x43c280: faces 10-14 ([0x67cc14] = +0x278 > 9)
+                // are female (player slot +0xc4 via 0x4604e0, read by the spawn 0x45c150).
+                g.female = soldier().get(0x278) > 9;
                 g.df2Attributes = uint32_t(cfg_.get("attributes"));
                 g.df2Wind = std::clamp(cfg_.get("sp_wind"), 0, 2);
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
