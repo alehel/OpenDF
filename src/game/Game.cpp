@@ -2981,16 +2981,31 @@ void Game::tickDf2Items() {
             l.wait = 0x10;
             if (!l.init) {
                 // First think: home yaw = heading | 1, home pitch, sweep
-                // 0x20000000 (45 degrees), aiming at home + 45.
+                // 0x20000000 (45 degrees), aiming at home + 45; it goes on
+                // into the rest of the think (GOG Df2.exe 0x42ccf0, no return).
                 l.init = true;
                 l.homeYaw = yaw | 1;
                 l.homePitch = uint32_t(pitch);
                 l.sweep = 0x20000000;
                 l.targetYaw = l.homeYaw + uint32_t(l.sweep);
                 l.targetPitch = l.homePitch;
-            } else {
-                const bool targetDead = l.target == -3 ? playerDead() : l.target >= 0 && !world_.objects[size_t(l.target)].alive();
-                if (--l.counter > 0 && l.target != -1 && !targetDead) {
+            }
+            {
+                // GOG Df2.exe 0x42ccf0: with a target, AI +0x48 - 1 > 0 and
+                // AI flag 0x40 clear it tracks; a target first seen dead
+                // (flags & 4) sets 0x40 and is still aimed at this think;
+                // with 0x40 already set the target is dropped (AI +0x54 = 0)
+                // and the scan runs.
+                bool track = false;
+                if (l.target != -1 && --l.counter > 0) {
+                    if (!l.targetDead) {
+                        track = true;
+                        if (l.target == -3 ? playerDead() : !world_.objects[size_t(l.target)].alive()) l.targetDead = true;
+                    } else {
+                        l.target = -1;
+                    }
+                }
+                if (track) {
                     // Tracking: aim at the target with a +-0x200000 jitter,
                     // the yaw within +-45 degrees of home, the pitch within
                     // +-11.25 degrees; think 0x20.
@@ -3020,13 +3035,15 @@ void Game::tickDf2Items() {
                     int id = -1;
                     Vec3 at{0, 0, 0};
                     const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.side, pv, id, at);   // by side (GOG 0x42aa10)
-                    l.target = -1;
                     // score · perception, a quarter when AI byte +0xb4 is 0
-                    // (0x425e8f..0x425eb8).
+                    // (0x425e8f..0x425eb8). No candidate clears AI +0x54; a
+                    // failed draw leaves it as it was (0x42ce0b..0x42ce4f).
                     const float seen = score * l.perception * (l.alert == 0 ? 0.25f : 1.f);
-                    if (id != -1 && seen * 65536.f > float(shrapRand())) {
+                    if (id == -1) l.target = -1;
+                    else if (seen * 65536.f > float(shrapRand())) {
                         l.target = id;
                         l.counter = 8;
+                        l.targetDead = false;
                         ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
                     }
                     l.wait = 0x10;

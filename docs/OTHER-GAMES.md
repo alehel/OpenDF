@@ -1153,15 +1153,22 @@ First differences from DF1:
     bark 1; the relaxed quarter then no longer applies. A soldier ordered
     to cover the player (order 2) scores candidates targeting the player
     twice. Helicopters (0x42bff0) draw against the scan's score with
-    perception once and mark their team as having spotted the target's;
-    searchlights mark (light team, target team) (0x42ce2f). Enemies fire through DF2's
+    perception once (night-reduced as 0x403790 does) and mark their team as
+    having spotted the target's, again at every sight re-check that holds
+    (0x42b84d); taking a target scales the vertical speed +0xC4 by
+    (ai+0x80 >> 1). Searchlights mark (light team, target team) (0x42ce2f),
+    scan on their first think too, keep the target when the draw fails and
+    aim once more at a target first seen dead (0x42ccf0). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
     vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed
     hand; no shot without it), the aim 0x415de0 (= 0x46b838: from the body
     origin at the target's origin while it is seen, else the last known
     point with errMul 5, whole-metre distance, the error stored on the
-    body; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
+    body; in sight errMul is the integer 16 - seen / 62 with seen capped
+    at (16 - aim factor) × 62 and written back, 0x417e20; a muzzle under the
+    water fires nothing but the ammo's fourth sound unless the mode is
+    1, 0x27..0x29 or 0x31, 0x416a30, the BRDM and door guns too; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
     target sight line from 1 m up to the target's origin (0x401732), after
     which (seen or not) the full scan runs and a different best candidate
     scoring over 0x4000, without a random draw, becomes the target (GOG

@@ -537,8 +537,19 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         if (p.target == -3) move = player.moveNumber;
         else if (p.target >= 0) move = world.objects[size_t(p.target)].moveNumber;
         const float f = moveAimFactor(move);
-        const float seen = std::min(float(p.seen), (16.f - f) * 62.f);
-        const float errMul = (p.flags & 0x80) ? std::max(f, 16.f - seen / 62.f) : 5.f;
+        float errMul;
+        if (df2) {
+            // GOG Df2.exe 0x417e20: the cap (16 - (aim >> 16)) * 0x3e is
+            // written back to ai->seen, and the multiplier is the integer
+            // 16 - seen / 0x3e (whole steps every 62 ticks).
+            if (p.flags & 0x80) {
+                p.seen = std::min(p.seen, (16 - int(f)) * 0x3e);
+                errMul = float(16 - p.seen / 0x3e);
+            } else errMul = 5.f;
+        } else {
+            const float seen = std::min(float(p.seen), (16.f - f) * 62.f);
+            errMul = (p.flags & 0x80) ? std::max(f, 16.f - seen / 62.f) : 5.f;
+        }
         const float unit = float(int(65536.f * 100.f / p.accuracy) * 30 >> 16);
         const float spread = unit * errMul * 65536.f * turnUnit / ((hard && o.side == 2) ? 4.f : 1.f);
         yaw += r1 * spread;
@@ -547,6 +558,20 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         // (+0x30 / +0x34; DF2 0x415f85).
         o.heading = yaw;
         o.aimPitch = pitch;
+    }
+    // DF2 (GOG Df2.exe 0x416a30, before the gun's spread): a muzzle under
+    // the water fires nothing unless the mode +0xA8 is 0x27/0x28/0x29, 1 or
+    // 0x31; the ammo's fourth sound plays at the shooter. The caller's burst
+    // and think go on as for a round.
+    if (df2 && world.terrain) {
+        const float water = world.terrain->waterLevel();
+        const int m = o.weaponMode;
+        if (water != 0 && muzzle.y < water && m != 0x27 && m != 0x28 && m != 0x29 && m != 1 && m != 0x31) {
+            if (const int id = shots.gunAt(md.gun).sounds[3]; id > 0) sound.play(id, o.pos);
+            if (!followUp && md.burst) p.burstLeft = 2;
+            p.think = std::max(1, md.cooldown);
+            return;
+        }
     }
     // The gun's own spread, per round (0x46af90 / 0x414ad0).
     {
@@ -1093,6 +1118,26 @@ bool AiSystem::reached(int team, int path, int point) const {
     return it != reached_.end() && point >= 0 && point < 32 && (it->second >> point & 1);
 }
 
+// GOG Df2.exe 0x4032f0: the path's start point for a follow-path order.
+// The 3D distance in whole metres between the object and each marker
+// (ground plus record height), from raw differences (no world wrap), each
+// >> 16 before squaring; '<=' so the last of equal points wins.
+int df2NearestPoint(const World& world, const Mission& mission, const Vec3& pos, const MissionPath& mp) {
+    const float ext = world.extent();
+    int best = 0x7fffffff, pick = 0;
+    for (size_t k = 0; k < mp.points.size(); ++k) {
+        const MissionObject* wp = mission.inGroup(2, mp.points[k]);
+        if (!wp) continue;
+        const float mx = std::fmod(std::fmod(wp->x, ext) + ext, ext), mz = std::fmod(std::fmod(-wp->y, ext) + ext, ext);
+        const float mh = (world.terrain ? world.terrain->heightAt(mx, mz) : 0.f) + wp->z;
+        auto m = [](float d) { return int(std::floor(d)); };   // 16.16 >> 16
+        const int dx = m(pos.x - mx), dy = m(mz - pos.z), dz = m(pos.y - mh);   // game x, y (north), z (up)
+        const int d = dx * dx + dy * dy + dz * dz;
+        if (d <= best) best = d, pick = int(k);
+    }
+    return pick;
+}
+
 void AiSystem::followPath(World& world, int team, int path) {
     // 0x46bbe8 (GOG Df.exe 0x45f670): teams below 3 are ignored; each member
     // takes the path from its nearest point (0x45c5e0, 0 for an empty path).
@@ -1101,12 +1146,19 @@ void AiSystem::followPath(World& world, int team, int path) {
     const MissionPath& mp = mission_->paths[size_t(path)];
     for (auto& p : people_) {
         WorldObject& o = world.objects[size_t(p.object)];
-        if (o.team != team || !o.alive()) continue;
+        if (o.team != team || (!df2 && !o.alive())) continue;
         p.pathMode = 1;
         p.path = path;
         p.waypoint = 0;
-        float best = 1e30f;
         const float ext = world.extent();
+        if (df2) {
+            // GOG Df2.exe 0x418040: every organic of the team with an AI
+            // block (no alive check) gets path mode 1, the path and the
+            // start point from 0x4032f0; the think timer is left alone.
+            p.waypoint = df2NearestPoint(world, *mission_, o.pos, mp);
+            continue;
+        }
+        float best = 1e30f;
         for (size_t k = 0; k < mp.points.size(); ++k) {
             const MissionObject* wp = mission_->inGroup(2, mp.points[k]);
             if (!wp) continue;

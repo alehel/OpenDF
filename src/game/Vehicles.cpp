@@ -230,8 +230,10 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     if (world.df2Rules && v.kind == Kind::Veh0) {
         // DF2.EXE's veh0 (0x41efa1): the steer eases toward (target − heading) / 2
         // by at most 0x200000 (0.18°) a tick; herc and boat keep DF1's / 8.
+        // Only while the speed +0x90 is not 0 (GOG Df2.exe 0x423ac0: the
+        // steer and move block is skipped at 0, so a parked one keeps it).
         const float want = wrapAngle(v.targetHeading - o.heading) / 2.f, step = float(0x200000) / 4294967296.f * 2 * kPi;
-        steer = o.steer + std::clamp(want - o.steer, -step, step);
+        steer = v.speed != 0 ? o.steer + std::clamp(want - o.steer, -step, step) : o.steer;
     }
     o.steer = steer;   // drawn by the `tire` routine (0x4808fc)
     const float axle = o.item && o.item->axleDist > 0 ? o.item->axleDist : 2.3f;
@@ -241,7 +243,11 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     const Vec3 was = o.pos;
     o.pos = o.pos + fwd * (v.speed * std::cos(steer) / kTicks);
     {
-        const int idx = int(std::floor(-dyaw * 2048.f / (2 * kPi)));   // DF yaw grows anticlockwise
+        int idx = int(std::floor(-dyaw * 2048.f / (2 * kPi)));   // DF yaw grows anticlockwise
+        // DF2 (GOG Df2.exe 0x423ac0 at 0x423b91, boat 0x430be0, herc
+        // 0x431010): the turn as an unsigned angle >> 21, so a negative turn
+        // reads 2048 - k (-sin) and both directions drift.
+        if (world.df2Rules) idx &= 2047;
         if (idx >= 0) {
             const float lat = std::sin(float(idx) * 2 * kPi / 2048.f) * axle * 0.5f / 64.f;
             o.pos.x += lat * std::cos(o.heading);   // DF (sin θ, cos θ) with θ = π/2 − heading
@@ -662,8 +668,9 @@ Vec3 VehicleSystem::gunPoint(const World& world, const Vehicle& v) const {
 // given up for 60 thinks. Without a target the soldiers' scan (0x46a804,
 // GOG Df.exe 0x45e280, from 1 m above the hub) is drawn against rand
 // (0x450c40; DF2 0x42bff0 the same): score x perception x2 (hard, side 2),
-// / 4 when relaxed; taking a target marks the team spotted (0x42edd0; DF2
-// 0x41ac00). With a target the
+// / 4 when relaxed (DF2: the perception night-reduced as 0x403790 does);
+// taking a target marks the team spotted (0x42edd0; DF2 0x41ac00). With a
+// target the
 // sight line is re-checked about every 192 ticks; only while it holds is the
 // last known position refreshed (and a dead target noticed). The gun's aim
 // is that position from the gun point, relative to the body, clamped to the
@@ -703,9 +710,15 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         if (id == -1) return;
         // Perception once, x2 on hard for side 2, / 4 while ai+0x9c is 0
         // (0x45e280); 0x450c40 takes the target when rand < score.
-        score *= v.perception * ((ai.hard && o.side == 2) ? 2.f : 1.f);
+        // DF2: the AI block's perception loses 0x2666 at night when above
+        // 0x4ccc (GOG Df2.exe 0x403790), as for the BRDM.
+        const float perception = (world.df2Rules && ai.night && v.perception > 0.3f) ? v.perception - 0.15f : v.perception;
+        score *= perception * ((ai.hard && o.side == 2) ? 2.f : 1.f);
         if (v.alert == 0) score *= 0.25f;
         if (float(rnd()) >= score * 65536.f) return;
+        // GOG Df2.exe 0x42bff0: the last known point is stored before the
+        // 100 m test (0x42bd50, from the helicopter to that point).
+        if (world.df2Rules) v.lastKnown = at;
         if ((v.flags & 2) && dist2D(o.pos, at) > 100.f) return;
         // 0x450ca8: the "team spotted team" bit (0x42edd0).
         ai.markSpotted(o.team, id == -3 ? player_.team : world.objects[size_t(id)].team);
@@ -718,6 +731,10 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         v.bias = float(r >= 0 ? r + 0x1000000 : r - 0x1000000);
         v.acquiredAt = o.pos;
         v.giveUp = 0;
+        // GOG Df2.exe 0x42bff0: +0xC4 (the vertical speed) = +0xC4 x
+        // (ai+0x80 >> 1) >> 16 on taking a target.
+        if (world.df2Rules)
+            v.vz = float(int32_t(int64_t(std::lround(double(v.vz) * 65536.0)) * int64_t(std::lround(double(v.aimScale) * 65536.0)) >> 16)) / 65536.f;
         return;
     }
     // Tracking (0x47bf0c), with lift.
@@ -726,9 +743,9 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         if (v.losTimer > 0xBA) {
             v.losTimer = 0;
             v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
-            // GOG Df.exe 0x45051a: each sight re-check that holds marks the
-            // team spotted (Delta Force only: not traced in Df2.exe).
-            if (v.seen && !world.df2Rules) ai.markSpotted(o.team, v.gunTarget == -3 ? player_.team : world.objects[size_t(v.gunTarget)].team);
+            // Each sight re-check that holds marks the team spotted (GOG
+            // Df.exe 0x45051a; GOG Df2.exe 0x42b84d -> 0x41ac00).
+            if (v.seen) ai.markSpotted(o.team, v.gunTarget == -3 ? player_.team : world.objects[size_t(v.gunTarget)].team);
         }
         if (v.seen) {
             if (!targetAlive(world, v.gunTarget)) v.deadSeen = true;
@@ -801,6 +818,15 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     const int gunMode = shots.df2() ? 53 : 12;
     const ModeDef& md0 = shots.modeAt(gunMode);
     const GunDef& g0 = shots.gunAt(md0.gun);
+    // GOG Df2.exe 0x42bd40 -> 0x416a30: after the two error draws, a gun
+    // point under the water fires nothing (mode 0x35) and plays the ammo's
+    // fourth sound at the helicopter.
+    if (shots.df2() && world.terrain && world.terrain->waterLevel() != 0 && muzzle.y < world.terrain->waterLevel()) {
+        err();
+        err();
+        if (g0.sounds[3] > 0) sound.play(g0.sounds[3], o.pos);
+        return;
+    }
     auto spread = [&]() { return float((0x8000 - int(rnd())) * (g0.accuracy - 1) * 30) * turn; };
     // OpenDF heading is clockwise: the DF yaw bias and spread turn the other way.
     const float yaw = std::atan2(d.x, -d.z) - err() - v.bias * turn - spread();
@@ -939,6 +965,13 @@ void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& 
     yaw -= v.bias * turn;
     const ModeDef& md = shots.modeAt(53);
     const GunDef& g = shots.gunAt(md.gun);
+    // 0x416a30: a gun point under the water fires nothing (mode 0x35 is not
+    // one of the underwater modes); the ammo's fourth sound at the BRDM.
+    if (world.terrain && world.terrain->waterLevel() != 0 && muzzle.y < world.terrain->waterLevel()) {
+        if (g.sounds[3] > 0) sound.play(g.sounds[3], o.pos);
+        o.shotFlash = 10;
+        return;
+    }
     if (g.accuracy != 1) {
         yaw -= float((g.accuracy - 1) * (0x8000 - int(rnd())) * 0x1e) * turn;
         pitch += float((g.accuracy - 1) * (0x8000 - int(rnd())) * 0x1e) * turn;
@@ -1109,6 +1142,13 @@ void VehicleSystem::followPath(World& world, int team, int path) {
         v.path = path;
         v.stopped = false;
         v.waypoint = 0;
+        if (world.df2Rules) {
+            // GOG Df2.exe 0x418040: items of the team with an AI block take
+            // the start point from 0x4032f0 (3D, unwrapped, last of ties);
+            // the think timer is left alone.
+            v.waypoint = df2NearestPoint(world, *mission_, o.pos, mp);
+            continue;
+        }
         float best = 1e30f;
         for (size_t k = 0; k < mp.points.size(); ++k) {
             const MissionObject* wp = mission_->inGroup(2, mp.points[k]);

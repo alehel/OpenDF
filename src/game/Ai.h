@@ -23,6 +23,10 @@ namespace df {
 
 class SoundSystem;
 
+// GOG Df2.exe 0x4032f0: the point of a path a follow-path order starts from
+// (Ai.cpp).
+int df2NearestPoint(const World& world, const Mission& mission, const Vec3& pos, const MissionPath& mp);
+
 class AiSystem {
 public:
     void init(World& world, const Mission& mission);
