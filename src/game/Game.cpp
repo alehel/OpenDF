@@ -183,7 +183,7 @@ private:
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
-    void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
+    void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last);
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
@@ -3044,15 +3044,17 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
         return p;
     };
     const Mat4 projFar = withRange(kDepthSplit, zf), projNear = withRange(zn, kDepthSplit * 1.001f);
-    // Delta Force 2: the water before the objects while the camera is above
-    // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
-    const bool waterFirst = terrain_.df2Water() && eye.y > terrain_.waterLevel();
+    // Delta Force 2 (GOG Df2.exe 0x44f8d0): the water with the camera above
+    // it, 0x470aa0(0), after both object lists (0x44f490, 0x44f570) and
+    // before the translucent faces (0x44c480); with the camera at or below
+    // it, 0x470aa0(1) after them.
+    const bool waterMid = terrain_.df2Water() && eye.y > terrain_.waterLevel();
     for (int pass = 0; pass < 2; ++pass) {
         const bool last = pass == 1;
         glDepthRange(last ? 0.0 : 0.5, last ? 0.5 : 1.0);
         terrain_.pass = last ? Terrain::Pass::Near : Terrain::Pass::Far;
         terrain_.passSplit = kDepthSplit;
-        drawWorldPass(view, last ? projNear : projFar, eye, waterFirst, last);
+        drawWorldPass(view, last ? projNear : projFar, eye, waterMid, last);
     }
     terrain_.pass = Terrain::Pass::All;
     glDepthRange(0.0, 1.0);
@@ -3075,9 +3077,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
 
 // One depth pass of drawWorld: the terrain, the objects, the effects and
 // the water, with that pass's projection; `last` for the second (near) pass.
-void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last) {
+void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last) {
     terrain_.draw(view, proj, eye, viewDistance_);
-    if (waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
     // beyond 1020 m in Delta Force (either horizontal axis, or view depth +
     // radius; Delta Force 2's limits below); LOD by
@@ -3327,6 +3328,11 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         }
         models_.draw(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     }
+    if (waterMid) {   // DF2, camera above the water: over the opaque objects, under the translucent faces
+        models_.end();
+        terrain_.drawWater(view, proj, eye, float(ticks_));
+        models_.begin(proj * view, light);
+    }
     for (auto& v : visible)
         if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes) &&
             !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm"))   // the BRDM's are posed above
@@ -3435,7 +3441,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     }
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
-    if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
+    if (!waterMid) terrain_.drawWater(view, proj, eye, float(ticks_));
     // DF2's tracers, after the scene (GOG Df2.exe 0x44f8d0 -> 0x452610).
     if (world_.df2Rules) {
         arsenal_.ageTracers(ticks_);
