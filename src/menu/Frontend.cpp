@@ -323,6 +323,7 @@ private:
     int briefLine_ = 0, briefTotal_ = 0, briefVisible_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
+    bool debfWon_ = false;   // GOG 0x4e6cfc
     bool missionPlayed_ = false;   // a mission has ended this run (the mixer hook is off since)
     int quitCode_ = 0;
     uint32_t options_ = 0;   // df.cfg attributes (Enemy AI 0x80, Player Health 0x100, ...)
@@ -872,6 +873,11 @@ void Frontend::enter(Screen s) {
         break;
     case Debrief:
         setMenu("DebfMenu");
+        // GOG 0x41f320: "won" is the profile's mission-done flag (after the
+        // post-mission update), so a lost replay of a finished mission still
+        // debriefs as a win; Var02 = 0 then, else 1.
+        debfWon_ = prof().get(0x30 + camp_ * 0x44 + 4 * mis_) != 0;
+        musicVar(2, debfWon_ ? 0 : 1);
         saveProfile(cur_);
         break;
     case End:
@@ -2487,17 +2493,18 @@ int Frontend::run() {
                 missionPlayed_ = true;
                 audio_.setDfMixer(true, false);
                 if (outcome_.quit) break;
-                // 0x40e5d4: a win marks the mission done, kills add up; the
-                // flags are kept only on a win.
+                // 0x40e5d4 (GOG 0x407de0): a win marks the mission done and
+                // adds the kills; the flags are kept only on a win.
                 prof().set(0x70 + camp_ * 0x44, int32_t(flags));
-                if (outcome_.won) prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
-                prof().set(0x664, prof().get(0x664) + outcome_.kills);
+                if (outcome_.won) {
+                    prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
+                    prof().set(0x664, prof().get(0x664) + outcome_.kills);
+                }
                 if (!openWindow()) return 1;
                 // Post Menu (0x41e480): music_start, then Var00=1 (single
-                // player); Debf init: Var02 = 0 won / 1 lost (0x423f18).
+                // player); Debf init sets Var02 (GOG 0x41f320).
                 music_.start();
                 musicVar(0, 1);
-                musicVar(2, outcome_.won ? 0 : 1);
                 enter(Debrief);
                 next_ = Debrief;
             } else if (next_ == Quit) {
@@ -2580,10 +2587,10 @@ int Frontend::run() {
             auto t = [&](const char* k) { const std::string* s = menuText_.find("GroupMainMenu", k); return s ? *s : std::string(k); };
             char sec[32], key[32];
             std::snprintf(sec, sizeof sec, "Briefing%d", mis_ + 1);
-            std::snprintf(key, sizeof key, outcome_.won ? "Win%d" : "Lose%d", mis_ + 1);
+            std::snprintf(key, sizeof key, debfWon_ ? "Win%d" : "Lose%d", mis_ + 1);
             const std::string* body = campText_.find(sec, key);
             std::string text = t("DEBFMISSIONSTATS");
-            if (outcome_.won) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
+            if (debfWon_) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
             else text += " ~ ~ ";
             text += body ? *body : "Unable to find mission debriefing text";
             // One left-to-right, non-recursive {ADD}<key> pass into the 0x1000
