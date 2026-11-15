@@ -422,8 +422,9 @@ void Frontend::loadProfiles() {
 }
 
 void Frontend::saveProfile(int i) {
+    // GOG 0x409180 (CD 0x40f718): every slot is written, unused ones too (the
+    // save-all loop 0x408b90 / CD 0x40f17c), so a deleted soldier stays deleted.
     Profile& p = profiles_[size_t(i)];
-    if (!p.valid()) return;
     char name[32];
     std::snprintf(name, sizeof name, "player%02d.ply", i + 1);
     std::ofstream f(o_.gameDir / name, std::ios::binary);
