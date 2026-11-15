@@ -99,10 +99,13 @@ private:
     int unhandled_ = 0;
 };
 
-// Campaign flags (DF.EXE 0x66f9d8): restored at mission start, saved back
-// when side 1 wins. Kept for the session.
+// Campaign flags (DF.EXE 0x66f9d8, GOG Df.exe [0x67dbec]): restored at
+// mission start (GOG 0x404f16). Kept for the session.
 uint32_t& campaignFlags();
-// The flags a mission starts with (the soldier's); updated when side 1 wins.
+// The flags a mission starts with (the soldier's, GOG [0x67f70c]). The live
+// word is copied here when a single player mission is left with side 1 as
+// the latched winner (GOG Df.exe 0x401e70 at 0x401ea1, GOG Df2.exe 0x45a870),
+// so flags set after the win action are kept.
 uint32_t& savedCampaignFlags();
 
 } // namespace df

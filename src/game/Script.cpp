@@ -151,10 +151,9 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
         case 5: if (p1 >= 0 && p1 < 32) g_flags |= 1u << p1; break;
         case 6: host.showText(p1); break;
         case 7: host.radio(p1); break;
-        case 8:
-            g_savedFlags = g_flags;   // the campaign keeps its flags only on a win
-            host.endMission(1);
-            break;
+        // Only latches the result (GOG Df.exe 0x42e810 -> 0x444ca0(1)); the
+        // flags are saved when the mission is left (see savedCampaignFlags).
+        case 8: host.endMission(1); break;
         case 9: host.endMission(2); break;
         case 10: host.endMission(0); break;
         case 14: if (p1 >= 0 && p1 < 32) goals_ |= 1u << p1; break;
