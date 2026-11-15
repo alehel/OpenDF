@@ -712,6 +712,12 @@ private:
     // The red identification ticks and name (GOG Df2.exe 0x4642b0 crosshair,
     // 0x455be0 scope): `r` the scope radius, 0 for the crosshair.
     void drawDf2TargetId(const Screen& s, float cx, float cy, float r);
+    // GOG Df.exe 0x45f740: the first person on the player's side along the
+    // view within `range` and 2 m of the ray, or nullptr.
+    const WorldObject* df1AimPick(float range) const;
+    // Delta Force's "Break X" (GOG Df.exe 0x402300 main view, 0x466090
+    // scope): `r` the scope radius, 0 for the main view.
+    void drawDf1TargetId(const Screen& s, float cx, float cy, float r);
     void drawPaused(const Screen& s);
     void drawQuitBox(const Screen& s);
     void drawBinoculars(const Screen& s);
@@ -3865,6 +3871,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // while [0xbf2b40] is set), which OpenDF's camera is once the player is
     // dead.
     if (!showMap_ && df2Hud_.on && !playerDead()) drawDf2TargetId(s, cx, cy, 0);
+    // GOG Df.exe 0x402300: the same-side mark, with the crosshairs on or
+    // off; nothing outside the first-person view ([0x6ba3ec] != 0).
+    if (!showMap_ && !df2Hud_.on && !playerDead()) drawDf1TargetId(s, cx, cy, 0);
 
     // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
     // bright green border, ticks from r/4 to r/2 in the four directions, the
@@ -3949,6 +3958,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             else std::snprintf(buf, sizeof buf, "%3dm", int(range));
             hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
         }
+        drawDf1TargetId(s, zx, zy, r);   // GOG Df.exe 0x466090 (0x46662c)
     }
 
     if (showGoals_) drawGoals(s);
@@ -5815,6 +5825,67 @@ void Game::drawDf2TargetId(const Screen& s, float cx, float cy, float r) {
     }
     const std::string name = df2PersonName(*o);
     if (!name.empty()) hud_.text(cx - hud_.textWidth(name, s.text()) / 2, nameY, name, kHudRed, s.text());
+}
+
+const WorldObject* Game::df1AimPick(float range) const {
+    // GOG Df.exe 0x45f740: from the player's origin 0.75 m up ([0x4ccb34])
+    // along its yaw and pitch, the first organic (slot in use, side +0x70
+    // the player's, not the player, not +0x6c & 2) whose distance along the
+    // ray is in (1/256 m, range] and whose miss (0x477670's approximate
+    // length) is at most 2 m.
+    const Vec3 from = player_.origin() + Vec3{0, 0.75f, 0};
+    const float pitch = player_.pitch;
+    const Vec3 dir{std::cos(pitch) * std::sin(player_.yaw), std::sin(pitch), -std::cos(pitch) * std::cos(player_.yaw)};
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide) continue;
+        const Vec3 d = world_.nearest(o.pos, from) - from;
+        const float along = dot(d, dir);
+        if (along <= 1.f / 256.f || along > range) continue;
+        const Vec3 m = d - dir * along;
+        float a = std::abs(m.x), b = std::abs(m.y), c = std::abs(m.z);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        if (a + b * 11.f / 32.f + c * 0.25f <= 2.f) return &o;
+    }
+    return nullptr;
+}
+
+void Game::drawDf1TargetId(const Screen& s, float cx, float cy, float r) {
+    // GOG Df.exe 0x402300 / 0x466090: the pick at the centre's depth + 2 m
+    // (the depth buffer word << 10, at most 0xffff << 10); nothing with
+    // attributes & 0x2000 (Break X off; multiplayer & 0x40). The pick only
+    // returns the player's side, so the other-side branch (the name alone)
+    // never runs: four red ([0x67db54] = 0xff0000) diagonals and the AI's
+    // name (People Names, as the friendly tags) centred in red, style 2.
+    if (o_.attributes & 0x2000) return;
+    const float aim = rangeToAim();
+    const WorldObject* o = df1AimPick((aim < 0 ? 1024.f : std::min(aim, 1024.f)) + 2.f);
+    if (!o) return;
+    const float t = s.px();
+    float nameY = cy;
+    if (r <= 0) {
+        // Main view: (512 -+ 15, 384 -+ 15) to (512 -+ 5, 384 -+ 5) in the
+        // virtual 1024x768 space; the name at y 339 (384 - 10 - 5 - 30).
+        const float a = s.vy(15), b = s.vy(5);
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                hud_.line(cx + float(sx) * a, cy + float(sy) * a, cx + float(sx) * b, cy + float(sy) * b, t, kHudRed);
+        nameY = cy - s.vy(45);
+    } else {
+        // The scope inset: (±r/2, ±r/2) to (±r/4, ±r/4) about its centre,
+        // the name (0x472bc0) at the centre.
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                hud_.line(cx + float(sx) * r / 2, cy + float(sy) * r / 2, cx + float(sx) * r / 4, cy + float(sy) * r / 4, t, kHudRed);
+    }
+    if (o->missionIndex < 0) return;
+    const int nameId = int(mission_.objects[size_t(o->missionIndex)].raw[1]);
+    if (nameId == 0) return;
+    char key[24];
+    std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
+    const std::string* name = campText_.find("People Names", key);
+    if (name && !name->empty()) hud_.text(cx - hud_.textWidth(*name, s.text()) / 2, nameY, *name, kHudRed, s.text());
 }
 
 void Game::drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj) {
