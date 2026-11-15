@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -187,7 +188,7 @@ private:
     float textWidth(MenuFont& f, const std::string& s);
     // Text with {C:Name} colour codes; align 0 left, 1 centre, 2 right.
     void drawText(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align = 0);
-    // Word wrap (~0x409260): words at spaces, "~" a line break, "{...}"
+    // Word wrap (~0x409260, GOG 0x410050): words at spaces, a word starting with "~" a line break, "{...}"
     // link tags dropped; returns the number of lines.
     int drawWrapped(const std::string& fontName, float x, float y, float w, float h, const std::string& s, uint32_t color,
                     int startLine = 0);
@@ -217,6 +218,8 @@ private:
     void captureTo(GLuint& tex);
     void drawCaptured(GLuint tex, float x, float y, float w, float h);
     void drawWipe();
+    void pushTestEvents(const char* events);
+    void commitEdit();
 
     void enter(Screen s);
     void setMenu(const std::string& name);
@@ -234,6 +237,7 @@ private:
     // Screens.
     void refreshSoldier();
     void refreshCampaign();
+    void refreshOverviewTitle();
     void refreshOptions();
     bool missionAvailable(int camp, int mis);
     uint32_t missionHeader(int camp, int mis, int offset);
@@ -326,6 +330,7 @@ private:
     int briefLine_ = 0, briefTotal_ = 0, briefVisible_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
+    bool debfWon_ = false;   // GOG 0x4e6cfc
     bool missionPlayed_ = false;   // a mission has ended this run (the mixer hook is off since)
     int quitCode_ = 0;
     uint32_t options_ = 0;   // df.cfg attributes (Enemy AI 0x80, Player Health 0x100, ...)
@@ -394,19 +399,26 @@ void Frontend::loadKeyDefaults() {
     for (int i = 0; i < kKeyRowsGog; ++i) keyDefaults_[size_t(i)] = {kKeyRows[i].vk, kKeyRows[i].mouse, 0};
     if (!gogProfile_) return;
     // GOG 0x407040: DFDK.KEY [KEYS] "KEY=index,vk,mouse,joy" over the table
-    // at 0x4e7ddc (12-byte rows).
+    // at 0x4e7ddc (12-byte rows, zero in the EXE's DGROUP, so a row the file
+    // does not list stays 0).
     std::vector<uint8_t> raw;
     if (!vfs_.read("DFDK.KEY", raw)) return;
+    keyDefaults_ = {};
     std::istringstream in(std::string(raw.begin(), raw.end()));
     std::string line;
     bool keys = false;
     while (std::getline(in, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty() && line[0] == '[') { keys = upperCase(line).compare(0, 6, "[KEYS]") == 0; continue; }
+        if (const size_t c = line.find(';'); c != std::string::npos) line.resize(c);
+        while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+        size_t b = 0;
+        while (b < line.size() && std::isspace(static_cast<unsigned char>(line[b]))) ++b;
+        line.erase(0, b);
+        if (line.empty()) continue;
+        if (line[0] == '[') { keys = upperCase(line).compare(0, 6, "[KEYS]") == 0; continue; }
         if (!keys || upperCase(line).compare(0, 4, "KEY=") != 0) continue;
         int idx = -1;
         unsigned vk = 0, mouse = 0, joy = 0;
-        if (std::sscanf(line.c_str() + 4, "%d,%u,%u,%u", &idx, &vk, &mouse, &joy) >= 1 && idx >= 0 && idx < kKeyRowsGog)
+        if (std::sscanf(line.c_str() + 4, "%d , %u , %u , %u", &idx, &vk, &mouse, &joy) >= 1 && idx >= 0 && idx < kKeyRowsGog)
             keyDefaults_[size_t(idx)] = {vk, mouse, joy};
     }
 }
@@ -613,8 +625,8 @@ void Frontend::drawWipe() {
     drawCaptured(startTex_, 0, 0, 640, 480);
     if (wipeStep_ > 0) {
         drawCaptured(endTex_, 0, 0, float(128 * wipeStep_), 480);
-        // The bar: 50 %, black skipped (0x4083f8).
-        const HudImage bar = image("ImageLightBarRt");
+        // The bar: 50 %, black pixels skipped (0x4083f8; GOG 0x40f1e0).
+        const HudImage bar = image("ImageLightBarRt", true);
         if (bar.texture)
             hud().imageUV(bar.texture, offX_ + float(128 * (wipeStep_ - 1) + 44) * scale_, offY_, 84 * scale_, 480 * scale_, 0, 0, 84.f / float(bar.width),
                           480.f / float(bar.height), {1, 1, 1, 0.5f});
@@ -699,12 +711,14 @@ int Frontend::drawWrapped(const std::string& fontName, float x, float y, float w
             word = e == std::string::npos ? std::string() : word.substr(e + 1);
             if (word.empty()) continue;
         }
-        if (word == "~") { newline(); continue; }
-        const float ww = textWidth(f, word + " ");
-        if (cx + ww > x + w && cx > x) newline();
+        // GOG 0x410050: a token starting with '~' breaks the line (not drawn);
+        // the word alone is tested against the right edge, the word and its
+        // space advance.
+        if (word[0] == '~') { newline(); continue; }
+        if (cx + textWidth(f, word) > x + w && cx > x) newline();
         if (cy + lh > y + h) break;
         if (line >= startLine) drawText(fontName, cx, cy, word, color);
-        cx += ww;
+        cx += textWidth(f, word + " ");
     }
     return line + 1;
 }
@@ -829,7 +843,8 @@ void Frontend::enter(Screen s) {
             if (a == std::string::npos && c == std::string::npos) break;
             bool include = true;
             size_t tagEnd;
-            if (c != std::string::npos && (a == std::string::npos || c < a)) {
+            const bool isCv = c != std::string::npos && (a == std::string::npos || c < a);
+            if (isCv) {
                 a = c;
                 tagEnd = briefing_.find('}', c);
                 if (tagEnd == std::string::npos) break;
@@ -845,7 +860,10 @@ void Frontend::enter(Screen s) {
             size_t e = tagEnd;
             while (e < briefing_.size() && briefing_[e] != ' ') ++e;
             const std::string* more = include ? campText_.find(sec, briefing_.substr(tagEnd, e - tagEnd)) : nullptr;
-            briefing_.replace(a, e - a, more ? *more : "");
+            // GOG 0x414520: after a {CV:n} key the space is dropped when a '{'
+            // follows it ({ADD} keeps its space).
+            const size_t cut = isCv && e + 1 < briefing_.size() && briefing_[e] == ' ' && briefing_[e + 1] == '{' ? e + 1 : e;
+            briefing_.replace(a, cut - a, more ? *more : "");
         }
         briefLine_ = 0;
         caption_.clear();
@@ -888,10 +906,11 @@ void Frontend::enter(Screen s) {
             if (!t.empty()) tokens.push_back(t);
             float x = 348;
             for (size_t i = 0; i < tokens.size(); ++i) {
-                if (i > 0 && tokens[i] == "~") { ++briefTotal_; continue; }
-                const float w = textWidth(f, tokens[i] + " ");
-                if (i > 0 && x + w > 558) { ++briefTotal_; x = 348; }
-                x += w;
+                // GOG 0x425a10: '~' as the first character; the word alone is
+                // tested, the word and its space advance.
+                if (i > 0 && tokens[i][0] == '~') { ++briefTotal_; continue; }
+                if (i > 0 && x + textWidth(f, tokens[i]) > 558) { ++briefTotal_; x = 348; }
+                x += textWidth(f, tokens[i] + " ");
             }
             if (MnuButton* sl = mnu_.button("but_mi_sl")) {
                 sl->sliderSize = briefTotal_ >= briefVisible_ ? briefTotal_ - briefVisible_ + 1 : 0;
@@ -911,6 +930,11 @@ void Frontend::enter(Screen s) {
         break;
     case Debrief:
         setMenu("DebfMenu");
+        // GOG 0x41f320: "won" is the profile's mission-done flag (after the
+        // post-mission update), so a lost replay of a finished mission still
+        // debriefs as a win; Var02 = 0 then, else 1.
+        debfWon_ = prof().get(0x30 + camp_ * 0x44 + 4 * mis_) != 0;
+        musicVar(2, debfWon_ ? 0 : 1);
         saveProfile(cur_);
         break;
     case End:
@@ -1282,10 +1306,14 @@ void Frontend::drawBriefingText(const MnuButton& b) {
         ++lineNo;
     };
     for (size_t i = 0; i < tokens.size(); ++i) {
-        if (i == 0) { put(i, true); continue; }   // the first token is drawn untested (as DF.EXE)
-        if (tokens[i] == "~") { newline(); }
+        // The first token is drawn without a wrap test, and only at scroll
+        // line 0 (GOG 0x425610: 0x425470(..., scroll < 1)).
+        if (i == 0) { put(i, briefLine_ < 1); continue; }
+        // A token starting with '~' breaks the line; a word wraps when the
+        // word alone (its space not counted) passes the right edge.
+        if (tokens[i][0] == '~') { newline(); }
         else {
-            if (x + textWidth(f, tokens[i] + " ") > right) newline();
+            if (x + textWidth(f, tokens[i]) > right) newline();
             if (y + fh > bottom) break;
             put(i, lineNo >= briefLine_);
             continue;
@@ -1514,6 +1542,20 @@ void Frontend::refreshCampaign() {
             b->drawstate = i == camp_ ? 3 : 1;
         }
     }
+    refreshOverviewTitle();
+}
+
+void Frontend::refreshOverviewTitle() {
+    // GOG 0x40aa10 (0x4d0d40 is always set): "%s {C:TrueGreen}%s" with
+    // CAOVERVIEW and the selected mission's 'Mission Names' STR_VC<c>M<m>
+    // (empty if missing) into but_ca_ovrtxt.
+    MnuButton* o = mnu_.button("but_ca_ovrtxt");
+    if (!o) return;
+    char key[32];
+    std::snprintf(key, sizeof key, "STR_VC%02dM%02d", camp_ + 1, mis_ + 1);
+    const std::string* nm = campText_.find("Mission Names", key);
+    const std::string* ov = menuText_.find("GroupMainMenu", "CAOVERVIEW");
+    o->text = (ov ? *ov : std::string("CAOVERVIEW")) + " {C:TrueGreen}" + (nm ? *nm : std::string());
 }
 
 void Frontend::acceptMission() {
@@ -1557,10 +1599,14 @@ void Frontend::event(MnuButton& b, int ev) {
     // Choose Soldier.
     if (cb == "MNU_NS_NAMEBUTTON1") {
         const int row = std::atoi(b.name.c_str() + 7) - 1;   // BUT_NS_<n>[L]
-        if (row < 0 || row > 8 || !editing_.empty()) return;
+        if (row < 0 || row > 8) return;
         if (ev == 6 && row != cur_) b.drawstate = 2;
         else if (ev == 7 && row != cur_) b.drawstate = 1;
         else if (ev == 2) {
+            // 0x409330 acts only on another row: a click on the row being
+            // edited leaves the edit alone (another row's click committed it
+            // first, 0x40dd80).
+            if (!editing_.empty()) return;
             cur_ = row;
             deleting_ = false;
             refreshSoldier();
@@ -1623,6 +1669,7 @@ void Frontend::event(MnuButton& b, int ev) {
             lastMapClick_ = ticks_;
             mis_ = i;
             prof().set(0x470 + 4 * camp_, i);
+            refreshOverviewTitle();   // 0x40b353
             sound("BEEP2.WAV");
             return;
         }
@@ -2093,35 +2140,42 @@ void Frontend::textInput(const char* t) {
         if (int(b->text.size()) + 1 < editMax_ && *p >= 32 && *p < 127) b->text += *p;
 }
 
+void Frontend::commitEdit() {
+    // GOG 0x40d970: the edit ends and its callback gets 4, from Enter or from
+    // a click elsewhere (0x40dd80).
+    MnuButton* b = mnu_.button(editing_);
+    if (!b) { editing_.clear(); return; }
+    editing_.clear();
+    SDL_StopTextInput();
+    if (b->callback != "MNU_NS_TEXT") { event(*b, 4); return; }
+    // mnu_ns_text (0x410074): empty keeps the old name; else the
+    // upper-cased name, slot in use, saved at once.
+    if (!b->text.empty()) {
+        if (editMode_ == 1) profileDefaults(prof());
+        prof().setName(b->text);
+        prof().set(0x24, prof().get(0x24) | 1);
+        saveProfile(cur_);
+    } else if (editMode_ == 1) {
+        profileDefaults(prof());
+        prof().setName("New Operative");
+    }
+    b->text = prof().name();
+    refreshSoldier();
+}
+
 void Frontend::key(const SDL_KeyboardEvent& k) {
     const SDL_Keycode sym = k.keysym.sym;
     if (!editing_.empty()) {
         MnuButton* b = mnu_.button(editing_);
         if (!b) { editing_.clear(); return; }
         if (sym == SDLK_BACKSPACE && !b->text.empty()) b->text.pop_back();
-        else if (b->callback != "MNU_NS_TEXT" && (sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE)) {
-            // Framework (0x406bf8): Enter -> cb(4), Esc -> text restored, cb(5).
-            const bool commit = sym != SDLK_ESCAPE;
-            if (!commit) b->text = editBackup_;
+        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) commitEdit();   // GOG 0x40d9e0 -> 0x40d970
+        else if (b->callback != "MNU_NS_TEXT" && sym == SDLK_ESCAPE) {
+            // Framework (0x406bf8): Esc -> text restored, cb(5).
+            b->text = editBackup_;
             editing_.clear();
             SDL_StopTextInput();
-            event(*b, commit ? 4 : 5);
-        } else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
-            // mnu_ns_text (0x410074): empty keeps the old name; else the
-            // upper-cased name, slot in use, saved at once.
-            if (!b->text.empty()) {
-                if (editMode_ == 1) profileDefaults(prof());
-                prof().setName(b->text);
-                prof().set(0x24, prof().get(0x24) | 1);
-                saveProfile(cur_);
-            } else if (editMode_ == 1) {
-                profileDefaults(prof());
-                prof().setName("New Operative");
-            }
-            b->text = prof().name();
-            editing_.clear();
-            SDL_StopTextInput();
-            refreshSoldier();
+            event(*b, 5);
         } else if (sym == SDLK_ESCAPE) {
             b->text = editBackup_;
             editing_.clear();
@@ -2388,6 +2442,13 @@ int Frontend::run() {
                     continue;
                 }
                 MnuButton* b = hit(mouseX_, mouseY_);
+                if (!editing_.empty()) {
+                    // GOG 0x40dd80: while a text field is edited, moves reach no
+                    // button (no hover); a press or release off the button hovered
+                    // when the edit began commits it first, as Enter does.
+                    if (e.type == SDL_MOUSEMOTION) continue;
+                    if (!b || b->name != hover_) commitEdit();
+                }
                 if (b && (b->type == 2 || b->type == 3) && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && !(b->attrib & 2) && b->drawstate != 4) {
                     sound("CLICK9.WAV");
                     dragging_ = b->name;
@@ -2426,8 +2487,11 @@ int Frontend::run() {
         const Uint64 now = SDL_GetPerformanceCounter();
         clock += double(now - last) / double(SDL_GetPerformanceFrequency());
         last = now;
+        static const char* testEvents = std::getenv("OPENDF_FEEVENTS");   // testing
+        if (testEvents && !o_.screenshot.empty()) clock = 0.016 * 4;
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
+            if (testEvents) pushTestEvents(testEvents);
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             ++screenTicks_;
             static const int leadTicks = std::getenv("OPENDF_LEADTICKS") ? std::atoi(std::getenv("OPENDF_LEADTICKS")) : 600;   // testing
@@ -2465,18 +2529,20 @@ int Frontend::run() {
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;
+                g.showGun = cfg_.get("showgun") != 0;
                 g.flipMouse = cfg_.get("flipmouse") != 0;
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
                 g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
                 // 0x41cca0 (GOG 0x41ce20): the profile's 44 (GOG 46: +0x8b0
-                // PrevWaypoint, +0x8bc server) bindings over the game table;
+                // PrevWaypoint, +0x8bc server; row 28 named AudioMacros)
+                // bindings over the game table;
                 // mouse 1/2/3 -> mask 1/2/0x10; Fire also sets attack_2.
                 g.bindings.clear();
                 for (int i = 0; i < keyRows_; ++i) {
                     const uint32_t vk = uint32_t(prof().get(0x6a0 + 12 * i)) & 0xFFFF, m = uint32_t(prof().get(0x6a4 + 12 * i));
                     const uint32_t mask = m == 1 ? 1 : m == 2 ? 2 : m == 3 ? 0x10 : 0;
-                    g.bindings.push_back({kKeyRows[i].game, vk | mask << 16});
+                    g.bindings.push_back({i == 28 && keyRows_ == kKeyRowsGog ? "AudioMacros" : kKeyRows[i].game, vk | mask << 16});
                     if (i == 8) g.bindings.push_back({"attack_2", vk | mask << 16});
                 }
                 uint32_t flags = uint32_t(prof().get(0x70 + camp_ * 0x44));
@@ -2485,18 +2551,26 @@ int Frontend::run() {
                 runGame(vfs_, g, &outcome_, &flags);
                 missionPlayed_ = true;
                 audio_.setDfMixer(true, false);
+                // GOG 0x401e70 -> 0x407980: the mission's option words go back
+                // to the settings (df.cfg); of them OpenDF's missions change
+                // only the crosshair and gun toggles.
+                if (outcome_.played) {
+                    cfg_.set("crosshairs", outcome_.crosshairs ? 1 : 0);
+                    cfg_.set("showgun", outcome_.showGun ? 1 : 0);
+                }
                 if (outcome_.quit) break;
-                // 0x40e5d4: a win marks the mission done, kills add up; the
-                // flags are kept only on a win.
+                // 0x40e5d4 (GOG 0x407de0): a win marks the mission done and
+                // adds the kills; the flags are kept only on a win.
                 prof().set(0x70 + camp_ * 0x44, int32_t(flags));
-                if (outcome_.won) prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
-                prof().set(0x664, prof().get(0x664) + outcome_.kills);
+                if (outcome_.won) {
+                    prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
+                    prof().set(0x664, prof().get(0x664) + outcome_.kills);
+                }
                 if (!openWindow()) return 1;
                 // Post Menu (0x41e480): music_start, then Var00=1 (single
-                // player); Debf init: Var02 = 0 won / 1 lost (0x423f18).
+                // player); Debf init sets Var02 (GOG 0x41f320).
                 music_.start();
                 musicVar(0, 1);
-                musicVar(2, outcome_.won ? 0 : 1);
                 enter(Debrief);
                 next_ = Debrief;
             } else if (next_ == Quit) {
@@ -2579,10 +2653,10 @@ int Frontend::run() {
             auto t = [&](const char* k) { const std::string* s = menuText_.find("GroupMainMenu", k); return s ? *s : std::string(k); };
             char sec[32], key[32];
             std::snprintf(sec, sizeof sec, "Briefing%d", mis_ + 1);
-            std::snprintf(key, sizeof key, outcome_.won ? "Win%d" : "Lose%d", mis_ + 1);
+            std::snprintf(key, sizeof key, debfWon_ ? "Win%d" : "Lose%d", mis_ + 1);
             const std::string* body = campText_.find(sec, key);
             std::string text = t("DEBFMISSIONSTATS");
-            if (outcome_.won) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
+            if (debfWon_) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
             else text += " ~ ~ ";
             text += body ? *body : "Unable to find mission debriefing text";
             // One left-to-right, non-recursive {ADD}<key> pass into the 0x1000
@@ -2626,6 +2700,55 @@ int Frontend::run() {
     music_.stop();
     closeWindow();
     return quitCode_;
+}
+
+void Frontend::pushTestEvents(const char* ev) {
+    // Testing: OPENDF_FEEVENTS="TICK OP ARGS; ..." pushes real SDL events at
+    // menu tick TICK (OP m = move to x y, c = left click at x y, r = right
+    // click, k = key by SDL name, t = text input) in 640x480 coordinates.
+    std::istringstream all(ev);
+    std::string item;
+    while (std::getline(all, item, ';')) {
+        std::istringstream in(item);
+        int at = 0;
+        std::string op;
+        if (!(in >> at >> op) || at != ticks_) continue;
+        if (op == "m" || op == "c" || op == "r") {
+            float x = 0, y = 0;
+            in >> x >> y;
+            int ww, wh, dw, dh;
+            SDL_GetWindowSize(win_, &ww, &wh);
+            SDL_GL_GetDrawableSize(win_, &dw, &dh);
+            const int wx = int((offX_ + x * scale_) * float(ww) / float(std::max(1, dw)));
+            const int wy = int((offY_ + y * scale_) * float(wh) / float(std::max(1, dh)));
+            SDL_Event m{};
+            m.type = SDL_MOUSEMOTION;
+            m.motion.x = wx;
+            m.motion.y = wy;
+            SDL_PushEvent(&m);
+            if (op != "m")
+                for (Uint32 t : {Uint32(SDL_MOUSEBUTTONDOWN), Uint32(SDL_MOUSEBUTTONUP)}) {
+                    SDL_Event b{};
+                    b.type = t;
+                    b.button.button = op == "c" ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+                    b.button.x = wx;
+                    b.button.y = wy;
+                    SDL_PushEvent(&b);
+                }
+        } else if (op == "k") {
+            std::string name;
+            std::getline(in >> std::ws, name);
+            SDL_Event k{};
+            k.type = SDL_KEYDOWN;
+            k.key.keysym.scancode = SDL_GetScancodeFromName(name.c_str());
+            k.key.keysym.sym = SDL_GetKeyFromScancode(k.key.keysym.scancode);
+            SDL_PushEvent(&k);
+        } else if (op == "t") {
+            std::string text;
+            std::getline(in >> std::ws, text);
+            if (!editing_.empty()) textInput(text.c_str());   // straight in (a pushed SDL_TEXTINPUT is not portable)
+        }
+    }
 }
 
 int runFrontend(Vfs& vfs, const FrontendOptions& options) {

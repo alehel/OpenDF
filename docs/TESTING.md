@@ -43,6 +43,12 @@ per frame). Example, remapping STRAFE LEFT to K on the Keyboard page:
 `OPENDF_FE2EVENTS="30 c 325 130; 40 k K" opendf --game games/DF2 play keyboard --screenshot k.ppm --frames 20`
 (this saves the soldier file, so keep a copy of `df2plyrs.sav`).
 
+The Delta Force front end has the same aid as `OPENDF_FEEVENTS` (same syntax, plus `t TEXT` for typed
+text); with it and `--screenshot` four menu ticks pass per frame, and the first frame's ticks come before
+the first draw, so start events at tick 8 or later. Example, Settings from the Main Menu:
+`OPENDF_FEEVENTS="8 c 320 203" opendf --game games/DeltaForce play main --screenshot w.ppm --frames 5`
+(the front end saves the profiles on exit, so keep a copy of `player01.ply`).
+
 The front ends' sound can be captured: `OPENDF_AUDIODUMP=FILE` opens no audio device and
 mixes 0.016 s per menu tick into FILE as raw s16le stereo at 22050 Hz (with `--screenshot`,
 four ticks per frame), e.g. `OPENDF_AUDIODUMP=brief.raw opendf --game games/DF2 play briefing

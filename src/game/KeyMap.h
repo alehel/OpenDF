@@ -2,8 +2,9 @@
 // joy}): the CD's 44 rows (defaults 0x4dd190, row labels 0x4dd3a0, game-table
 // names 0x41cca0; row 8 feeds attack_1 and attack_2). The GOG Df.exe has 46
 // (kKeyRowsGog): defaults 0x4e7ddc, read from DFDK.KEY (0x407040), labels
-// 0x4e8004 (64 bytes each), names 0x41ce20; row 44 PrevWaypoint (E), row 45
-// server (Home). Shared by the keyboard page and the in-game help (0x4816a0).
+// 0x4e8004 (64 bytes each), names 0x41ce20 (row 28 is "AudioMacros" there);
+// row 44 PrevWaypoint (E), row 45 server (Home). Shared by the keyboard page
+// and the in-game help (0x4816a0).
 #pragma once
 
 #include <cstdint>
