@@ -481,7 +481,7 @@ static bool inTriangle(const HitFace& f, float pu, float pv, int ua, int va) {
 
 template <class Visit>
 static void testFaces(const World& world, const WorldObject& o, const GpuModel& m, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip,
-                      uint32_t skipMaterial, float maxT, Visit visit) {
+                      uint32_t skipMaterial, float maxT, bool bothSides, Visit visit) {
     forPosedMeshes(world, o, m, a, hitSkip, [&](int mi, const Mat4& w) {
         auto toFile = [&](Vec3 p) {
             const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
@@ -497,7 +497,10 @@ static void testFaces(const World& world, const WorldObject& o, const GpuModel& 
             if (f.material & skipMaterial) continue;
             const float ds = f.n[0] * ls[0] + f.n[1] * ls[1] + f.n[2] * ls[2] + f.d;
             const float de = f.n[0] * le[0] + f.n[1] * le[1] + f.n[2] * le[2] + f.d;
-            if (f.material & 0x2) { if ((ds > 0 && de > 0) || (ds <= 0 && de <= 0)) continue; }
+            // bothSides: any crossing of the plane, whatever the material
+            // (GOG Df.exe rounds, 0x464a44..0x464b71); else from the front
+            // only, both ways with material 0x2 (CD 0x44e918, sight 0x42db80).
+            if (bothSides || (f.material & 0x2)) { if ((ds > 0) == (de > 0)) continue; }
             else if (!(ds > 0 && de <= 0)) continue;
             const float sum = std::abs(ds) + std::abs(de);
             if (sum <= 0) continue;
@@ -823,7 +826,7 @@ Vec3 World::personStep(WorldObject& o, float velocity) const {
 
 bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
     bool found = false;
-    testFaces(*this, o, *o.model, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
+    testFaces(*this, o, *o.model, a, b, hitSkip_, 0x01000000, 2.f, !df2Rules, [&](const HitFace& f, int mi, float t) {
         // Ties: a later face wins among objects, not over the terrain.
         if (haveObject || found ? t > best : t >= best) return true;
         best = t;
@@ -900,7 +903,7 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
         if (y < z) std::swap(y, z);
         if (x + y * 11.f / 32.f + z * 0.25f > R) continue;
         bool blocked = false;
-        testFaces(*this, o, m, a, b, hitSkip_, 0x800, 2.f, [&](const HitFace& f, int, float) {
+        testFaces(*this, o, m, a, b, hitSkip_, 0x800, 2.f, false, [&](const HitFace& f, int, float) {
             if (f.material & 0x868C) { ++extra; return true; }
             blocked = true;
             return false;
@@ -986,8 +989,10 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
         if (!people && o.person) continue;
         // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m
         // of the body origin, then each part's sphere; the nearest along the
-        // path wins.
-        if (o.person && !o.dead && !o.spheres.empty()) {
+        // path wins. Delta Force's rounds (GOG Df.exe 0x463790) do not skip
+        // the dead (no flags & 4 test): a body's posed spheres stop them
+        // (flesh effect and sound, no damage, an armed explosive goes off).
+        if (o.person && (!o.dead || (rounds && !df2Rules && !o.removed)) && !o.spheres.empty()) {
             const Vec3 at = nearest(o.pos, mid);
             // Distance as DF.EXE measures it (0x435bf8): largest component +
             // 11/32 of the middle one + 1/4 of the smallest.
@@ -1105,6 +1110,22 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.gnrcTimer = 0x20;
         return o.item->name + " destroyed";
     }
+    if (!df2Rules && o.item && o.item->aiFunction == "brrl") {
+        // GOG Df.exe 0x45bf80, the barrel's think and damage handler (the
+        // damage 0x464c50 and the blasts call it without a flags & 4 test):
+        // with flag 4 set it goes off at once (0x446fb0, 10 fragments), the
+        // smoke generator (0x447610) and the record cleared (0x4471d0);
+        // otherwise at hp <= 0 flags |= 4 and the think in 10 ticks. Until
+        // then the barrel stays drawn and is still hit by rounds and blasts.
+        if (o.detonate > 0) { o.detonate = 1; return {}; }   // goes off at the next tick
+        if (o.hp <= 0) return {};
+        o.hp -= amount;
+        if (o.hp > 0) return {};
+        o.hp = 0;
+        o.detonate = 10;
+        destroyed_.push_back(index);
+        return o.item->name + " destroyed";
+    }
     if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
     if (o.hp > 0) return {};
@@ -1169,18 +1190,22 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
     const Vec3 target = at + Vec3{0, 0.5f, 0};
     for (size_t i = 0; i < objects.size(); ++i) {
         WorldObject& o = objects[i];
-        if (!o.alive() && o.gnrcTimer <= 0) continue;   // a waiting gnrc object (0x4533f0) still takes it
+        if (!o.alive() && o.gnrcTimer <= 0 && o.detonate <= 0) continue;   // a waiting gnrc object (0x4533f0) or barrel (0x45bf80) still takes it
         const Vec3 p = nearest(o.pos, at);
         if (o.person) {
             const float r = radius + 1.f;
             if (std::abs(p.x - at.x) > r || std::abs(p.y - at.y) > r || std::abs(p.z - at.z) > r) continue;
             float d = len3(p.x - at.x, p.y - at.y, p.z - at.z);
             if (d > r) continue;
-            // Line of sight (0x45be04): from the body to the blast point
-            // raised 0.5 m, then from 0.5 m higher; both blocked: no damage
-            // for type 1, double distance otherwise.
+            // Line of sight: from the body to the blast point raised 0.5 m,
+            // then from 0.5 m higher; both blocked: no damage for type 1,
+            // double distance otherwise. Delta Force (GOG Df.exe 0x465830 ->
+            // 0x42e2b0, CD 0x45be04) uses the sight line, so terrain,
+            // buildings, decorations and items shield; DF2 the terrain only.
             RayHit h;
-            if (raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)) {
+            const bool blocked = df2Rules ? raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)
+                                          : sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0;
+            if (blocked) {
                 if (!heavy) continue;
                 d *= 2;
             }
@@ -1196,7 +1221,7 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
         }
         // A destroyed Delta Force gnrc object waiting to go off (flag 4, no
         // husk yet) is still in the blast and fires at once (0x4533f0).
-        if ((o.hp <= 0 && o.gnrcTimer <= 0) || !o.model) continue;
+        if ((o.hp <= 0 && o.gnrcTimer <= 0 && o.detonate <= 0) || !o.model) continue;
         const std::string& type = o.item ? o.item->type : std::string();
         const float h = o.model->flatRadius, v = o.model->height;
         float d;

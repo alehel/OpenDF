@@ -184,12 +184,15 @@ public:
     bool df2() const { return df2_; }
     // The tables in use (DF2's when loaded, else DF.EXE's), for AI and
     // vehicle guns: every shooter goes through the same tables (DF2.EXE
-    // 0x414ad0).
+    // 0x414ad0; GOG Df.exe 0x462f20 reads the one gun table 0x4f9154 for
+    // everyone, so AI soldiers and vehicles get the tables read from the
+    // user's DF.EXE too, e.g. GOG's silenced records 4/5/6 with power 1 /
+    // falloff 5; without an EXE they are the built-in CD values).
     const ModeDef& modeAt(int m) const {
-        return df2_ && m >= 0 && m < int(modes_.size()) ? modes_[size_t(m)] : modeInfo(m);
+        return (df2_ || fromExe_) && m >= 0 && m < int(modes_.size()) ? modes_[size_t(m)] : modeInfo(m);
     }
     const GunDef& gunAt(int g) const {
-        return df2_ && g >= 0 && g < int(guns_.size()) ? guns_[size_t(g)] : gunInfo(g);
+        return (df2_ || fromExe_) && g >= 0 && g < int(guns_.size()) ? guns_[size_t(g)] : gunInfo(g);
     }
     // DF2: the mission's wind, per tick in metres along x (east) and z
     // (DF2.EXE 0x46bbf0; projectiles are dragged toward it, 0x44c2f0).
