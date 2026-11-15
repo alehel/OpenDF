@@ -74,7 +74,7 @@ public:
     }
     // Delta Force 2's searchlight scan (0x425c70); yaw and pitch are DF2
     // binary angles (yaw anticlockwise from east). See Ai.cpp.
-    float lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
+    float lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
                     int& bestId, Vec3& bestPos) const;
     // 0x418960(a, b): sets bit b of row a of the "spotted" table that the
     // script condition 1 (team a spotted team b) reads.
@@ -149,6 +149,7 @@ private:
     void think(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player);
     void patrol(World& world, Person& p);
     bool scan(World& world, Person& p, const PlayerView& player);
+    float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const;
     Vec3 targetPos(const World& world, const Person& p, const PlayerView& player) const;
     bool targetAlive(const World& world, const Person& p, const PlayerView& player) const;
     void fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player, bool followUp);

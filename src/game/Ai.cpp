@@ -204,7 +204,8 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
 }
 
 // The searchlight's scan (DF2.EXE 0x425c70 over the 256 soldier slots):
-// skip team 0, the light's own team and the dead; the target's yaw from the
+// skip side 0, the light's own side (+0x68, mission byte 0x43; GOG Df2.exe
+// 0x42aa10 compares the slot's +0x68 with the light's) and the dead; the target's yaw from the
 // light's current heading and its pitch from the light's pitch must both be
 // within 0x10/256 turn (22.5 degrees); distance under 1000 m; the sight line
 // 0x406180 gives 1..2. score = (100 / d) · (16 - |dyaw|) / 16 (dyaw in 1/256
@@ -212,12 +213,12 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
 // it fired (+0x64 & 0x4000, set at 0x44a9dc; 0x425e09..0x425e1f) · 2
 // unless +0x64 & 1, the player-controlled slot (0x447833; 0x425e5e).
 // Returns the best score, 0 if none.
-float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
+float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
                           int& bestId, Vec3& bestPos) const {
     float best = 0;
     bestId = -1;
-    auto consider = [&](int id, Vec3 pos, int tteam, int move, bool fired, bool isPlayer) {
-        if (tteam == 0 || tteam == team) return;
+    auto consider = [&](int id, Vec3 pos, int tside, int move, bool fired, bool isPlayer) {
+        if (tside == 0 || tside == side) return;
         const Vec3 tp = world.nearest(pos, at);
         const Vec3 d = tp - at;
         const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
@@ -231,29 +232,42 @@ float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, i
         float score = (100.f / dist) * float(16 - dyaw) / 16.f * moveVisibility(move) * (fired ? 6.f : 1.f) * (isPlayer ? 1.f : 2.f);
         if (score > best) best = score, bestId = id, bestPos = tp;
     };
-    if (player.alive) consider(-3, player.origin, player.team, player.moveNumber, playerFired_, true);
+    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, true);
     for (size_t i = 0; i < world.objects.size(); ++i) {
         const WorldObject& o = world.objects[i];
         if (!o.person || !o.alive() || int(i) == self) continue;
         const Person* q = nullptr;
         for (const auto& x : people_)
             if (x.object == int(i)) q = &x;
-        consider(int(i), o.pos, o.team, o.moveNumber, q && q->fired, false);
+        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired, false);
     }
     return best;
+}
+
+// The scan's best candidate and its score, without the random draw: the
+// best target score x perception (x2 hard for side 2), a quarter when
+// relaxed. DF2 (GOG Df2.exe 0x417830): nothing with ai flag 1, nor for a
+// side-0 soldier without flag 0x200. bestId -1 when none.
+float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const {
+    const WorldObject& self = world.objects[size_t(p.object)];
+    const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
+    const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
+    bestId = -1;
+    bestPos = Vec3{0, 0, 0};
+    // DF2: ai flag 1 blocks acquisition entirely.
+    if (df2 && ((p.flags & 1) || (self.side == 0 && !(p.flags & 0x200)))) return 0;
+    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200));
+    float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
+    if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
+    return score;
 }
 
 bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
-    const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
     int bestId = -1;
     Vec3 bestPos{0, 0, 0};
-    // DF2: ai flag 1 blocks acquisition entirely.
-    if (df2 && (p.flags & 1)) return false;
-    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200));
-    float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
-    if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
+    const float score = scanScore(world, p, player, bestId, bestPos);
     if (bestId == -1 || float(rnd()) >= score * 65536.f) return false;
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d (team %d) spots %d at %.0f m, score %.3f\n", p.object, self.team, bestId, len3(bestPos - eye), score);
@@ -515,6 +529,27 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             spotted_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
         } else {
             p.flags &= ~0x80u;
+        }
+        // DF2 (GOG Df2.exe org1 0x40197f..0x4019fc, CD 0x40179f): seen or
+        // not, the full scan 0x417830 follows; a different best candidate
+        // scoring over 0x4000 (no random draw) becomes the target: spotted
+        // (own team, its team), seen, think 0x10, dead flag 0x40 if it is
+        // already dead, and its position the last known one.
+        if (df2) {
+            int bestId = -1;
+            Vec3 bestPos{0, 0, 0};
+            const float score = scanScore(world, p, player, bestId, bestPos);
+            if (bestId != -1 && bestId != p.target && score * 65536.f > float(0x4000)) {
+                if (std::getenv("OPENDF_DEBUGAI"))
+                    std::fprintf(stderr, "ai %d (team %d) switches %d -> %d, score %.3f\n", p.object, o.team, p.target, bestId, score);
+                p.target = bestId;
+                p.flags |= 0x80;
+                p.unseen = 0;
+                spotted_[size_t(o.team & 63)] |= 1ull << ((bestId == -3 ? player.team : world.objects[size_t(bestId)].team) & 63);
+                p.think = 16;
+                if (!targetAlive(world, p, player)) p.flags |= 0x40;
+                p.lastKnown = world.nearest(targetPos(world, p, player), o.pos);
+            }
         }
     }
     if (p.flags & 0x80) p.seen += elapsed;
