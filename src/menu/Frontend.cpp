@@ -425,10 +425,14 @@ void Frontend::loadKeyDefaults() {
 }
 
 void Frontend::loadProfiles() {
-    // 0x40f40c (GOG 0x408e30): nine files; an absent or unused one is zeroed
-    // with defaults; with no soldier at all slot 0 becomes "BLACKHAWK" (NSDELETEME).
+    // 0x40f40c (GOG 0x408e30): nine files. An absent or unreadable one is
+    // zeroed with defaults and not counted; a "PLY" file whose slot is not
+    // in use (+0x24 bit 0) is reset to defaults with GroupMainMenu NSEMPTY
+    // copied as it is to +4, and counted like one in use. With none counted
+    // slot 0 becomes NSDELETEME ("BLACKHAWK"), in use.
     loadKeyDefaults();
-    bool any = false;
+    const std::string* emptyName = menuText_.find("GroupMainMenu", "NSEMPTY");
+    int files = 0;
     for (int i = 0; i < 9; ++i) {
         Profile& p = profiles_[size_t(i)];
         char name[32];
@@ -448,10 +452,14 @@ void Frontend::loadProfiles() {
                 for (int r = kKeyRowsCd; r < kKeyRowsGog; ++r)
                     for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * r + 4 * k, int32_t(keyDefaults_[size_t(r)][size_t(k)]));
             if (gogProfile_) p.d[3] = 0x1B;
+            if (!p.valid()) {
+                profileDefaults(p);
+                p.setStr(4, 16, emptyName ? *emptyName : "New Operative");
+            }
+            ++files;
         } else {
             profileDefaults(p);
         }
-        if (!p.valid()) { profileDefaults(p); p.setName("New Operative"); }
         // Profiles written by OpenDF before it kept the message macros have
         // all ten empty; they get DF.EXE's defaults (DF.EXE never writes that).
         bool noMacros = true;
@@ -469,13 +477,12 @@ void Frontend::loadProfiles() {
             profileDefaults(fresh);
             std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], size_t(keyRows_) * 12);
         }
-        any = any || p.valid();
         std::memset(&p.d[0x14], 0, 16);
         std::memcpy(&p.d[0x14], name, std::strlen(name));
     }
-    if (!any) {
+    if (files == 0) {
         const std::string* n = menuText_.find("GroupMainMenu", "NSDELETEME");
-        profiles_[0].setName(n ? *n : "BLACKHAWK");
+        profiles_[0].setStr(4, 16, n ? *n : "BLACKHAWK");
         profiles_[0].set(0x24, 1);
     }
     cur_ = 0;
@@ -1083,11 +1090,15 @@ uint32_t Frontend::missionHeader(int camp, int mis, int offset) {
 }
 
 void Frontend::refreshSoldier() {
-    // Row labels: the soldier's name or "New Operative"; the current row pushed.
+    // Row labels (0x40ed60, GOG 0x4086d0): the soldier's name, or for a slot
+    // not in use GroupMainMenu NSEMPTY as it is ("New Operative"); the
+    // current row pushed.
+    const std::string* emptyName = menuText_.find("GroupMainMenu", "NSEMPTY");
     for (int i = 0; i < 9; ++i) {
         char n[32];
         std::snprintf(n, sizeof n, "but_ns_%dtxt", i + 1);
-        if (MnuButton* b = mnu_.button(n)) b->text = profiles_[size_t(i)].name();
+        const Profile& p = profiles_[size_t(i)];
+        if (MnuButton* b = mnu_.button(n)) b->text = p.valid() ? p.name() : emptyName ? *emptyName : "New Operative";
         for (const char* suffix : {"", "l"}) {
             std::snprintf(n, sizeof n, "but_ns_%d%s", i + 1, suffix);
             if (MnuButton* b = mnu_.button(n)) b->drawstate = i == cur_ ? 3 : 1;
