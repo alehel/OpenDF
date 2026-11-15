@@ -297,6 +297,14 @@ private:
     int carried_ = -1;                    // the object the player carries (+0x90)
     bool leaveMission_ = false, quit_ = false;
 public:
+    // Delta Force 2 keeps the campaign switches when the mission is left
+    // (GOG Df2.exe 0x464140, also run by the Space replay 0x466ad0): in
+    // single player with side 1 the winner, the live switches [0x67d40c]
+    // become the saved ones [0x67cf44] that 0x43c6f0 writes to the profile.
+    // DF1 copies them at action 8 instead (Script.cpp).
+    void keepCampaignSwitches() const {
+        if (world_.df2Rules && missionResult_ == kPlayerSide) savedCampaignFlags() = campaignFlags();
+    }
     MissionOutcome outcome() const {
         MissionOutcome o;
         o.played = true;
@@ -2674,6 +2682,15 @@ void Game::killTeam(int team) {
             if (f.empty() || f == "null" || f == "dec0") continue;
             if (!o.person && o.hp <= 0) o.hp = 1;   // hp is set, not reduced: an hp-0 item goes too
             world_.damage(int(i), o.person ? 1000 : o.hp + 50, 0x7fff);        }
+        // The player is an organic of team 1 (0x4146f0) with `plyr`
+        // (0x401fc0): at hp <= 0 it dies on any event, with the death move
+        // of kind 1, part 0, direction 0 (0x417170(obj, 0, 0, 1)), and no
+        // red flash.
+        if (team == kPlayerTeam && !playerDead()) {
+            const int flash = damageFlash_;
+            hurtPlayer(playerHp_ + 50, 1, player_.feet + player_.forward());
+            damageFlash_ = flash;
+        }
         return;
     }
     // GOG Df.exe 0x45f4c0 (CD 0x46ba38): for a non-zero team, every object
@@ -2770,7 +2787,11 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
         }
-        if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
+        if (k.keysym.sym == SDLK_SPACE) {
+            keepCampaignSwitches();   // GOG Df2.exe 0x466ad0 -> 0x464140 before the reload
+            loadMission(current_);
+            return;
+        }
     }
     // DF2's command-map name prompt takes the keyboard while it is open.
     if (df2Hud_.on && showMap_ && df2Map_.prompt) { df2MapKey(k); return; }
@@ -6817,6 +6838,7 @@ int runGame(Vfs& vfs, const GameOptions& options, MissionOutcome* outcome, uint3
     if (flags) savedCampaignFlags() = *flags;
     Game game(vfs, options);
     const int rc = game.run();
+    game.keepCampaignSwitches();
     if (outcome) *outcome = game.outcome();
     if (flags) *flags = savedCampaignFlags();
     return rc;

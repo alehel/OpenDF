@@ -152,7 +152,12 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
         case 6: host.showText(p1); break;
         case 7: host.radio(p1); break;
         case 8:
-            g_savedFlags = g_flags;   // the campaign keeps its flags only on a win
+            // DF1: the campaign keeps its flags here, only on a win.
+            // Delta Force 2's case 8 (GOG Df2.exe 0x41b700) only latches
+            // the winner; the switches are kept when the mission is left
+            // (0x464140, Game::keepCampaignSwitches), so the unlock switch
+            // the win event sets after action 8 is kept too.
+            if (mission_->version < 0x0F) g_savedFlags = g_flags;
             host.endMission(1);
             break;
         case 9: host.endMission(2); break;

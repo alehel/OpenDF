@@ -205,6 +205,9 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     for (int i = 0; i < 128; ++i, o += 0x88) {
         MissionPath p;
         p.flags = u32(d, o);
+        // Delta Force 2 marks every one-point path "stop at end" (bit 1)
+        // after reading the table (GOG Df2.exe 0x403e20, loop 0x4041b0).
+        if (m.version >= 0x0F && u32(d, o + 4) == 1) p.flags |= 1;
         const uint32_t n = std::min<uint32_t>(u32(d, o + 4), 32);
         for (uint32_t k = 0; k < n; ++k) p.points.push_back(int(u32(d, o + 8 + 4 * k)));
         m.paths.push_back(std::move(p));
