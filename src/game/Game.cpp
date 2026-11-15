@@ -739,6 +739,15 @@ private:
         const std::string* t = gameTable_.find(section, key);
         return t && !t->empty() ? *t : std::string(fallback);
     }
+    // Delta Force's HUD text. GOG Df.exe looks it up in DFGAME.BIN by
+    // section and key (0x404cf0: the entry's text, even empty, else ""); the
+    // CD build draws literals and its DFGAME.BIN has no such sections, so
+    // without the section the CD build's literal `cdText`.
+    std::string df1Text(const char* section, const char* key, const char* cdText) const {
+        if (!gameTable_.hasSection(section)) return cdText;
+        const std::string* t = gameTable_.find(section, key);
+        return t ? *t : std::string();
+    }
     bool nvg_ = false;   // DF2 night vision ([0x765740], forced on for night missions)
     // Delta Force 2's command map (DF2.EXE 0x40b370): a 640x480 mouse UI.
     // Its one selection ([0xbcb424], set by select 0x40bb10 from a Map pick,
@@ -2034,7 +2043,9 @@ void Game::touchPickups() {
             if (id == 4118) arsenal_.refillGrenades();
             else arsenal_.refill();
             if (world_.df2Rules) pushMessage(df2Text("Misc", "STRMSIC17", ""), rgb(0xff, 0x80, 0));
-            else pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
+            // CD 0x42b57f: "Ammo reloaded" in 0x66f94c. GOG Df.exe 0x46d9f0
+            // (case 0x1d) asks for the same misspelt STRMSIC17 and shows "".
+            else pushMessage(df1Text("Misc", "STRMSIC17", "Ammo reloaded"), {1, 1, 1, 1}, false, kHudBright);
             sound_.play2D(0x164);
             o.removed = true;
             o.boxes.clear();
@@ -4050,7 +4061,8 @@ void Game::runAction(Action act, bool reverse) {
             break;
         }
         friendlyTags_ = !friendlyTags_;
-        pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
+        // GOG Df.exe 0x477d40: Misc STRMISC04 / STRMISC05.
+        pushMessage(friendlyTags_ ? df1Text("Misc", "STRMISC04", "Friendly Tags: On") : df1Text("Misc", "STRMISC05", "Friendly Tags: Off"));
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
 
@@ -5222,26 +5234,30 @@ void Game::drawTopBar(const Screen& s) {
     std::string grid = gridName(player_.missionX(), player_.missionY());
     hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(13.1f), grid, kHudGreen, ts);
     {
-        // 0x48375b: the carried item's name by id.
-        std::string what = "Nothing";
+        // 0x48375b: the carried item's name by id (GOG Df.exe 0x427640:
+        // the whole line from Overlays STROVER8..17).
+        const char* key = "STROVER8";
+        const char* what = "Nothing";
         if (carried_ >= 0 && world_.objects[size_t(carried_)].item) {
             switch (world_.objects[size_t(carried_)].item->id - 100000) {
-            case 4008: what = "Metal Case"; break;
-            case 4018: what = "Case"; break;
-            case 4021: what = "Black Box"; break;
-            case 4034: what = "Laptop"; break;
-            case 4035: what = "Red Flag"; break;
-            case 4036: what = "Blue Flag"; break;
-            case 4038: what = "Code Book"; break;
-            case 4077: what = "Bomb!"; break;
-            default: what = "Unknown"; break;
+            case 4008: key = "STROVER13"; what = "Metal Case"; break;
+            case 4018: key = "STROVER12"; what = "Case"; break;
+            case 4021: key = "STROVER9"; what = "Black Box"; break;
+            case 4034: key = "STROVER10"; what = "Laptop"; break;
+            case 4035: key = "STROVER15"; what = "Red Flag"; break;
+            case 4036: key = "STROVER16"; what = "Blue Flag"; break;
+            case 4038: key = "STROVER11"; what = "Code Book"; break;
+            case 4077: key = "STROVER14"; what = "Bomb!"; break;
+            default: key = "STROVER17"; what = "Unknown"; break;
             }
         }
-        hud_.text(s.rx(490.6f), s.y(13.1f), "Carrying: " + what, kHudGreen, ts);
+        hud_.text(s.rx(490.6f), s.y(13.1f), df1Text("Overlays", key, (std::string("Carrying: ") + what).c_str()), kHudGreen, ts);
     }
     // "WP%i: %s (%s)", distance "%im" or "%ikm+" (0x4838ac): whole metres of
-    // x and y difference, integer square root; "None" without a route.
-    std::string wp = "None";
+    // x and y difference, integer square root; "None" without a route. GOG
+    // Df.exe 0x427800: Overlays STROVER18 for "None", "%s%i: %s (%s)" with
+    // STROVER55 for "WP".
+    std::string wp = df1Text("Overlays", "STROVER18", "None");
     if (!route_.empty()) {
         const RoutePoint& p = route_[size_t(routeIndex_)];
         const long dx = long(std::floor(p.x - player_.missionX())), dy = long(std::floor(p.y - player_.missionY()));
@@ -5249,7 +5265,7 @@ void Game::drawTopBar(const Screen& s) {
         char dist[32], line[128];
         if (d < 1000) std::snprintf(dist, sizeof dist, "%ldm", d);
         else std::snprintf(dist, sizeof dist, "%ldkm+", d / 1000);
-        std::snprintf(line, sizeof line, "WP%d: %s (%s)", routeIndex_ + 1, p.name.c_str(), dist);
+        std::snprintf(line, sizeof line, "%s%d: %s (%s)", df1Text("Overlays", "STROVER55", "WP").c_str(), routeIndex_ + 1, p.name.c_str(), dist);
         wp = line;
     }
     hud_.text(s.rx(425), s.y(38.1f), wp, kHudGreen, ts);
@@ -5660,11 +5676,13 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             hud_.line(zx, zy - d, zx + d, zy, t, kHudBright);
             hud_.line(zx + d, zy, zx, zy + d, t, kHudBright);
             hud_.line(zx, zy + d, zx - d, zy, t, kHudBright);
-            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
-            else std::snprintf(buf, sizeof buf, "Range: %3im", int(range));
+            // GOG Df.exe 0x466090: Misc STRMISC13 / "%s %3im" with STRMISC14,
+            // STRMISC16 / STRMISC15.
+            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "%s", df1Text("Misc", "STRMISC13", "Range: 1km+").c_str());
+            else std::snprintf(buf, sizeof buf, "%s %3im", df1Text("Misc", "STRMISC14", "Range:").c_str(), int(range));
             hud_.text(s.vx(770) - hud_.textWidth(buf, s.text()) / 2, s.vy(450), buf, kHudBright, s.text());
             const bool target = range >= 0 && range <= 999;
-            const char* status = target ? "Laser Active" : "No Target";
+            const std::string status = target ? df1Text("Misc", "STRMISC16", "Laser Active") : df1Text("Misc", "STRMISC15", "No Target");
             if (target || (ticks_ & 0x10))
                 hud_.text(s.vx(770) - hud_.textWidth(status, s.text()) / 2, s.vy(300), status, kHudBright, s.text());
         } else {
@@ -5702,7 +5720,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         // Misc STRMISC11 ("You are dead."); the CD build's text is in the
         // EXE (0x4c051c). (STRMISC12 "Respawn allowed in:" below it
         // only in multiplayer: 0x471900 returns 0 with [0x67f520] clear.)
-        const std::string dead = exe_.build() == ExeBuild::Df1Gog ? df2Text("Misc", "STRMISC11", "You are dead.") : "You Are Dead";
+        const std::string dead = df1Text("Misc", "STRMISC11", "You Are Dead");
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudMessage, s.text());
     }
 
@@ -7909,7 +7927,7 @@ void Game::drawPaused(const Screen& s) {
         return;
     }
     df1Panel(s, 310, 330, 714, 438);   // GOG 0x427180 -> 0x401ec0, outlined
-    const char* t = "Game Paused";
+    const std::string t = df1Text("Overlays", "STROVER7", "Game Paused");   // GOG Df.exe 0x427180
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
 }
 
@@ -7926,7 +7944,7 @@ void Game::drawQuitBox(const Screen& s) {
         return;
     }
     df1Panel(s, 310, 330, 714, 438);   // GOG 0x4270a0 -> 0x401ec0, outlined
-    const char* t = "End Mission? (Y/N)";
+    const std::string t = df1Text("Overlays", "STROVER5", "End Mission? (Y/N)");   // GOG Df.exe 0x4270a0
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
 }
 
@@ -7968,7 +7986,7 @@ void Game::drawOldMessages(const Screen& s) {
         return;
     }
     df1Panel(s, 100, 100, 924, 668);   // GOG 0x428eb0 -> 0x401ec0, outlined
-    const char* t = "Messages";
+    const std::string t = df1Text("Overlays", "STROVER43", "Messages");   // GOG Df.exe 0x428eb0
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kHudBright, s.text());
     const size_t first = history_.size() < 16 ? 0 : history_.size() - 16;
     for (size_t i = first, row = 16 - (history_.size() - first); i < history_.size(); ++i, ++row)
@@ -8275,16 +8293,19 @@ void Game::drawBinoculars(const Screen& s) {
     RayHit hit;
     float dist = 1e9f;
     if (world_.raycast(eye, eye + dir * 1100.f, hit, true, -3)) dist = hit.t * 1100.f * dot(dir, dir);   // not the player (nor his gun)
-    char buf[32];
-    if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "Distance: 1km+");
-    else std::snprintf(buf, sizeof buf, "Distance: %3im", int(dist));
+    // GOG Df.exe 0x402300: Misc STRMISC01 / "%s %3im" with STRMISC02, and
+    // "%s %3i" with STRMISC03.
+    auto label = [&](const char* key, const char* cd) { return df2Hud_.on ? std::string(cd) : df1Text("Misc", key, cd); };
+    char buf[64];
+    if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "%s", label("STRMISC01", "Distance: 1km+").c_str());
+    else std::snprintf(buf, sizeof buf, "%s %3im", label("STRMISC02", "Distance:").c_str(), int(dist));
     // DF2.EXE 0x45a9e0: the same texts in orange, 15 above the 3D view's centre.
     const float ty = df2Hud_.on ? s.playY + s.playH * 0.5f - s.vy(15) : s.vy(369);
     const Color tc = df2Hud_.on ? kDf2Amber : kHudBright;
     hud_.text(s.vx(768) - hud_.textWidth(buf, s.text()) / 2, ty, buf, tc, s.text());
     float deg = 360.f - cam.yaw * 180.f / kPi;
     deg -= 360.f * std::floor(deg / 360.f);
-    std::snprintf(buf, sizeof buf, "Heading: %3i", int(deg));
+    std::snprintf(buf, sizeof buf, "%s %3i", label("STRMISC03", "Heading:").c_str(), int(deg));
     hud_.text(s.vx(256) - hud_.textWidth(buf, s.text()) / 2, ty, buf, tc, s.text());
 }
 
@@ -8314,8 +8335,11 @@ void Game::drawMissionEnd(const Screen& s) {
     // +40, +80, +110.
     const int top = int(std::lround(s.playY / s.vy(1)));
     df1Panel(s, 0x80, top + 0x14, 0x380, top + 0x96);   // GOG 0x426f20 -> 0x401ec0
-    const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
-                           "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
+    // GOG Df.exe 0x426f20: Overlays STROVER1 / STROVER2, STROVER3, STROVER4.
+    const std::string lines[] = {won ? df1Text("Overlays", "STROVER1", "Congratulations!  Mission Completed Successfully.")
+                                     : df1Text("Overlays", "STROVER2", "Game Over.  Mission Incomplete."),
+                                 df1Text("Overlays", "STROVER3", "Hit Enter to end mission."),
+                                 df1Text("Overlays", "STROVER4", "Hit Space Bar to replay mission")};
     const float tops[] = {40, 80, 110};
     for (int i = 0; i < 3; ++i)
         hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.playY + s.vy(tops[i]), lines[i], kHudPureGreen, s.text());
@@ -8372,7 +8396,6 @@ void Game::drawGoals(const Screen& s) {
     // whether or not there was one. GOG takes the headers from DFGAME.BIN
     // Overlays STROVER51 / STROVER52 ("Lose Condiitions:", sic), the CD
     // build has them in the EXE (0x4c0990 / 0x4c09b4).
-    const bool gog = exe_.build() == ExeBuild::Df1Gog;
     for (int part = 0; part < 2; ++part) {
         if (part == 1) y += 6.25f;
         for (int n = 1; n <= 4; ++n) {
@@ -8381,8 +8404,8 @@ void Game::drawGoals(const Screen& s) {
             const std::string* t = campText_.find("Goals", key);
             if (!t || t->empty()) break;
             if (n == 1) {
-                if (part == 0) line(gog ? df2Text("Overlays", "STROVER51", "Win Conditions:") : "Win Conditions:", kHudWhite);
-                else line(gog ? df2Text("Overlays", "STROVER52", "Lose Condiitions:") : "Lose Conditions:", kHudWhite);
+                if (part == 0) line(df1Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
+                else line(df1Text("Overlays", "STROVER52", "Lose Conditions:"), kHudWhite);
             }
             const bool met = part == 0 ? script_.goalDone(n) : script_.failDone(n);
             line(*t, met ? (part == 0 ? kHudGreen : kHudRed) : kHudWhite);

@@ -279,7 +279,7 @@ private:
     // was closed or the test screenshot was taken during it; `frame`
     // counts presented frames for --screenshot/--frames.
     bool playIntro(int& frame, bool& shotTaken);
-    bool introLeadSkip_ = false;   // a left click or an unread key during the intro (0x418b50, 0x489dc4)
+    bool introLeadSkip_ = false;   // CD: a left click (0x418b50) or a key still queued after the intro (0x489dc4)
     void writeScreenshot(int dw, int dh);
     void writeMenuShot(const std::filesystem::path& path, int dw, int dh);
     DfConfig cfg_;              // df.cfg (written at exit, 0x40dc88 from 0x4016c7)
@@ -2464,7 +2464,7 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
     };
     int keys = 0;   // 0x489e2c: the key queue starts empty
     // Testing: OPENDF_INTROKEY=N presses a key after N shown frames (with
-    // --screenshot), OPENDF_INTROCLICK=N clicks the left button.
+    // --screenshot), OPENDF_INTROCLICK=N presses the left button.
     const int testKey = fixed && std::getenv("OPENDF_INTROKEY") ? std::atoi(std::getenv("OPENDF_INTROKEY")) : -1;
     const int testClick = fixed && std::getenv("OPENDF_INTROCLICK") ? std::atoi(std::getenv("OPENDF_INTROCLICK")) : -1;
     int shown = 0;
@@ -2477,21 +2477,22 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
         // repeats too) go into the key queue (0x485a3a); a left click goes
         // to the Start Screen's mouse hook, registered before the intro
         // (0x418b91 -> 0x418b50), which marks DF_LEAD as done (0x4d9120).
-        // The GOG Df.exe's player (0x49ae00) swaps that hook for its own
-        // (0x49ae4b -> 0x49ade0, the Start Screen's back at 0x49aea5): a
-        // left press (code 2), a right or middle press or release (8..0x40)
-        // or a wheel step (0x100 / 0x200, from 0x497a90) ends the intro, and
-        // the click does not reach DF_LEAD.
+        // The GOG Df.exe's player (0x49ae00) swaps the mouse hook [0xd0936c]
+        // for its own (0x49ae4b -> 0x49ade0) while the video plays and
+        // restores it after (0x49aea5), so the Start Screen's hook never
+        // sees the click. 0x49ade0 ends the video (-3, no key taken) on mouse
+        // code 2 or >= 8 from 0x497a40: any press (double clicks pass as the
+        // raw 0x203 / 0x206 / 0x209), any release but the left one (code 4),
+        // a wheel notch (0x100 / 0x200). Motion (1) does not.
         SDL_Event e;
         bool mouseEnd = false;
         while (SDL_PollEvent(&e)) {
             if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) ++keys;
-            else if (gogProfile_ && (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)) {
-                const int b = e.button.button;
-                if ((b == SDL_BUTTON_LEFT && e.type == SDL_MOUSEBUTTONDOWN) || b == SDL_BUTTON_RIGHT || b == SDL_BUTTON_MIDDLE) mouseEnd = true;
-            } else if (gogProfile_ && e.type == SDL_MOUSEWHEEL && e.wheel.y != 0) mouseEnd = true;
+            else if (gogProfile_ && (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEWHEEL ||
+                                     (e.type == SDL_MOUSEBUTTONUP && e.button.button != SDL_BUTTON_LEFT)))
+                mouseEnd = true;
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) introLeadSkip_ = true;
             else if (e.type == SDL_WINDOWEVENT && !fixed) {
                 // WM_SETFOCUS / WM_KILLFOCUS (0x48580b, 0x485c64): no frames

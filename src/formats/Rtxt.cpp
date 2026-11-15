@@ -64,6 +64,12 @@ const std::string* TextTable::find(const std::string& section, const std::string
     return nullptr;
 }
 
+bool TextTable::hasSection(const std::string& section) const {
+    for (const auto& s : sections_)
+        if (s.name == section) return true;
+    return false;
+}
+
 uint32_t TextTable::position(const std::string& section, const std::string& key) const {
     const std::string* t = find(section, key);
     if (!t) return 0;
