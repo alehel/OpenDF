@@ -4193,7 +4193,8 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             act = (k.keysym.mod & KMOD_SHIFT) ? controls_.shiftActionFor(sc) : Action::Count;   // PrintScreen (flag 0x40)
     }
     // GOG Df2.exe: zoomin / zoomout (0x168 / 0x169) are held commands (table
-    // 0x4b1710 flags 4), polled every frame in the main loop instead.
+    // 0x4b1710 flags 4), polled each tick with the held camera commands
+    // instead (0x420670).
     if (df2Keys && (act == Action::MapZoomIn || act == Action::MapZoomOut)) return;
     runAction(act, df2Keys && shift);
 }
@@ -9458,15 +9459,6 @@ int Game::run() {
             for (SDL_Scancode sc : inputHeld_) keys[sc] = 1;
             const Uint32 mouse = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
             auto down = [&](Action a) { return controls_.down(a, keys, mouse); };
-            // GOG Df2.exe 0x420940 -> 0x41eae0, once a frame unless the text
-            // prompt is open ([0xab0588]): each held command (flags 4) whose key
-            // is down runs, in table order; zoomin / zoomout (0x41f150 cases
-            // 0x62 / 0x63) scale the map [0x79a69c] by 0.9 (min 0x4000) / 1.1
-            // (max 0x39999).
-            if (arsenal_.df2() && controls_.df2Table() && !(df2Map_.prompt && showMap_)) {
-                if (down(Action::MapZoomIn)) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);
-                if (down(Action::MapZoomOut)) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);
-            }
             PlayerInput in;
             in.forward = float(down(Action::MoveForward)) - float(down(Action::MoveBack));
             in.strafe = float(down(Action::SlideRight)) - float(down(Action::SlideLeft));
@@ -9942,6 +9934,20 @@ int Game::run() {
                 // polled each tick, 0x420670): yaw -/+ 0x2000000, pitch
                 // -/+ 0x2000000 within 0xd0000000..0x40000000, distance
                 // -/+ 0x2000 within 1..500 m.
+                // The same held-command pass (0x420670 -> 0x420940 -> 0x41eae0),
+                // unless the text prompt is open ([0xab0588]), runs zoomin /
+                // zoomout (0x41f150 cases 0x62 / 0x63): the map scale
+                // [0x79a69c] x 0.9 (min 0x4000) / 1.1 (max 0x39999), map open
+                // or not.
+                if (arsenal_.df2() && controls_.df2Table() && !(df2Map_.prompt && showMap_)) {
+                    Uint8 kb[SDL_NUM_SCANCODES];
+                    std::memcpy(kb, SDL_GetKeyboardState(nullptr), sizeof kb);
+                    maskFullscreenKey(kb);
+                    for (SDL_Scancode sc : inputHeld_) kb[sc] = 1;
+                    const Uint32 mb = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+                    if (controls_.down(Action::MapZoomIn, kb, mb)) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);
+                    if (controls_.down(Action::MapZoomOut, kb, mb)) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);
+                }
                 if (arsenal_.df2() && !(df2Hud_.on && showMap_)) {
                     Uint8 kb[SDL_NUM_SCANCODES];
                     std::memcpy(kb, SDL_GetKeyboardState(nullptr), sizeof kb);
