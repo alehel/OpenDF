@@ -60,7 +60,7 @@ The Delta Force intro (INTRO.KDV) plays before the start screen. With `--screens
 runs in fixed steps (frame N is always the same picture) and its frames count towards `--frames`:
 `opendf --game games/DeltaForce play intro --screenshot i.ppm --frames 300` shows intro frame 300
 (add `OPENDF_AUDIODUMP=intro.raw` for its sound). `OPENDF_INTROKEY=N` presses a key after N
-frames (skips), `OPENDF_INTROCLICK=N` left-clicks (DF_LEAD then fades at once). `opendf kdv FILE
+frames (skips), `OPENDF_INTROCLICK=N` left-clicks (CD: DF_LEAD then fades at once; GOG: the video ends). `opendf kdv FILE
 [OUTDIR [EVERY]]` decodes any KDV file (also the VIEWS.PFF award videos, after `extract OUT KDV`)
 and writes every EVERY-th frame as a .ppm. Delta Force 2: `OPENDF_DEBUGVIDEO=1` prints the
 binkplay command line DF2.EXE would run at start-up and what the Bink player did. The DF2 intro
