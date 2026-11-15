@@ -239,7 +239,9 @@ First differences from DF1:
     pushed out along the least-negative plane: sideways less 0.1 m
     (nothing within 0.1 m), vertically less 0.02 m (a side push sinks the
     mover 0.02 m, which the terrain then lifts back); a downward push stands
-    him on the object (ground distance 0, +0xF8 = it). Touch items
+    him on the object (ground distance 0, +0xF8 = it). An object whose
+    ladder volume the cubes also touch pushes in full instead, no 0.1 m
+    and no 0.02 m, whoever climbs (GOG Df2.exe 0x446ebc). Touch items
     (movecb) do not push. Type 4 volumes are ladders: contact clears airborne
     and, unless prone (+0x74 & 0x20), zeroes vel_z (GOG Df2.exe 0x446e0a..
     0x446e1c), and there is no gravity on one unless prone (0x4470a5: a
@@ -266,7 +268,8 @@ First differences from DF1:
     .ANMs climb in place with no horizontal step (INFERRED: DF2's table
     entry for a missing move). A side push sinks 0.02 m a tick, so a
     walker (0x800 per odd tick) pressed against a wall cannot climb, a
-    runner (0x1000) can (READ: 0x440a8b). `OPENDF_TESTLADDER=1|ITEM` sends
+    runner (0x1000) can (READ: 0x440a8b); in GOG Df2.exe the ladder's
+    own object pushes in full (0x446ebc), so only other objects sink him. `OPENDF_TESTLADDER=1|ITEM` sends
     the first such soldier into the nearest ladder (testing; D06M11's
     powcamp guard tower: under the CD rules climbed 27.5 to 32.9 m and
     stepped onto it; under GOG's the guard aims level and stays at the foot). Type 6 volumes set +0x64 & 0x1000000: the
