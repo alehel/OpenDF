@@ -22,12 +22,14 @@ enum class Action {
     Binoculars, Pause, OldMessages, ShowFriendly, LetterBox, Drop, Briefing, Help,
     // Delta Force 2: scope zeroing (X / Z) and night vision (N).
     ScopeInc, ScopeDec, NightVision,
-    // Delta Force 2: the map's elevation view (F9 mapterrain / F10
-    // mapelevation, actions 362 / 363).
+    // mapterrain / mapelevation (actions 362 / 363): Delta Force's GPS inset
+    // and elevation picture (F10 / F11); Delta Force 2's map elevation view
+    // (F9 / F10).
     MapTerrain, MapElevation,
     // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
     VCam,
-    // GOG Df.exe: the HUD waypoint one back (PrevWaypoint, E; 0x484d00).
+    // GOG Df.exe: the HUD waypoint one back (PrevWaypoint, command 0x2f, E;
+    // 0x484d00; the EXE table 0x4fb2fc, overwritten from the profile +0x8b0).
     PrevWaypoint,
     // Delta Force: the FO camera inset (fo, F9, id 0x1e) and its next
     // team-mate (tab, Tab, id 0x1f) (GOG Df.exe 0x477d40).

@@ -173,6 +173,7 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         m.terrain = cstr(d, 0x54, 0x10);
         m.dialogue = cstr(d, 0x64, 0x10);
         for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
+        for (int i = 0; i < 4; ++i) m.mapKeyIds[i] = int(u32(d, 0x88 + 4 * i));
         m.lightFlags = d.size() > 0x7A ? d[0x7A] : 0;
     }
     m.colorVariant = int(u32(d, 0x74) & 3);

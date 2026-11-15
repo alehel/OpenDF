@@ -59,10 +59,11 @@ struct Profile {
         std::string u = upperCase(n).substr(0, 15);
         std::memcpy(&d[4], u.data(), u.size());
     }
-    void defaults() {
-        // 0x40ee14: .45, M4/M203, Double ammo; +0x68C = 8.
+    void defaults(bool gog) {
+        // 0x40ee14: .45, M4/M203, Double ammo; +0x68C = 8. GOG Df.exe writes
+        // version 0x1B (0x409060).
         d.fill(0);
-        d[0] = 'P'; d[1] = 'L'; d[2] = 'Y'; d[3] = 0x1A;
+        d[0] = 'P'; d[1] = 'L'; d[2] = 'Y'; d[3] = gog ? 0x1B : 0x1A;
         set(0x28, 1);
         set(0x680, 6);
         set(0x684, 9);
@@ -440,6 +441,9 @@ void Frontend::loadProfiles() {
         if (f && f.read(reinterpret_cast<char*>(buf.data()), kProfileSize) && buf[0] == 'P' && buf[1] == 'L' && buf[2] == 'Y' &&
             (gogProfile_ || buf[3] >= 0x1A)) {
             p.d = buf;
+            // GOG Df.exe 0x409060: a profile older than 0x1B gets the 24
+            // bytes at 0x4e7ddc row 44 (0x4e7fec: rows 44 and 45 as DFDK.KEY
+            // gave them, 0x407040 runs first) at +0x8b0, and version 0x1B.
             if (gogProfile_ && p.d[3] < 0x1B)
                 for (int r = kKeyRowsCd; r < kKeyRowsGog; ++r)
                     for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * r + 4 * k, int32_t(keyDefaults_[size_t(r)][size_t(k)]));
@@ -1115,8 +1119,7 @@ void Frontend::refreshOptions() {
 void Frontend::profileDefaults(Profile& p) {
     // 0x40ee14 loadout etc., then the message macros DEFAULTMACRO1..10 from
     // DFMENU.BIN "Macros" into +0x4b0, 40 bytes each (0x40f6ac).
-    p.defaults();
-    if (gogProfile_) p.d[3] = 0x1B;
+    p.defaults(gogProfile_);
     for (int i = 0; i < keyRows_; ++i)   // key bindings from 0x4dd190 (GOG 0x4e7ddc, 0x408e30 copies 46 rows)
         for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * i + 4 * k, int32_t(keyDefaults_[size_t(i)][size_t(k)]));
     for (int i = 0; i < 10; ++i) {

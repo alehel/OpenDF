@@ -41,6 +41,7 @@ const Default kDefaults[] = {
     {"crosshairs", 0x72}, {"showgun", 0x73}, {"escape", 0x1b},
     {"Binoculars", 0x42}, {"Pause", 0x13}, {"OldMessages", 0x52}, {"ShowFriendly", 0x46}, {"lbsize", 0x7b},
     {"Drop", 0x44}, {"briefing", 0x4f}, {"help", 0x70}, {"fo", 0x78}, {"tab", 0x09},
+    {"mapterrain", 0x79}, {"mapelevation", 0x7a},   // F10 / F11 (GOG Df.exe 0x4fc3a8..)
 };
 
 // Left/right variants of the modifier keys count as the same key.

@@ -104,6 +104,9 @@ struct Mission {
     // The player's route names: header +0xAC, one number per point of the
     // route path; text "WPN%03i" in the campaign's "Waypoint Names" section.
     int routeNameIds[8] = {};
+    // Delta Force: the map key lines, header +0x88..+0x94 ([0x8cf990..],
+    // GOG Df.exe 0x48dd80): "MKEY%03i" in the campaign's "Map Keys" section.
+    int mapKeyIds[4] = {};
     // Header +0x74: which of each model material's four colour/texture
     // variants this mission uses (DF.EXE 0x43f964).
     int colorVariant = 0;

@@ -31,7 +31,7 @@ inline const KeyRow kKeyRows[kKeyRowsGog] = {
     {"KBDLOOKLEFT", "turn_left", 0x64, 0}, {"KBDCYCLEFOB", "tab", 0x09, 0}, {"KBDORDERS", "briefing", 0x4F, 0},
     {"KBDRECENTMSGS", "OldMessages", 0x52, 0}, {"KBDTEAMTAGS", "ShowFriendly", 0x46, 0}, {"KBDGOALS", "MissionGoals", 0x47, 0},
     {"KBDCOMMANDMAP", "BigMap", 0x43, 0}, {"KBDTURBO", "Turbo", 0x48, 0}, {"KBDEFLAGS", "NextFlag", 0x51, 0},
-    {"KBDPREVWP", "PrevWaypoint", 0x45, 0}, {"KBDSERVER", "server", 0x24, 0},
+    {"KBDPREVWP", "PrevWaypoint", 0x45, 0}, {"KBDSERVER", "server", 0x24, 0},   // GOG only
 };
 
 
