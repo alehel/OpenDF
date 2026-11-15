@@ -461,6 +461,18 @@ First differences from DF1:
     the mouse turns the camera instead of the player (0x41eb50 -> commands
     0x35..0x38, cases 0x29..0x2c). Mode flag 0x100 (modes 31, 48) hides the
     first-person model once no clip or chambered one is left (0x44ea10).
+    The Forward Observer (GOG 0x41f150 case 0x14, fo F11: night vision
+    off, [0x79a6a8] toggled; N turns it off, case 0x27): with the camera's
+    inset off and the scope not shown, 0x456670 draws its target's view
+    ([0x79a6ac], the player at mission start, 0x44e7f0) in the same
+    rectangle (x rounded down to 4) from the target's origin raised by the
+    player's eye offset [0x79a688], its yaw and pitch, 90 degrees across,
+    the target itself not drawn; 0x4559d0(1) outlines it in 0xff8000 and
+    writes the target's name at (x0 + 10, y1 + 10); a target no longer in
+    use turns it off, none while the player is dead or the target on
+    another side. Tab (case 0x15, 0x44e590) picks the next person in use on
+    the player's side with item attrib 8 (FO), wrapping; none: no target.
+    OpenDF counts the player's own table entry as before the first person.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),

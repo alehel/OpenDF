@@ -187,6 +187,14 @@ private:
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
+    void drawFoInset(const Screen& s);
+    void df2FoNext();
+    // GOG Df2.exe's Forward Observer: the inset flag [0x79a6a8] and its
+    // target [0x79a6ac]: -1 the player (0x44e7f0 sets it so), -2 none,
+    // otherwise a world object.
+    bool fo_ = false;
+    int foTarget_ = -1;
+    const WorldObject* hideObject_ = nullptr;   // not drawn: the inset's own body ([0xbf2b44])
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -964,6 +972,9 @@ bool Game::loadMission(int index) {
         // DF2.EXE 0x44781e: night missions (header flag 0x100000) start with
         // the night vision on.
         nvg_ = mission_.version >= 0x0F && (mission_.lightFlags & 0x10);
+        // GOG Df2.exe 0x44e7f0: the Forward Observer off, its target the player.
+        fo_ = false;
+        foTarget_ = -1;
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
@@ -2977,7 +2988,14 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
-    case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
+    // DF2 action 51, [0x765740]; GOG Df2.exe 0x41f150 case 0x27 also turns
+    // the Forward Observer off.
+    case Action::NightVision: if (df2Hud_.on) { fo_ = false; nvg_ = !nvg_; } break;
+    // GOG Df2.exe 0x41f150 case 0x14 (fo, F11): night vision off, the
+    // Forward Observer toggled; case 0x15 (tab, Tab): the next team-mate
+    // while it is on (0x44e590; single player).
+    case Action::Fo: if (df2Hud_.on) { nvg_ = false; fo_ = !fo_; } break;
+    case Action::FoNext: if (df2Hud_.on && fo_) df2FoNext(); break;
     // GOG Df2.exe 0x41f150 case 0x61 -> 0x44c7e0: E steps the scope
     // magnification up, Shift+E down.
     case Action::ScopeMag: if (arsenal_.df2()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
@@ -3115,7 +3133,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         return depth >= -sr && depth + sr <= 4080.f;
     };
     for (const auto& o : world_.objects) {
-        if (o.removed) continue;
+        if (o.removed || &o == hideObject_) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
         const float depth = dot(d, fwd);
@@ -3660,6 +3678,80 @@ void Game::drawCameraInset(const Screen& s) {
     dirOverride_ = nullptr;
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
+}
+
+// GOG Df2.exe 0x44e590 (Tab with the Forward Observer on): from the entry
+// after the current target (the start when there is none) to the end of
+// the organics table, then from the start up to the current one, the
+// first person in use on the player's side whose item has attrib 8 (FO)
+// and not +0x64 & 2; none: no target. INFERRED: the player's own entry
+// counts as before the first world person.
+void Game::df2FoNext() {
+    auto ok = [&](const WorldObject& o) {
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int cur = foTarget_ >= 0 && foTarget_ < n && !world_.objects[size_t(foTarget_)].removed ? foTarget_ : -1;
+    for (int i = cur + 1; i < n; ++i)
+        if (ok(world_.objects[size_t(i)])) { foTarget_ = i; return; }
+    for (int i = 0; i <= cur; ++i)
+        if (ok(world_.objects[size_t(i)])) { foTarget_ = i; return; }
+    foTarget_ = -2;
+}
+
+// GOG Df2.exe 0x465fde -> 0x456670 / 0x4559d0(1): the Forward Observer
+// inset, not on the scoped path and not while the video camera's inset is
+// on ([0x79a6b4] first). No target (or one no longer in use) turns it off.
+// Unless the player is dead (+0x64 & 4) or the target is on another side:
+// the target's view from its origin raised by the player's own eye offset
+// ([0x79a688]) with its yaw and pitch (+0x30 / +0x34), FOV 0x5a0000 (90
+// degrees across), into x 0x2c0..0x3c0, y view top + 0x40..+0x100 of the
+// 1024x768 frame, x rounded down to 4 pixels, the target itself not drawn
+// ([0xbf2b44]); then a one-pixel 0xff8000 outline and the target's name
+// (+0x54) at (x0 + 10, y1 + 10) in frame pixels (0x4577f0 flag 0).
+void Game::drawFoInset(const Screen& s) {
+    if (!fo_ || arsenal_.cameraView() || scopeShown() || showMap_) return;
+    const WorldObject* t = nullptr;
+    if (foTarget_ >= 0) {
+        if (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed) { fo_ = false; return; }
+        t = &world_.objects[size_t(foTarget_)];
+    } else if (foTarget_ != -1) {
+        fo_ = false;
+        return;
+    }
+    if (playerDead() || (t && t->side != kPlayerSide)) return;
+    const float k = s.art();
+    const float x0 = std::floor(std::floor(s.vx(0x2c0) / k) / 4.f) * 4.f * k, x1 = std::floor(std::floor(s.vx(0x3c0) / k) / 4.f) * 4.f * k;
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeUp = player_.eye().y - player_.origin().y;
+    const Vec3 eye = t ? t->pos + Vec3{0, eyeUp, 0} : player_.eye();
+    const float yaw = t ? t->heading : player_.yaw, pitch = t ? t->aimPitch : player_.pitch;
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hideObject_ = t;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    hideObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float px = std::max(1.f, k);
+    hud_.rect(x0, y0, w, px, kDf2Amber);
+    hud_.rect(x1, y0, px, h + px, kDf2Amber);
+    hud_.rect(x0, y1, w, px, kDf2Amber);
+    hud_.rect(x0, y0, px, h, kDf2Amber);
+    const std::string name = t ? df2PersonName(*t) : o_.soldierName;
+    hud_.text(x0 + 10.f * k, y1 + 10.f * k, name, kDf2Amber, s.text());
+    hud_.end();
 }
 
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
@@ -7033,6 +7125,7 @@ int Game::run() {
                     // (0x449450), then the weapon pass (0x448980).
                     drawZoomInset(s, view, fovY);
                     drawCameraInset(s);
+                    drawFoInset(s);
                     glViewport(0, 0, dw, dh);
                     // GOG Df2.exe 0x465fde: the scoped path (0x455be0 at
                     // 0x4662dd, JMP 0x4662ef) skips the night vision 0x450550.

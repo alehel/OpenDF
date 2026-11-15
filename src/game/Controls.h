@@ -29,6 +29,9 @@ enum class Action {
     VCam,
     // GOG Df2.exe: the scope magnification (scopemag, E; Shift+E down).
     ScopeMag,
+    // GOG Df2.exe: the Forward Observer inset (fo, F11) and its next
+    // team-mate (tab, Tab).
+    Fo, FoNext,
     Count
 };
 
