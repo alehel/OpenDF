@@ -98,7 +98,8 @@ private:
     GLuint prog_ = 0, identityLut_ = 0;
     int variant_ = 0;
     GLint locModel_ = -1, locColor_ = -1, locTextured_ = -1, locMode_ = -1, locSpec_ = -1, locSpecPow_ = -1,
-          locBright_ = -1, locKey_ = -1;
+          locBright_ = -1, locKey_ = -1, locRoot_ = -1, locPose_ = -1, locPoseCount_ = -1;
+    static constexpr int kMaxPoses = 32;   // uPose[] in the vertex shader
     std::map<std::string, std::unique_ptr<GpuModel>> cache_;
     std::map<std::string, std::string> failed_;
 };

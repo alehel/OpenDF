@@ -595,6 +595,23 @@ First differences from DF1:
     map prompt y = (H − bottom strip)·768/H − 160 (0x45cb40, 0x443e21);
     the scroll bar's thumb and zones (0x40c7d0, 0x40c8c0); the image-button
     text placement (0x43d4c0); the software z-buffer's depth (0x484077);
+  - *settled since* (rendering, GOG Df2.exe 1.06.15): the draw-list cull
+    0x4501b0 (people, objects, effects) follows the fog: D = 2^fog_level m
+    (0x46e400), 4080 m with the fog off; kept while |dx|, |dy| <= D + 256 m
+    and |depth| < D + 2 m (people) or D + header +0x60 (models), then the
+    sphere test 0x404c70 (depth + r <= 4080 m, r = 1 m for people); the
+    rounds (0x44fb20) keep the fixed < 4081 / < 4080 m (the CD build
+    0x4490d0 had the fixed limits for all). DF1 keeps 1020 m. The GL far
+    plane is OpenDF's own and lies past the terrain's farthest band (it was
+    1126 m, cutting the ground off). The face drawer 0x44bc00: a back-facing
+    face of a two-sided material with flag 0x4000 and slot +0x1F = 0x7F is
+    drawn with the next material (AHUT1 'Qahut03' -> 'Qahut03b' inside);
+    meshes with flag byte bit 0 place each vertex by the part matrix its
+    word +6 names (0x44b140; DF2's people share joint vertices between
+    bones), the normals stay with the face's mesh. The `hind` (0x427ed0:
+    main rotor about file +Z through hardpoint 1, tail about +Y through
+    hardpoint 2) and `ka29` (0x428120: coaxial, +/- the main angle about +Z
+    through hardpoint 0, meshes 1/3 and 2/4) draws, meshes 0..4 only;
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key

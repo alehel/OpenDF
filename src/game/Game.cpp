@@ -610,6 +610,11 @@ private:
     float missionTime_ = 0;
     // Objects: DF.EXE's depth buffer saturates at 1024 m (inferred cull distance).
     float viewDistance_ = 1024;
+    // The GL far plane (OpenDF): beyond the terrain's farthest band (DF2.EXE
+    // 0x47180e / 0x472440: 256·F/2 m, 12.8 km at F = 320, more in the scope),
+    // since the voxel terrain has no far clip; the depth precision near the
+    // camera depends on the near plane only.
+    static constexpr float kFarPlane = 262144.f;
     float scopeFocal_ = 320;
     float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
@@ -2465,7 +2470,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     const bool waterFirst = terrain_.df2Water() && eye.y > terrain_.waterLevel();
     if (waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
-    // beyond 1020 m (either horizontal axis, or view depth + radius); LOD by
+    // beyond 1020 m in Delta Force (either horizontal axis, or view depth +
+    // radius; Delta Force 2's limits below); LOD by
     // projected radius F·R/depth against the model's thresholds.
     const float focal = 320.f * terrain_.ringScale;
     SceneLighting light;
@@ -2477,13 +2483,30 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     models_.begin(proj * view, light);
     struct Visible { const WorldObject* o; Vec3 at; int lod; };
     std::vector<Visible> visible;
+    // Delta Force 2 (GOG Df2.exe 0x4501b0, for people, objects and the
+    // effects): D = 2^fog_level m from the fog getter 0x46e400, 4080 m with
+    // the fog off; kept while |dx|, |dy| <= D + 256 m and |depth| < D + r
+    // (r = 2 m for people, else the model's +0x60), then the sphere test
+    // 0x404c70: depth >= -r and depth + r <= 4080 m (r = 1 m for people).
+    const bool df2Cull = df2Hud_.on;
+    const float df2D = terrain_.fogLevel() ? terrain_.fogDistance() : 4080.f;
+    auto df2Keep = [&](Vec3 d, float depth, float r, bool person) {
+        if (std::abs(d.x) > df2D + 256.f || std::abs(d.z) > df2D + 256.f) return false;
+        if (std::abs(depth) >= df2D + (person ? 2.f : r)) return false;
+        const float sr = person ? 1.f : r;
+        return depth >= -sr && depth + sr <= 4080.f;
+    };
     for (const auto& o : world_.objects) {
         if (o.removed) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
-        if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
         const float depth = dot(d, fwd);
-        if (depth < -o.model->radius || depth + o.model->headerRadius > 1020.f) continue;
+        if (df2Cull) {
+            if (!df2Keep(d, depth, o.model->headerRadius, o.person)) continue;
+        } else {
+            if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
+            if (depth < -o.model->radius || depth + o.model->headerRadius > 1020.f) continue;
+        }
         const int lod = ModelRenderer::chooseLod(*o.model, std::max(depth, 0.01f), focal, o.person);
         if (lod < 0) continue;
         visible.push_back({&o, at, lod});
@@ -2519,6 +2542,42 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
                 const float c = std::cos(v.o->gunPitch), sn = std::sin(v.o->gunPitch);
                 gp.at(0, 0) = c; gp.at(0, 1) = -sn; gp.at(1, 0) = sn; gp.at(1, 1) = c;
                 pose[5] = about(4, rotateY(v.o->gunYaw) * gp);
+            }
+            models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
+            continue;
+        }
+        if (v.lod < 4 && (v.o->model->lodCodes[v.lod] == "hind" || v.o->model->lodCodes[v.lod] == "ka29") &&
+            v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
+            // Delta Force 2's two other rotor draws; only meshes 0..4 are drawn.
+            // hind (GOG Df2.exe 0x427ed0): mesh 0; mesh 1 (blades) or 2 (disc,
+            // main rotor speed >= 0x0C000000) turned by the main angle about
+            // file +Z through hardpoint 1; mesh 3 or 4 (tail speed) by the
+            // tail angle about file +Y through hardpoint 2.
+            // ka29 (GOG Df2.exe 0x428120): coaxial rotors about file +Z through
+            // hardpoint 0: mesh 1 or 3 by +main angle, mesh 2 or 4 by -main angle.
+            // (OpenDF keeps one rotor speed for both, as for helo.)
+            const GpuModel& m = *v.o->model;
+            const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
+            const bool fast = v.o->rotorSpeed >= float(0x0C000000);
+            Mat4 hide;
+            for (float& x : hide.m) x = 0;
+            auto about = [&](int hp, const Mat4& r) {
+                const auto& p = m.points[size_t(hp)];
+                return translate({p[0], p[1], p[2]}) * r * translate({-p[0], -p[1], -p[2]});
+            };
+            // File +Z (up) is OpenDF +Y; file +Y (left) is OpenDF -Z.
+            const float main = float(v.o->rotorAngle[0]) / 4294967296.f * 2 * kPi;
+            std::vector<Mat4> pose(meshes, hide);
+            if (meshes > 0) pose[0] = Mat4{};
+            if (m.lodCodes[v.lod] == "hind") {
+                const float tail = float(v.o->rotorAngle[1]) / 4294967296.f * 2 * kPi;
+                Mat4 rz;
+                { const float c = std::cos(tail), s = std::sin(tail); rz.at(0, 0) = c; rz.at(0, 1) = -s; rz.at(1, 0) = s; rz.at(1, 1) = c; }
+                if (meshes > (fast ? 2u : 1u)) pose[fast ? 2 : 1] = about(1, rotateY(main));
+                if (meshes > (fast ? 4u : 3u)) pose[fast ? 4 : 3] = about(2, rz);
+            } else {
+                if (meshes > (fast ? 3u : 1u)) pose[fast ? 3 : 1] = about(0, rotateY(main));
+                if (meshes > (fast ? 4u : 2u)) pose[fast ? 4 : 2] = about(0, rotateY(-main));
             }
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
@@ -2589,7 +2648,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     for (const auto& e : effects_) {
         const Vec3 at = world_.nearest(e.pos, eye);
         const Vec3 d = at - eye;
-        if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f || dot(d, fwd) < 0.5f) continue;
+        if (df2Cull ? !df2Keep(d, dot(d, fwd), e.model->headerRadius, false)
+                    : std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f || dot(d, fwd) < 0.5f) continue;
         if (e.canopy) {
             WorldObject body;
             body.heading = e.heading;
@@ -2661,6 +2721,14 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         const GpuModel* gm = gi && !gi->graphic.empty() ? models_.get(vfs_, gi->graphic) : nullptr;
         if (!gm) continue;
         const Vec3 at = world_.nearest(p.pos, eye);
+        // DF2's rounds keep the fixed limits (GOG Df2.exe 0x44fb20): |dx|,
+        // |dy| < 4081 m, |depth| < 4080 m, then the sphere test 0x404c70.
+        if (df2Cull) {
+            const Vec3 d = at - eye;
+            const float depth = dot(d, fwd), r = gm->headerRadius;
+            if (std::abs(d.x) >= 4081.f || std::abs(d.z) >= 4081.f || std::abs(depth) >= 4080.f) continue;
+            if (depth < -r || depth + r > 4080.f) continue;
+        }
         Mat4 pitch;
         const float c = std::cos(p.pitch), sn = std::sin(p.pitch);
         pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
@@ -2817,7 +2885,7 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true);
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.
@@ -5811,7 +5879,7 @@ int Game::run() {
             const float tanHalfX = binoculars_ && !playerDead() ? std::tan(11.f * kPi / 180.f) : 1.f;
             const float fovY = 2.f * std::atan(tanHalfX * std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
             viewFovY_ = 2.f * std::atan(std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
-            Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, viewDistance_ * 1.1f);
+            Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, kFarPlane);
             // With the binoculars up the camera carries their random offset (0x404246).
             Player cam = player_;
             if (binoculars_) { cam.yaw += binoYaw_; cam.pitch += binoPitch_; }
