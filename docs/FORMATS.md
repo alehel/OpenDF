@@ -329,7 +329,9 @@ multiplayer maps).
 0x64  char dialogue[16]    "dfdlg02"
 0x98  u32 counts[...]      the first four add up to the object count
 0x10C object records, 96 bytes each, until a zero type
-  0x00 u32 type            ITEMS.DEF id − 100000 (one item, 3034, is stored as-is)
+  0x00 u32 type            ITEMS.DEF id − 100000; a type with no item is the first
+                           ITEMS.DEF entry, 'null' (DF.EXE GOG 0x4828c0): C04M05's
+                           two type-3034 objects ("inhut2" has the mistyped id 3034)
   0x08 u32 id              unique within the mission
   0x0C u32 flags           team/state bits (0, 0x10, 0x100, 0x102, 0x112 …; not decoded)
   0x10 i32 x               16.16, metres east

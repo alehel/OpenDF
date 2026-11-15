@@ -6211,6 +6211,7 @@ int Game::run() {
         std::fprintf(stderr, "cannot read ITEMS.DEF\n");
         return 1;
     }
+    items_.setMissIsFirst(vfs_.exists("DFGAME.BIN"));   // Delta Force: unknown BMS types are 'null' (0x4828c0)
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
     // Delta Force 2 names its game text DF2GAME.BIN.
     const char* gameBin = vfs_.exists("DFGAME.BIN") ? "DFGAME.BIN" : "DF2GAME.BIN";
