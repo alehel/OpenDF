@@ -371,6 +371,12 @@ private:
     void layout(D2Button& b);
     D2Button* hit(int x, int y);
     void drawMenu();
+    // GOG Df2.exe 0x434000 (0x434151 / 0x43415d): ImageCurTarg is the menu
+    // cursor with its hot spot at (12, 12) (0x433780); drawn every frame
+    // after the page (0x443d90 -> 0x4436a0).
+    HudImage cursor_;
+    bool cursorLoaded_ = false;
+    void drawCursor();
     void drawButton(D2Button& b);
     void drawDefault(D2Button& b);
     // 0x43d4c0 keeps the justification in two locals of its loop ([esp+0x14]
@@ -669,7 +675,9 @@ bool FrontendDf2::openWindow() {
     images_.clear();
     fonts_.clear();
     briefMap_ = {};
-    SDL_ShowCursor(SDL_ENABLE);
+    cursor_ = {};
+    cursorLoaded_ = false;
+    SDL_ShowCursor(SDL_DISABLE);   // the menus draw their own cursor (drawCursor)
     return true;
 }
 
@@ -678,6 +686,9 @@ void FrontendDf2::closeWindow() {
     images_.clear();
     fonts_.clear();
     briefMap_ = {};
+    cursor_ = {};
+    cursorLoaded_ = false;
+    SDL_ShowCursor(SDL_ENABLE);
     if (ctx_) SDL_GL_DeleteContext(ctx_);
     if (win_) SDL_DestroyWindow(win_);
     ctx_ = nullptr;
@@ -1424,6 +1435,28 @@ void FrontendDf2::boxText(const std::string& fontName, int l, int r, int top, in
     const int ty = top + ((bottom - top - H) >> 1);
     const int tx = justify == 2 ? r - W : justify == 4 ? l + ((r - l - W) >> 1) : l;
     text(fontName, float(tx), float(ty), s, color);
+}
+
+// GOG Df2.exe 0x4436a0: the cursor image at (mouse - hot spot), the area
+// under it saved first (0x46b4f0) and put back before the next frame
+// (0x443d90); 0x46d130 skips pixels whose RGB is 0 and draws the others
+// opaque. Clipped to the 640x480 screen. Hit tests use the mouse itself.
+void FrontendDf2::drawCursor() {
+    if (!cursorLoaded_) {
+        cursorLoaded_ = true;
+        auto it = mnu_.images.find("IMAGECURTARG");
+        std::vector<uint8_t> data;
+        RgbaImage rgba;
+        if (it != mnu_.images.end() && vfs_.read(upper(it->second.file), data) && decodeRgbaImage(data, rgba)) {
+            for (size_t i = 0; i + 3 < rgba.rgba.size(); i += 4)
+                rgba.rgba[i + 3] = (rgba.rgba[i] | rgba.rgba[i + 1] | rgba.rgba[i + 2]) ? 255 : 0;
+            cursor_ = hud().makeImage(rgba.width, rgba.height, rgba.rgba);
+        }
+    }
+    if (!cursor_.texture) return;
+    hud().clip(offX_, offY_, 640.f * scale_, 480.f * scale_);
+    blit(cursor_, float(mouseX_ - 12), float(mouseY_ - 12), 0, 0, float(cursor_.width), float(cursor_.height));
+    hud().unclip();
 }
 
 void FrontendDf2::drawMenu() {
@@ -2539,6 +2572,7 @@ int FrontendDf2::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         hud().begin(dw, dh);
         drawMenu();
+        drawCursor();
         hud().end();
         if (!o_.screenshot.empty() && ++frame_ >= o_.frames) {
             std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
