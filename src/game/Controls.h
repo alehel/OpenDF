@@ -27,6 +27,8 @@ enum class Action {
     MapTerrain, MapElevation,
     // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
     VCam,
+    // GOG Df.exe: the previous waypoint (PrevWaypoint, E, id 0x2f).
+    PrevWaypoint,
     Count
 };
 

@@ -1,7 +1,10 @@
 // The soldier profile's 44 key bindings (profile +0x6a0, 12 bytes {vk,
 // mouse, 0}): defaults 0x4dd190, row labels 0x4dd3a0, game-table names
 // (0x41cca0; row 8 feeds attack_1 and attack_2). Shared by the keyboard page
-// and the in-game help (0x4816a0).
+// and the in-game help (0x4816a0). GOG Df.exe has 46: row 44 PrevWaypoint
+// (E, +0x8b0) and row 45 server (Home, +0x8bc), labels 0x4e8004, game names
+// 0x41ce20, defaults from Dfbase.pff DFDK.KEY (0x407040); kKeyRowsCd = the
+// CD's 44.
 #pragma once
 
 #include <cstdint>
@@ -11,7 +14,8 @@
 namespace df {
 
 struct KeyRow { const char* label; const char* game; uint32_t vk; uint32_t mouse; };
-inline const KeyRow kKeyRows[44] = {
+constexpr int kKeyRowsCd = 44, kKeyRowsGog = 46;
+inline const KeyRow kKeyRows[kKeyRowsGog] = {
     {"KBDMOVELEFT", "slide_left", 0x25, 0}, {"KBDMOVERIGHT", "slide_right", 0x27, 0}, {"KBDMOVEUP", "move_forward", 0x26, 0},
     {"KBDMOVEDOWN", "move_back", 0x28, 0}, {"KBDGOPRONE", "Prone", 0x22, 3}, {"KBDCROUCH", "Crouch", 0x23, 0},
     {"KBDSTAND", "Stand", 0x2E, 0}, {"KBDJUMP", "move_jump", 0x20, 0}, {"KBDFIRE", "attack_1", 0x11, 1},
@@ -27,6 +31,7 @@ inline const KeyRow kKeyRows[44] = {
     {"KBDLOOKLEFT", "turn_left", 0x64, 0}, {"KBDCYCLEFOB", "tab", 0x09, 0}, {"KBDORDERS", "briefing", 0x4F, 0},
     {"KBDRECENTMSGS", "OldMessages", 0x52, 0}, {"KBDTEAMTAGS", "ShowFriendly", 0x46, 0}, {"KBDGOALS", "MissionGoals", 0x47, 0},
     {"KBDCOMMANDMAP", "BigMap", 0x43, 0}, {"KBDTURBO", "Turbo", 0x48, 0}, {"KBDEFLAGS", "NextFlag", 0x51, 0},
+    {"KBDPREVWP", "PrevWaypoint", 0x45, 0}, {"KBDSERVER", "server", 0x24, 0},
 };
 
 

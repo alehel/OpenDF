@@ -641,6 +641,7 @@ private:
     void df2Action(int code);
     void df2SetWaypoint(Df2Sel s);
     void df2NextWaypoint();
+    void df1StepWaypoint(int dir);
     struct Df2WpView { bool ok = false; double x = 0, y = 0; float elev = 0; std::string name; int listIndex = -1; };
     Df2WpView df2CurrentWaypoint() const;
     bool df2HudWpIs(Df2Sel s) const;
@@ -2958,7 +2959,10 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
         if (df2Hud_.on) df2NextWaypoint();
-        else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+        else df1StepWaypoint(1);
+        break;
+    case Action::PrevWaypoint:   // GOG Df.exe only (E, command 0x2f)
+        if (!df2Hud_.on) df1StepWaypoint(-1);
         break;
     // DF2 0x41bdf4 (mapterrain, F9): elevation on -> off and the flag set,
     // else the flag toggled. 0x41be2e (mapelevation, F10): elevation on ->
@@ -4681,6 +4685,24 @@ void Game::df2NextWaypoint() {
     routeIndex_ = (routeIndex_ + 1) % int(route_.size());
 }
 
+// GOG Df.exe NextWaypoint 0x484c80 / PrevWaypoint 0x484d00: nothing with
+// fewer than two entries or when no entry's object exists (+4, the
+// marker's item; a never-created one has none); else step with wrap until
+// an entry's object exists. (CD DF.EXE: (i + 1) % n.)
+void Game::df1StepWaypoint(int dir) {
+    const int n = int(route_.size());
+    if (n < 2) return;
+    auto exists = [&](int i) { const MissionObject* o = route_[size_t(i)].object; return o && !o->omitted; };
+    bool any = false;
+    for (int i = 0; i < n && !any; ++i) any = exists(i);
+    if (!any) return;
+    do {
+        routeIndex_ += dir;
+        if (routeIndex_ >= n) routeIndex_ = 0;
+        if (routeIndex_ < 0) routeIndex_ = n - 1;
+    } while (!exists(routeIndex_));
+}
+
 bool Game::df2HudWpIs(Df2Sel s) const {
     if (df2HudWp_.kind == 0) return s.kind == 3 && !route_.empty() && route_[size_t(routeIndex_)].object == &mission_.objects[size_t(s.index)];
     return df2HudWp_ == s;
@@ -5782,7 +5804,7 @@ void Game::drawHelp(const Screen& s) {
             {Action::Jump, "move_jump"}, {Action::NoRun, "NoRun"}, {Action::Binoculars, "Binoculars"}, {Action::Briefing, "briefing"},
             {Action::OldMessages, "OldMessages"}, {Action::ShowFriendly, "ShowFriendly"}, {Action::MissionGoals, "MissionGoals"},
             {Action::Fire, "attack_1"}, {Action::Scope, "scope"}, {Action::MapZoomIn, "zoomin"}, {Action::MapZoomOut, "zoomout"},
-            {Action::NextWaypoint, "NextWaypoint"}, {Action::BigMap, "BigMap"}, {Action::Weapon0, "weapon0"}, {Action::Weapon1, "weapon1"},
+            {Action::NextWaypoint, "NextWaypoint"}, {Action::PrevWaypoint, "PrevWaypoint"}, {Action::BigMap, "BigMap"}, {Action::Weapon0, "weapon0"}, {Action::Weapon1, "weapon1"},
             {Action::Weapon2, "weapon2"}, {Action::Weapon3, "weapon3"}, {Action::Weapon4, "weapon4"}, {Action::Weapon5, "weapon5"},
             {Action::Weapon6, "weapon6"}, {Action::Weapon7, "weapon7"}, {Action::Weapon8, "weapon8"}, {Action::Weapon9, "weapon9"}};
         for (const auto& [act, n] : names)
@@ -5836,6 +5858,15 @@ void Game::drawHelp(const Screen& s) {
     put(520, 750, y, label("HELPWAYPOINT"), keyOf(Action::NextWaypoint));
     y += 25;
     put(520, 750, y, label("HELPBIGMAP"), keyOf(Action::BigMap));
+    // GOG Df.exe 0x42be00 (filled by 0x42b0b0): two more rows, Prev
+    // Waypoint (profile row 44) and Server Screen (row 45). The CD's
+    // DFMENU.BIN has neither label.
+    if (menuText_.find("GroupMainMenu", "HELPPREVWP")) {
+        y += 25;
+        put(520, 750, y, label("HELPPREVWP"), keyOf(Action::PrevWaypoint));
+        y += 25;
+        put(520, 750, y, label("HELPSERVER"), bindingText("server"));
+    }
 }
 
 void Game::drawPaused(const Screen& s) {
