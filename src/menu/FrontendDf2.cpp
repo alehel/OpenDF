@@ -353,6 +353,7 @@ private:
     void text(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align = 0);
     int wrapped(const std::string& fontName, float x0, float y0, float x1, float y1, const std::string& s, uint32_t color,
                 int skipLines = 0);
+    int breakLines(const std::string& fontName, int width, const std::string& s, std::vector<std::string>* lines = nullptr);
     void boxText(const std::string& fontName, int l, int r, int top, int bottom, const std::string& s, uint32_t color, int justify);
     void blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh);
     void rectOutline(float x0, float y0, float x1, float y1, uint32_t color);
@@ -466,7 +467,6 @@ private:
         else if (b.name == "but_opt1_mvsl") setMusicVolume(b.p2);
         else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
         else if (b.name == "but_opt2_vsl") { b.p2 = std::min(b.p2, b.p1 - 1); refreshKeys(); }   // opt2_ScrollTo 0x43a6b0
-        else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
         // mb_MapVSlide / mb_MapHSlide (GOG Df2.exe 0x43d970 / 0x43d950): the
         // map's scroll target follows the slider.
         else if (b.name == "but_mb_mpvsl") mapTargetY_ = b.p2;
@@ -551,7 +551,6 @@ private:
     std::string bms_;                 // the chosen mission
     std::string helpText_;
     size_t helpShown_ = 0;
-    int briefLine_ = 0;
     HudImage briefMap_;
     // The map's scroll is the value (+0x6c) of but_mb_mphsl / but_mb_mpvsl
     // (GOG Df2.exe 0x4f39b8 / 0x4f37c0); this is where it is heading.
@@ -800,34 +799,64 @@ void FrontendDf2::text(const std::string& fontName, float x, float y, const std:
     }
 }
 
-// Word-wrapped text in a box (0x419d50); "\r\n" / "~" break lines. Returns the line count.
+// GOG Df2.exe 0x41bf70 (the counter) and 0x41c0e0's loop: the text broken
+// into lines of at most `width` pixels. Characters go into a line buffer
+// (0x09 skipped; 0x0a, 0x0d and 0x0d 0x0a end the line); a space marks the
+// last break point; once the buffer is wider than `width` the line is cut at
+// that space and what followed it is read again, or, with no space, after the
+// overflowing character. After every break the spaces that follow are
+// skipped (leading spaces of the text itself are kept); runs of spaces stay.
+// Returns the number of ended lines: a last line without a newline is not
+// counted (but is in `lines`, when not empty).
+int FrontendDf2::breakLines(const std::string& fontName, int width, const std::string& s, std::vector<std::string>* lines) {
+    int count = 0;
+    std::string buf;
+    size_t lastSpace = std::string::npos;
+    size_t i = 0;
+    auto lineBreak = [&]() {
+        if (lines) lines->push_back(buf);
+        buf.clear();
+        lastSpace = std::string::npos;
+        ++count;
+        while (i < s.size() && s[i] == ' ') ++i;
+    };
+    while (i < s.size() && s[i] != 0) {
+        const char c = s[i];
+        if (c == '\t') { ++i; continue; }
+        if (c == '\n' || c == '\r') {
+            if (c == '\r' && i + 1 < s.size() && s[i + 1] == '\n') ++i;
+            ++i;
+            lineBreak();
+            continue;
+        }
+        buf += c;
+        ++i;
+        if (c == ' ') lastSpace = buf.size() - 1;
+        if (int(textWidth(fontName, buf)) <= width) continue;
+        if (lastSpace != std::string::npos) {
+            i -= buf.size() - lastSpace - 1;   // read again what followed the space
+            buf.resize(lastSpace);
+        }
+        lineBreak();
+    }
+    if (lines && !buf.empty()) lines->push_back(buf);
+    return count;
+}
+
+// GOG Df2.exe 0x41c0e0 (CD 0x419d50): the text (its first 3999 characters)
+// broken as breakLines at width x1 - x0; lines before `skipLines` are passed
+// over, the others drawn from y0 down, (height of 'A') + 4 apart (the CD
+// build: + 3), while y + (height of 'A') + 3 <= y1.
 int FrontendDf2::wrapped(const std::string& fontName, float x0, float y0, float x1, float y1, const std::string& s, uint32_t color,
                          int skipLines) {
     D2FontTex& f = font(fontName);
     if (!f.ok) return 0;
     std::vector<std::string> lines;
-    std::string line, word;
-    auto flushWord = [&]() {
-        if (word.empty()) return;
-        const std::string cand = line.empty() ? word : line + " " + word;
-        if (!line.empty() && textWidth(fontName, cand) > x1 - x0) { lines.push_back(line); line = word; }
-        else line = cand;
-        word.clear();
-    };
-    for (size_t i = 0; i < s.size(); ++i) {
-        const char c = s[i];
-        if (c == '\r') continue;
-        if (c == '\n' || c == '~') { flushWord(); lines.push_back(line); line.clear(); continue; }
-        if (c == ' ') { flushWord(); continue; }
-        word += c;
-    }
-    flushWord();
-    if (!line.empty()) lines.push_back(line);
-    // 0x419d50: lines (height of 'A') + 3 apart; a line is drawn while y + that <= the box bottom.
-    const float lh = float(f.height + 3);
+    const int count = breakLines(fontName, int(x1 - x0), s.substr(0, 3999), &lines);
+    const float hA = float(f.height);
     float y = y0;
-    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + lh <= y1; ++i, y += lh) text(fontName, x0, y, lines[i], color);
-    return int(lines.size());
+    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + hA + 3 <= y1; ++i, y += hA + 4) text(fontName, x0, y, lines[i], color);
+    return count;
 }
 
 void FrontendDf2::blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh) {
@@ -1471,9 +1500,15 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             text("FRK11N", float(b.x + 6), float(b.y + 20), l2, mnu_.fonts["FRK11N"].fg[0]);
         }
     } else if (cb == "mb_TextBrief") {
-        const std::string key = bms_.substr(0, std::min<size_t>(6, bms_.size()));
-        if (const std::string* t = briefText_.find("MBBRIEF", key))
-            wrapped("LCD10S", float(b.x), float(b.y), float(b.user1), float(b.user2), *t, mnu_.fonts["LCD10S"].fg[0], briefLine_);
+        // GOG Df2.exe 0x43d120, event 7, not in drawstate 0: the border
+        // (0x43afc0), then the button's text (the briefing, set by 0x43d000)
+        // in its font, coloured by state, from (x + 5, y + 5), width
+        // user1 - x - 10, down to user2, from line but_mb_brvsl's value.
+        rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), b.drawstate == 4 ? 0x844030 : 0xCA4409);
+        auto fi = mnu_.fonts.find(b.font);
+        const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
+        wrapped(b.font, float(b.x + 5), float(b.y + 5), float(b.user1 - 5), float(b.user2), b.text,
+                b.drawstate == 4 ? df.fg[2] : b.drawstate == 2 ? df.fg[1] : df.fg[0], sliderValue("but_mb_brvsl"));
     } else if (cb == "mb_Map") {
         // GOG Df2.exe 0x43d250 (CD 0x437fd0), event 7, only with the picture
         // (+0x64): the mm_Rect border (0x43afc0), then the tiled terrain
@@ -1635,7 +1670,18 @@ void FrontendDf2::refreshQuick() {
 }
 
 void FrontendDf2::loadBriefing() {
-    briefLine_ = 0;
+    // GOG Df2.exe 0x43d000: but_mb_mbrct's text is the mission's MBBRIEF
+    // (keyed by its first six letters); but_mb_brvsl's range is the number
+    // of lines it breaks into (0x41bf70 at the text's width user1 - x - 10)
+    // less the 25 the box shows, at least 0, and its value 0.
+    if (D2Button* t = btn("but_mb_mbrct")) {
+        const std::string* brief = briefText_.find("MBBRIEF", bms_.substr(0, std::min<size_t>(6, bms_.size())));
+        t->text = brief ? *brief : std::string();
+        if (D2Button* sl = btn("but_mb_brvsl")) {
+            sl->p1 = std::max(0, breakLines(t->font, t->user1 - t->x - 10, t->text) - 25);
+            sl->p2 = 0;
+        }
+    }
     briefMap_ = {};
     mapMarkers_.clear();
     mapCentreX_ = mapCentreY_ = 0x200;
@@ -1893,8 +1939,10 @@ void FrontendDf2::event(D2Button& b, int ev) {
             startVoice();
         }
     }
-    else if (cb == "mb_BriefUp") briefLine_ = std::max(0, briefLine_ - 1);
-    else if (cb == "mb_BriefDown") ++briefLine_;
+    // mb_BriefUp / mb_BriefDown (GOG Df2.exe 0x43d1c0 / 0x43d1f0): the
+    // briefing slider's value -1 (not below 0) / +1 (not above its range).
+    else if (cb == "mb_BriefUp") { if (D2Button* sl = btn("but_mb_brvsl")) sl->p2 = std::max(0, sl->p2 - 1); }
+    else if (cb == "mb_BriefDown") { if (D2Button* sl = btn("but_mb_brvsl")) sl->p2 = std::min(sl->p2 + 1, sl->p1); }
     // mb_MapUp / Down / Left / Right (GOG Df2.exe 0x43d650 / 0x43d610 /
     // 0x43d690 / 0x43d6d0): the slider's value -+10 within its range, the
     // target with it; mb_MapCenter (0x43d930) heads back for the mission's
