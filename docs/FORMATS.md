@@ -133,7 +133,8 @@ LOD × count, each: header (v5: 184 bytes, v2-v4: 176) then data
   u32 @0x80 vertices, @0x88 normals, @0x90 faces, @0x98 meshes,
       @0xA0 hardpoints, @0xA8 materials, @0xB0 collision volumes (v5 only)
   data, in order:
-    vertex   8 bytes   i16 x, y, z; u16 mesh
+    vertex   8 bytes   i16 x, y, z; u16 mesh (v8, in a mesh whose flag byte
+                       has bit 0: the part whose matrix places it, DF2.EXE 0x44b140)
     normal   8 bytes   i16 x, y, z (/16384); i16 flags
     face    72 bytes   u16 flags; i32 u[3] @0x04, v[3] @0x10 (/65536, may exceed 1 = tiling);
                        i16 vertex[3] @0x1C, normal[3] @0x22 (relative to the mesh);

@@ -29,6 +29,10 @@ struct ModelVertex {
     float px, py, pz;
     float nx, ny, nz;
     float u, v;
+    // DF2 skinned meshes (mesh flag byte bit 0): the mesh whose matrix
+    // places this vertex (vertex word +6, DF2.EXE 0x44b140); -1 = the
+    // face's own mesh.
+    float bone = -1;
 };
 
 // Material flags (DF.EXE renderer, 0x46f9e3): 0x0001 textured, 0x0002

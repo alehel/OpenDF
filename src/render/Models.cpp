@@ -11,7 +11,13 @@ const char* kModelVS = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
+layout(location = 3) in float aBone;
 uniform mat4 uViewProj, uModel;
+// DF2 skinned meshes (DF2.EXE 0x44b140): a vertex with a bone is placed by
+// that part's pose (root x pose[bone]); its normal stays with the face's
+// mesh (the light is turned into the mesh's frame, 0x44bb70).
+uniform mat4 uRoot, uPose[32];
+uniform int uPoseCount;
 uniform vec3 uLight, uViewer;
 uniform float uSpec, uBright;
 uniform int uSpecPow;
@@ -32,7 +38,8 @@ float shade(vec3 n) {
     return clamp(lit * 32.0, 1.0, 60.0);       // shade level
 }
 void main() {
-    vec4 w = uModel * vec4(aPos, 1.0);
+    int bone = int(aBone + 0.5);
+    vec4 w = aBone >= 0.0 && bone < uPoseCount ? uRoot * (uPose[bone] * vec4(aPos, 1.0)) : uModel * vec4(aPos, 1.0);
     vec3 n = normalize(mat3(uModel) * aNormal);
     vLit = vec2(shade(n), shade(-n));
     vUv = aUv;
@@ -187,6 +194,9 @@ bool ModelRenderer::init(std::string* error) {
     locSpecPow_ = glGetUniformLocation(prog_, "uSpecPow");
     locBright_ = glGetUniformLocation(prog_, "uBright");
     locKey_ = glGetUniformLocation(prog_, "uKey");
+    locRoot_ = glGetUniformLocation(prog_, "uRoot");
+    locPose_ = glGetUniformLocation(prog_, "uPose");
+    locPoseCount_ = glGetUniformLocation(prog_, "uPoseCount");
     glUseProgram(prog_);
     glUniform1i(glGetUniformLocation(prog_, "uTex"), 0);
     glUniform1i(glGetUniformLocation(prog_, "uIndex"), 1);
@@ -274,6 +284,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(ModelVertex, nx)));
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(ModelVertex, u)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(ModelVertex, bone)));
         glBindVertexArray(0);
         g->lods.push_back(std::move(gl));
     }
@@ -331,6 +343,13 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
     if (m.lods.empty() || lod < 0) return;
     const auto& l = m.lods[std::clamp(lod, 0, int(m.lods.size()) - 1)];
     glUniformMatrix4fv(locModel_, 1, GL_FALSE, model.m);
+    // Skinned vertices take their own part's pose; unposed draws keep the rest shape.
+    const int poses = meshes ? std::min(int(meshes->size()), kMaxPoses) : 0;
+    glUniform1i(locPoseCount_, poses);
+    if (poses > 0) {
+        glUniformMatrix4fv(locRoot_, 1, GL_FALSE, model.m);
+        glUniformMatrix4fv(locPose_, poses, GL_FALSE, (*meshes)[0].m);
+    }
     glBindVertexArray(l.vao);
     for (const auto& b : l.batches) {
         if ((b.blend != 0) != translucent) continue;
