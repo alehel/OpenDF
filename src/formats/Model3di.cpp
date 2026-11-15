@@ -82,7 +82,10 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t f = layout.v8 ? 0x0C : 0;   // v8 fields move by 12 (a second name at +0x0C)
         t.name = r.str(p, 12);
         const uint32_t size = r.u32(p + 0x10 + f);
-        t.sequence = r.u8(p + 0x14 + f);
+        // v8: the header is copied whole into the texture table (GOG Df2.exe
+        // 0x445120, 0x34 bytes) and +0x20 is read as a signed word
+        // (0x444d5f / 0x444eb1).
+        t.sequence = layout.v8 ? int(r.i16(p + 0x14 + f)) : int(r.u8(p + 0x14 + f));
         const uint8_t tflags = r.u8(p + 0x16 + f);
         t.indexZeroTransparent = !layout.v8 && (tflags & 0x20) != 0;
         t.noGrade = !layout.v8 && (tflags & 0x10) != 0;
@@ -151,7 +154,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         p = palette + 1024;
     }
 
-    std::map<uint8_t, int> bySequence;
+    std::map<int, int> bySequence;
     std::map<std::string, int> byName;
     for (int i = int(m.textures.size()) - 1; i >= 0; --i) {
         bySequence[m.textures[i].sequence] = i;      // first one wins
@@ -194,15 +197,23 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                    r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f,
                    r.u16(o + 0x12)};
             // Textured only if a texture has the variant's sequence id (0x43f217).
-            if (flags & 0x0001) {
+            if ((flags & 0x0001) && layout.v8) {
+                // GOG Df2.exe 0x444d3d: the byte is sign-extended and compared
+                // with the textures' signed words in file order (0x444d5f), with
+                // no name fallback; 0x80..0xFF never match and no match sets
+                // 0x0800 (0x444d74), e.g. df2par02's vest pieces.
+                const int ti = int(int8_t(r.u8(o + 0x34 + size_t(variant))));
+                if (auto it = bySequence.find(ti); it != bySequence.end()) mt.tex = it->second;
+            } else if (flags & 0x0001) {
                 const uint8_t ti = r.u8(o + 0x34 + size_t(variant));
                 if (auto it = bySequence.find(ti); ti != 0xFF && it != bySequence.end()) mt.tex = it->second;
                 else if (auto jt = byName.find(upper(r.str(o, 12))); jt != byName.end()) mt.tex = jt->second;
             } else if (layout.v8 && (flags & 0x8000)) {
                 // v8: an alpha material without 0x0001 takes its texture by
-                // the sequence at +0x37 (DF2.EXE 0x43ebca), e.g. the SMKT_H
+                // the signed sequence at +0x37 (GOG Df2.exe 0x444e9a vs the
+                // signed word at 0x444eb1; CD 0x43ebca), e.g. the SMKT_H
                 // dust-cloud frames and SNOW.3DI.
-                const uint8_t ti = r.u8(o + 0x37);
+                const int ti = int(int8_t(r.u8(o + 0x37)));
                 if (auto it = bySequence.find(ti); it != bySequence.end()) mt.tex = it->second;
             }
             // 0x0800 hidden; 0x0008 is not drawn in the hi-colour renderer;
