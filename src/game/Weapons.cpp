@@ -1092,6 +1092,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 spent = std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f;
             Vec3 stopAt{};
             bool stopped = false;   // DF2: the tick ends at the water
+            bool recorded = false;  // this pass's tracer is stored
             // Water (0x44f0e4, tested after terrain and objects; the nearest
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
@@ -1306,8 +1307,11 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         if (hit.mesh != 6) ++target.tailHits;   // +0xD4 (mesh 6: +0xD8, never read)
                     }
                 }
-                // The pass's tracer (0x454797) ends 0x4000 before the hit.
+                // The pass's tracer (0x454797) ends 0x4000 before the hit;
+                // once a pass (0x452290), so the tick end below does not
+                // record it again.
                 recordTracer(b, passStart, hit.point - normalize(next - passStart) * (0x4000 / 65536.f), tickStart);
+                recorded = true;
                 if (goesOn && !spent) {
                     // GOG 0x454823..0x454894: the next pass starts 0x2000 past the hit
                     // (0x4000 back + 0x6000); when that is at or past the end
@@ -1346,7 +1350,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             }
             if (!stopped) tracer(b, next);   // the whole step (0x465273)
             b.pos = stopped ? stopAt : next;
-            recordTracer(b, passStart, b.pos, tickStart);
+            if (!recorded) recordTracer(b, passStart, b.pos, tickStart);
             if (df2_) {
                 // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
                 // for a delay grenade under the water), then drag toward the
