@@ -45,7 +45,8 @@ approximation), **todo** = not checked yet.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | M1 | Map grid and labels | fixed | bright green 1 px; labels white with black outline (0x43ddf4) |
-| M2 | Route and markers | fixed | route bright green; markers from record +0x4C (type: 1 circle, 3 diamond, ...) in side colour, radius 6.25 (0x43e434) |
+| M2 | Route and markers | fixed | route bright green; markers from record byte +0x4C (type: 1 circle, 3 diamond, ...) in side colour, radius 6.25 (0x43e434). Groups 0-2 are drawn from the live objects at their current position (GOG Df.exe 0x48e070 -> 0x48f5d0: +0x24/+0x28, heading +0x30, X when dead +0x6C&4), so a moving convoy moves on the map; removed and never-created objects are not drawn (was: every record at its file position) |
+| M8 | Multiplayer-only objects | fixed | GOG Df.exe 0x449710 (CD 0x43ff24): with no network game, records with +0x0C bit 0x10 (extra co-op player starts and kit, byte +0x45 = players needed) or 0x80 are never created: not in the world, not the player start, not on the map. Bits 0x20/0x40 pass in GOG single player (the CD build also dropped 0x20). Was: all created, and the player started at the first 6001 even when it was a co-op start (19 GOG missions, e.g. C02M01, C03M02) |
 | M3 | Player marker | fixed | soldier marker in side colour, blue (0x43e434) |
 | M4 | Current waypoint blink | fixed | DF.EXE 0x43d975 |
 | M5 | Soldier marks | fixed | GPS option (default 1, "gpsicon") draws soldiers whose record +0x4C is set as soldier markers in side colour (red enemies, blue friendlies), an X once dead, culled to the map window (0x43d445, 0x43e434). The flag never changes at run time; footage at 173 s shows live and dead enemies this way. OpenDF shows more at once only because soldiers do not move or die yet (no AI) |
