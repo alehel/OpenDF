@@ -76,6 +76,7 @@ private:
         bool hasHome = false;     // DF1: always (the load position); DF2: from the first one-way path end
         float bank = 0, yawRate = 0;
         float floorHeight = 0;    // the controller's last floor (DF1 +0xb4 / DF2 +0xCC = z - floor)
+        float heightB4 = 0;       // DF1 +0xb4 as stored: z - floor when the controller / landing think ran
         float accel = 0;          // +0xb0: m per tick^2, set by the think, added to vz every tick (DF1)
         // DF2 (GOG Df2.exe 0x42b520 / 0x42c960): the vertical acceleration
         // +0xC8 chosen by the think.

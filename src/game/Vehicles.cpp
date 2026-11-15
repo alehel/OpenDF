@@ -376,6 +376,14 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             if (dist > 80) v.targetSpeed = 15, v.mode = 2, use(18.f, 4.f, 2);
             else if (dist > 30) v.targetSpeed = 5, v.mode = 2, use(18.f, 4.f, 1);
             else v.targetSpeed = 2.5f, v.mode = 1, use(8.f, 1.f, 0);
+        } else if (!world.df2Rules) {
+            // Idle (GOG Df.exe 0x4512cd..0x451330): hover (mode 1) when
+            // alerted (ai+0x9c 2) or the signed speed +0x7c is 0x400 or more;
+            // else mode 1 only from 9 m up (+0xb4 >= 0x90000, the height the
+            // last controller or landing think stored), 0 below.
+            v.targetSpeed = 0;
+            if (v.alert == 2 || v.speed >= 0x400 / 65536.f * kTicks) v.mode = 1;
+            else v.mode = v.heightB4 >= float(0x90000) / 65536.f ? 1 : 0;
         } else {
             v.targetSpeed = 0;
             v.mode = (v.alert == 2 || std::abs(v.speed) >= 0x400 / 65536.f * kTicks) ? 1 : 0;
@@ -404,6 +412,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
                 const float unit = 1.f / 65536.f;
                 const bool lift = v.rotor >= float(0x14000000);
                 v.floorHeight = v.probe;
+                v.heightB4 = o.pos.y - v.probe;   // +0xb4 (0x45119e.., before the landing clamp)
                 if (lift && o.pos.y - v.probe > float(0x90000) * unit) use(8.f, 1.f, nTail);
                 else if (v.probe + rest < o.pos.y) v.accel = !lift ? -0x134 * unit : v.vz < -0x3ff * unit ? 0.f : -0x9a * unit;
                 else { v.accel = 0; v.vz = 0; o.pos.y = v.probe + rest; }
@@ -422,9 +431,10 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             // DF2 keeps the old always-on spin-up (its own think is not
             // reproduced here yet).
             const bool liftNow = v.rotor >= float(0x14000000);
-            const bool idle = std::abs(v.speed) < 0x400 / 65536.f * kTicks;
+            // The idle test reads the stored +0xb4 (0x45131f), signed speed.
+            const bool idle = v.speed < 0x400 / 65536.f * kTicks;
             const bool busy = world.df2Rules || v.mode != 0 || v.gunTarget != -1 || v.alert == 2 ||
-                              (idle && o.pos.y - fl > 8.f) || (liftNow && o.pos.y > ground + rest);
+                              (idle && v.heightB4 > float(0x80000) / 65536.f) || (liftNow && o.pos.y > ground + rest);
             if (busy) v.rotor = std::min(v.rotor + float(0x800000), float(0x1b000000));
             else if (v.rotor > float(0x700000)) v.rotor -= float(0x400000);
             else v.rotor = std::max(v.rotor - float(0x20000), 0.f);
@@ -547,6 +557,7 @@ void VehicleSystem::altitude(World& world, Vehicle& v, float H, float band, int 
         if (h > fl) { fl = h; ++n; }
     }
     v.floorHeight = fl;
+    v.heightB4 = o.pos.y - fl;   // +0xb4 = z - floor (0x450100)
     float lo = H + fl;
     const float hy = float(0x100 << shift) * unit;
     if (v.vz < 0) lo -= hy;
