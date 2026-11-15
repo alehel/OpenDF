@@ -477,9 +477,10 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     // anticlockwise, beyond what the heading controller can hold.
     if (!v.dead && o.tailHits > 2)
         o.heading -= float(std::min(uint32_t(o.tailHits) << 22, 0x1400000u)) / 4294967296.f * turn;
-    // Speed (0x47bacc). Delta Force without lift (GOG Df.exe 0x451687 ->
-    // 0x44ffc0(obj, 0)): toward 0, by twice the rate once destroyed.
-    const float accel = (o.item ? o.item->acceleration : 4.f) / kTicks * (!world.df2Rules && !lift && v.dead ? 2.f : 1.f);
+    // Speed (0x47bacc). Delta Force (GOG Df.exe 0x44ffc0, from 0x451697
+    // toward 0 without lift and 0x451790 / 0x451848 toward +0x88 with it):
+    // by twice the rate once destroyed (flags & 4, 0x44ffe7), lift or not.
+    const float accel = (o.item ? o.item->acceleration : 4.f) / kTicks * (!world.df2Rules && v.dead ? 2.f : 1.f);
     const float want = !world.df2Rules && !lift ? 0.f : v.targetSpeed;
     if (std::abs(want - v.speed) <= accel) v.speed = want;
     else v.speed += want > v.speed ? accel : -accel;
