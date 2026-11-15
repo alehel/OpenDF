@@ -2,10 +2,11 @@
 // ("dlg101" -> dlg101_00000, dlg101_00001, ...) and their subtitles. The
 // audio itself is in DFDLGnn.PWF; subtitle text in DFDLGnn.BIN.
 //
-// Layout: 32-byte header ("DLG0"), then per dialog: name[24], u32 part count
-// at +0x18, parts from +0x34; each part 0x44 bytes: clip name[24], then a
-// 16-byte text field: "_" + entry number in DFDLGnn.BIN, or "##" for no
-// subtitle.
+// Layout (GOG Df.exe 0x455c90, 0x456110): 28-byte header ("DLG0"), then per
+// dialog: u32 0x34, name[24] at +4, u32 part count at +0x1c, parts from
+// +0x34; each part 0x44 bytes: u32, clip name[24] at +4, then a 16-byte text
+// field at +0x1c: "_" + entry number in DFDLGnn.BIN, or "##" for no
+// subtitle; a byte at +0x34, the gap byte at +0x35, ints at +0x38..+0x40.
 #pragma once
 
 #include <cstdint>
