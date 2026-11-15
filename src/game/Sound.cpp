@@ -544,8 +544,10 @@ void SoundSystem::startDf1(SoundDef& def, Pwf& bank, float distance, int dir, bo
         const int count = int(layer.variants.size());
         int pick;
         if (layer.flags & 0x10) {
-            pick = layer.next;
-            if (++layer.next >= count) layer.next = 0;
+            // (A stored round-robin value past the count, from a damaged
+            // bank, starts at 0.)
+            pick = layer.next < count ? layer.next : 0;
+            layer.next = pick + 1 >= count ? 0 : pick + 1;
         } else {
             pick = int((random() & 0xFF) * uint32_t(count) >> 8);
         }
