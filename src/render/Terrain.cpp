@@ -1337,7 +1337,8 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             glUniform4f(glGetUniformLocation(progSky_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
         }
     }
-    setF(progSky_, "uTime", float(SDL_GetTicks()) * 60.f / 1000.f);
+    // Delta Force: 0x485610 -> 0x489980 with the step count [0x67dbf4].
+    setF(progSky_, "uTime", !gen2_ && skyTicks >= 0.f ? skyTicks : float(SDL_GetTicks()) * 60.f / 1000.f);
     for (int i = 0; i < 17; ++i) {
         char name[16];
         std::snprintf(name, sizeof name, "uPal[%d]", i);

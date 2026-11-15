@@ -480,6 +480,7 @@ private:
     void tickDialogs(bool drawn);
     float scriptClock_ = 0;
     uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
+    uint32_t missionSteps_ = 0;           // DF1 [0x67dbf4]: steps since the mission (re)started, the cloud clock
     // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
     // billboarded toward the camera, animated frame by frame, removed after
     // frames x ticks-per-frame.
@@ -962,6 +963,7 @@ bool Game::loadMission(int index) {
         return false;
     }
     dropMultiplayerRecords(mission_, items_);   // single player (GOG Df2.exe 0x403790, GOG Df.exe 0x449710)
+    missionSteps_ = 0;   // [0x67dbf4] = 0 (GOG Df.exe 0x404e30 -> 0x405170)
     loadingLine("STRLTEXT4");   // after it and 0x405210 (0x403bdd)
     {
         // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
@@ -3898,6 +3900,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = insetFocal_ > 0 ? insetFocal_ / 320.f : zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
+    terrain_.skyTicks = arsenal_.df2() ? -1.f : float(missionSteps_);   // DF1 cloud drift (GOG Df.exe 0x489980)
     // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
     // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
     // inset 2.5 under magnification 5, else 5.0, and 2.5 (0x466090). Delta
@@ -8502,6 +8505,7 @@ int Game::run() {
             bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
+                ++missionSteps_;   // GOG Df.exe 0x4043b3
                 tickEffects();
                 tickDialogs(dlgDrawn);
                 dlgDrawn = false;
