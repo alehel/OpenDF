@@ -45,15 +45,19 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
-// HUD colours: DF.EXE builds them at start-up from these RGB values
-// (0x4027b1; nearest palette entries in 8-bit modes).
+// HUD colours: DF.EXE builds them at start-up (0x4027b1, GOG colour init
+// before 0x402cf0): with the 256-colour renderer ([0x67f4e4] == 0) the
+// palette entries nearest (0,0,0), (17,60,253), (1,230,1), ...; with the
+// 16-million-colour one (df.cfg renderer 1, the default) these fixed
+// values, which OpenDF's true-colour renderer uses (GOG Df2.exe 0x465d60
+// has the same black and blue).
 constexpr Color rgb(int r, int g, int b) { return {r / 255.f, g / 255.f, b / 255.f, 1}; }
-const Color kHudWhite = rgb(255, 255, 255);   // 0x66f930
-const Color kHudBlack = rgb(0, 0, 0);         // 0x66f934
+const Color kHudWhite = rgb(255, 255, 255);   // 0x66f930 (GOG [0x67db40])
+const Color kHudBlack = rgb(1, 1, 1);         // 0x66f934 (GOG [0x67db44]): 0x1010101
 const Color kHudPureGreen = rgb(0, 255, 0);   // 0x66f938
-const Color kHudBlue = rgb(17, 60, 253);      // 0x66f93c
+const Color kHudBlue = rgb(16, 64, 255);      // 0x66f93c (GOG [0x67db4c]): 0x1040ff
 const Color kHudRed = rgb(255, 0, 0);         // 0x66f944
-const Color kHudBright = rgb(1, 230, 1);      // 0x66f94c: crosshair, scope, map grid, route
+const Color kHudBright = rgb(1, 224, 1);      // 0x66f94c (GOG [0x67db5c]): 0x4101e001; crosshair, scope, map grid, route
 const Color kHudGreen = rgb(1, 129, 1);       // 0x66f950: HUD text and outlines
 const Color kHudDark = rgb(9, 51, 9);         // 0x66f954: box scanlines, text shadow
 // Message text: each message carries its own colour (0x42f400's second
@@ -197,10 +201,12 @@ private:
     // at 0x4fb326 (CD 0x4df51e) + action id * 0x2c (the command table indexed
     // by the id, not by entry) drops an action with bit 0 while paused
     // ([0x6e4714]) or dead (player +0x6c & 4). Of the ids OpenDF has, that is
-    // scope (6) in both builds and briefing (0x25) in GOG's table only (the
-    // CD's entry 37 there, 'polys', has flag 0); everything else still runs.
+    // scope (6) and pinp (0x1d, the byte of entry 29, Binoculars) in both
+    // builds and briefing (0x25) in GOG's table only (the CD's entry 37
+    // there, 'polys', has flag 0); everything else still runs.
     bool df1PauseGated(Action a) const {
-        const bool gated = a == Action::Scope || (a == Action::Briefing && exe_.build() == ExeBuild::Df1Gog);
+        const bool gated = a == Action::Scope || a == Action::PicInPic ||
+                           (a == Action::Briefing && exe_.build() == ExeBuild::Df1Gog);
         return gated && (paused_ || playerDead());
     }
     // The game commands (DF.EXE 0x42d9c0, GOG Df2.exe 0x41f150); `reverse`
@@ -223,6 +229,15 @@ private:
     // 0x4829f0), -2 none, else a world object.
     bool foOn_ = false;
     int foTarget_ = -1;
+    // Delta Force's picture-in-picture ([0x67f510], df.cfg picinpic, F8):
+    // in an outside view the scope inset stays and, without it, the
+    // player's own view replaces the FO inset (GOG Df.exe 0x404640 ->
+    // 0x466b70).
+    bool pinp_ = false;
+    // GOG Df.exe's audio-macro box ([0x67db90], AudioMacros, A): drawn by
+    // 0x429810; while it is up 0x4790a0 takes the keys 1..9, 0.
+    bool audioMacros_ = false;
+    void drawAudioMacros(const Screen& s);
     void foNext();
     void drawFoInset(const Screen& s);
     const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
@@ -248,9 +263,9 @@ private:
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
     // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
-    // DF1 0x404640: the scope inset only in the first-person view of the
-    // living player (pinp, which would keep it in the outside views, is not done).
-    bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || (outsideView() == 0 && !playerDead())); }
+    // DF1 0x404640: the scope inset only for the living player, in the
+    // first-person view or with picture-in-picture on ([0x67f510]).
+    bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || ((outsideView() == 0 || pinp_) && !playerDead())); }
     // GOG Df2.exe 0x455790: none of the player's +0x64 bits 0x422004 (dead,
     // airborne, swimming 0x20000, on a ladder 0x400000), the scope flag with
     // a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40] 0) and not
@@ -383,6 +398,7 @@ public:
         o.quit = quit_;
         o.crosshairs = crosshair_;
         o.showGun = gunVisible_;
+        o.picInPic = pinp_;
         o.earlierWin = earlierWin_;
         o.earlierKills = earlierKills_;
         o.letterbox = letterbox_;
@@ -420,6 +436,7 @@ private:
         return team == kPlayerTeam && carried_ >= 0 && world_.objects[size_t(carried_)].team == itemTeam;
     }
     void drawBriefing(const Screen& s);
+    void drawDf1Briefing(const Screen& s);
     void drawHelp(const Screen& s);
     // GOG Df2.exe's help (F1): the action table (0x4b1710, 0x200 rows of
     // 0x70) with the mission's bindings, sorted and paged (0x41e5d0 at the
@@ -712,6 +729,11 @@ private:
     // DF2.EXE 0x45c160: a panel darkened 50 % with a one-pixel orange outline,
     // in the virtual 1024x768 space.
     void df2Panel(const Screen& s, float vx0, float vy0, float vx1, float vy1);
+    // GOG Df.exe 0x401ec0 (CD 0x401b6c) with shade 10 and the outline on:
+    // the virtual 1024x768 corners to mode pixels (0x471af0), x rounded down
+    // to 4, the box darkened and framed by four one-pixel lines in bright
+    // green ([0x67db5c]).
+    void df1Panel(const Screen& s, int vx0, int vy0, int vx1, int vy1);
     // A DF2GAME.BIN string (section, key), or `fallback`.
     std::string df2Text(const char* section, const char* key, const char* fallback) const {
         const std::string* t = gameTable_.find(section, key);
@@ -930,8 +952,10 @@ private:
                 h.push_front({text.substr(0, 0x77), df2Colour});
             while (h.size() > 40) h.pop_back();
         }
-        messages_.push_back({text, 0, df1Colour});
-        history_.push_back({text, df1Colour});
+        // DF.EXE 0x42f400 (GOG 0x479f00): at most 0x77 characters go into
+        // the ring entry, for the message lines and the Messages box alike.
+        messages_.push_back({text.substr(0, 0x77), 0, df1Colour});
+        history_.push_back({text.substr(0, 0x77), df1Colour});
         while (history_.size() > 16) history_.pop_front();
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
@@ -1291,6 +1315,9 @@ bool Game::loadMission(int index) {
             if (o.item && (o.item->attrib & 0x20)) o.removed = true;
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
+    // GOG Df.exe 0x429740 (from the mission start 0x4038b0 at 0x403f65) also
+    // shuts the Messages box [0x67db84] and the goals [0x67db8c].
+    if (!world_.df2Rules) oldMessages_ = showGoals_ = false;
     buildDf2Help();   // GOG Df2.exe only (its action table)
     charges_.clear();
     // Delta Force: satchels the mission places share the satchel's handler
@@ -1463,6 +1490,9 @@ bool Game::loadMission(int index) {
     // DF.EXE 0x403b13 / 0x404ba0, DF2.EXE 0x45d8f1: the box is shut at mission start.
     quitBox_ = false;
     messages_.clear();
+    // GOG Df.exe 0x479e90 (from the mission loader 0x404e30 at 0x404f2c):
+    // the 40-entry message ring 0xbd34b0 cleared, so the Messages box too.
+    history_.clear();
     // DF2: the waypoint pool is cleared at mission load (0x403520); the
     // HUD waypoint and the elevation view at mission start (0x447810/0x447816).
     for (auto& w : df2Wps_) w = Df2Waypoint{};
@@ -3796,8 +3826,21 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             return;
         }
         if (c == keyOf("STRMISC10", 'N')) { closeQuitBox(); return; }
-    } else if (missionResult_ >= 0) {
+    } else if (audioMacros_ && !world_.df2Rules) {
+        // GOG Df.exe 0x4790a0: with the audio-macro box up, 1..9 and 0 send
+        // macro 1..10 (0x4717e0: network packet 0x43, a voice played by the
+        // receivers, 0x471760) and shut the box; nothing else is taken here.
+        // OpenDF has no network, so nothing is sent.
+        const SDL_Keycode sym = k.keysym.sym;
+        if (sym >= SDLK_0 && sym <= SDLK_9) {
+            audioMacros_ = false;
+            return;
+        }
+    } else if (missionResult_ >= 0 && !(briefingShown_ && !world_.df2Rules)) {
         // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
+        // Delta Force's chain (GOG 0x4790a0, CD 0x42e8f4) looks at the
+        // End Mission box, the audio macros and the briefing (PgUp / PgDn)
+        // first: with the briefing open Enter and Space are not taken here.
         if (k.keysym.sym == SDLK_RETURN || k.keysym.sym == SDLK_KP_ENTER) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
@@ -3836,8 +3879,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         else df2HelpPage_ = df2HelpPage_ < 1 ? n - 1 : df2HelpPage_ - 1;
         return;
     }
-    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
-    if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
+    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time (not
+    // reached with GOG's audio-macro box up, 0x4790a0).
+    if (briefingShown_ && !audioMacros_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
             if (briefStart_ != briefLast_) {
                 briefPage_ = std::max(briefPage_, briefLast_ - briefStart_);
@@ -3907,6 +3951,7 @@ void Game::runAction(Action act, bool reverse) {
         // pause, old messages, the box, [0x7655fc], the command map); with
         // none open it opens "End Mission? (Y/N)" (0x42e548 / 0x41b5d1).
         if (paused_) { paused_ = false; break; }
+        if (audioMacros_) { audioMacros_ = false; break; }   // GOG Df.exe: before the Messages box
         if (oldMessages_) { oldMessages_ = false; break; }
         if (quitBox_) { closeQuitBox(); break; }
         // DF2 0x41b59d: with [0x7655fc] set (F9 / F10), Escape only clears it.
@@ -4045,6 +4090,8 @@ void Game::runAction(Action act, bool reverse) {
     case Action::MapZoomIn: mapScale_ = std::max(0.25f, mapScale_ * 0.9f); break;
     case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
+    case Action::PicInPic: if (!world_.df2Rules) pinp_ = !pinp_; break;   // GOG Df.exe 0x477d40 id 0x1d
+    case Action::AudioMacros: if (!world_.df2Rules) audioMacros_ = !audioMacros_; break;   // GOG Df.exe 0x477d40 id 0x2b
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
     case Action::PrintScreen: printScreen_ = !world_.df2Rules; break;   // GOG Df.exe 0x477d40 cmd 2 -> 0x473eb0
     case Action::CenterView: player_.pitch = 0; break;
@@ -4783,7 +4830,19 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    // GOG Df.exe 0x466090 looks from the player's eye (+0x24.. raised by
+    // [0xc23a18], his yaw / pitch / roll) also when picture-in-picture keeps
+    // the scope up in an outside view.
+    Mat4 scopeView = view;
+    const Vec3 pEye = player_.eye(), pDir = player_.forward();
+    const bool fromPlayer = !df2Hud_.on && outsideView() != 0;
+    if (fromPlayer) {
+        scopeView = lookDir(pEye, pDir, {0, 1, 0});
+        eyeOverride_ = &pEye;
+        dirOverride_ = &pDir;
+    }
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * scopeView : scopeView, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    if (fromPlayer) eyeOverride_ = dirOverride_ = nullptr;
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
@@ -4865,10 +4924,18 @@ void Game::drawFoInset(const Screen& s) {
     // a one-pixel border in [0x67db5c] (0x472610) and the target's name at
     // (0x2d4, top + 0x114), left-aligned, in [0x67db5c]. With the player as
     // the observer his own body (drawn in the outside views) is left out too.
-    if (!foOn_ || df2Hud_.on || scopeShown() || showMap_) return;
-    if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
-        foOn_ = false;
-        return;
+    // With picture-in-picture in an outside view 0x404640 draws 0x466b70
+    // instead: nothing while dead, else the player's own view (his eye,
+    // yaw, pitch and roll, FOV 90, himself not drawn: [0x6ba3f0] = the
+    // player, [0x6ba3ec] = 0) in the same box and border, with no name.
+    if (df2Hud_.on || scopeShown() || showMap_) return;
+    const bool pinp = pinp_ && outsideView() != 0;
+    if (!pinp) {
+        if (!foOn_) return;
+        if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
+            foOn_ = false;
+            return;
+        }
     }
     if (playerDead()) return;
     const float x0 = float(int(s.vx(0x2c0)) & ~3), x1 = float(int(s.vx(0x3c0)) & ~3);
@@ -4880,11 +4947,11 @@ void Game::drawFoInset(const Screen& s) {
     float yaw, pitch;
     std::string name;
     const WorldObject* target = nullptr;
-    if (foTarget_ < 0) {
+    if (pinp || foTarget_ < 0) {
         eye = player_.origin() + Vec3{0, eyeUp, 0};
         yaw = player_.yaw;
         pitch = player_.pitch;
-        name = o_.soldierName;
+        if (!pinp) name = o_.soldierName;
     } else {
         target = &world_.objects[size_t(foTarget_)];
         eye = target->pos + Vec3{0, target->hip + eyeUp, 0};   // its body origin (+0x24..), not its feet
@@ -5597,8 +5664,11 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         const std::string dead = df2Text("Misc", "STRMISC11", "You are dead.");
         hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
     } else if (playerDead() && missionResult_ < 0) {
-        // GOG Df.exe 0x426c30: at the view's top ([0x67dba0]) + 20.
-        const char* dead = "You Are Dead";
+        // GOG Df.exe 0x426c30: at the view's top ([0x67dba0]) + 20, DFGAME.BIN
+        // Misc STRMISC11 ("You are dead."); the CD build's text is in the
+        // EXE (0x4c051c). (STRMISC12 "Respawn allowed in:" below it
+        // only in multiplayer: 0x471900 returns 0 with [0x67f520] clear.)
+        const std::string dead = exe_.build() == ExeBuild::Df1Gog ? df2Text("Misc", "STRMISC11", "You are dead.") : "You Are Dead";
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudMessage, s.text());
     }
 
@@ -5619,6 +5689,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // frame 0x48f9b0 runs this pass too), before the overlays.
     if (!df2Hud_.on && gpsShown_) drawGpsInset(s);
     if (oldMessages_) drawOldMessages(s);
+    if (audioMacros_ && !df2Hud_.on) drawAudioMacros(s);   // GOG 0x426c30: after the Messages box
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
@@ -5681,6 +5752,24 @@ void Game::df2Panel(const Screen& s, float vx0, float vy0, float vx1, float vy1)
     hud_.rect(x0, y1 - t, x1 - x0, t, kDf2Amber);
     hud_.rect(x0, y0, t, y1 - y0, kDf2Amber);
     hud_.rect(x1 - t, y0, t, y1 - y0, kDf2Amber);
+}
+
+void Game::df1Panel(const Screen& s, int vx0, int vy0, int vx1, int vy1) {
+    // 0x471af0: x * mode width / 1024, y * mode height / 768. The 32-bit
+    // path (renderer 1, OpenDF's true colour) halves every channel,
+    // ((p & 0xfefefefe) >> 1), x0 .. x1 - 1 on rows y0 .. y1, whatever the
+    // shade level; the 8-bit one would map through shade table 10 instead.
+    const int mw = s.modeW, mh = s.modeW * 3 / 4;
+    const int px0 = (vx0 * mw / 1024) & ~3, px1 = (vx1 * mw / 1024) & ~3, py0 = vy0 * mh / 768, py1 = vy1 * mh / 768;
+    const float k = s.art(), ox = s.cx(-320), t = std::max(1.f, k);
+    const float x0 = ox + float(px0) * k, x1 = ox + float(px1) * k, y0 = float(py0) * k, y1 = float(py1) * k;
+    hud_.multiply(x0, y0, x1 - x0, y1 - y0 + k, {0.5f, 0.5f, 0.5f, 1});
+    // 0x472610 lines (x0,y0)-(x1,y0), (x1,y0)-(x1,y1), (x1,y1)-(x0,y1),
+    // (x0,y1)-(x0,y0), end points included.
+    hud_.rect(x0, y0, x1 - x0 + t, t, kHudBright);
+    hud_.rect(x0, y1, x1 - x0 + t, t, kHudBright);
+    hud_.rect(x0, y0, t, y1 - y0 + t, kHudBright);
+    hud_.rect(x1, y0, t, y1 - y0 + t, kHudBright);
 }
 
 void Game::drawDf2Strips(const Screen& s) {
@@ -7373,12 +7462,11 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
 }
 
 void Game::drawBriefing(const Screen& s) {
-    // 0x482cb8: darkened box (200, 200)-(824, 568); "Mission Briefing"
-    // (DFMENU.BIN) centred at (512, 225) in bright green; the text wrapped
-    // by 0x482970 into x0 + 5, y0 + 35, width - 10, height - 40: words split
-    // at spaces, "{...}" tags removed, "~" a line break, a word that would
-    // pass the right edge starts a line; lines before the start line are
-    // skipped; stop when the next line would pass the bottom.
+    if (!df2Hud_.on) {
+        drawDf1Briefing(s);
+        return;
+    }
+    // (Delta Force 2: not traced; Delta Force's earlier reading.)
     const float x0 = s.vx(200), x1 = s.vx(824), y0 = s.vy(200), y1 = s.vy(568);
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     const std::string* title = menuText_.find("GroupMainMenu", "HELPMISSIONBRIEFING");
@@ -7414,6 +7502,79 @@ void Game::drawBriefing(const Screen& s) {
         }
         if (line >= briefStart_) hud_.text(x, y, w, kHudBright, s.text());
         x += ww;
+    }
+    briefLast_ = line;
+}
+
+void Game::drawDf1Briefing(const Screen& s) {
+    // GOG Df.exe 0x42c7f0 (CD 0x482cb8): the panel (200, 200)-(824, 568)
+    // (0x401ec0, outlined); "Mission Briefing" (DFMENU.BIN) centred at
+    // (512, 225) in bright green; then the corners in mode pixels
+    // (0x471af0, not rounded to 4) and the text wrapped by 0x42c4a0 (CD
+    // 0x482970) into x0 + 5, y0 + 35, width - 10, height - 40 mode pixels;
+    // its result, the line it stopped on, is [0x6ba430].
+    df1Panel(s, 200, 200, 824, 568);
+    const std::string* title = menuText_.find("GroupMainMenu", "HELPMISSIONBRIEFING");
+    const std::string t = title ? *title : "Mission Briefing";
+    const float ts = s.text();
+    hud_.text(s.vx(512) - hud_.textWidth(t, ts) / 2, s.vy(225), t, kHudBright, ts);
+    const int mw = s.modeW, mh = s.modeW * 3 / 4;
+    const int px0 = 200 * mw / 1024, py0 = 200 * mh / 768, px1 = 824 * mw / 1024, py1 = 568 * mh / 768;
+    const float k = s.art(), ox = s.cx(-320);
+    const float left = ox + float(px0 + 5) * k, top = float(py0 + 35) * k;
+    const float right = left + float(px1 - px0 - 10) * k, bottom = top + float(py1 - py0 - 40) * k;
+    const float lh = hud_.lineHeight(ts);
+    // 0x42c4a0: no text (or "") returns 0. The text, at most 3999
+    // characters, is cut by strtok at ' ' only. The first word is taken as
+    // it is (no tag or '~' test, no wrap) and drawn at the top left on page
+    // 1. Every later word loses a leading "{...}" (a tag alone leaves an
+    // empty word, drawn as a space); one starting with '~' (the rest of it
+    // dropped) breaks the line; any other wraps when x + its width passes
+    // the right edge, even at a line's start. A break moves down only from
+    // the start line on and returns the line it was on when the next line
+    // would pass the bottom (so the next page repeats that line). Every word
+    // gets a ' ' and is drawn from the start line on, x advancing by its
+    // width with the space.
+    if (briefing_.empty()) { briefLast_ = 0; return; }
+    const std::string text = briefing_.substr(0, 3999);
+    std::vector<std::string> words;
+    for (size_t i = 0; i < text.size();) {
+        size_t e = text.find(' ', i);
+        if (e == std::string::npos) e = text.size();
+        if (e > i) words.push_back(text.substr(i, e - i));
+        i = e + 1;
+    }
+    if (words.empty()) { briefLast_ = 0; return; }
+    float x = left, y = top;
+    int line = 1;
+    std::string w = words[0].substr(0, 63) + ' ';
+    if (briefStart_ < 2) hud_.text(x, y, w, kHudBright, ts);
+    for (size_t i = 1;;) {
+        x += hud_.textWidth(w, ts);
+        bool done = false;
+        for (;;) {
+            if (i >= words.size()) { done = true; break; }
+            std::string tok = words[i++];
+            if (tok[0] == '{') {
+                const size_t e = tok.find('}');
+                tok = e == std::string::npos ? std::string() : tok.substr(e + 1);
+            }
+            w = tok.substr(0, 63);
+            if (w.empty() || w[0] != '~') break;
+            x = left;
+            if (briefStart_ <= line) y += lh;
+            if (bottom < y + lh) { done = true; break; }
+            ++line;
+        }
+        if (done) break;
+        if (right < x + hud_.textWidth(w, ts)) {
+            x = left;
+            if (briefStart_ <= line) y += lh;
+            if (bottom < y + lh) break;
+            ++line;
+        }
+        w += ' ';
+        if (briefStart_ <= line) hud_.text(x, y, w, kHudBright, ts);
     }
     briefLast_ = line;
 }
@@ -7591,12 +7752,17 @@ void Game::drawDf2Help(const Screen& s) {
 
 void Game::drawHelp(const Screen& s) {
     if (df2Hud_.on && !df2HelpPages_.empty()) { drawDf2Help(s); return; }
-    // 0x48232c: darkened box (7, 98)-(1023, 666); labels (DFMENU.BIN HELP*)
+    // 0x48232c (GOG 0x42be00): the panel (7, 98)-(1023, 666) (0x401ec0,
+    // outlined); labels (DFMENU.BIN HELP*)
     // and keys in two columns, rows 25 apart from y 115, bright green: left
     // labels at x 40 / keys at 200, right at 540 / 770 (0x4822f4 draws at
     // x + 20, y + 100). Key texts from the soldier's bindings (0x4816a0).
-    const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    if (df2Hud_.on) {
+        const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
+        hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    } else {
+        df1Panel(s, 7, 98, 1023, 666);
+    }
     auto label = [&](const char* key) {
         const std::string* t = menuText_.find("GroupMainMenu", key);
         return t ? *t : std::string(key);
@@ -7660,14 +7826,25 @@ void Game::drawHelp(const Screen& s) {
     for (int k = 1; k <= 10; ++k) {
         const int slot = k % 10;
         const ModeDef* md = arsenal_.slotMode(slot);
-        if (!md || md->name.empty()) continue;
-        put(520, 750, y, md->name, keyOf(slotKeys[slot]));
+        if (!md) continue;
+        // 0x42be00 / 0x48232c: the mode's short name (+0x44, DFGAME.BIN
+        // "Player Weapons" STR_SPWNAME%02i, 0x46bfb0); a row only when it
+        // is not empty.
+        std::string name = md->name;
+        if (!df2Hud_.on) {
+            char key[24];
+            std::snprintf(key, sizeof key, "STR_SPWNAME%02d", arsenal_.slotModeIndex(slot));
+            const std::string* t = gameTable_.find("Player Weapons", key);
+            name = t ? *t : std::string();
+        }
+        if (name.empty()) continue;
+        put(520, 750, y, name, keyOf(slotKeys[slot]));
         y += 25;
     }
     put(520, 750, y, label("HELPFIRE"), keyOf(Action::Fire));
     y += 25;
     put(520, 750, y, label("HELPSCOPE"), keyOf(Action::Scope));
-    y += 75;
+    y += 50;   // 0x42be00: Terrain Map 75 below Fire, one row free after Scope
     put(520, 750, y, label("HELPTERRAINMAP"), label("HELPF10"));
     y += 25;
     put(520, 750, y, label("HELPCONTOURMAP"), label("HELPF11"));
@@ -7695,8 +7872,7 @@ void Game::drawPaused(const Screen& s) {
         hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
         return;
     }
-    const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    df1Panel(s, 310, 330, 714, 438);   // GOG 0x427180 -> 0x401ec0, outlined
     const char* t = "Game Paused";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
 }
@@ -7713,10 +7889,25 @@ void Game::drawQuitBox(const Screen& s) {
         hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
         return;
     }
-    const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    df1Panel(s, 310, 330, 714, 438);   // GOG 0x4270a0 -> 0x401ec0, outlined
     const char* t = "End Mission? (Y/N)";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+void Game::drawAudioMacros(const Screen& s) {
+    // GOG Df.exe 0x429810: the panel (0x80, 200)-(0x380, 0x230) (0x401ec0);
+    // DFGAME.BIN "Male Audio Macros" STRMAM_%02i, or for a female soldier
+    // ([0x67f434]: profile +0x640 > 7) "Female Audio Macros" STRFAM_%02i,
+    // 1..10 as "%i - %s" ("0 - %s" for the tenth) left-aligned at x 200 from
+    // y 240, 30 apart, in bright green ([0x67db5c]).
+    df1Panel(s, 0x80, 200, 0x380, 0x230);
+    const char* section = o_.female ? "Female Audio Macros" : "Male Audio Macros";
+    for (int i = 0; i < 10; ++i) {
+        char key[16];
+        std::snprintf(key, sizeof key, "STR%cAM_%02d", o_.female ? 'F' : 'M', i + 1);
+        const std::string t = std::to_string((i + 1) % 10) + " - " + df2Text(section, key, "");
+        hud_.text(s.vx(200), s.vy(240 + 30 * float(i)), t, kHudBright, s.text());
+    }
 }
 
 void Game::drawOldMessages(const Screen& s) {
@@ -7740,8 +7931,7 @@ void Game::drawOldMessages(const Screen& s) {
         }
         return;
     }
-    const float x0 = s.vx(100), x1 = s.vx(924), y0 = s.vy(100), y1 = s.vy(668);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    df1Panel(s, 100, 100, 924, 668);   // GOG 0x428eb0 -> 0x401ec0, outlined
     const char* t = "Messages";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kHudBright, s.text());
     const size_t first = history_.size() < 16 ? 0 : history_.size() - 16;
@@ -8064,10 +8254,9 @@ void Game::drawBinoculars(const Screen& s) {
 
 void Game::drawMissionEnd(const Screen& s) {
     // DF.EXE 0x483094: success if the winner is the player's side. A darkened
-    // panel (0x401b6c) from (128, 116) to (896, 246) virtual, i.e. x 80-560,
-    // y 72.5-153.75, shade level 10 of the 32-step shade table (0x435070:
-    // level r keeps r/31 of the brightness, so 10/31), with a one-pixel
-    // outline in bright green (0x66f94c); three lines centred at x 512 in
+    // panel (0x401b6c, GOG 0x401ec0: see df1Panel) from (128, 116) to
+    // (896, 246) virtual, with a one-pixel outline in bright green
+    // (0x66f94c); three lines centred at x 512 in
     // green (0x66f938) with tops at 136, 176, 206 virtual.
     const bool won = missionResult_ == kPlayerSide;
     if (df2Hud_.on) {
@@ -8087,12 +8276,8 @@ void Game::drawMissionEnd(const Screen& s) {
     // GOG Df.exe 0x426f20 places it from the view's top [0x67dba0] (96 or,
     // with letterbox 2, 192 virtual): the panel at +20..+150, the lines at
     // +40, +80, +110.
-    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.playY + s.vy(20), y1 = s.playY + s.vy(150), t = s.px();
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
-    hud_.rect(x0, y0, x1 - x0, t, kHudBright);
-    hud_.rect(x0, y1 - t, x1 - x0, t, kHudBright);
-    hud_.rect(x0, y0, t, y1 - y0, kHudBright);
-    hud_.rect(x1 - t, y0, t, y1 - y0, kHudBright);
+    const int top = int(std::lround(s.playY / s.vy(1)));
+    df1Panel(s, 0x80, top + 0x14, 0x380, top + 0x96);   // GOG 0x426f20 -> 0x401ec0
     const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
                            "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
     const float tops[] = {40, 80, 110};
@@ -8145,18 +8330,27 @@ void Game::drawGoals(const Screen& s) {
         hud_.text(x, s.y(y), text, c, ts);
         y += 15.625f;
     };
+    // GOG Df.exe 0x429160 (CD 0x485004): each list ends at the first goal
+    // whose text is missing or empty; its header comes with the first one;
+    // the lose list starts 10 virtual units below the win list's last row,
+    // whether or not there was one. GOG takes the headers from DFGAME.BIN
+    // Overlays STROVER51 / STROVER52 ("Lose Condiitions:", sic), the CD
+    // build has them in the EXE (0x4c0990 / 0x4c09b4).
+    const bool gog = exe_.build() == ExeBuild::Df1Gog;
     for (int part = 0; part < 2; ++part) {
-        std::vector<std::pair<std::string, bool>> items;
+        if (part == 1) y += 6.25f;
         for (int n = 1; n <= 4; ++n) {
             char key[24];
             std::snprintf(key, sizeof key, part == 0 ? "M%02dSUBGOAL%02d" : "M%02dSUBFAIL%02d", missionNumber_, n);
-            if (const std::string* t = campText_.find("Goals", key))
-                items.push_back({*t, part == 0 ? script_.goalDone(n) : script_.failDone(n)});
+            const std::string* t = campText_.find("Goals", key);
+            if (!t || t->empty()) break;
+            if (n == 1) {
+                if (part == 0) line(gog ? df2Text("Overlays", "STROVER51", "Win Conditions:") : "Win Conditions:", kHudWhite);
+                else line(gog ? df2Text("Overlays", "STROVER52", "Lose Condiitions:") : "Lose Conditions:", kHudWhite);
+            }
+            const bool met = part == 0 ? script_.goalDone(n) : script_.failDone(n);
+            line(*t, met ? (part == 0 ? kHudGreen : kHudRed) : kHudWhite);
         }
-        if (items.empty()) continue;
-        if (part == 1) y += 6.25f;
-        line(part == 0 ? "Win Conditions:" : "Lose Conditions:", kHudWhite);
-        for (auto& [text, met] : items) line(text, met ? (part == 0 ? kHudGreen : kHudRed) : kHudWhite);
     }
 }
 
@@ -8217,6 +8411,7 @@ int Game::run() {
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
         gunVisible_ = o_.showGun;   // GOG 0x407a90: [0x67f514] = showgun
+        pinp_ = o_.picInPic;        // GOG 0x407a90: [0x67f510] = picinpic
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));

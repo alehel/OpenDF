@@ -30,7 +30,8 @@ const ActionName kNames[] = {
     {Action::ThirdPersonL, "3rdPersonl"}, {Action::CameraLeft, "CameraLeft"}, {Action::CameraRight, "CameraRight"},
     {Action::CameraUp, "CameraUp"}, {Action::CameraDown, "CameraDown"}, {Action::CameraZoomIn, "CameraZoomIn"},
     {Action::CameraZoomOut, "CameraZoomOut"}, {Action::FoCamera, "fo"}, {Action::FoNext, "tab"},
-    {Action::ScopeMag, "scopemag"}, {Action::PrintScreen, "PrintScreen"},
+    {Action::ScopeMag, "scopemag"}, {Action::PrintScreen, "PrintScreen"}, {Action::PicInPic, "pinp"},
+    {Action::AudioMacros, "AudioMacros"},
 };
 
 // Built-in copy of DF.EXE's defaults (virtual-key code | mouse << 16).
@@ -48,7 +49,7 @@ const Default kDefaults[] = {
     {"Drop", 0x44}, {"briefing", 0x4f}, {"help", 0x70},
     {"1stPerson", 0x71}, {"3rdPersonw", 0x75}, {"3rdPersonp", 0x74}, {"3rdPersonl", 0x76},
     {"CameraLeft", 0x4c}, {"CameraRight", 0xba}, {"CameraUp", 0x50}, {"CameraDown", 0xbe},
-    {"CameraZoomIn", 0xdb}, {"CameraZoomOut", 0xdd}, {"fo", 0x78}, {"tab", 0x09},
+    {"CameraZoomIn", 0xdb}, {"CameraZoomOut", 0xdd}, {"fo", 0x78}, {"tab", 0x09}, {"pinp", 0x77},
     {"mapterrain", 0x79}, {"mapelevation", 0x7a},   // F10 / F11 (GOG Df.exe 0x4fc3a8..)
     {"PrintScreen", 0x50},                          // P, with Shift (flag 0x40)
 };

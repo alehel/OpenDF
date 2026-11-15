@@ -2756,6 +2756,7 @@ int Frontend::run() {
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.showGun = cfg_.get("showgun") != 0;
+                g.picInPic = cfg_.get("picinpic") != 0;
                 g.flipMouse = cfg_.get("flipmouse") != 0;
                 // 0x407a90 passes df.cfg's values on unclamped (0x406640
                 // stores atoi's result as it is). The +-2^20 bound is
@@ -2785,10 +2786,11 @@ int Frontend::run() {
                 audio_.setDfMixer(true, false);
                 // GOG 0x401e70 -> 0x407980: the mission's option words go back
                 // to the settings (df.cfg); of them OpenDF's missions change
-                // only the crosshair and gun toggles.
+                // only the crosshair, gun and picture-in-picture toggles.
                 if (outcome_.played) {
                     cfg_.set("crosshairs", outcome_.crosshairs ? 1 : 0);
                     cfg_.set("showgun", outcome_.showGun ? 1 : 0);
+                    cfg_.set("picinpic", outcome_.picInPic ? 1 : 0);
                 }
                 if (outcome_.letterbox) cfg_.set("window_size", outcome_.letterbox);   // 0x407980: back to df.cfg
                 if (outcome_.quit) {

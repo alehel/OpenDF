@@ -283,6 +283,7 @@ public:
     int slot() const { return current_; }
     // The mode in a slot (null if empty), e.g. for the help screen.
     const ModeDef* slotMode(int i) const { return i >= 0 && i < kSlots && slots_[size_t(i)] ? &modes_[size_t(slots_[size_t(i)])] : nullptr; }
+    int slotModeIndex(int i) const { return i >= 0 && i < kSlots ? slots_[size_t(i)] : 0; }   // the player-table mode number
     const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
     int modeIndex() const { return slots_[size_t(current_)]; }   // the player-table mode number
     // The third-person item a person holds for mode m: DF.EXE's table

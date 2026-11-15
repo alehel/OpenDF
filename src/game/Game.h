@@ -71,6 +71,9 @@ struct GameOptions {
     // df.cfg showgun: the view model is drawn only when set (GOG Df.exe
     // 0x407a90 -> [0x67f514], read by 0x483f30).
     bool showGun = true;
+    // df.cfg picinpic: picture-in-picture (GOG Df.exe 0x407a90 ->
+    // [0x67f510], back by 0x407980).
+    bool picInPic = false;
     // Delta Force 2: the scope sensitivity [0x67ccfc] (soldier +0x5d8 +
     // 0x80, GOG Df2.exe 0x43c352), the scoped mouse turn rate (0x41eb50).
     int df2ScopeSens = 0x80;
@@ -95,7 +98,7 @@ struct MissionOutcome {
     bool quit = false;       // the window was closed: leave the program (exit code 2)
     // The in-mission option toggles as the mission ended, copied back to the
     // menu's settings (GOG Df.exe 0x401e70 -> 0x407980).
-    bool crosshairs = true, showGun = true;
+    bool crosshairs = true, showGun = true, picInPic = false;
     // Delta Force: earlier attempts of this run won and then replayed with
     // Space (GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 records each one).
     bool earlierWin = false;
