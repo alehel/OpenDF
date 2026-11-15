@@ -19,6 +19,27 @@ constexpr int kGazelle = 2018;   // graphic number 0x7e2: loop 502, else 503
 
 float wrapAngle(float a) { return a - std::floor(a / (2 * kPi) + 0.5f) * 2 * kPi; }
 
+// Helicopter types as the EXEs test them (item def +0x20, the graphic
+// number). DF.EXE: the Gazelle, and everything else as the Black Hawk. GOG
+// Df2.exe: the Gazelle (0x7e2) and Black Hawk (0x7e5) door guns have limits
+// and only the Black Hawk turns its door to the target; the Havoc (0x7d5),
+// Hind (0x7ec) and Ka-29 (0x7ed) are neither (0x42b922, 0x42bb5e, 0x42bca2).
+enum class HeloType { Gazelle, Hawk, Other };
+HeloType heloType(const World& world, const WorldObject& o) {
+    const int g = o.item ? o.item->id - 100000 : 0;
+    if (g == kGazelle) return HeloType::Gazelle;
+    return (!world.df2Rules || g == 0x7e5) ? HeloType::Hawk : HeloType::Other;
+}
+
+// The rest height of the origin above the ground (DF.EXE: Gazelle 0x3f000,
+// others 0x37000; GOG Df2.exe 0x42ca03 / 0x42c6ad by graphic number).
+float heloRest(const World& world, const WorldObject& o) {
+    const int g = o.item ? o.item->id - 100000 : 0;
+    int r = g == kGazelle ? 0x3f000 : 0x37000;
+    if (world.df2Rules) r = g == 0x7e5 ? 0x37000 : g == 0x7d5 ? 0x38000 : g == 0x7ec ? 0x41000 : g == 0x7ed ? 0x34000 : 0x3f000;
+    return float(r) / 65536.f;
+}
+
 } // namespace
 
 void VehicleSystem::init(World& world, const Mission& mission) {
@@ -261,7 +282,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     WorldObject& o = world.objects[size_t(v.object)];
     const float turn = 2 * kPi;   // binary angle -> radians
     const float ground = world.terrain->heightAt(o.pos.x, o.pos.z);
-    const float rest = (o.item && o.item->id == 100000 + kGazelle) ? 0x3f000 / 65536.f : 0x37000 / 65536.f;
+    const float rest = heloRest(world, o);
     // Rotor angles advance by the speeds on every move call (0x47d064).
     o.rotorAngle[0] += uint32_t(v.rotor);
     o.rotorAngle[1] += uint32_t(v.rotor);
@@ -298,7 +319,8 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             // OpenDF's clockwise headings.
             const Vec3 d = world.nearest(v.lastKnown, o.pos) - o.pos;
             const float dist = std::sqrt(d.x * d.x + d.z * d.z);
-            const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
+            // GOG Df2.exe 0x42b922 / 0x42b969: the Black Hawk (0x7e5) only.
+            const bool hawk = heloType(world, o) == HeloType::Hawk;
             float h = std::atan2(d.x, -d.z);
             if (!world.df2Rules && v.rotor < float(0x14000000)) h = v.targetHeading;
             else if (dist > 80) { v.targetSpeed = 15; v.mode = 2; }
@@ -495,11 +517,15 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
     }
     // Aim (0x47c220).
     const float turn = 2 * kPi / 4294967296.f;
-    const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
+    const HeloType type = heloType(world, o);
+    const bool hawk = type == HeloType::Hawk;
     const float deg = kPi / 180.f;
     const Vec3 d = world.nearest(v.lastKnown, o.pos) - gunPoint(world, v);
     const float yaw = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
     const float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) - o.pitch;
+    // GOG Df2.exe 0x42bb5e / 0x42bba8: a helicopter that is neither the
+    // Gazelle nor the Black Hawk stores the aim unclamped.
+    if (type == HeloType::Other) { v.gunTgtYaw = yaw; v.gunTgtPitch = pitch; return; }
     v.gunTgtYaw = std::clamp(yaw, hawk ? -135 * deg : -45 * deg, hawk ? -45 * deg : 45 * deg);
     v.gunTgtPitch = std::clamp(pitch, hawk ? -float(0x0C000000) * turn : -45 * deg, 0.f);
 }
@@ -516,9 +542,12 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
 void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound) {
     WorldObject& o = world.objects[size_t(v.object)];
     const float turn = 2 * kPi / 4294967296.f;
-    const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
+    const HeloType type = heloType(world, o);
+    const bool hawk = type == HeloType::Hawk;
     const float deg = kPi / 180.f;
-    if (!v.gunInit) {   // 0x47ca6c: the Black Hawk's gun starts pointing out of its door
+    // 0x47ca6c (GOG Df2.exe 0x42c379, 0x7e5 only): the Black Hawk's gun
+    // starts pointing out of its door.
+    if (!v.gunInit) {
         v.gunInit = true;
         if (hawk) v.gunYaw = v.gunTgtYaw = -90 * deg;
     }
@@ -542,8 +571,9 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     {
         const float ry = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
         const float rp = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) - o.pitch;
-        if (ry < (hawk ? -135 * deg : -45 * deg) || ry > (hawk ? -45 * deg : 45 * deg) ||
-            rp < (hawk ? -float(0x0C000000) * turn : -45 * deg) || rp > 0)
+        // GOG Df2.exe 0x42bccf: no limits for the other types.
+        if (type != HeloType::Other && (ry < (hawk ? -135 * deg : -45 * deg) || ry > (hawk ? -45 * deg : 45 * deg) ||
+            rp < (hawk ? -float(0x0C000000) * turn : -45 * deg) || rp > 0))
             return;
     }
     auto err = [&]() { return float(int((rnd() & 0xFFFF) << 6) - 0x200000) * turn; };
@@ -771,7 +801,12 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
             // within 0x6000..0x12000 (0x47ca0f).
             if (v.rotor > 0) {
                 const float pitch = std::clamp((v.rotor / 8192.f + 0x5000) / 65536.f, 0x6000 / 65536.f, 0x12000 / 65536.f);
-                sound.setLoop(100000 + v.object, (o.item && o.item->id == 100000 + kGazelle) ? 502 : 503, o.pos, pitch);
+                // GOG Df2.exe 0x42c8d4: 503 for the Black Hawk (0x7e5), 502 for
+                // the Gazelle, Havoc, Hind and Ka-29, none for any other.
+                const int g = o.item ? o.item->id - 100000 : 0;
+                int loop = g == kGazelle ? 502 : 503;
+                if (world.df2Rules) loop = g == 0x7e5 ? 503 : (g == kGazelle || g == 0x7d5 || g == 0x7ec || g == 0x7ed) ? 502 : 0;
+                if (loop) sound.setLoop(100000 + v.object, loop, o.pos, pitch);
             }
         } else if (v.kind == Kind::Car) {
         } else if (v.kind == Kind::Loco) {

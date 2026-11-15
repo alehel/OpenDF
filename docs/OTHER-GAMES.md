@@ -681,6 +681,15 @@ First differences from DF1:
     of 16..47 ticks, one round per 16, pauses 64..127, the bias ×3/4 each
     time (0x423ac0, 0x424550); `brdm` draws the turret, gun, steered front
     wheels and the muzzle flash for one frame after a round (0x4295f0);
+    helicopters by graphic number (item def +0x20): rest height of the
+    origin above the ground Black Hawk 0x7e5 0x37000, Havoc 0x7d5 0x38000,
+    Hind 0x7ec 0x41000, Ka-29 0x7ed 0x34000, others (Gazelle) 0x3f000
+    (0x42ca03); only the Black Hawk turns its door to the target (+22.5° /
+    +67.5°, 0x42b922 / 0x42b969) and starts its gun at -90° (0x42c379); door
+    gun limits Gazelle ±45° yaw, -45..0° pitch, Black Hawk -135..-45° yaw,
+    -16.9..0° pitch, any other type unclamped with no fire refusal (0x42bb5e,
+    0x42bccf); rotor loop 503 for the Black Hawk, 502 for the Gazelle, Havoc,
+    Hind and Ka-29 (0x42c8d4);
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
     and the player and teleported teams at a start or teleport marker more
     than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe
