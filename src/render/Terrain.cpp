@@ -1173,12 +1173,17 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     // (GOG Df.exe 0x48d570, called near the end of 0x485610).
     if (eye.y <= level) return;
     df1WaterSetup(eye, ticks);
-    // The surface out to 1023 m, only where it is in front (depth test).
+    // The surface out to 1024 m of view depth (GOG Df.exe 0x48d040: a span
+    // stops past 0x3feffff), only where it is in front (depth test); the quad
+    // reaches the diagonal corners.
     glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
     setM4(progWater_, "uViewProj", proj * view);
     setF(progWater_, "uLevel", level);
-    setF(progWater_, "uExtent", 1023.f);
+    setF(progWater_, "uExtent", 1449.f);
+    setF(progWater_, "uMaxDepth", float(0x3feffff) / 65536.f);
+    setV3(progWater_, "uFwd", Vec3{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)});
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    setF(progWater_, "uMaxDepth", 0.f);
     glDepthMask(GL_TRUE);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
@@ -1233,8 +1238,8 @@ void Terrain::drawUnderwater(const Mat4& view, const Mat4& projNear, const Mat4&
     glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
     setV3(progWater_, "uEye", eye);
     setF(progWater_, "uLevel", waterLevel());
-    setF(progWater_, "uExtent", 1023.f);
-    setF(progWater_, "uMaxDepth", 1023.f);
+    setF(progWater_, "uExtent", 1449.f);
+    setF(progWater_, "uMaxDepth", float(0x3feffff) / 65536.f);
     setV3(progWater_, "uFwd", Vec3{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)});
     // The caller's two depth ranges (far 0.5..1, near 0..0.5).
     for (int range = 0; range < 2; ++range) {
