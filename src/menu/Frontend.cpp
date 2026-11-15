@@ -230,6 +230,7 @@ private:
     // Screens.
     void refreshSoldier();
     void refreshCampaign();
+    void refreshOverviewTitle();
     void refreshOptions();
     bool missionAvailable(int camp, int mis);
     uint32_t missionHeader(int camp, int mis, int offset);
@@ -1468,6 +1469,20 @@ void Frontend::refreshCampaign() {
             b->drawstate = i == camp_ ? 3 : 1;
         }
     }
+    refreshOverviewTitle();
+}
+
+void Frontend::refreshOverviewTitle() {
+    // GOG 0x40aa10 (0x4d0d40 is always set): "%s {C:TrueGreen}%s" with
+    // CAOVERVIEW and the selected mission's 'Mission Names' STR_VC<c>M<m>
+    // (empty if missing) into but_ca_ovrtxt.
+    MnuButton* o = mnu_.button("but_ca_ovrtxt");
+    if (!o) return;
+    char key[32];
+    std::snprintf(key, sizeof key, "STR_VC%02dM%02d", camp_ + 1, mis_ + 1);
+    const std::string* nm = campText_.find("Mission Names", key);
+    const std::string* ov = menuText_.find("GroupMainMenu", "CAOVERVIEW");
+    o->text = (ov ? *ov : std::string("CAOVERVIEW")) + " {C:TrueGreen}" + (nm ? *nm : std::string());
 }
 
 void Frontend::acceptMission() {
@@ -1581,6 +1596,7 @@ void Frontend::event(MnuButton& b, int ev) {
             lastMapClick_ = ticks_;
             mis_ = i;
             prof().set(0x470 + 4 * camp_, i);
+            refreshOverviewTitle();   // 0x40b353
             sound("BEEP2.WAV");
             return;
         }
