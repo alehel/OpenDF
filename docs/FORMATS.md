@@ -252,8 +252,13 @@ is found next to the PFF archives, any case: the CD's `DFSETUP/DF.EXE` /
 when the GOG installer was unpacked with innoextract). The build is
 recognised by file size and CRC-32; each build has its own set of table
 addresses (`Df1ExeTables` / `Df2ExeTables`). Any other file (another patch
-level, a modified executable) is reported as an unknown build and OpenDF
-uses its built-in values, as when the executable is missing. The GOG release
+level, a regional or modified executable) is reported as an unknown build
+and tried against each table set in turn (DF.EXE CD, GOG, then DF2.EXE CD,
+GOG) by its key table (`move_forward` on the Up arrow); the first that fits
+is used ("unknown build ...; its tables matched the DF.EXE (CD) set"), and
+each table's own sanity check (weapons, keys, sounds) still accepts or
+rejects it. When none fits, OpenDF uses its built-in values, as when the
+executable is missing. The GOG release
 is the reference: where its tables differ from the CD's, its values are used.
 
 | Build | Size | CRC-32 |

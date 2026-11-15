@@ -26,12 +26,12 @@ uint32_t crc32(const std::vector<uint8_t>& data) {
 // The known builds, by file size and CRC-32 (docs/FORMATS.md "Game
 // executables"). Each table was found through the code that uses it in both
 // builds (CD address / GOG address).
-struct KnownBuild { ExeBuild build; size_t size; uint32_t crc; const char* name; };
+struct KnownBuild { ExeBuild build; size_t size; uint32_t crc; const char* name; const char* guess; };
 constexpr KnownBuild kBuilds[] = {
-    {ExeBuild::Df1Cd, 1043468, 0x63B1DB57u, "DF.EXE (CD)"},
-    {ExeBuild::Df1Gog, 1102860, 0x7CED8382u, "Df.exe (GOG)"},
-    {ExeBuild::Df2Cd, 835584, 0xA0947236u, "DF2.EXE (CD)"},
-    {ExeBuild::Df2Gog, 921600, 0x4CED7D2Cu, "Df2.exe (GOG)"},
+    {ExeBuild::Df1Cd, 1043468, 0x63B1DB57u, "DF.EXE (CD)", "an unknown DF.EXE (CD tables)"},
+    {ExeBuild::Df1Gog, 1102860, 0x7CED8382u, "Df.exe (GOG)", "an unknown DF.EXE (GOG tables)"},
+    {ExeBuild::Df2Cd, 835584, 0xA0947236u, "DF2.EXE (CD)", "an unknown DF2.EXE (CD tables)"},
+    {ExeBuild::Df2Gog, 921600, 0x4CED7D2Cu, "Df2.exe (GOG)", "an unknown DF2.EXE (GOG tables)"},
 };
 
 // DF.EXE 0x470580 / GOG Df.exe 0x46bfb0 store the gun, row and mode table
@@ -58,7 +58,7 @@ constexpr Df2ExeTables kDf2Gog{0x4DC5E0, 0x4DA4F8, 0x4D95B8, 100, 39, 4, 16, 0x4
 
 const char* ExeImage::buildName() const {
     for (const auto& b : kBuilds)
-        if (b.build == build_) return b.name;
+        if (b.build == build_) return unknown_ ? b.guess : b.name;
     return "unknown build";
 }
 
@@ -76,6 +76,7 @@ bool ExeImage::load(const fs::path& path, std::string* error) {
     auto fail = [&](const std::string& m) {
         data_.clear();
         build_ = ExeBuild::Unknown;
+        unknown_ = false;
         if (error) *error = m;
         return false;
     };
@@ -103,19 +104,44 @@ bool ExeImage::load(const fs::path& path, std::string* error) {
         sections_.push_back(sec);
     }
     if (sections_.empty()) return fail("the game executable has no sections");
-    // Only a known build's tables are read: another build keeps them at other
-    // addresses, so it is treated like a missing executable.
+    // A known build by size and CRC-32. Another file (a regional or patched
+    // release) is tried against each build's table set in turn, CD before
+    // GOG, by its key table (move_forward on the Up arrow, as Controls
+    // checks); the first set that fits is used, and each table's own sanity
+    // check (Arsenal, Controls, SoundSystem) still accepts or rejects it.
     const uint32_t crc = crc32(data_);
     build_ = ExeBuild::Unknown;
+    unknown_ = false;
     for (const auto& b : kBuilds)
         if (b.size == data_.size() && b.crc == crc) build_ = b.build;
     if (build_ == ExeBuild::Unknown) {
-        char m[200];
-        std::snprintf(m, sizeof m, "%s is an unknown build (%zu bytes, CRC-32 %08X; OpenDF reads the CD and GOG releases)",
-                      path.filename().string().c_str(), data_.size(), unsigned(crc));
-        return fail(m);
+        for (ExeBuild b : {ExeBuild::Df1Cd, ExeBuild::Df1Gog, ExeBuild::Df2Cd, ExeBuild::Df2Gog})
+            if (keyTableFits(b)) { build_ = b; break; }
+        char m[240];
+        if (build_ == ExeBuild::Unknown) {
+            std::snprintf(m, sizeof m,
+                          "%s is an unknown build (%zu bytes, CRC-32 %08X) and none of the CD or GOG table sets fits it",
+                          path.filename().string().c_str(), data_.size(), unsigned(crc));
+            return fail(m);
+        }
+        std::fprintf(stderr, "%s is an unknown build (%zu bytes, CRC-32 %08X); its tables matched the %s set\n",
+                     path.filename().string().c_str(), data_.size(), unsigned(crc), buildName());
+        unknown_ = true;
     }
     return true;
+}
+
+bool ExeImage::keyTableFits(ExeBuild b) const {
+    const bool d1 = b == ExeBuild::Df1Cd || b == ExeBuild::Df1Gog;
+    const uint32_t table = d1 ? (b == ExeBuild::Df1Cd ? kDf1Cd : kDf1Gog).keys : (b == ExeBuild::Df2Cd ? kDf2Cd : kDf2Gog).keys;
+    const uint32_t entry = d1 ? 44 : (b == ExeBuild::Df2Cd ? kDf2Cd : kDf2Gog).keyRecord;
+    const uint32_t nameAt = d1 ? 0 : 4, keyAt = d1 ? 32 : 36;
+    for (uint32_t i = 0; i < 0x1FF; ++i) {
+        uint32_t key = 0;
+        if (!u32(table + i * entry + keyAt, key)) return false;
+        if (str(table + i * entry + nameAt, 32) == "move_forward") return (key & 0xFFFF) == 0x26;
+    }
+    return false;
 }
 
 bool ExeImage::u32(uint32_t va, uint32_t& out) const {

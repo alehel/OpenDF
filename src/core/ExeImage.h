@@ -46,11 +46,13 @@ class ExeImage {
 public:
     bool load(const std::filesystem::path& path, std::string* error);
     bool loaded() const { return !data_.empty(); }
-    // Which build was loaded (by file size and CRC-32); Unknown for any
-    // other file, whose tables are then not read.
+    // Which build was loaded (by file size and CRC-32). Any other file is
+    // given the first build whose table set fits it (its key table, CD before
+    // GOG); unknownBuild() then says so. Unknown when none fits (load fails).
     ExeBuild build() const { return build_; }
+    bool unknownBuild() const { return unknown_; }
     const char* buildName() const;
-    // The table addresses of a known DF.EXE / DF2.EXE build, else nullptr.
+    // The table addresses of the DF.EXE / DF2.EXE build, else nullptr.
     const Df1ExeTables* df1() const;
     const Df2ExeTables* df2() const;
 
@@ -66,6 +68,8 @@ private:
     std::vector<Section> sections_;
     uint32_t imageBase_ = 0;
     ExeBuild build_ = ExeBuild::Unknown;
+    bool unknown_ = false;   // not a known size / CRC-32; build_ is the table set that fits
+    bool keyTableFits(ExeBuild b) const;
 };
 
 // Finds DF.EXE next to the game's PFF archives (case-insensitive, so GOG's
