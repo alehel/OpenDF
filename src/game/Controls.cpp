@@ -26,6 +26,10 @@ const ActionName kNames[] = {
     {Action::ScopeInc, "scopeinc"}, {Action::ScopeDec, "scopedec"}, {Action::NightVision, "NVG"},
     {Action::MapTerrain, "mapterrain"}, {Action::MapElevation, "mapelevation"},
     {Action::Escape, "escape"}, {Action::VCam, "VCam"},
+    {Action::FirstPerson, "1stPerson"}, {Action::ThirdPersonP, "3rdPersonp"}, {Action::ThirdPersonW, "3rdPersonw"},
+    {Action::ThirdPersonL, "3rdPersonl"}, {Action::CameraLeft, "CameraLeft"}, {Action::CameraRight, "CameraRight"},
+    {Action::CameraUp, "CameraUp"}, {Action::CameraDown, "CameraDown"}, {Action::CameraZoomIn, "CameraZoomIn"},
+    {Action::CameraZoomOut, "CameraZoomOut"}, {Action::FoCamera, "fo"}, {Action::CycleFo, "tab"},
 };
 
 // Built-in copy of DF.EXE's defaults (virtual-key code | mouse << 16).
@@ -41,6 +45,9 @@ const Default kDefaults[] = {
     {"crosshairs", 0x72}, {"showgun", 0x73}, {"escape", 0x1b},
     {"Binoculars", 0x42}, {"Pause", 0x13}, {"OldMessages", 0x52}, {"ShowFriendly", 0x46}, {"lbsize", 0x7b},
     {"Drop", 0x44}, {"briefing", 0x4f}, {"help", 0x70},
+    {"1stPerson", 0x71}, {"3rdPersonw", 0x75}, {"3rdPersonp", 0x74}, {"3rdPersonl", 0x76},
+    {"CameraLeft", 0x4c}, {"CameraRight", 0xba}, {"CameraUp", 0x50}, {"CameraDown", 0xbe},
+    {"CameraZoomIn", 0xdb}, {"CameraZoomOut", 0xdd}, {"fo", 0x78}, {"tab", 0x09},
 };
 
 // Left/right variants of the modifier keys count as the same key.

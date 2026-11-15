@@ -27,6 +27,13 @@ enum class Action {
     MapTerrain, MapElevation,
     // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
     VCam,
+    // Delta Force: the outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193:
+    // F2 1stPerson, F5 3rdPersonp, F6 3rdPersonw, F7 3rdPersonl) and the
+    // held camera keys (0x19a..0x19f: L ; P . [ ]); the forward observer's
+    // inset (cmd 0x1e fo, F9) and its cycle (cmd 0x1f tab, Tab).
+    FirstPerson, ThirdPersonP, ThirdPersonW, ThirdPersonL,
+    CameraLeft, CameraRight, CameraUp, CameraDown, CameraZoomIn, CameraZoomOut,
+    FoCamera, CycleFo,
     Count
 };
 
