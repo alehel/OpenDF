@@ -162,7 +162,7 @@ void AiSystem::bark(World& world, const Person& p, SoundSystem& sound, int slot)
 // the target's move visibility, x6 if it fired lately; the best score x
 // perception (>> 2 when relaxed) against a random draw.
 float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float heading, int side, float half, const PlayerView& player,
-                           int& bestId, Vec3& bestPos, bool everyone) const {
+                           int& bestId, Vec3& bestPos, bool everyone, float* nearPlayer, Vec3 bodyAt) const {
     float best = 0;
     bestId = -1;
     struct { float heading; int side; } self{heading, side};
@@ -174,6 +174,19 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
         float diff = headingTo(eye, tp) - self.heading;
         diff -= std::floor(diff / (2 * kPi) + 0.5f) * 2 * kPi;
         if (std::abs(diff) > half) return;
+        // GOG Df2.exe 0x417830: for the player-controlled candidate (flags
+        // & 1) in the field of view, before the 1000 m and sight tests, the
+        // least of max + 11/32 mid + 1/4 min (0x41e880) of |dx|, |dy|, |dz|
+        // between the body origins, in whole metres.
+        if (nearPlayer && id == -3) {
+            auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+            int32_t a = std::abs(fx(tp.x - bodyAt.x)), b = std::abs(fx(tp.z - bodyAt.z)), c = std::abs(fx(tp.y - bodyAt.y));
+            if (a < b) std::swap(a, b);
+            if (a < c) std::swap(a, c);
+            if (b < c) std::swap(b, c);
+            const float m = float((a + (b * 11 >> 5) + (c >> 2)) >> 16);
+            if (m < *nearPlayer) *nearPlayer = m;
+        }
         const float d = len3(tp - eye);
         if (d >= 1000.f || d < 0.01f) return;
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  in fov, d %.1f\n", d);
@@ -297,7 +310,7 @@ float AiSystem::lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw
     return float(best) / 65536.f;
 }
 
-float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const {
+float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer) const {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
@@ -306,7 +319,8 @@ float AiSystem::scanScore(const World& world, const Person& p, const PlayerView&
     // DF2 (GOG Df2.exe 0x417830): nothing with ai flag 1, nor for a side-0
     // soldier without flag 0x200.
     if (df2 && ((p.flags & 1) || (self.side == 0 && !(p.flags & 0x200)))) return 0;
-    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200));
+    const float best =
+        bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200), nearPlayer, self.pos);
     float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
     if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
     return score;
@@ -317,14 +331,17 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     int bestId = -1;
     Vec3 bestPos{0, 0, 0};
-    const float score = scanScore(world, p, player, bestId, bestPos);
+    float nearPlayer = 1024.f;   // GOG Df2.exe 0x417830: local_10 = 0x400
+    const float score = scanScore(world, p, player, bestId, bestPos, &nearPlayer);
+    // DF2 +0xAC: stored whenever the scan returns a candidate, before the
+    // random draw (GOG Df2.exe 0x401de5 alert / 0x401efe relaxed); read for
+    // the scan interval at 0x401d92 / 0x401ea5.
+    if (df2 && bestId != -1) p.nearestPlayer = nearPlayer;
     if (bestId == -1 || float(rnd()) >= score * 65536.f) return false;
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d (team %d) spots %d at %.0f m, score %.3f\n", p.object, self.team, bestId, len3(bestPos - eye), score);
     p.target = bestId;
     p.lastKnown = bestPos;
-    // DF2 +0xAC: the player's distance at this scan (the scan interval).
-    if (df2 && bestId == -3) p.nearestPlayer = len3(bestPos - eye);
     p.unseen = 0;
     p.seen = 0;
     p.flags |= 0x80;
@@ -508,8 +525,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                         break;
                     }
             // Scan every 0x174 ticks (relaxed) or 0xf8 (cautious).
-            // DF2: by +0xAC, the player's distance at the last successful scan:
-            // under 32 m 62 ticks, under 100 m 124, else 372.
+            // DF2: by +0xAC, the player's distance at the last scan that
+            // returned a candidate (GOG Df2.exe 0x401ea5): under 32 m 62
+            // ticks, under 100 m 124, else 372.
             const int interval = df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 372) : (p.alert == 0 ? 0x174 : 0xf8);
             if (p.scanTimer >= interval) {
                 p.scanTimer = 0;

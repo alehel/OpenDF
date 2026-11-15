@@ -763,8 +763,9 @@ First differences from DF1:
     differences, READ): fire also needs under 128 m at night, no parachute,
     no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more
     than 0x40 ticks of continuous sight (0x401a8f); the scan interval by
-    the player's distance at the last successful scan (62 / 124 / 372, or
-    248 when alert, 0x4015f0); the ghillie suit hides a crouched or prone
+    +0xAC, the player's distance (1024 m unless in the field of view,
+    0x417830) stored whenever the scan returns a candidate, before the
+    draw (0x401de5 / 0x401efe): 62 / 124 / 372, or 248 when alert; the ghillie suit hides a crouched or prone
     player who has not fired beyond 50 m and halves visibility within
     (0x415a69); BMS flag bits 0x800/0x1000/0x2000/0x4000 → attack everyone
     / (movement) / avoid water over 0.25 m / deaf; flag 1 blocks
