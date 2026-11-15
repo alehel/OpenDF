@@ -20,8 +20,12 @@ All integers are little-endian.
 
 At install time the encrypted PFF2 packs are decoded by `PACK.EXE` and merged
 into the installed `dfbase.pff`. OpenDF instead mounts them all directly, in
-this order, with later archives overriding earlier ones:
-`DFBASE, DF, MISSIONS, AUDIO, VIEWS`.
+this order: `DFBASE, DF, MISSIONS, AUDIO, VIEWS`. DF.EXE looks a name up in
+`dfbase.pff` first and in `df.pff` only when it is missing there, taking the
+first directory entry of that name (GOG 0x48fc10, 0x48fd00, 0x49e590), so
+with `DFBASE.PFF` mounted the first archive and the first entry win (the one
+name both stock archives hold with different data, `_BACKUP_.PCX`, is never
+read). The later games' archives keep later ones overriding earlier ones.
 
 ## PFF archive
 

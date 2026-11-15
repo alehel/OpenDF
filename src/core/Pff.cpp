@@ -96,7 +96,11 @@ bool PffArchive::read(const PffEntry& e, std::vector<uint8_t>& out) {
 bool Vfs::mount(const fs::path& archive, std::string* error) {
     auto a = std::make_unique<PffArchive>();
     if (!a->open(archive, error)) return false;
-    for (size_t i = 0; i < a->entries().size(); ++i) index_[a->entries()[i].name] = {a.get(), i};
+    for (size_t i = 0; i < a->entries().size(); ++i) {
+        const Ref r{a.get(), i};
+        if (firstWins_) index_.try_emplace(a->entries()[i].name, r);
+        else index_[a->entries()[i].name] = r;
+    }
     archives_.push_back(std::move(a));
     return true;
 }
@@ -134,6 +138,13 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
             fs::path p = findIn(root, name);
             if (p.empty()) continue;
             std::string err;
+            // Delta Force: DF.EXE opens dfbase.pff as the primary archive and
+            // df.pff as the secondary (GOG 0x48fc10, CD 0x485590), looks a
+            // name up in the primary first and in df.pff only on a miss
+            // (0x48fd00), taking the first directory match (0x49e590). So
+            // with DFBASE.PFF present the first archive and the first entry
+            // win; the later games keep later archives overriding.
+            if (std::string(name) == "DFBASE.PFF") firstWins_ = true;
             if (mount(p, &err)) ++mounted;
             else if (error) *error += err + "\n";
             break;

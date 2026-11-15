@@ -43,7 +43,8 @@ private:
 class Vfs {
 public:
     // Mounts every known archive found in `gameDir` (or its DFSETUP sub-folder).
-    // Later mounts override earlier ones on name collisions.
+    // Later mounts override earlier ones on name collisions, except for
+    // Delta Force (DFBASE.PFF found), where the first archive and entry win.
     bool mountGameDir(const std::filesystem::path& gameDir, std::string* error);
     bool mount(const std::filesystem::path& archive, std::string* error);
 
@@ -58,6 +59,7 @@ private:
     struct Ref { PffArchive* archive; size_t index; };
     std::vector<std::unique_ptr<PffArchive>> archives_;
     std::unordered_map<std::string, Ref> index_;
+    bool firstWins_ = false;   // DF.EXE's lookup order (GOG 0x48fd00)
 };
 
 std::string toUpper(std::string s);
