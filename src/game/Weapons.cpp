@@ -997,9 +997,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // Objects (0x44bff0): an item whose second hp value is below
                     // 0 stops the round unharmed; buildings take nothing;
                     // vehicles only rockets (flag 0x40: 64) and shells and
-                    // impact grenades (0x11: 16); the rest max(1, E/25). (The
-                    // rounds' penetration by surface material is not in OpenDF:
-                    // a round stops at the first object.)
+                    // impact grenades (0x11: 16); the rest max(1, E/25).
                     const WorldObject& target = world.objects[size_t(hit.object)];
                     const ItemDef* it = target.item;
                     int dmg = 0;
@@ -1008,15 +1006,25 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else dmg = df2Damage(b);
                     }
                     if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
-                    // Penetration (0x44c2f0 -> 0x44bdd0): the face's material
-                    // costs 100 (Flesh item, checked first), metal 200, wood 90,
-                    // stone 500, bush 10, armour 2000, canvas 5, 0x10000000 10;
-                    // none: the round stops. T = cost · (hp2 + 1); with E =
-                    // |v|²·M above T the round goes on, its speed × sqrt((E−T)/E),
-                    // from 0.25 m before the hit + 0.375 m; up to 20 hits a tick.
-                    if (it && !b.explosive() && passes < 20) {
+                    // Penetration (0x44c2f0 -> 0x44bdd0; GOG Df2.exe 0x453860
+                    // case 1/2 -> 0x4532f0): a regular round (not flags 0x1851:
+                    // GOG 0x8400000 / 0x110000 / 0x10000000) on an object with
+                    // an item; the face's material costs 100 (Flesh item,
+                    // checked first), metal 200, wood 90, stone 500, bush 10,
+                    // armour 2000, canvas 5, 0x10000000 10 while the object is
+                    // intact. T = cost · (hp2 + 1); with E = |v|²·M above T the
+                    // round goes on, its speed × sqrt((E−T)/E); otherwise it
+                    // stops. A face with none of these (wire fences: WIREFENC /
+                    // WIREGATE 'Afencing', FENCEHI 'Abrbwr', 0x8003), or 0x10000000
+                    // on a husk, costs nothing (GOG 0x4542ee: effect 5 only) and
+                    // the round goes on at full speed. Every face makes a 5 m
+                    // noise (0x414660 0x50000; 20 m, 0x140000, for an intact
+                    // 0x10000000 face). The round goes on from 0.25 m before
+                    // the hit + 0.375 m; up to 20 hits a tick.
+                    if (it && (b.flags & 0x1851) == 0) {
                         int cost = 0;
                         const uint32_t m = hit.material;
+                        bool glass = false;
                         if (it->attrib & 0x40) cost = 100;
                         else if (m & 0x10000) cost = 200;
                         else if (m & 0x20000) cost = 90;
@@ -1024,7 +1032,9 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else if (m & 0x80000) cost = 10;
                         else if (m & 0x04000000) cost = 2000;
                         else if (m & 0x08000000) cost = 5;
-                        else if (m & 0x10000000) cost = 10;
+                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, glass = true;
+                        impacts_.back().noise = glass ? 20.f : 5.f;
+                        bool goesOn = cost == 0;
                         if (cost > 0) {
                             const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
                                           vz = int64_t(b.vel.z * kTick * 65536.f);
@@ -1032,11 +1042,14 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                             const int64_t t = int64_t(cost) * 65536 * (it->damageClass + 1);
                             if (e > t && e > 0) {
                                 b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
-                                b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
-                                ++passes;
-                                b.tickClock += kTick;   // the same tick goes on from here
-                                continue;
+                                goesOn = true;
                             }
+                        }
+                        if (goesOn && passes < 20) {
+                            b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
+                            ++passes;
+                            b.tickClock += kTick;   // the same tick goes on from here
+                            continue;
                         }
                     }
                 } else

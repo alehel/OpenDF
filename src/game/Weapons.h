@@ -119,6 +119,7 @@ struct Impact {
     bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
     int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
     uint32_t material = 0;    // objects: the hit face's material flags (0x44f90a picks effect and sound)
+    float noise = 0;          // DF2: a +-noise m AI noise at the hit (GOG Df2.exe 0x414660, flags 0), 0 none
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table
@@ -156,8 +157,9 @@ public:
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
     void init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, Loadout loadout);
     // Delta Force 2 (DF2.EXE tables 0x4C7238 modes, 0x4C5150 types, 0x4C4310
-    // ammo, 0x4C86B8 drag curve; init 0x46b230). `hudGuns`: the HudGuns
-    // names by mode. False (and DF1 left in place) if DF2.EXE is unusable.
+    // ammo, 0x4C86B8 drag curve; init 0x46b230; GOG Df2.exe: ExeImage::df2()).
+    // `hudGuns`: the HudGuns names by mode. False (and DF1 left in place) if
+    // DF2.EXE is unusable.
     bool initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout loadout);
     bool df2() const { return df2_; }
     // The tables in use (DF2's when loaded, else DF.EXE's), for AI and

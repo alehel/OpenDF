@@ -2424,6 +2424,7 @@ void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
 }
 
 void Game::spawnImpact(const Impact& hit) {
+    if (hit.noise > 0) ai_.noise(hit.pos, hit.noise, 0, 0);   // DF2 rounds on object faces (GOG Df2.exe 0x453860)
     if (hit.explosive && hit.armed) {
         const int surface = hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1;
         explode(hit.pos, surface, hit.law && surface != 2);
