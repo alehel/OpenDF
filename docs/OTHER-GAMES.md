@@ -474,7 +474,11 @@ First differences from DF1:
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
     0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
-    in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), half of it with the
+    in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), mag for slots 3-5
+    the kept magnification [0x79a698] (E / Shift+E step it 2..scope with
+    wraparound while scoped, 0x44c7e0; it starts as the slot-3 scope,
+    0x44eeb0; clamped by 0x44e6a0; shown as "%2ix" at (700, 480) in
+    yellow), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
     DF1's 28 / mag whole degrees;
     night vision (key N, on at the start of night missions: 0x44781e) as an
@@ -545,7 +549,7 @@ First differences from DF1:
     1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
-    attack_1 and attack_2 (GOG 0x441140; PrintScreen, scopemag and the Von*
+    attack_1 and attack_2 (GOG 0x441140; PrintScreen and the Von*
     commands have no game-side action in OpenDF yet). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
@@ -719,7 +723,7 @@ First differences from DF1:
     still carries DF1's ANIMMGR KDV player (its strings at file 0x87d9f),
     but DF2 ships no KDV file.
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
-    flags}; GOG Df2.exe 0x4b1738, 112-byte entries, name +0x4C, key +0x6C), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
+    flags}; GOG Df2.exe 0x4b1738, 112-byte entries, name +0x4C, key +0x6C), with scopeinc X, scopedec Z, NVG N and scopemag E added to OpenDF's actions.
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:

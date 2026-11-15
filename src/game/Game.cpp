@@ -2883,7 +2883,6 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // Debug keys (not in the original): N free flight (Ctrl+N in DF2, where N
     // is the night vision).
     if (k.keysym.sym == SDLK_n && (!df2Hud_.on || (k.keysym.mod & KMOD_CTRL))) { player_.fly = !player_.fly; return; }
-    (void)shift;
     // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
     if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
@@ -2978,6 +2977,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
+    // GOG Df2.exe 0x41f150 case 0x61 -> 0x44c7e0: E steps the scope
+    // magnification up, Shift+E down.
+    case Action::ScopeMag: if (arsenal_.df2()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
         // follows the raised move, set each tick (Game::run, 0x45c7e2).
@@ -4087,6 +4089,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the magnification "%2ix" ([0x79a698])
+                // at (700, 480) in the same yellow ([0x67d370]).
+                std::snprintf(buf, sizeof buf, "%2dx", arsenal_.df2Magnification());
+                hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
             }
         }
         drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
