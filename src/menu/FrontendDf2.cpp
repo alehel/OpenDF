@@ -473,6 +473,7 @@ private:
     // Event 0xA: a slider's new value is written where it belongs.
     void sliderChanged(D2Button& b) {
         if (b.name == "but_opt1_mssl") soldier().set(0x5b0, b.p2);
+        else if (b.name == "but_opt1_sshsl") soldier().set(0x5d8, b.p2);   // opt_Accept 0x43ebf7
         else if (b.name == "but_opt1_sfsl") soldier().set(0x5b8, b.p2);
         else if (b.name == "but_opt1_dvsl") soldier().set(0x5c0, b.p2);
         else if (b.name == "but_opt1_mvsl") setMusicVolume(b.p2);
@@ -1888,6 +1889,9 @@ void FrontendDf2::refreshOptions() {
     auto set = [&](const char* name, const std::string& t) { if (D2Button* b = btn(name)) b->text = t; };
     if (screen_ == Screen::Options1) {
         if (D2Button* b = btn("but_opt1_mssl")) { b->p1 = 512; b->p2 = soldier().get(0x5b0); b->p3 = 260; }
+        // GOG Df2.exe 0x43e683 / 0x43ec70: SCOPE SENSITIVITY 0..0x180, the
+        // soldier's +0x5d8.
+        if (D2Button* b = btn("but_opt1_sshsl")) { b->p1 = 0x180; b->p2 = soldier().get(0x5d8); }
         set("but_opt1_fmtxt", soldier().get(0x5b4) ? menuText("YES", "YES") : menuText("NO", "NO"));
         set("but_opt1_dvtxt", menuText("FULL_SCREEN_(HARDWARE)", "OpenGL"));
         char res[32];
@@ -2111,11 +2115,14 @@ void FrontendDf2::event(D2Button& b, int ev) {
     else if (cb == "opt1_FMChange") { soldier().set(0x5b4, !soldier().get(0x5b4)); refreshOptions(); }
     else if (cb == "opt1_TUChange") { cfg_.set("turbo", !cfg_.get("turbo")); refreshOptions(); }
     else if (cb == "opt1_MSLeft" || cb == "opt1_MSRight" || cb == "opt1_FXLeft" || cb == "opt1_FXRight" || cb == "opt1_MVLeft" ||
-             cb == "opt1_MVRight" || cb == "opt1_DVLeft" || cb == "opt1_DVRight") {
-        // 0x4399c0.. / 0x439d90.. / 0x439de0.. / 0x439e50..: the slider's
-        // value +-1 within 0..range, then the same write as dragging it.
+             cb == "opt1_MVRight" || cb == "opt1_DVLeft" || cb == "opt1_DVRight" || cb == "opt1_SSLeft" || cb == "opt1_SSRight") {
+        // 0x4399c0.. / 0x439d90.. / 0x439de0.. / 0x439e50..; GOG Df2.exe
+        // opt1_SSLeft / opt1_SSRight 0x43ef70 / 0x43ef90 (but_opt1_sshsl):
+        // the slider's value +-1 within 0..range, then the same write as
+        // dragging it.
         const std::string k = cb.substr(5, 2);
-        const char* name = k == "MS" ? "but_opt1_mssl" : k == "FX" ? "but_opt1_sfsl" : k == "MV" ? "but_opt1_mvsl" : "but_opt1_dvsl";
+        const char* name = k == "MS" ? "but_opt1_mssl" : k == "FX" ? "but_opt1_sfsl" : k == "MV" ? "but_opt1_mvsl"
+                         : k == "SS" ? "but_opt1_sshsl" : "but_opt1_dvsl";
         if (D2Button* sl = btn(name)) {
             const bool right = cb.find("Right") != std::string::npos;
             sl->p2 = std::clamp(sl->p2 + (right ? 1 : -1), 0, sl->p1);
@@ -2586,7 +2593,15 @@ int FrontendDf2::run() {
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
-                g.mouseScale = std::clamp(soldier().get(0x5b0), 0, 255);
+                // GOG Df2.exe 0x43c346 / 0x43c352: [0x67ccf8] = +0x5b0, [0x67ccfc]
+                // = +0x5d8 + 0x80, both clamped by the mouse code 0x41eb50
+                // (<= 0 -> 0x80 / <= 0x80 -> 0x80, > 0x1ff -> 0x1ff) and
+                // written back after the mission (0x43c1f0 / 0x43c205: +0x5d8
+                // = [0x67ccfc] - 0x80).
+                const int mouseSens = soldier().get(0x5b0) <= 0 ? 0x80 : std::min(soldier().get(0x5b0), 0x1ff);
+                const int scopeSens = std::clamp(soldier().get(0x5d8) + 0x80, 0x80, 0x1ff);
+                g.mouseScale = mouseSens;
+                g.df2ScopeSens = scopeSens;
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
@@ -2602,6 +2617,8 @@ int FrontendDf2::run() {
                 MissionOutcome out;
                 audio_.setDfMixer(true, false);   // 0x43b68d: the hook is off from here on
                 runGame(vfs_, g, &out, &flags);
+                soldier().set(0x5b0, mouseSens);
+                soldier().set(0x5d8, scopeSens - 0x80);
                 if (out.quit) break;
                 // 0x437550: a campaign win marks the mission done; kills add
                 // up; the unlock mask comes back from the game.

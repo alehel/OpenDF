@@ -440,7 +440,13 @@ First differences from DF1:
     in (standing), 2HW 8, 1HW 4, else KNIFE (prone: 1HW). The scope
     inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18), while
     the shot's origin and the designator take 0x447b40 alone; the mouse
-    turns at an eighth while the inset shows (0x41ae13). DF1's [0x93353c]
+    turns at an eighth while the inset shows in the CD build (0x41ae13);
+    GOG Df2.exe 0x41eb50 replaces the eighth by a rate that grows with the
+    frame's counts u over the mode's width / height s, 0x40000 + 4096 ·
+    scope · (2u/s)² binary angle per count, scope = the soldier's SCOPE
+    SENSITIVITY (+0x5d8, Settings 0..0x180) + 0x80 clamped to 0x80..0x1ff;
+    the mouse sensitivity (+0x5b0, 0..0x200) is used as 0x80 when <= 0 and
+    0x1ff above. Both are written back after the mission. DF1's [0x93353c]
     is the same (AUDIT G5), hidden while moving or with the binoculars up
     ([0x93367c], a flag that moving clears, 0x4373ab). Kevlar is checked on every person
     (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that

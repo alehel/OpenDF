@@ -6363,6 +6363,7 @@ int Game::run() {
 
             SDL_Event e;
             bool zoomClick = false;
+            int df2MouseX = 0, df2MouseY = 0;   // DF2: the frame's mouse counts (0x41eb50 reads them once a frame)
             while (SDL_PollEvent(&e)) {
                 if (fullscreenEvent(win_, e)) continue;
                 if (e.type == SDL_QUIT) { running = false; quit_ = true; }
@@ -6391,7 +6392,10 @@ int Game::run() {
                 }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
-                else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
+                else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_ && arsenal_.df2()) {
+                    df2MouseX += e.motion.xrel;
+                    df2MouseY += e.motion.yrel;
+                } else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
                     // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
                     // (0x200000, 0.1758°, at the default 128), a quarter while
                     // zoomed; flipmouse flips the vertical axis (0x42ebd6).
@@ -6416,6 +6420,41 @@ int Game::run() {
                 } else if (e.type == SDL_KEYDOWN && (!e.key.repeat || (df2Map_.prompt && showMap_))) handleKey(e.key);
             }
             if (zoomClick) arsenal_.toggleZoom();
+            if (df2MouseX || df2MouseY) {
+                // GOG Df2.exe 0x41eb50, once a frame: the mouse sensitivity
+                // [0x67ccf8] (<= 0 -> 0x80, > 0x1ff -> 0x1ff) gives
+                // mouse << 14 binary angle per count. While the scope shows
+                // (0x455790: zoomed, not moving) the rate instead grows with
+                // the larger axis' counts u over the mode's width (that axis
+                // x) or height: r = (u << 32) / (size << 15) (16.16, 2u /
+                // size), then ((((r² >> 16) · (scope << 7)) >> 16) ·
+                // 0x200000 >> 16) + 0x40000, scope [0x67ccfc] = the soldier's
+                // scope sensitivity + 0x80, clamped to 0x80..0x1ff (the CD
+                // build: a fixed eighth, CD 0x41ad70). flipmouse [0x67ccf4]
+                // turns the vertical axis. The video camera's view takes the
+                // mouse instead (commands 0x35..0x38, 0x41f150 cases
+                // 0x29..0x2c), turned as the player would be.
+                const int mouse = o_.mouseScale <= 0 ? 0x80 : std::min(o_.mouseScale, 0x1ff);
+                const int scope = std::clamp(o_.df2ScopeSens, 0x80, 0x1ff);
+                const int dy = o_.flipMouse ? -df2MouseY : df2MouseY;
+                int64_t rate = int64_t(mouse) << 14;
+                if (arsenal_.scopeShown()) {
+                    const int modeW = hudMode_ ? hudMode_ : 640;
+                    const bool across = std::abs(dy) < std::abs(df2MouseX);
+                    const int u = across ? df2MouseX : dy, size = across ? modeW : modeW * 3 / 4;
+                    const int32_t r = int32_t((int64_t(int32_t(uint32_t(u) << 16)) << 16) / int64_t(size << 15));
+                    const int32_t r2 = int32_t((int64_t(r) * r) >> 16);
+                    const int32_t t = int32_t((int64_t(scope << 7) * r2) >> 16);
+                    rate = int32_t((int64_t(t) * 0x200000) >> 16) + 0x40000;
+                }
+                const float perCount = float(rate) / 4294967296.f * 2.f * kPi;
+                if (arsenal_.cameraSteered()) {
+                    arsenal_.turnCamera(float(df2MouseX) * perCount, -float(dy) * perCount);
+                } else {
+                    player_.yaw += float(df2MouseX) * perCount;
+                    player_.pitch = std::clamp(player_.pitch - float(dy) * perCount, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                }
+            }
 
             if (!inputCmds_.empty()) runInputScript(realDt);
             const Uint8* kb = SDL_GetKeyboardState(nullptr);
