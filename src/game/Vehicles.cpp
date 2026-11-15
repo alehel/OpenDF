@@ -643,8 +643,9 @@ Vec3 VehicleSystem::gunPoint(const World& world, const Vehicle& v) const {
 // with flag 2 one more than 100 m (2D) from where the helicopter took it is
 // given up for 60 thinks. Without a target the soldiers' scan (0x46a804,
 // GOG Df.exe 0x45e280, from 1 m above the hub) is drawn against rand
-// (0x450c40): score x perception x2 (hard, side 2), / 4 when relaxed; taking
-// a target marks the team spotted (0x42edd0). With a target the
+// (0x450c40; DF2 0x42bff0 the same): score x perception x2 (hard, side 2),
+// / 4 when relaxed; taking a target marks the team spotted (0x42edd0; DF2
+// 0x41ac00). With a target the
 // sight line is re-checked about every 192 ticks; only while it holds is the
 // last known position refreshed (and a dead target noticed). The gun's aim
 // is that position from the gun point, relative to the body, clamped to the
