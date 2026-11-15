@@ -2411,6 +2411,7 @@ int Frontend::run() {
                 g.flipMouse = cfg_.get("flipmouse") != 0;
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
+                g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
                 // 0x41cca0: the profile's 44 bindings over the game table;
                 // mouse 1/2/3 -> mask 1/2/0x10; Fire also sets attack_2.
                 g.bindings.clear();

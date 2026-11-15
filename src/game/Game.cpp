@@ -715,6 +715,7 @@ bool Game::loadMission(int index) {
     terrain_.skyOverride = mission_.sky;
     terrain_.fogLevelOverride = mission_.fogLevel;
     terrain_.fogColorOverride = mission_.fogColor;
+    terrain_.displayGamma = o_.displayGamma;
     if (!terrain_.load(vfs_, trn, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.c_str());
         return false;
@@ -2765,6 +2766,10 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
+    // Ring divisors: main view 2.2 / 2.2 (GOG Df.exe 0x402105), the scope
+    // 2.5 under magnification 5, else 5.0, and 2.5 (0x466090).
+    terrain_.ringP1 = zoomView ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : 2.2f;
+    terrain_.ringP2 = zoomView ? 2.5f : 2.2f;
     terrain_.draw(view, proj, eye, viewDistance_);
     // Delta Force 2: the water before the objects while the camera is above
     // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
@@ -2777,6 +2782,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     SceneLighting light;
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
+    light.gradeLut = terrain_.gradeLutTexture();
+    light.gradeSaturation = terrain_.gradeSaturation();
     light.highlight = terrain_.highlight();
     const Vec3 fwd = viewDir();
     light.viewer = fwd * -1.f;
@@ -2794,7 +2801,51 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         if (lod < 0) continue;
         visible.push_back({&o, at, lod});
     }
+    // The view's yaw in heading sense (DF [0x8cfa30], view +0x10).
+    const float viewYaw = std::atan2(fwd.x, -fwd.z);
+    // Delta Force LOD-code draws posed per mesh (both passes through
+    // drawPosed; Delta Force 2 keeps the plain draw):
+    //  palm (GOG Df.exe 0x44d5e0): the meshes of the palm state (palmPose).
+    //  tree (GOG Df.exe 0x4817a0): mesh 0 with the object matrix; mesh i >= 1
+    //  turned about the LOD's hardpoint i-1 by (view yaw - object yaw)
+    //  (0x45d400 with -hp and that yaw), so the foliage faces the view's
+    //  heading. DF yaw is anticlockwise, OpenDF heading clockwise.
+    auto codePose = [&](const Visible& v, std::vector<Mat4>& pose) {
+        const GpuModel& m = *v.o->model;
+        if (arsenal_.df2() || v.lod >= 4 || v.lod >= int(m.lods.size())) return false;
+        const std::string& code = m.lodCodes[v.lod];
+        const auto& l = m.lods[size_t(v.lod)];
+        const size_t meshes = l.meshParent.size();
+        if (code == "palm") {
+            std::vector<bool> shown;
+            palmPose(v.o->palmState, meshes, l.points, pose, shown);
+            return true;
+        }
+        if (code == "tree") {
+            pose.assign(meshes, Mat4{});
+            const Mat4 turn = rotateY(v.o->heading - viewYaw);
+            for (size_t i = 1; i < meshes && i - 1 < l.points.size(); ++i) {
+                const auto& p = l.points[i - 1];
+                pose[i] = translate({p[0], p[1], p[2]}) * turn * translate({-p[0], -p[1], -p[2]});
+            }
+            return true;
+        }
+        return false;
+    };
+    // Delta Force gnrc (GOG Df.exe 0x481060): when LOD +0x5a is not 0, every mesh at
+    // frame (global ticks / ticks per frame) % frames, looping forever.
+    auto codeFrame = [&](const Visible& v) {
+        const GpuModel& m = *v.o->model;
+        if (arsenal_.df2() || v.lod >= 4 || v.lod >= int(m.lods.size()) || m.lodCodes[v.lod] != "gnrc") return 0;
+        const auto& l = m.lods[size_t(v.lod)];
+        return l.animated ? int((ticks_ / uint32_t(l.ticksPerFrame)) % uint32_t(std::max(1, l.frames))) : 0;
+    };
+    std::vector<Mat4> codeMeshes;
     for (auto& v : visible) {
+        if (codePose(v, codeMeshes)) {
+            models_.drawPosed(*v.o->model, v.lod, v.o->matrix(v.at), codeMeshes);
+            continue;
+        }
         if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "helo" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
             // 0x478114: mesh 0 and 6 static; mesh 1 (blades) or 2 (disc) at
             // rotor speed >= 0x0C000000, about file +Z through hardpoint 0;
@@ -2875,10 +2926,11 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
                     }
             continue;
         }
-        models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
+        models_.draw(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     }
     for (auto& v : visible)
-        if (!(v.o->chr && !v.o->anim.angles().empty())) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
+        if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes))
+            models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920).
     if (playerDead() && !playerBody_.angles().empty())
@@ -3016,6 +3068,8 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     SceneLighting light;
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
+    light.gradeLut = terrain_.gradeLutTexture();
+    light.gradeSaturation = terrain_.gradeSaturation();
     light.highlight = terrain_.highlight();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
@@ -3079,6 +3133,8 @@ void Game::drawViewModel(const Screen& s) {
         light.viewer = {0, 0, 1};
         light.lut = terrain_.lutTexture();
         light.saturation = terrain_.saturationFactor();
+        light.gradeLut = terrain_.gradeLutTexture();
+        light.gradeSaturation = terrain_.gradeSaturation();
         light.highlight = terrain_.highlight();
     }
     // The flash meshes' animation frame (DF.EXE [0x933980] -> [0xb7a874],

@@ -21,6 +21,8 @@ struct GpuModel {
     struct Lod {
         GLuint vao = 0, vbo = 0; std::vector<Batch> batches; float min[3], max[3]; int triangles = 0;
         int frames = 1, ticksPerFrame = 1;
+        bool animated = false;                        // see ModelLod
+        std::vector<std::array<float, 3>> points;     // this LOD's hardpoints (OpenDF axes)
         std::vector<int> materialTextures;
         std::vector<int> meshParent;                  // see ModelLod
         std::vector<std::array<float, 3>> meshPivot;
@@ -40,6 +42,7 @@ struct GpuModel {
     uint16_t impact = 0;
     std::vector<GLuint> textures;
     std::vector<GLuint> indexTextures; // raw 8-bit texels (R8, nearest)
+    std::vector<bool> textureNoGrade;  // see Model3diTexture::noGrade
     std::vector<Lod> lods;
     std::vector<CollisionBox> collision;   // LOD 0 collision volumes (may be empty)
     std::vector<MeshVolumes> meshVolumes;  // v8 LOD 0 plane volumes per mesh (DF2.EXE 0x440f80)
@@ -57,6 +60,11 @@ struct SceneLighting {
     Vec3 viewer{0, 0, 1};                        // toward the viewer (DF uses the view axis)
     GLuint lut = 0;                              // terrain gamma/filter table (256x1 RGB)
     float saturation = 1;
+    // Delta Force: the TRN grade GOG Df.exe 0x4867a0 bakes into the model
+    // palettes (unless flagged) and material colours before shading: the
+    // saturation, then this table (0: none).
+    GLuint gradeLut = 0;
+    float gradeSaturation = 1;
     Vec3 highlight{1, 1, 1};                     // sky palette entry 16 (shade rows 32..63)
 };
 
@@ -100,7 +108,8 @@ private:
     GLuint prog_ = 0, identityLut_ = 0;
     int variant_ = 0;
     GLint locModel_ = -1, locColor_ = -1, locTextured_ = -1, locMode_ = -1, locSpec_ = -1, locSpecPow_ = -1,
-          locBright_ = -1, locKey_ = -1;
+          locBright_ = -1, locKey_ = -1, locGradeTexel_ = -1;
+    bool grade_ = false;   // begin(): the scene has a TRN grade
     std::map<std::string, std::unique_ptr<GpuModel>> cache_;
     std::map<std::string, std::string> failed_;
 };

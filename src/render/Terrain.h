@@ -44,9 +44,17 @@ public:
 
     const TerrainDesc& desc() const { return desc_; }
     Vec3 fogColor() const;
-    // The TRN's colour finish, for models: gamma/filter table, saturation,
-    // and sky palette entry 16 (shade table highlight).
-    GLuint lutTexture() const { return texSkyPal_; }
+    // The final colour stage, for models: the display gamma/filter table and
+    // saturation, and sky palette entry 16 (shade table highlight). Delta
+    // Force: the df.cfg gamma table with filters 128 and no saturation step
+    // (GOG Df.exe 0x402940 / 0x4027d0 -> 0x480bb0(cfg gamma, 0x80 x4));
+    // Delta Force 2: the TRN's table and saturation.
+    GLuint lutTexture() const { return gen2_ ? texSkyPal_ : texDisplayLut_; }
+    // Delta Force: the TRN grade (saturation, then the TRN gamma/filter
+    // table) that GOG Df.exe 0x4867a0 bakes into the model palettes and
+    // material colours at load (0 / 1: none, as for Delta Force 2).
+    GLuint gradeLutTexture() const { return gen2_ ? 0 : texSkyPal_; }
+    float gradeSaturation() const { return gen2_ ? 1.f : desc_.saturation / 128.f; }
     // Surface at (x, z): 1 dirt, 2 grass, 3 snow, 4 cement, 5 sand, 6 packed
     // dirt, 0 none; each colour-map palette colour is matched to the nearest
     // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects). Delta
@@ -55,7 +63,7 @@ public:
     int surfaceAt(float x, float z) const;
     // Water, after everything else is drawn (DF.EXE 0x43bfd8); `ticks` drives the waves.
     void drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks);
-    float saturationFactor() const { return desc_.saturation / 128.f; }
+    float saturationFactor() const { return gen2_ ? desc_.saturation / 128.f : 1.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
     GLuint colorTexture() const { return texColor_; }
@@ -68,6 +76,14 @@ public:
     // F / 320: the original's ring distances scale with the focal length of
     // its display mode (F = width / 2 at 90°).
     float ringScale = 1.f;
+    // Delta Force: the ring table's divisors (GOG Df.exe 0x489440 p1, p2):
+    // 2.2 / 2.2 for the main view (0x402105), the scope 2.5 (magnification
+    // under 5) or 5.0 / 2.5 (0x466090). Near rings end at F / (2·p1) m, far
+    // ring k (0..5, 0x48dc70 draws rings 0..10) ends at 2^k·F / p2 m.
+    float ringP1 = 2.2f, ringP2 = 2.2f;
+    // Delta Force: df.cfg "gamma" (DISPLAY, default 128), the display table's
+    // gamma. Set before load().
+    int displayGamma = 128;
     // Delta Force 2: the mission's water height override (BMS flag 0x78 bit 0,
     // word +0x88, in TRN water_height units); -1 none. Set before load().
     int waterOverride = -1;
@@ -107,6 +123,7 @@ private:
     GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0;
     std::vector<uint8_t> colorRgb_;   // DF2: the colour map as drawn (for the radar)
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
+    GLuint texDisplayLut_ = 0;   // Delta Force: the df.cfg gamma table (filters 128)
     GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0, texWaterGrad_ = 0, texScene_ = 0;
     int sceneW_ = 0, sceneH_ = 0;
     GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0, progFog_ = 0;
