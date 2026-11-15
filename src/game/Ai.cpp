@@ -337,9 +337,12 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
 // last point's heading.
 void AiSystem::patrol(World& world, Person& p) {
     WorldObject& o = world.objects[size_t(p.object)];
-    if (!mission_ || p.path <= 0 || p.path >= int(mission_->paths.size())) { p.pathMode = 0; return; }
+    if (!mission_ || p.path < 0 || p.path >= int(mission_->paths.size())) { p.pathMode = 0; return; }
     const MissionPath& path = mission_->paths[size_t(p.path)];
-    if (path.points.empty()) { p.pathMode = 0; return; }
+    // Path 0 (every shipped mission leaves it empty; "follow path 0" halts a
+    // team) or an empty path: no point, so path mode ends (GOG Df.exe 0x45c6a0
+    // returns 0, 0x45b400 clears ai+0xa4 and thinks again in 16).
+    if (p.path == 0 || path.points.empty()) { p.pathMode = 0; p.think = 16; return; }
     p.waypoint = std::clamp(p.waypoint, 0, int(path.points.size()) - 1);
     const MissionObject* wp = mission_->inGroup(2, path.points[size_t(p.waypoint)]);
     if (!wp) { p.pathMode = 0; return; }
@@ -869,15 +872,17 @@ bool AiSystem::reached(int team, int path, int point) const {
 }
 
 void AiSystem::followPath(World& world, int team, int path) {
-    // 0x46bbe8: teams below 3 are ignored; each member takes the path from
-    // its nearest point.
-    if (team < 3 || !mission_ || path <= 0 || path >= int(mission_->paths.size())) return;
+    // 0x46bbe8 (GOG Df.exe 0x45f670): teams below 3 are ignored; each member
+    // takes the path from its nearest point (0x45c5e0, 0 for an empty path).
+    // Path 0 is taken too: the next path step ends path mode (see patrol).
+    if (team < 3 || !mission_ || path < 0 || path >= int(mission_->paths.size())) return;
     const MissionPath& mp = mission_->paths[size_t(path)];
     for (auto& p : people_) {
         WorldObject& o = world.objects[size_t(p.object)];
         if (o.team != team || !o.alive()) continue;
         p.pathMode = 1;
         p.path = path;
+        p.waypoint = 0;
         float best = 1e30f;
         const float ext = world.extent();
         for (size_t k = 0; k < mp.points.size(); ++k) {

@@ -122,9 +122,11 @@ void VehicleSystem::driveTrain(World& world, AiSystem& ai, Vehicle& v, float tea
 // its radius or 2 |speed| (per tick) of it; a one-way path ends with speed 0.
 bool VehicleSystem::pathStep(World& world, AiSystem& ai, Vehicle& v) {
     WorldObject& o = world.objects[size_t(v.object)];
-    if (!v.pathMode || !mission_ || v.path <= 0 || v.path >= int(mission_->paths.size())) return false;
+    if (!v.pathMode || !mission_ || v.path < 0 || v.path >= int(mission_->paths.size())) return false;
     const MissionPath& path = mission_->paths[size_t(v.path)];
-    if (path.points.empty()) return false;
+    // Path 0 or an empty path (GOG Df.exe 0x45c6a0 returns 0): path mode ends
+    // and the vehicle stops (0x450ae0 / 0x453f30 clear ai+0xa4).
+    if (v.path == 0 || path.points.empty()) { v.pathMode = 0; return false; }
     v.waypoint = std::clamp(v.waypoint, 0, int(path.points.size()) - 1);
     const MissionObject* wp = mission_->inGroup(2, path.points[size_t(v.waypoint)]);
     if (!wp) return false;
@@ -753,8 +755,9 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
 }
 
 void VehicleSystem::followPath(World& world, int team, int path) {
-    // 0x46bbe8 also sends vehicles of the team down the path, from the nearest point.
-    if (team < 3 || !mission_ || path <= 0 || path >= int(mission_->paths.size())) return;
+    // 0x46bbe8 (GOG Df.exe 0x45f670) also sends vehicles of the team down the
+    // path, from the nearest point; path 0 included (it halts them, pathStep).
+    if (team < 3 || !mission_ || path < 0 || path >= int(mission_->paths.size())) return;
     const MissionPath& mp = mission_->paths[size_t(path)];
     const float ext = world.extent();
     for (auto& v : vehicles_) {
@@ -763,6 +766,7 @@ void VehicleSystem::followPath(World& world, int team, int path) {
         v.pathMode = 1;
         v.path = path;
         v.stopped = false;
+        v.waypoint = 0;
         float best = 1e30f;
         for (size_t k = 0; k < mp.points.size(); ++k) {
             const MissionObject* wp = mission_->inGroup(2, mp.points[k]);
