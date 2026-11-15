@@ -2696,6 +2696,7 @@ int FrontendDf2::run() {
                 g.df2Wind = std::clamp(cfg_.get("sp_wind"), 0, 2);
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
+                g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);   // [0x67cce4]: the runtime table (GOG 0x4666c0)
                 g.flipMouse = soldier().get(0x5b4) != 0;
                 // GOG Df2.exe 0x43c346 / 0x43c352: [0x67ccf8] = +0x5b0, [0x67ccfc]
                 // = +0x5d8 + 0x80, both clamped by the mouse code 0x41eb50

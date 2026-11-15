@@ -112,8 +112,14 @@ public:
     // ring k (0..5, 0x48dc70 draws rings 0..10) ends at 2^k·F / p2 m.
     float ringP1 = 2.2f, ringP2 = 2.2f;
     // Delta Force: df.cfg "gamma" (DISPLAY, default 128), the display table's
-    // gamma. Set before load().
+    // gamma; Delta Force 2: df2.cfg "gamma", the runtime table's. Set before
+    // load().
     int displayGamma = 128;
+    // Delta Force 2: the runtime colour table left after the load (GOG
+    // Df2.exe 0x4658f0 -> 0x466590 -> 0x4666c0: 0x413b60(df2.cfg gamma
+    // [0x67cce4], saturation 0x80, filters 0x80)), 256 RGB triples; what
+    // 0x413c50 grades the dust and smoke colours with at spawn.
+    const std::vector<uint8_t>& df2RuntimeTable() const { return runtimeLut_; }
     // Delta Force 2: the mission's water height override (BMS flag 0x78 bit 0,
     // word +0x88, in TRN water_height units); -1 none. Set before load().
     int waterOverride = -1;
@@ -167,6 +173,7 @@ private:
     std::vector<uint8_t> colorRgb_;   // DF2: the colour map as drawn (for the radar)
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
     GLuint texDisplayLut_ = 0;   // Delta Force: the df.cfg gamma table (filters 128)
+    std::vector<uint8_t> runtimeLut_;   // Delta Force 2: the df2.cfg gamma table (filters 128)
     GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0, texWaterGrad_ = 0, texScene_ = 0;
     int sceneW_ = 0, sceneH_ = 0;
     GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0, progFog_ = 0;

@@ -52,6 +52,23 @@ int Animator::tick(const Chr& chr) {
     const ChrAnimation* a = chr.animation(anim_);
     if (!a) { frozen_ = true; return 0; }
     const ChrFrame& f = a->frames[size_t(frame_)];
+    if (chr.ksa()) {
+        // Delta Force 2 (GOG Df2.exe 0x423380, CD 0x41e830): advance first
+        // and return the event of the frame entered; the step into frame k
+        // carries frame k's root offset, the wrap or chain to (next, next
+        // frame) none (+0x14..+0x20 cleared). A move change (0x423420 from
+        // 0x4467d0) sets frame 0 and steps at once, so frame 0's event and
+        // root never count.
+        if (frame_ + 1 < int(a->frames.size())) {
+            enter(chr, anim_, frame_ + 1);
+        } else {
+            const ChrTransition* t = f.transitions.empty() ? nullptr : &f.transitions.front();
+            enter(chr, t ? t->anim : 0, t ? std::max(0, t->frame) : 0);
+            rootStep_ = {0, 0, 0};
+        }
+        const ChrFrame* e = frozen_ ? nullptr : currentFrame(chr);
+        return e ? e->event : 0;
+    }
     const int event = f.event;
     if (frame_ + 1 < int(a->frames.size())) {
         enter(chr, anim_, frame_ + 1);

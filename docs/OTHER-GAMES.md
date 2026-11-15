@@ -111,7 +111,12 @@ First differences from DF1:
   - **soldier animations** from `PLAYER01.KSA` (DF2.EXE 0x41e5e0): 255
     animations of 88-byte frames (15 part angles, pose extents, feet height,
     root motion, event), next-animation/frame continuation, no interpolation;
-    posed about the model's mesh pivots with DF2's rotation Rz(a0)Ry(a1)Rx(a2)
+    each step advances first and fires the entered frame's event, carrying
+    its root offset, a wrap or chain carrying none (GOG Df2.exe 0x423380); a
+    move change sets frame 0 and steps at once (0x4467d0 -> 0x423420), so
+    frame-0 events never fire; an airborne person (+0x64 & 0x2000, not 0x40)
+    is drawn in frame 0 of its Jumping_1HW animation (0x451090, move table
+    +0xe3c); posed about the model's mesh pivots with DF2's rotation Rz(a0)Ry(a1)Rx(a2)
     (0x449df0);
   - **sounds** from `DF2.PWF` (DF1's PWF2 format) with DF2's table (0x4B85A8,
     1024 id slots), whole 16-bit WAV samples (DF2 fixed DF1's low-byte bug);
@@ -192,9 +197,13 @@ First differences from DF1:
   - **sky**: the mission's sky block (BMS 0xB8..0xE4, a SUNSETS.DEF entry)
     replaces the TRN's clouds, gradient, sky height, horizon, gamma,
     saturation and filter when both names are set (0x4654b6); clouds blend
-    toward the cloud colour (gradient row 0) by density/256 (0x4679b0); the
+    toward the cloud colour (gradient row 0) by density/256 (0x4679b0),
+    the 512-wide sky map point-sampled from 9 levels built as the water's
+    (0x46d8f0), the level per row from the texel step (GOG 0x4718f0, at
+    most 8); drift 1/64 texel per loop tick, which runs on in the pause
+    ([0xc249ec], 0x40b850); the
     sky is not colour-graded; the gradient rows as described above (view
-    +0x4c is the FOV in degrees, 22 with the binoculars);
+    +0x4c is the FOV in degrees, 22 with the binoculars; GOG 22.5 in 16.16);
   - **fog** (used on the disc: D03M07 and D06M17 fog_level 5, DM_S21 and
     KH_S22 7, TDM_D31 7 in 0x646464): BMS flag 0x78 bit 1 → fog_level +0x8C,
     bit 2 → fog_color +0x90 (0x45d6df; TRN keys `fog_level` / `fog_color`,
@@ -222,14 +231,16 @@ First differences from DF1:
     tests, radar);
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
-    born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
+    born up to 64 m around the player object's origin, 16 m up, whatever
+    the camera (GOG Df2.exe 0x464d8b -> 0x476170; the CD build used the
+    last frame's camera) (rain 5 a tick
     falling 0x5000, snow 1 falling 0x800), drifting with the full wind
     velocity, effect 17 where they reach the water level (0x46baa0); rain
     a 1-pixel streak 0.5 m up and half a tick of wind back in (106,126,154)
     at 100/255, snow SNOW.3DI at scale 2 facing the camera, both after the
-    fog (0x46b780). DF2's D3D frame never called the drawing, so with a
-    3D card the original showed none; OpenDF draws what its software
-    renderer showed;
+    fog (0x46b780). The CD build's D3D frame never called the drawing;
+    GOG's does (0x44fa80 -> 0x475e40, snow at scale 0x100000 there, 0x20000
+    in software). OpenDF draws the software look;
   - **air** (0x4587f0): +1 a tick while the player's origin is 0.5 m or more
     under the water; surfacing with more than 60 resets it (AIR_SUCK 801);
     gags (802) at 2304/2496/2688; over 2880 (48 s) the player drowns at once;
@@ -248,7 +259,8 @@ First differences from DF1:
     velocity (0x44c2f0, per-ammo drag bands; DF1 has no drag), is in
     (`Arsenal::df2Drag`).
   - **heights** (DF2.EXE 0x464c30, 0x464798): the elevation PCX smoothed
-    into 8.8 words, H = 256·Σw·h/29 with the wrapping kernel [2 3 2; 3 9 3;
+    into 8.8 words, H = (256·Σw·h·0x8d3) >> 16 (about ÷ 29; GOG Df2.exe
+    0x46eb30) with the wrapping kernel [2 3 2; 3 9 3;
     2 3 2], compared as H << 7: **0.5 m a step** (DF1 0.25 m); ground under
     the water level darkened at load by ×(255 − 6·depth steps)/256, at least
     25/256 (0x4637c0); the mission's water height override (flag 0x78 bit 0,
@@ -257,6 +269,9 @@ First differences from DF1:
     plane at the level out to 2047 m, the 256-wide `water_map` PCX in its own
     palette graded like the terrain, 16 texels a metre, DF1's ±0.25 m wobble
     (16 m, 512 ticks), averaged 50/50 with the scene and writing depth;
+    point-sampled from 8 levels (256..2) whose mips average the indices,
+    (a+b+c+d+2)>>2 less 1 when non-zero (GOG Df2.exe 0x46d8f0), the level
+    per row from the horizontal texel step (0x470aa0, at most 7);
     drawn before the objects with the camera above it, after them below it,
     then a 50 % tint with palette entry 255 over the view. No water when the
     PCX fails to load (RIPPLE3 is not on the disc: DMDG3 and DMS2 are dry).
@@ -519,7 +534,8 @@ First differences from DF1:
     47, kind 12, flags 0x200, no scope bit) and saves the slot held in
     [0x76553c], B again selects that slot. So with the scope flag on, the
     scope is hidden while the binoculars are held and comes back with the
-    gun. The binocular view (FOV 22, the random offset 0x4481e0 picked anew
+    gun. The binocular view (FOV 22.5 in GOG Df2.exe 0x465f90, 0x168000 in
+    16.16; 22 in the CD build; the random offset 0x4481e0 picked anew
     on each raise, the Heading/Distance texts) shows only in the raised
     moves 0x68/0x72/5, which the move chooser 0x43f690 picks for a 0x200
     mode at speed bits ((+0x74 >> 3) & 3) zero: walking keeps the
@@ -593,7 +609,7 @@ First differences from DF1:
     PgUp / PgDn turn the pages with wrap (0x41e240). The CD build's table
     has no categories, so with CD DF2.EXE OpenDF keeps its old layout; the
     scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
-    half-blended navy inner segments, "%4im" range in orange, the zeroing
+    inner segments darkened by half (GOG 0x457480, colour 0), "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
     0x44e0a0) and above it the magnification "%2ix" (below), the laser
@@ -830,7 +846,10 @@ First differences from DF1:
     husk at step 8, a ±500 m flags-0 noise that alerts relaxed soldiers;
     0x4028d0); smk2 clouds are SMKT_H billboards growing, rolling and fading
     (0x42aaa0, efct draw 0x41f740), their colour INFERRED to replace the
-    material's; v8 alpha materials without flag 1 take the texture at +0x37
+    material's, graded at spawn (GOG Df2.exe 0x413c50 from 0x415de0 /
+    0x415f70) with the runtime table, which after the load is the df2.cfg
+    gamma with saturation and filters 0x80 (0x4658f0 -> 0x4666c0), not the
+    TRN grade; df2.cfg gamma affects nothing else; v8 alpha materials without flag 1 take the texture at +0x37
     (0x43ebca) and 8-bit grey textures on them are INFERRED drawn as
     texel-as-alpha;
     gnrl breaks silently (0x4012b0); smok one puff (0x402550); ibom the kind-5

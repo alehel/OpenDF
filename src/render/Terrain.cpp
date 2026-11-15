@@ -187,6 +187,17 @@ float cloudTexel(vec3 dir) {
     vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
     return texture(uClouds, p / 512.0).r * 255.0;
 }
+// Delta Force 2 (GOG Df2.exe 0x4718f0): the level from the texel step
+// across the row, halved while above one texel, at most 8; nearest texel
+// (span 0x491012).
+float cloudTexelDf2(vec3 dir) {
+    if (dir.y <= 0.001 || uEye.y >= uCloudH) return -1.0;
+    float t = (uCloudH - uEye.y) / dir.y;
+    vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
+    float st = length(dFdx(p));
+    float lod = st > 1.0 ? min(ceil(log2(st)), 8.0) : 0.0;
+    return textureLod(uClouds, p / 512.0, lod).r * 255.0;
+}
 void main() {
     vec3 v = vec3(vNdc.x * uTan.x, vNdc.y * uTan.y, -1.0);
     vec3 dir = normalize((uInvRot * vec4(v, 0.0)).xyz);
@@ -203,7 +214,7 @@ void main() {
         // Clouds (0x4679b0, span 0x485c80): lerp(gradient, cloud colour,
         // density / 256) per row LUT, in plain byte space; no grading (2.7
         // of the DF2 terrain notes).
-        float px = cloudTexel(dir);
+        float px = cloudTexelDf2(dir);
         if (px >= 0.0) sky = mix(sky, uPal[16], px / 256.0);
         oColor = vec4(sky, 1.0);
         return;
@@ -302,7 +313,12 @@ void main() {
         vec2 t = vWorld.xz * 16.0;
         float iu = mod(t.x * 4.0 + uPhase, 1024.0), iv = mod(t.y * 4.0 + uPhase, 1024.0);
         vec2 w = t + 4.0 * vec2(cos(kTwoPi * iv / 1024.0), sin(kTwoPi * iu / 1024.0));
-        oColor = vec4(texture(uWaterIdx, w / 256.0).rgb, 0.5);
+        // The level per row (GOG Df2.exe 0x470aa0): the horizontal texel
+        // step (row depth / focal) << 4 halved while above one texel, at
+        // most 7 (0x470ddb..0x470df6), point-sampled (span 0x4911a9).
+        float st = length(dFdx(t));
+        float lod = st > 1.0 ? min(ceil(log2(st)), 7.0) : 0.0;
+        oColor = vec4(textureLod(uWaterIdx, w / 256.0, lod).rgb, 0.5);
         return;
     }
     vec3 under = texture(uScene, (gl_FragCoord.xy - uViewport.xy) / uViewport.zw).rgb * 255.0;
@@ -344,6 +360,29 @@ GLuint makeTex2D(int w, int h, GLint internal, GLenum format, const void* data, 
                     mips ? GL_LINEAR_MIPMAP_LINEAR : (linear ? GL_LINEAR : GL_NEAREST));
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
     return t;
+}
+
+// Delta Force 2's index-map mip levels (GOG Df2.exe 0x46d8f0, from
+// 0x46ed60's end for the sky and water maps): each texel of level n+1 is
+// (a + b + c + d + 2) >> 2 of its 2x2 in level n, less 1 when non-zero.
+// Square maps; `levels` levels in all, level 0 the map itself.
+std::vector<std::vector<uint8_t>> df2IndexMips(const std::vector<uint8_t>& base, int size, int levels) {
+    std::vector<std::vector<uint8_t>> out{base};
+    for (int n = 1; n < levels && size > 1; ++n) {
+        const std::vector<uint8_t>& src = out.back();
+        const int h = (size + 1) / 2;
+        std::vector<uint8_t> dst(size_t(h) * size_t(h));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < h; ++x) {
+                const size_t i = size_t(2 * y) * size_t(size) + size_t(2 * x);
+                int v = (src[i] + src[i + 1] + src[i + size_t(size)] + src[i + size_t(size) + 1] + 2) >> 2;
+                if (v) --v;
+                dst[size_t(y) * size_t(h) + size_t(x)] = uint8_t(v);
+            }
+        out.push_back(std::move(dst));
+        size = h;
+    }
+    return out;
 }
 
 GLuint makeTexArray(int w, int h, int layers, GLint internal, GLenum format, const void* data) {
@@ -491,8 +530,9 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     detailElev_.clear();
     sightMax_.clear();
     if (gen2_) {
-        // Delta Force 2 (DF2.EXE 0x464c30): heights smoothed into 8.8 words,
-        // H = 256 · Σ w·h / 29 with the wrapping kernel [2 3 2; 3 9 3; 2 3 2],
+        // Delta Force 2 (DF2.EXE 0x464c30, GOG Df2.exe 0x46eb30): heights
+        // smoothed into 8.8 words, H = (256 · Σ w·h · 0x8d3) >> 16 (about
+        // ÷ 29) with the wrapping kernel [2 3 2; 3 9 3; 2 3 2],
         // compared as H << 7 against 16.16 metres: 0.5 m an elevation step.
         static const int kW[3][3] = {{2, 3, 2}, {3, 9, 3}, {2, 3, 2}};
         std::vector<float> smooth(heights_.size());
@@ -503,7 +543,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
                     for (int dx = -1; dx <= 1; ++dx)
                         sum += kW[dz + 1][dx + 1] *
                                elev.pixels[size_t((z + dz + size_) % size_) * size_t(size_) + size_t((x + dx + size_) % size_)];
-                smooth[size_t(z) * size_t(size_) + size_t(x)] = float(256 * sum / 29) / 256.f;
+                smooth[size_t(z) * size_t(size_) + size_t(x)] = float((int64_t(256) * sum * 0x8d3) >> 16) / 256.f;
             }
         heights_.swap(smooth);
         scale.heightScale = 0.5f;
@@ -847,6 +887,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
 
     texSkyPal_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, lut.data(), false, false);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    runtimeLut_ = gen2_ ? display : std::vector<uint8_t>{};
     if (!gen2_) {
         texDisplayLut_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, display.data(), false, false);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -857,7 +898,21 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         clouds.width = clouds.height = 1;
         clouds.pixels = {127};
     }
-    texClouds_ = makeTex2D(clouds.width, clouds.height, GL_R8, GL_RED, clouds.pixels.data(), true, true);
+    if (gen2_ && clouds.width == clouds.height && clouds.width >= 2 && (clouds.width & (clouds.width - 1)) == 0) {
+        // Delta Force 2: the 512x512 sky map and its 8 halvings built as the
+        // EXE builds them (0x46d8f0), point-sampled from a level chosen per
+        // row (GOG Df2.exe 0x4718f0, span 0x491012).
+        const auto mips = df2IndexMips(clouds.pixels, clouds.width, 9);
+        texClouds_ = makeTex2D(clouds.width, clouds.height, GL_R8, GL_RED, clouds.pixels.data(), false, false);
+        for (size_t n = 1; n < mips.size(); ++n) {
+            const int w = std::max(1, clouds.width >> int(n));
+            glTexImage2D(GL_TEXTURE_2D, GLint(n), GL_R8, w, w, 0, GL_RED, GL_UNSIGNED_BYTE, mips[n].data());
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, GLint(mips.size()) - 1);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    } else {
+        texClouds_ = makeTex2D(clouds.width, clouds.height, GL_R8, GL_RED, clouds.pixels.data(), true, true);
+    }
 
     // Water (DF.EXE 0x431b3e, 0x431d04): none if water_height is 0 or the
     // palette is missing; the gradient T from water palette entries 0..15.
@@ -880,14 +935,27 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
                 }
                 return out;
             };
-            std::vector<uint8_t> rgb(water.pixels.size() * 3);
-            for (size_t i = 0; i < water.pixels.size(); ++i) {
-                const Rgb c = graded(water.palette[water.pixels[i]]);
-                rgb[i * 3] = c.r;
-                rgb[i * 3 + 1] = c.g;
-                rgb[i * 3 + 2] = c.b;
+            // 8 levels, 256..2 (GOG Df2.exe 0x5377b8..0x5377d4), averaged in
+            // index space as the EXE does (0x46d8f0), then coloured.
+            std::vector<uint8_t> base = water.pixels;
+            base.resize(256 * 256, 0);   // the EXE's 0x10000-byte level 0
+            const auto mips = df2IndexMips(base, 256, 8);
+            auto coloured = [&](const std::vector<uint8_t>& idx) {
+                std::vector<uint8_t> rgb(idx.size() * 3);
+                for (size_t i = 0; i < idx.size(); ++i) {
+                    const Rgb c = graded(water.palette[idx[i]]);
+                    rgb[i * 3] = c.r;
+                    rgb[i * 3 + 1] = c.g;
+                    rgb[i * 3 + 2] = c.b;
+                }
+                return rgb;
+            };
+            texWater_ = makeTex2D(256, 256, GL_RGB8, GL_RGB, coloured(mips[0]).data(), false, false);
+            for (size_t n = 1; n < mips.size(); ++n) {
+                const int w = std::max(1, 256 >> int(n));
+                glTexImage2D(GL_TEXTURE_2D, GLint(n), GL_RGB8, w, w, 0, GL_RGB, GL_UNSIGNED_BYTE, coloured(mips[n]).data());
             }
-            texWater_ = makeTex2D(water.width, water.height, GL_RGB8, GL_RGB, rgb.data(), false, true);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, GLint(mips.size()) - 1);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
             waterColor_ = graded(water.palette[255]);
             hasWater_ = true;
@@ -1323,7 +1391,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             int64_t horizonRow = vp[3] / 2;
             if (deg >= 89.0) horizonRow += 0x800;
             else horizonRow += ((int64_t(std::tan(double(pitch)) * 65536.0) * focal) >> 16) + 5;
-            int64_t st = (int64_t(df2FovDeg) << 16) / W;
+            int64_t st = int64_t(std::llround(double(df2FovDeg) * 65536.0)) / W;   // GOG Df2.exe 0x471640: the 16.16 FOV / W
             st = (st << 16) / 0x3333;
             st = (st * 0x20000) >> 16;
             st = (st * int64_t(desc_.horizon * 65536.f)) >> 16;
@@ -1335,6 +1403,11 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             glUniform4f(glGetUniformLocation(progSky_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
         }
     }
+    // Cloud drift: 1/64 texel a tick. Delta Force 2 (GOG Df2.exe 0x44f8d0 ->
+    // 0x4722f0 -> 0x4718f0, x 0x2000 per tick) counts [0xc249ec], which
+    // 0x40b850 bumps from the Game Loop state's tick 0x464ce0 every loop
+    // tick, paused or not (the pause flag [0xc249e4] only gates
+    // [0xc249f0]): so the clouds drift on through the pause, as real time.
     setF(progSky_, "uTime", float(SDL_GetTicks()) * 60.f / 1000.f);
     for (int i = 0; i < 17; ++i) {
         char name[16];
