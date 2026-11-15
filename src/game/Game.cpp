@@ -1541,6 +1541,19 @@ void Game::touchPickups() {
             o.removed = true;
             o.boxes.clear();
             break;
+        case 4118:
+            // DF2 grenade crate (GOG Df2.exe 0x446050 case 0x1016, the player
+            // only): 0x45ba20 sends packet 0x1f, whose client side (0x409610)
+            // refills the grenades (0x44e310), shows Misc "STRMSIC17" (sic:
+            // no such key, so an empty line) in [0x67d37c] = 0xff8000 and
+            // plays 0x164; 0x418110 deletes the crate.
+            if (!world_.df2Rules) break;
+            arsenal_.refillDf2Grenades();
+            pushMessage(df2Text("Misc", "STRMSIC17", ""), kDf2Amber);
+            sound_.play2D(0x164);
+            o.removed = true;
+            o.boxes.clear();
+            break;
         case 4054:
             mineContact(int(i));   // DF2 0x43ff93, GOG Df.exe 0x488f00 case 0xfd6
             break;

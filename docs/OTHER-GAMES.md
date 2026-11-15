@@ -785,6 +785,10 @@ First differences from DF1:
     (team p2) of row p1 (0x41b180; set from the AI 0x4018fc / 0x401f3b ->
     0x41ac60); AI property 5/6 also sets / clears the team's alert state
     that condition 1/3 tests (0x4184c0 -> 0x4045c0 / 0x4045a0), members or not;
+    the grenade crate 104118 (0x446050 case 0x1016, the player only):
+    packet 0x1f refills every slot holding mode 0x21 / 0x22 / 0x31
+    (0x44e310), shows Misc "STRMSIC17" (sic, no such key: an empty line)
+    with sound 0x164, and the crate goes (0x418110);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key
