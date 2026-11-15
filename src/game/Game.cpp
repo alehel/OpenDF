@@ -816,6 +816,11 @@ private:
     int df2SelItem(Df2Sel s) const;
     std::string df2MissionName(size_t index) const;
     std::string df2RecordName(size_t index) const;
+    // GOG Df2.exe 0x467430 (from 0x466ba0 at mission load): default labels
+    // (+0x54) and radar shapes (+0x6E) of item-list objects; the labels by
+    // mission record index.
+    void df2DefaultLabels();
+    std::map<size_t, std::string> df2Labels_;
     bool df2SelOnPlayerTeam(Df2Sel s) const;
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
@@ -1191,6 +1196,7 @@ bool Game::loadMission(int index) {
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
             world_.df2Gog = arsenal_.df2Gog();
+            df2DefaultLabels();
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
             setDf2Wind();
@@ -5940,7 +5946,56 @@ std::string Game::df2RecordName(size_t index) const {
         std::snprintf(key, sizeof key, "STRWPNAME%03d", mo.raw[0x58 / 4]);
         if (const std::string* n = wpnText_.find("WPNames", key)) name = n->substr(0, 15);
     }
+    if (const auto it = df2Labels_.find(index); it != df2Labels_.end()) name = it->second;   // GOG Df2.exe 0x467430
     return name;
+}
+
+// GOG Df2.exe 0x467430 (0x466ba0, mission load; not in the CD build): over
+// the item list (mission group 0, objects with an item), by item id (+0x20)
+// unless the item is S&D (attrib 0x1000): 0x1028 STROVER68, 0x1029
+// STROVER67, 0xfc3 STROVER19, 0xfc4 STROVER20, 0xfcb STROVER21, 0xfcc
+// STROVER22, 0x1020 STROVER60; 0xc1b / 0xc24 (the armories) STROVER66 and
+// radar shape 6 when it is 0; 0x178a..0x178c STROVER23..25, 0x17cc
+// STROVER69, 0x17cd STROVER70, each with shape 3 when 0. An S&D item gets
+// shape 6 (a building, item kind 5) or 4 when 0, and STROVER71 on side 1,
+// STROVER72 on side 2. The text is copied into the name +0x54 whole; the
+// shape is +0x6E. OpenDF keeps the command-map flag (mapMarker) in step.
+void Game::df2DefaultLabels() {
+    df2Labels_.clear();
+    if (!arsenal_.df2Gog()) return;
+    for (WorldObject& o : world_.objects) {
+        if (!o.item || o.missionGroup != 0 || o.missionIndex < 0 || o.removed) continue;
+        const char* key = nullptr;
+        int shape = 0;   // the default shape, 0 none
+        if (o.item->attrib & 0x1000) {
+            shape = o.item->type == "building" ? 6 : 4;
+            key = o.side == 1 ? "STROVER71" : o.side == 2 ? "STROVER72" : nullptr;
+        } else {
+            switch (o.item->id - 100000) {
+            case 0x1028: key = "STROVER68"; break;
+            case 0x1029: key = "STROVER67"; break;
+            case 0xfc3: key = "STROVER19"; break;
+            case 0xfc4: key = "STROVER20"; break;
+            case 0xfcb: key = "STROVER21"; break;
+            case 0xfcc: key = "STROVER22"; break;
+            case 0x1020: key = "STROVER60"; break;
+            case 0xc1b: case 0xc24: key = "STROVER66"; shape = 6; break;
+            case 0x178a: key = "STROVER23"; shape = 3; break;
+            case 0x178b: key = "STROVER24"; shape = 3; break;
+            case 0x178c: key = "STROVER25"; shape = 3; break;
+            case 0x17cc: key = "STROVER69"; shape = 3; break;
+            case 0x17cd: key = "STROVER70"; shape = 3; break;
+            default: break;
+            }
+        }
+        if (shape && o.radarShape == 0) {
+            o.radarShape = shape;
+            o.mapMarker = true;
+        }
+        if (key) {
+            const std::string* t = gameTable_.find("Overlays", key);
+            df2Labels_[size_t(o.missionIndex)] = t ? *t : std::string();
+        }    }
 }
 
 std::string Game::df2SelName(Df2Sel s) const {
@@ -6812,7 +6867,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 bx = mx + (at.x - c.x) / mPerPx;
                 by = my + (at.z - c.z) / mPerPx;
             } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
-            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, missionName(*d.mission));
+            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, df2RecordName(size_t(id.index)));   // with 0x467430's labels
         });
         // Player waypoints (pool loop 0x421e48, Waypoints filter): shape 3
         // (diamond) in team 0's green 0x00ff00; names (+0x54) in the blip
