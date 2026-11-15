@@ -2981,8 +2981,9 @@ void Game::tickEffects() {
             continue;
         }
         if (e.debris) {
-            // gdeb (GOG Df.exe 0x453530): position += velocity; the yaw's top
-            // byte +1, the pitch's high word + 0x380, the roll's top byte +7;
+            // gdeb (GOG Df.exe 0x453530; Df2.exe 0x42e6a0 the same):
+            // position += velocity; the yaw's top byte +1, the pitch's high
+            // word + 0x380, the roll's top byte +7;
             // while the ground (0x47df40) is below it, vz -= 0x134; at or
             // above it the piece is deleted (0x45da30).
             e.pos = e.pos + e.dvel;
@@ -3263,16 +3264,31 @@ void Game::tickDf2Items() {
             l.wait = 0x10;
             if (!l.init) {
                 // First think: home yaw = heading | 1, home pitch, sweep
-                // 0x20000000 (45 degrees), aiming at home + 45.
+                // 0x20000000 (45 degrees), aiming at home + 45; it goes on
+                // into the rest of the think (GOG Df2.exe 0x42ccf0, no return).
                 l.init = true;
                 l.homeYaw = yaw | 1;
                 l.homePitch = uint32_t(pitch);
                 l.sweep = 0x20000000;
                 l.targetYaw = l.homeYaw + uint32_t(l.sweep);
                 l.targetPitch = l.homePitch;
-            } else {
-                const bool targetDead = l.target == -3 ? playerDead() : l.target >= 0 && !world_.objects[size_t(l.target)].alive();
-                if (--l.counter > 0 && l.target != -1 && !targetDead) {
+            }
+            {
+                // GOG Df2.exe 0x42ccf0: with a target, AI +0x48 - 1 > 0 and
+                // AI flag 0x40 clear it tracks; a target first seen dead
+                // (flags & 4) sets 0x40 and is still aimed at this think;
+                // with 0x40 already set the target is dropped (AI +0x54 = 0)
+                // and the scan runs.
+                bool track = false;
+                if (l.target != -1 && --l.counter > 0) {
+                    if (!l.targetDead) {
+                        track = true;
+                        if (l.target == -3 ? playerDead() : !world_.objects[size_t(l.target)].alive()) l.targetDead = true;
+                    } else {
+                        l.target = -1;
+                    }
+                }
+                if (track) {
                     // Tracking: aim at the target with a +-0x200000 jitter,
                     // the yaw within +-45 degrees of home, the pitch within
                     // +-11.25 degrees; think 0x20.
@@ -3302,13 +3318,15 @@ void Game::tickDf2Items() {
                     int id = -1;
                     Vec3 at{0, 0, 0};
                     const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.side, pv, id, at);   // by side (GOG 0x42aa10)
-                    l.target = -1;
                     // score · perception, a quarter when AI byte +0xb4 is 0
-                    // (0x425e8f..0x425eb8).
+                    // (0x425e8f..0x425eb8). No candidate clears AI +0x54; a
+                    // failed draw leaves it as it was (0x42ce0b..0x42ce4f).
                     const float seen = score * l.perception * (l.alert == 0 ? 0.25f : 1.f);
-                    if (id != -1 && seen * 65536.f > float(shrapRand())) {
+                    if (id == -1) l.target = -1;
+                    else if (seen * 65536.f > float(shrapRand())) {
                         l.target = id;
                         l.counter = 8;
+                        l.targetDead = false;
                         ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
                     }
                     l.wait = 0x10;
@@ -9053,6 +9071,12 @@ int Game::run() {
                 if (mission_.version < 0x0F && world_.objects[size_t(i)].item) {
                     const std::string& f = world_.objects[size_t(i)].item->aiFunction;
                     if (f == "wdsm" || f == "wdmd" || f == "cact" || f == "palm") woodDebris(i);
+                } else if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "palm") {
+                    // Delta Force 2's palm (GOG Df2.exe 0x42ed40) at hp <= 0:
+                    // 0x429e40(-1), the same pieces, counts, items 0xfe0..0xfe4
+                    // and sound 300 as GOG Df.exe's 0x44e6b0(-1), with DF2's
+                    // gdeb mover 0x42e6a0 equal to DF1's; then flags |= 0xc.
+                    woodDebris(i);
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {

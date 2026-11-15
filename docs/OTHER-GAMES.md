@@ -455,8 +455,11 @@ First differences from DF1:
     for explosives) noise, no impact effect; the panes stay drawn (+0x78 has
     no draw reader). Not yet: the glass shards (0x414a90: min(100, area·20)
     of 107047..107049, ai `gdeb`), the blast's flag-2 mesh pass, and the
-    staged palm trees (0x42ed40 / 0x429e40 / 0x42eae0: palmsection /
-    palmdebris pieces, sounds 0x12E / 300); the owner of a vehicle's or
+    palm trees' hit stages (0x42ed40: hit part 0/1 into +0xB4, 2 into
+    +0xB8, over 10 -> 0x429e40(part); 0x42eae0 / 0x42eed0: the falling
+    palmsection, sounds 0x12E / 303); a palm at hp <= 0 does throw its
+    palmdebris pieces with sound 300 (0x429e40(-1), as GOG Df.exe's
+    0x44e6b0(-1); DF2's gdeb mover 0x42e6a0 is DF1's); the owner of a vehicle's or
     charge's own detonate / fragment chain (0x414960) is not passed on
     either (the boat's five big blasts take its +0xF8). The bld2
     crush (0x45cd80) takes 100 hp from people, every item-list object and
@@ -1154,15 +1157,22 @@ First differences from DF1:
     bark 1; the relaxed quarter then no longer applies. A soldier ordered
     to cover the player (order 2) scores candidates targeting the player
     twice. Helicopters (0x42bff0) draw against the scan's score with
-    perception once and mark their team as having spotted the target's;
-    searchlights mark (light team, target team) (0x42ce2f). Enemies fire through DF2's
+    perception once (night-reduced as 0x403790 does) and mark their team as
+    having spotted the target's, again at every sight re-check that holds
+    (0x42b84d); taking a target scales the vertical speed +0xC4 by
+    (ai+0x80 >> 1). Searchlights mark (light team, target team) (0x42ce2f),
+    scan on their first think too, keep the target when the draw fails and
+    aim once more at a target first seen dead (0x42ccf0). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
     vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed
     hand; no shot without it), the aim 0x415de0 (= 0x46b838: from the body
     origin at the target's origin while it is seen, else the last known
     point with errMul 5, whole-metre distance, the error stored on the
-    body; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
+    body; in sight errMul is the integer 16 - seen / 62 with seen capped
+    at (16 - aim factor) × 62 and written back, 0x417e20; a muzzle under the
+    water fires nothing but the ammo's fourth sound unless the mode is
+    1, 0x27..0x29 or 0x31, 0x416a30, the BRDM and door guns too; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
     target sight line from 1 m up to the target's origin (0x401732), after
     which (seen or not) the full scan runs and a different best candidate
     scoring over 0x4000, without a random draw, becomes the target (GOG
