@@ -68,7 +68,7 @@ public:
     float landOrigin() const;
     // Effect slots spawned since the last call (water entry splash), with
     // their position.
-    struct Spawn { int slot; Vec3 pos; };
+    struct Spawn { int slot; Vec3 pos; int sound = 0; };   // sound: an id played at pos too (0: none)
     std::vector<Spawn> takeSpawns() { std::vector<Spawn> out; out.swap(spawns_); return out; }
     bool inWater() const { return inWater_; }
     bool swimming() const { return inWater_ && swimMove_; }

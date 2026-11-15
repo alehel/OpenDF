@@ -272,7 +272,7 @@ First differences from DF1:
     animation events 0x10/0x11/0x17 play DEATH_WATER/UW_IDLE/UW_SWIM
     (0x43f480). The AI swims too (both games, every person runs the same
     move): falling in sets the swim flag with effect 4 and sound 0x8A at the
-    surface, walking in sets it silently with one gravity step; in water
+    surface (DF2: the player's too, GOG 0x446fb6..0x446ffa), walking in sets it silently with one gravity step; in water
     vz ×0x68DB per DF1 AI ground pass (every 4th tick, 0x43693b; the
     player's ×0xCCCC), ×0xCCCC every tick in DF2 (0x440c0a); out when the
     origin is above the level; the bottom holds. The swim motion is by the
@@ -935,7 +935,9 @@ First differences from DF1:
     0x45c4b0 (CD 0x4544a0) flags those markers 0x20, which the start
     (0x460810) and the teleport (0x418be0) copy, descend 0x2222 a tick under
     `parachut` (PFoil items) or `pararnd`; landing (on the ground, an
-    object's volume or the water) leaves the canopy, which tips over and
+    object's volume or the water) leaves the canopy (GOG 0x415cd0: at the
+    person's origin, `parachut` or `pararnd` by its PFoil attribute, the
+    player's too), which tips over and
     sinks for 1800 ticks (`para` 0x42c570). There is no wind drift: with
     PFoil (every player item and the Squad Members) the chute glides 0x4000
     a tick (0.25 m, 15 m/s) along the heading, so the player steers by
