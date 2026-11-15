@@ -261,8 +261,24 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             cb.cx = r.i32(vo + 0x08) / 65536.f;
             cb.cz = -r.i32(vo + 0x0C) / 65536.f;
             cb.r = r.i32(vo + 0x18) / 65536.f;
+            cb.cy = r.i32(vo + 0x10) / 65536.f;
+            // v5: the owning mesh, by the running total of the meshes' +0x1C.
+            if (!layout.v8) {
+                uint32_t first = 0;
+                for (uint32_t mi = 0; mi < nm; ++mi) {
+                    const uint32_t count = r.u32(mOff + size_t(mi) * layout.mesh + 0x1C);
+                    if (i >= first && i - first < count) { cb.mesh = int(mi); break; }
+                    first += count;
+                }
+            }
             lod.collision.push_back(cb);
         }
+        if (layout.volumes && !layout.v8)
+            for (uint32_t mi = 0; mi < nm; ++mi) {
+                const size_t mo = mOff + size_t(mi) * layout.mesh + 0x40;
+                auto v = [&](int k) { return r.i32(mo + 4 * size_t(k)) / 65536.f; };
+                lod.meshBoxes.push_back({v(0), v(4), -v(3), v(1), v(5), -v(2)});
+            }
         // v8 (DF2.EXE loader 0x43e937..0x43e9a4): each mesh owns the next
         // +0x1C volumes, each volume the next +0x48 planes. Running totals
         // past the LOD's counts (10 shipped LODs do not add up) are cut off

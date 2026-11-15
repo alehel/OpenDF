@@ -20,6 +20,7 @@ enum class Stance { Stand, Crouch, Prone };
 struct PlayerInput {
     float forward = 0, strafe = 0;   // -1..1
     bool walk = false, jump = false;
+    bool jumpPress = false;          // DF1: the move_jump press this frame (GOG Df.exe [0xc23a00] & 0x400, 0x477d40)
     bool shooting = false;           // the weapon's refire time is running (DF.EXE [0x93334c] > 0)
     bool up = false, down = false;   // fly mode only
     bool dead = false;               // the player is dead (+0x64 & 4): DF2's 0x4145a0 lets go of a gun
@@ -40,6 +41,10 @@ public:
     // 0x200 BIN poses) and the scope in (+0x74 & 0x80): GOG Df2.exe 0x445980.
     int df2ModeFlags = 0;
     bool scoped = false;
+    // Delta Force: the current mode's raw flags +0xA4 (GOG Df.exe 0x488200:
+    // 8 SLW, 4 2HW, 0x40 KNIFE poses, 0xc the _2HW walking / running moves,
+    // 1 Jumping_2HW).
+    int df1ModeFlags = 0;
     // Eye height above the feet per stance (stand, crouch, prone) and hand
     // (two-, one-handed): the pose's origin height (.CHR contact points) plus
     // DF.EXE's eye offset (0x449913). Filled from the game data; defaults
@@ -122,6 +127,7 @@ private:
     float originY_ = 0, eyeOffset_ = 0;
     std::vector<Spawn> spawns_;
     bool sliding_ = false;
+    bool uphill_ = false;            // DF1 +0x6e & 8 (flag 0x80000): the walking moves (0x487370 -> 0x488200)
     bool reqCrouch_ = false, reqProne_ = false, reqStand_ = false;
     bool jumpArmed_ = true;          // DF1 GOG [0xc23a10]: set while the jump key is up (0x4795a0)
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)

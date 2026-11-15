@@ -31,6 +31,11 @@ enum class Action {
     // GOG Df.exe: the HUD waypoint one back (PrevWaypoint, command 0x2f, E;
     // 0x484d00; the EXE table 0x4fb2fc, overwritten from the profile +0x8b0).
     PrevWaypoint,
+    // Delta Force: the outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193:
+    // F2 1stPerson, F5 3rdPersonp, F6 3rdPersonw, F7 3rdPersonl) and the
+    // held camera keys (0x19a..0x19f: L ; P . [ ]).
+    FirstPerson, ThirdPersonP, ThirdPersonW, ThirdPersonL,
+    CameraLeft, CameraRight, CameraUp, CameraDown, CameraZoomIn, CameraZoomOut,
     // Delta Force: the FO camera inset (fo, F9, id 0x1e) and its next
     // team-mate (tab, Tab, id 0x1f) (GOG Df.exe 0x477d40).
     FoCamera, FoNext,

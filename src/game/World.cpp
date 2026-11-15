@@ -318,52 +318,89 @@ float World::groundHeight(Vec3 feet, float step, int* owner) const {
     return df2Surface(feet, step, df2Neighbours(feet, 10.f));
 }
 
-Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
+Vec3 World::resolve(Vec3 feet, float originAbove) const {
     if (df2Rules) return feet;   // DF2.EXE has no mover box: the volume push-out (0x440f80) in personTick
+    // GOG Df.exe 0x4889c0 (CD 0x437a28), at most two passes over the mover's
+    // list while something pushed (0x487370). The mover is a box around its
+    // body origin (obj +0x2C): x, y +-0.75 m, height origin - 0.75 ..
+    // origin + 1.0 m, in each mesh's frame.
+    constexpr float kHalf = 0xc000 / 65536.f, kUp = 0x10000 / 65536.f;
+    Vec3 org{feet.x, feet.y + originAbove, feet.z};
     for (int pass = 0; pass < 2; ++pass) {
+        bool any = false;
         for (const auto& o : objects) {
             // The mover's list (0x436a34, rebuilt every tick by 0x436bec
             // into +0x104 / +0x108) takes its candidates from the object
             // arrays 0x820f60 and 0x796f60 (not the mover itself), never
             // from the people array 0x785b60: soldiers and the player do
             // not collide with people, their own body box included.
-            if (o.boxes.empty() || o.person) continue;
-            Vec3 at = nearest(o.pos, feet);
-            float dx = at.x - feet.x, dz = at.z - feet.z;
-            float reach = o.model->radius + radius + 1;
-            if (dx * dx + dz * dz > reach * reach) continue;
-            Frame f(at, o.heading);
-            for (const auto& b : o.boxes) {
-                float bottom = at.y + b.min[1], top = at.y + b.max[1];
-                if (feet.y + step >= top || feet.y + height <= bottom) continue;  // can step onto it / passes under
-                if (b.type != 1 && b.type != 3) continue;   // other volume types are ignored (0x437a28)
-                // 0x437a28: the mover is a square of +-radius in the
-                // object's frame; an overlap is pushed out along the axis
-                // needing the smaller push (x on a tie), toward the side
-                // away from the box centre.
-                Vec3 l = f.toLocal(feet);
-                if (l.x + radius < b.min[0] || l.x - radius > b.max[0] || l.z + radius < b.min[2] || l.z - radius > b.max[2]) continue;
-                const float cx = (b.min[0] + b.max[0]) * 0.5f, cz = (b.min[2] + b.max[2]) * 0.5f;
-                const float qx = l.x < cx ? b.min[0] - (l.x + radius) : b.max[0] - (l.x - radius);
-                const float qz = l.z < cz ? b.min[2] - (l.z + radius) : b.max[2] - (l.z - radius);
-                float px = 0, pz = 0;
-                if (b.type == 3) {
-                    // Cylinder: within r + radius of the centre, set out to
-                    // (r + radius) x 1.01 along the line from the centre.
-                    const float dx = l.x - b.cx, dz = l.z - b.cz, dist = std::sqrt(dx * dx + dz * dz);
-                    const float k = (b.r + radius) * 1.01f;
-                    if (dist > b.r + radius) continue;
-                    const float a = std::atan2(dz, dx);
-                    px = b.cx + k * std::cos(a) - l.x;
-                    pz = b.cz + k * std::sin(a) - l.z;
-                } else if (std::abs(qz) >= std::abs(qx)) px = qx; else pz = qz;
-                // Back to world: inverse of toLocal's rotation.
-                feet.x += f.c * px + f.s * pz;
-                feet.z += -f.s * px + f.c * pz;
+            if (o.person || o.removed || o.dead || !o.model || o.boxes.empty()) continue;
+            // Only models with collision volumes (LOD +0xb0); the bounds
+            // OpenDF makes up for the others (refreshBoxes) are for rounds.
+            const GpuModel& m = *o.model;
+            if (m.collision.empty()) continue;
+            // The object's square: +-(model +0x64 + 0.75) around it.
+            const Vec3 at = nearest(o.pos, org);
+            const float reach = m.flatRadius + kHalf;
+            if (std::abs(at.x - org.x) > reach || std::abs(at.z - org.z) > reach) continue;
+            // A touch item (attrib movecb 0x10) never pushes (0x488c5b); its
+            // touch is Game::touchPickups.
+            const bool touch = o.item && (o.item->attrib & 0x10);
+            const Mat4 w = o.matrix(at);
+            auto toLocal = [&](Vec3 p) {
+                const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
+                return Vec3{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
+                            w.at(0, 2) * q.x + w.at(1, 2) * q.y + w.at(2, 2) * q.z};
+            };
+            for (size_t mi = 0; mi < m.meshBoxes.size(); ++mi) {
+                // Each mesh with volumes (+0x1C): its box (+0x40..+0x54) first.
+                const auto& mb = m.meshBoxes[mi];
+                Vec3 l = toLocal(org);
+                if (!(l.x - kHalf <= mb[3] && mb[0] <= l.x + kHalf && l.z - kHalf <= mb[5] && mb[2] <= l.z + kHalf &&
+                      l.y - kHalf <= mb[4] && mb[1] <= l.y + kUp))
+                    continue;
+                bool pushed = false;
+                for (const auto& b : m.collision) {
+                    if (b.mesh != int(mi) || (b.type != 1 && b.type != 3)) continue;
+                    if (!(b.min[0] <= l.x + kHalf && l.x - kHalf <= b.max[0] && b.min[2] <= l.z + kHalf && l.z - kHalf <= b.max[2] &&
+                          b.min[1] <= l.y + kUp && l.y - kHalf <= b.max[1]))
+                        continue;
+                    if (b.type == 1) {
+                        // Away from the volume's centre (+0x08..+0x10) along
+                        // the axis needing the smallest push: x unless y or
+                        // z needs less, then y unless z needs less (file
+                        // axes; OpenDF z is file -y, y the height).
+                        const float qx = l.x < b.cx ? b.min[0] - (l.x + kHalf) : b.max[0] - (l.x - kHalf);
+                        const float qz = l.z > b.cz ? b.max[2] - (l.z - kHalf) : b.min[2] - (l.z + kHalf);
+                        const float qy = l.y < b.cy ? b.min[1] - (l.y + kUp) : b.max[1] - (l.y - kHalf);
+                        const float ax = std::abs(qx), az = std::abs(qz), ay = std::abs(qy);
+                        if (ax <= az && ax <= ay) l.x += qx;
+                        else if (az <= ax && az <= ay) l.z += qz;
+                        else l.y += qy;
+                        pushed = true;
+                    } else {
+                        // Upright cylinder: within r + 0.75 of the centre (on
+                        // x, y), set out to (r + 0.75) x 1.01 (0x1028f).
+                        const float dx = l.x - b.cx, dz = l.z - b.cz;
+                        if (std::sqrt(dx * dx + dz * dz) > b.r + kHalf) continue;
+                        const float k = (b.r + kHalf) * (0x1028f / 65536.f), a = std::atan2(dz, dx);
+                        l.x = b.cx + k * std::cos(a);
+                        l.z = b.cz + k * std::sin(a);
+                        pushed = true;
+                    }
+                }
+                if (!pushed) continue;
+                // Written back (0x45cda0) unless the item is a touch item;
+                // either way the pass counts as pushing.
+                if (!touch) org = Vec3{w.at(0, 0) * l.x + w.at(0, 1) * l.y + w.at(0, 2) * l.z + w.at(0, 3),
+                                       w.at(1, 0) * l.x + w.at(1, 1) * l.y + w.at(1, 2) * l.z + w.at(1, 3),
+                                       w.at(2, 0) * l.x + w.at(2, 1) * l.y + w.at(2, 2) * l.z + w.at(2, 3)};
+                any = true;
             }
         }
+        if (!any) break;
     }
-    return feet;
+    return {org.x, org.y - originAbove, org.z};
 }
 
 // A round against one object's LOD 0 faces (0x44e918, per object): the

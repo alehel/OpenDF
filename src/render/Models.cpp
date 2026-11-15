@@ -297,6 +297,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     }
     g->radius = std::max(std::sqrt(r2), 0.1f);
     g->collision = src.lods[0].collision;
+    g->meshBoxes = src.lods[0].meshBoxes;
     g->meshVolumes = src.lods[0].meshVolumes;
     for (const auto& mv : g->meshVolumes) g->hasVolumes = g->hasVolumes || !mv.volumes.empty();
     g->points = src.lods[0].points;

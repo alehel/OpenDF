@@ -174,10 +174,12 @@ public:
     // gravity, land on the surface below.
     void personTick(WorldObject& o);
 
-    // Pushes a vertical cylinder (feet at `feet`) out of solid boxes (DF.EXE
-    // 0x437a28); people are never in the list (0x436a34). Under Delta Force 2's rules it does nothing: DF2 has no
+    // Pushes the mover box (body origin `originAbove` over `feet`) out of
+    // the objects' collision volumes (GOG Df.exe 0x4889c0, CD 0x437a28),
+    // also up or down; returns the new feet. People are never in the list
+    // (0x436a34). Under Delta Force 2's rules it does nothing: DF2 has no
     // mover box, people are pushed out of the volumes in personTick.
-    Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
+    Vec3 resolve(Vec3 feet, float originAbove) const;
 
     // Delta Force 2 collision volumes (DF2.EXE 0x440f80): `count` cubes of
     // half-size halves[k] centred on pts[k] against object `n`'s LOD 0 plane
