@@ -466,17 +466,70 @@ private:
         else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
         else if (b.name == "but_opt2_vsl") { b.p2 = std::min(b.p2, b.p1 - 1); refreshKeys(); }   // opt2_ScrollTo 0x43a6b0
         else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
-        else if (b.name == "but_mb_mpvsl") mapY_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 323.f);
-        else if (b.name == "but_mb_mphsl") mapX_ = float(b.p2) / float(std::max(1, b.p1)) * (1024.f - 279.f);
+        // mb_MapVSlide / mb_MapHSlide (GOG Df2.exe 0x43d970 / 0x43d950): the
+        // map's scroll target follows the slider.
+        else if (b.name == "but_mb_mpvsl") mapTargetY_ = b.p2;
+        else if (b.name == "but_mb_mphsl") mapTargetX_ = b.p2;
     }
+    // A held slider follows the mouse (GOG Df2.exe 0x433d10 / 0x433b60, CD
+    // 0x42f150, event 1): value = (mouse - pos - knob/2) / length · range,
+    // clamped.
     void dragTo(D2Button& b) {
-        // 0x42f150: value = (mouse - pos - knob/2) / length · range, clamped.
         const HudImage im = image(b.image);
         const float len = float(std::max(1, b.p3));
         const float m = b.type == 2 ? float(mouseX_ - b.x - im.width / 2) : float(mouseY_ - b.y - im.height / 2);
         b.p2 = std::clamp(int(m / len * float(b.p1)), 0, b.p1);
         sliderChanged(b);
     }
+    // A press on a slider (GOG Df2.exe 0x433d10 type 2 / 0x433b60 type 3,
+    // event 2): at or before its start the value goes to 0; otherwise a value
+    // under the mouse (as dragTo) within half the knob's size of the current
+    // one takes hold of the knob, anything further steps the value by user1
+    // (+0x7c, 5 when 0) towards it. Then clamped and event 0xA.
+    void sliderPress(D2Button& b) {
+        b.drawstate = 3;
+        const HudImage im = image(b.image);
+        const bool across = b.type == 2;
+        const int m = across ? mouseX_ : mouseY_, pos = across ? b.x : b.y;
+        const int half = (across ? im.width : im.height) >> 1;
+        const int step = b.user1 ? b.user1 : 5;
+        if (m <= pos) {
+            b.p2 = 0;
+        } else {
+            const int v = int(double(m - half - pos) / double(std::max(1, b.p3)) * double(b.p1));
+            if (v < 10000) {
+                if (std::abs(v - b.p2) <= half) dragging_ = b.name;
+                else b.p2 += v > b.p2 ? step : -step;
+            }
+        }
+        b.p2 = std::clamp(b.p2, 0, std::max(0, b.p1));
+        sliderChanged(b);
+    }
+    // GOG Df2.exe 0x43cdf0: the map's scroll target centred on picture point
+    // (x, y) of the view but_mb_mpimg (scroll = point - ((view - 1) >> 1)),
+    // clamped to [0, the slider's range]; without ease the sliders' values
+    // (the scroll itself) jump there too.
+    void mapCentre(int x, int y, bool ease) {
+        D2Button* v = btn("but_mb_mpimg");
+        D2Button* hs = btn("but_mb_mphsl");
+        D2Button* vs = btn("but_mb_mpvsl");
+        if (!v || !hs || !vs) return;
+        mapTargetX_ = std::min(std::max(0, x - ((v->user1 - v->x - 1) >> 1)), hs->p1);
+        mapTargetY_ = std::min(std::max(0, y - ((v->user2 - v->y - 1) >> 1)), vs->p1);
+        if (!ease) { hs->p2 = mapTargetX_; vs->p2 = mapTargetY_; }
+    }
+    // The Mission Briefing page's tick (GOG Df2.exe 0x43ca20): each map
+    // slider's value moves towards the scroll target by at most 10.
+    void mapTick() {
+        auto ease = [](D2Button* s, int target) {
+            if (!s) return;
+            if (target < s->p2) s->p2 -= std::min(s->p2 - target, 10);
+            else if (target > s->p2) s->p2 += std::min(target - s->p2, 10);
+        };
+        ease(btn("but_mb_mphsl"), mapTargetX_);
+        ease(btn("but_mb_mpvsl"), mapTargetY_);
+    }
+    int sliderValue(const char* name) { const D2Button* s = btn(name); return s ? s->p2 : 0; }
 
     Screen screen_ = Screen::Soldier, next_ = Screen::Soldier, returnTo_ = Screen::Main;
     std::string menuName_;
@@ -499,7 +552,10 @@ private:
     size_t helpShown_ = 0;
     int briefLine_ = 0;
     HudImage briefMap_;
-    float mapX_ = 0, mapY_ = 0;
+    // The map's scroll is the value (+0x6c) of but_mb_mphsl / but_mb_mpvsl
+    // (GOG Df2.exe 0x4f39b8 / 0x4f37c0); this is where it is heading.
+    int mapTargetX_ = 0, mapTargetY_ = 0;   // 0x4f3d6c / 0x4f3d70
+    int mapCentreX_ = 512, mapCentreY_ = 512;   // the mission's centre point, 0x4f3d64 / 0x4f3d68
     // GOG Df2.exe 0x4045e0: the briefing map's markers, up to 50, in the
     // picture's 1024² coordinates (0x4f3a40, count 0x4f3d60).
     struct MapMarker { int marker, x, y, team; };
@@ -1178,17 +1234,17 @@ void FrontendDf2::captureTick() {
     keyCapture_ = false;
 }
 
-// Button size (0x42d8d0): image type 1 -> image width x height / frames;
-// sliders: the image, the track p3; text-only: to (user1, user2) or the text.
+// Button size (GOG Df2.exe 0x432690, CD 0x42d8c0), +0x74 x +0x78: with an
+// image a push button is image width x height / 4 (always 4 stacked frames,
+// whatever the IMAGE record's frame count), a slider the whole image and any
+// other type 0 x 0 (so pictures are never under the mouse); without one the
+// text's box or (p1, p2). Then a slider's track p3 is its length.
 void FrontendDf2::layout(D2Button& b) {
     const HudImage im = b.image.empty() ? HudImage{} : image(b.image);
     if (im.texture) {
-        // 0x42d8d0: a push button's image is always 4 stacked frames
-        // (whatever the IMAGE record's frame count); animations use the record's.
-        b.w = im.width;
-        b.h = im.height / (b.type == 1 ? 4 : std::max(1, imageFrames(b.image)));
-        if (b.type == 2) b.w = b.p3;
-        if (b.type == 3) b.h = b.p3;
+        b.w = b.h = 0;
+        if (b.type == 1) { b.w = im.width; b.h = im.height / 4; }
+        if (b.type == 2 || b.type == 3) { b.w = im.width; b.h = im.height; }
     } else if (!b.mnuText.empty()) {
         // 0x42dc7c: (user1 - x, user2 - y); if either is not positive both come
         // from the text's measure 0x4694a0 (the text as stored, '&' removed).
@@ -1205,23 +1261,28 @@ void FrontendDf2::layout(D2Button& b) {
         b.w = b.p1;
         b.h = b.p2;
     }
+    if (b.type == 2) b.w = b.p3;
+    if (b.type == 3) b.h = b.p3;
 }
 
+// GOG Df2.exe 0x4337a0 (CD 0x42e9f0): the first button of the page, from the
+// highest z-order, whose box holds the mouse. Only J (0x200) is ignored: any
+// type, drawstate, C or callback-less button is hit (and so covers what lies
+// below it); what happens then depends on the type (0x433ec0). Without an
+// image and G a box is 1.6 times as tall, and lies left of x when
+// right-justified (0x10) but not left-justified (8).
 D2Button* FrontendDf2::hit(int x, int y) {
     D2Menu* m = menu();
     if (!m) return nullptr;
-    // 0x42e9f0: from the highest z-order; J (0x200) ignores the mouse;
-    // text-only buttons are 1.6 times as tall; right-justified ones lie left of x.
     for (int i : m->buttons) {
         D2Button& b = mnu_.buttons[size_t(i)];
-        if (b.drawstate == 0 || (b.attrib & 0x200) || (b.attrib & 4) || b.callback.empty()) continue;
-        if (b.type == 0) continue;
-        float x0 = float(b.x), w = float(b.w), h = float(b.h);
+        if (b.attrib & 0x200) continue;
+        int x0 = b.x, h = b.h;
         if (b.image.empty() && !(b.attrib & 0x40)) {
-            h *= 1.6f;
-            if (b.attrib & 0x10) x0 -= w;
+            h = int(float(b.h) * 1.6f);
+            if (!(b.attrib & 8) && (b.attrib & 0x10)) x0 -= b.w;
         }
-        if (x >= x0 && x < x0 + w && y >= b.y && y < b.y + h) return &b;
+        if (x0 <= x && b.y <= y && x < x0 + b.w && y < b.y + h) return &b;
     }
     return nullptr;
 }
@@ -1413,16 +1474,17 @@ void FrontendDf2::ownerDraw(D2Button& b) {
         if (const std::string* t = briefText_.find("MBBRIEF", key))
             wrapped("LCD10S", float(b.x), float(b.y), float(b.user1), float(b.user2), *t, mnu_.fonts["LCD10S"].fg[0], briefLine_);
     } else if (cb == "mb_Map") {
-        // The terrain's JPG scaled x4 to 1024² in the view, scrolled; numbered waypoints.
-        const float vw = float(b.user1 - b.x), vh = float(b.user2 - b.y);
-        if (briefMap_.texture) {
-            const float s = 1024.f / float(briefMap_.width);
-            blit(briefMap_, float(b.x), float(b.y), mapX_ / s, mapY_ / s, vw / s, vh / s);
-        }
-        // GOG Df2.exe 0x43d250 (CD 0x437fd0), event 7: three passes over the
-        // markers of 0x4045e0. sx/sy: the scroll; a point's screen position is
-        // view origin + point - scroll.
-        const int sx = int(mapX_), sy = int(mapY_), w = b.user1 - b.x, h = b.user2 - b.y;
+        // GOG Df2.exe 0x43d250 (CD 0x437fd0), event 7, only with the picture
+        // (+0x64): the mm_Rect border (0x43afc0), then the tiled terrain
+        // picture 1:1 (0x46c6d0) at (x+1, y+1), (user1-x-1) x (user2-y-1),
+        // from the sliders' values.
+        if (!briefMap_.texture) return;
+        rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), b.drawstate == 4 ? 0x844030 : 0xCA4409);
+        const int sx = sliderValue("but_mb_mphsl"), sy = sliderValue("but_mb_mpvsl"), w = b.user1 - b.x, h = b.user2 - b.y;
+        blit(briefMap_, float(b.x + 1), float(b.y + 1), float(sx), float(sy),
+             float(std::min(w - 1, briefMap_.width)), float(std::min(h - 1, briefMap_.height)));
+        // Then three passes over the markers of 0x4045e0. A point's screen
+        // position is view origin + point - scroll (not +1).
         auto visible = [&](int x0, int y0, int x1, int y1, int x, int y) { return x >= x0 && x <= x1 && y >= y0 && y <= y1; };   // 0x43d220
         auto route = [](int marker) { return marker == 1 || marker == 2 || marker == 3; };
         // 0x46c8e0: frame f of an icon strip of 8 frames stacked vertically, index 0 keyed.
@@ -1470,7 +1532,6 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             if (visible(sx, sy, sx + w - 4, sy + h - 4, mk.x - 4, mk.y - 4))
                 icon("yel_icon.pcx", mk.marker - 1, b.x - sx + mk.x - 4, b.y - sy + mk.y - 4);
         }
-        rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), 0xCA4409);
     }
 }
 
@@ -1576,18 +1637,30 @@ void FrontendDf2::loadBriefing() {
     briefLine_ = 0;
     briefMap_ = {};
     mapMarkers_.clear();
+    mapCentreX_ = mapCentreY_ = 0x200;
     std::vector<uint8_t> d;
     Mission m;
     if (vfs_.read(bms_ + ".BMS", d)) {
         std::string err;
         if (parseMission(d, m, &err)) {
-            std::string trn = m.terrain;
-            if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
-            std::vector<uint8_t> td, raw;
-            TerrainDesc desc;
-            if (vfs_.read(trn + ".TRN", td) && parseTrn(std::string(td.begin(), td.end()), desc) && vfs_.read(upper(desc.colorMap) + ".JPG", raw)) {
-                RgbaImage im;
-                if (decodeRgbaImage(raw, im)) briefMap_ = hud().makeImage(im.width, im.height, im.rgba);
+            // GOG Df2.exe 0x43ce90: the picture is the header's terrain name
+            // (+0x44, read only from a version-15 header, 0x4044a0) with its
+            // extension replaced by .JPG (e.g. DFS1.TRN -> DFS1.JPG, 256²),
+            // repeated 4 x 4 (0x46c760(img, 4, 3) copies each row 4 times
+            // across and the whole picture 4 times down): a tiling, 4 m a
+            // pixel like the markers.
+            std::string jpg = m.version == 15 ? m.terrain : std::string();
+            if (auto dot = jpg.rfind('.'); dot != std::string::npos) jpg.resize(dot);
+            std::vector<uint8_t> raw;
+            RgbaImage im;
+            if (!jpg.empty() && vfs_.read(upper(jpg) + ".JPG", raw) && decodeRgbaImage(raw, im) && im.width > 0 && im.height > 0) {
+                const size_t row = size_t(im.width) * 4;
+                std::vector<uint8_t> tiled(row * 4 * size_t(im.height) * 4);
+                for (int ty = 0; ty < 4; ++ty)
+                    for (int y = 0; y < im.height; ++y)
+                        for (int tx = 0; tx < 4; ++tx)
+                            std::memcpy(&tiled[(size_t(ty * im.height + y) * 4 + size_t(tx)) * row], &im.rgba[size_t(y) * row], row);
+                briefMap_ = hud().makeImage(im.width * 4, im.height * 4, tiled);
             }
             // GOG Df2.exe 0x4045e0 (CD 0x404390), BMS version >= 15 only: the
             // objects of the four groups in file order whose marker byte
@@ -1610,10 +1683,24 @@ void FrontendDf2::loadBriefing() {
                     if (o.group == 2 && o.type == 0x1796 && (marker == 0 || !hidden)) { cx = o.raw[4]; cy = o.raw[5]; }
                 }
             }
-            // GOG 0x43cdf0: scroll = centre - ((view - 1) >> 1), clamped to
-            // [0, 1024 - view] for the 279x323 view.
-            mapX_ = float(std::clamp(0x200 + (cx >> 18) - (278 >> 1), 0, 1024 - 279));
-            mapY_ = float(std::clamp(0x200 - (cy >> 18) - (322 >> 1), 0, 1024 - 323));
+            mapCentreX_ = 0x200 + (cx >> 18);
+            mapCentreY_ = 0x200 - (cy >> 18);
+        }
+    }
+    // 0x43ce90: with the picture the sliders' range is picture - view
+    // (1024 - 279 / 1024 - 323) and the scroll starts on the centre
+    // (0x43cdf0, not eased); without it the map shows nothing and both
+    // sliders' range and value are 0.
+    D2Button* v = btn("but_mb_mpimg");
+    D2Button* hs = btn("but_mb_mphsl");
+    D2Button* vs = btn("but_mb_mpvsl");
+    if (v && hs && vs) {
+        if (briefMap_.texture) {
+            hs->p1 = v->x - v->user1 + briefMap_.width;
+            vs->p1 = v->y - v->user2 + briefMap_.height;
+            mapCentre(mapCentreX_, mapCentreY_, false);
+        } else {
+            hs->p1 = hs->p2 = vs->p1 = vs->p2 = 0;
         }
     }
     // Page init (0x4376f0): the ramp cleared, then 0x43778f -> 0x4384f0.
@@ -1705,6 +1792,10 @@ void FrontendDf2::event(D2Button& b, int ev) {
         for (const auto& [n, k] : kHelp)
             if (b.callback == n) { helpText_ = menuText(k, ""); helpShown_ = 0; }
     }
+    // mb_Map (GOG Df2.exe 0x43d250), event 3: a press on the map heads the
+    // scroll for the picture point under the mouse (0x43cdf0, eased).
+    if (ev == 3 && cb == "mb_Map")
+        mapCentre(sliderValue("but_mb_mphsl") - b.x + mouseX_, sliderValue("but_mb_mpvsl") - b.y + mouseY_, true);
     if (ev != 4) return;
     auto exitGame = [&]() { next_ = Screen::Quit; };
     if (cb == "mm_Quit" || cb == "cs_ExitGame" || cb == "ca_ExitGame" || cb == "qm_ExitGame" || cb == "mb_ExitGame" ||
@@ -1803,10 +1894,17 @@ void FrontendDf2::event(D2Button& b, int ev) {
     }
     else if (cb == "mb_BriefUp") briefLine_ = std::max(0, briefLine_ - 1);
     else if (cb == "mb_BriefDown") ++briefLine_;
-    else if (cb == "mb_MapUp") mapY_ = std::max(0.f, mapY_ - 16);
-    else if (cb == "mb_MapDown") mapY_ = std::min(1024.f - 323.f, mapY_ + 16);
-    else if (cb == "mb_MapLeft") mapX_ = std::max(0.f, mapX_ - 16);
-    else if (cb == "mb_MapRight") mapX_ = std::min(1024.f - 279.f, mapX_ + 16);
+    // mb_MapUp / Down / Left / Right (GOG Df2.exe 0x43d650 / 0x43d610 /
+    // 0x43d690 / 0x43d6d0): the slider's value -+10 within its range, the
+    // target with it; mb_MapCenter (0x43d930) heads back for the mission's
+    // centre (eased).
+    else if (cb == "mb_MapUp" || cb == "mb_MapDown" || cb == "mb_MapLeft" || cb == "mb_MapRight") {
+        const bool vert = cb == "mb_MapUp" || cb == "mb_MapDown";
+        if (D2Button* s = btn(vert ? "but_mb_mpvsl" : "but_mb_mphsl")) {
+            s->p2 = std::clamp(s->p2 + (cb == "mb_MapDown" || cb == "mb_MapRight" ? 10 : -10), 0, std::max(0, s->p1));
+            (vert ? mapTargetY_ : mapTargetX_) = s->p2;
+        }
+    } else if (cb == "mb_MapCenter") mapCentre(mapCentreX_, mapCentreY_, true);
     // Change Gear.
     else if (cb == "cg_PWLeft" || cb == "cg_PWRight") gearStep(0x2bc, 3, cb == "cg_PWRight" ? 1 : -1);
     else if (cb == "cg_SWLeft" || cb == "cg_SWRight") gearStep(0x2c0, 4, cb == "cg_SWRight" ? 1 : -1);
@@ -2177,51 +2275,56 @@ int FrontendDf2::run() {
                                 : e.button.button == SDL_BUTTON_MIDDLE ? 3 : 0;
                     if (m) { keyMouse_ = m; pressed_.clear(); continue; }
                 }
+                // GOG Df2.exe 0x433f20: while a slider is held (0x4f2034) a
+                // move goes to it alone; letting go ends the hold (state 1,
+                // event 0xA) and is then handled as any button-up.
+                const bool leftDown = e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT;
+                const bool leftUp = e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT;
                 if (D2Button* d = btn(dragging_)) {
-                    if (e.type == SDL_MOUSEMOTION) dragTo(*d);
-                    else if (e.type == SDL_MOUSEBUTTONUP) dragging_.clear();
-                    continue;
+                    if (e.type == SDL_MOUSEMOTION) { dragTo(*d); continue; }
+                    if (leftUp) {
+                        dragging_.clear();
+                        if (d->drawstate == 3) { d->drawstate = 1; sliderChanged(*d); }
+                    }
                 }
-                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT)
-                    if (D2Menu* m = menu())
-                        for (int i : m->buttons) {
-                            D2Button& s = mnu_.buttons[size_t(i)];
-                            if ((s.type != 2 && s.type != 3) || s.drawstate == 0 || s.drawstate == 4) continue;
-                            const HudImage knob = image(s.image);
-                            const float w = s.type == 2 ? float(s.p3 + knob.width) : float(knob.width);
-                            const float h = s.type == 3 ? float(s.p3 + knob.height) : float(knob.height);
-                            if (mouseX_ >= s.x && mouseX_ < s.x + w && mouseY_ >= s.y && mouseY_ < s.y + h) {
-                                dragging_ = s.name;
-                                dragTo(s);
-                                break;
-                            }
-                        }
-                if (!dragging_.empty()) continue;
+                // 0x433ec0: the hit button's type picks its handler: 1 push
+                // (0x433a30), 2 / 3 slider (0x433d10 / 0x433b60), any other
+                // type nothing. Each ignores drawstate 0 and 4.
                 D2Button* b = hit(mouseX_, mouseY_);
                 const std::string name = b ? b->name : std::string();
+                auto live = [](const D2Button* x) { return x && x->drawstate != 0 && x->drawstate != 4; };
                 if (name != hover_) {
                     if (D2Button* old = btn(hover_)) {
-                        if (old->drawstate == 2 || old->drawstate == 3) old->drawstate = 1;
-                        event(*old, 2);
+                        if (old->type == 1 && live(old)) {
+                            if (old->drawstate == 2 || old->drawstate == 3) old->drawstate = 1;
+                            event(*old, 2);
+                        } else if ((old->type == 2 || old->type == 3) && old->drawstate == 3) {
+                            old->drawstate = 1;
+                        }
                     }
                     hover_ = name;
-                    if (b && b->drawstate != 4) {
+                    // 0x433a30 event 1: btn_roll unless M (0x1000), whether
+                    // or not there is a callback.
+                    if (b && b->type == 1 && live(b)) {
                         b->drawstate = 2;
-                        if (!(b->attrib & 0x400)) sound("btn_roll", 4);
+                        if (!(b->attrib & 0x1000)) sound("btn_roll", 4);
                         event(*b, 1);
                     }
                 }
-                if (b && b->drawstate != 4) {
-                    if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                if (b && b->type == 1 && live(b)) {
+                    if (leftDown) {
                         b->drawstate = 3;
-                        if (!(b->attrib & 0x400)) sound("btn_slct", 3);
+                        if (!(b->attrib & 0x1000)) sound("btn_slct", 3);
                         pressed_ = name;
                         event(*b, 3);
-                    } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && pressed_ == name) {
+                    } else if (leftUp && pressed_ == name) {
                         pressed_.clear();
                         b->drawstate = 2;
                         event(*b, 4);
                     }
+                } else if (b && (b->type == 2 || b->type == 3) && live(b)) {
+                    if (leftDown) sliderPress(*b);
+                    else if (leftUp && b->drawstate == 3) { b->drawstate = 1; sliderChanged(*b); }
                 }
             }
         }
@@ -2296,7 +2399,7 @@ int FrontendDf2::run() {
                     if (b.flash > 0) --b.flash;
                 }
             // The next incomplete region blinks while none is chosen (0x42fc50).
-            if (screen_ == Screen::Briefing) voiceTick();   // 0x437820, the page's tick
+            if (screen_ == Screen::Briefing) { mapTick(); voiceTick(); }   // GOG 0x43ca20 (CD 0x437820), the page's tick
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             music_.update();
         }
