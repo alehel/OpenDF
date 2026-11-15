@@ -80,6 +80,12 @@ First differences from DF1:
     How DF2's renderer DLL draws them is INFERRED, not traced), the texture
     variant mask (3 camouflage variants), 192-byte LOD headers, collision
     planes, 80-byte volumes, 120-byte materials (DF2.EXE 0x43e570).
+    Lighting (GOG Df2.exe 0x44bab0): colour x intensity, intensity ambient
+    0x8ccc + diffuse 0x8000 x |n.L| (back faces /4) or the fullbright +0x3c,
+    capped at 0xffff; no specular and no shade-table highlight. The TRN
+    grade is baked into palettes and material colours before shading
+    (0x4454e0 -> 0x413cd0 / 0x413ba0), skipping textures flagged 0x10
+    (smoke, flashes, mist, sparks, blob shadows); no df.cfg table after.
   - **BMS version 0x0F**: a 0x208-byte header (title/author 32 bytes, terrain
     0x44, dialogue 0x54, flags 0x78 with night 0x100000, weather 0xAC); the
     rest is DF1's layout (DF2.EXE 0x403bd0).

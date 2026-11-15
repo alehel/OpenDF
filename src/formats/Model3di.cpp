@@ -85,7 +85,10 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         t.sequence = r.u8(p + 0x14 + f);
         const uint8_t tflags = r.u8(p + 0x16 + f);
         t.indexZeroTransparent = !layout.v8 && (tflags & 0x20) != 0;
-        t.noGrade = !layout.v8 && (tflags & 0x10) != 0;
+        // Flag 0x10 keeps the palette out of the TRN grade in both games
+        // (GOG Df.exe 0x4867a0; GOG Df2.exe 0x4454e0 tests flags & 0x90, the
+        // v8 byte at +0x22).
+        t.noGrade = (tflags & 0x10) != 0;
         t.width = r.u16(p + 0x18 + f);
         t.height = r.u16(p + 0x1A + f);
         const size_t pixels = p + layout.texHeader;
@@ -191,7 +194,9 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             uint32_t flags = r.u16(o + 0x10);
             const size_t rgbAt = o + 0x28 + 3 * size_t(variant);
             Mat mt{-1, {r.u8(rgbAt) / 255.f, r.u8(rgbAt + 1) / 255.f, r.u8(rgbAt + 2) / 255.f}, false, 0, flags,
-                   r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f,
+                   // Delta Force 2 has no specular term (GOG Df2.exe 0x44bab0;
+                   // +0x38/+0x40 are never read by its rasterisers).
+                   layout.v8 ? 0.f : r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f,
                    r.u16(o + 0x12)};
             // Textured only if a texture has the variant's sequence id (0x43f217).
             if (flags & 0x0001) {

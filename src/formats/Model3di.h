@@ -16,8 +16,9 @@ struct Model3diTexture {
     uint8_t sequence = 0;            // what materials refer to
     bool indexZeroTransparent = false;
     bool alpha16 = false;            // v8: 16-bit texels (index, alpha)
-    // Header +0x16 flag 0x10 (v5): the palette is left out of the TRN grade
-    // (GOG Df.exe 0x4867a0 skips textures flagged 0x10 or 0x80).
+    // Header +0x16 flag 0x10 (v5; v8 +0x22): the palette is left out of the
+    // TRN grade (GOG Df.exe 0x4867a0 and GOG Df2.exe 0x4454e0 skip textures
+    // flagged 0x10 or 0x80).
     bool noGrade = false;
     std::vector<uint8_t> rgba;       // width*height*4, decoded
     std::vector<uint8_t> indices;    // the raw 8-bit texels (used as alpha by 0x8000 materials)
