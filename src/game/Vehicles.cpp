@@ -67,7 +67,10 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         v.targetHeading = o.heading;
         v.lastHp = o.hp;
         // GOG Df.exe 0x449710 (0x449b24..0x449b36): home = the load position.
+        // Delta Force 2 (its helicopter home is not traced in Df2.exe; its
+        // vehicle path step 0x42db20 writes none): the first one-way path end.
         v.home = o.pos;
+        v.hasHome = !world.df2Rules;
         // The AI block soldiers use too (0x440109): perception +0x24 (%),
         // field of view +0x38 (degrees; half angle in 1/256 turns), alert +0x42.
         v.perception = (mo.raw[0x24 / 4] > 0 ? float(mo.raw[0x24 / 4]) : 100.f) / 100.f;
@@ -167,7 +170,9 @@ bool VehicleSystem::pathStep(World& world, AiSystem& ai, Vehicle& v) {
                 v.pathMode = 0;
                 v.path = 0;
                 v.stopped = true;
-                v.home = o.pos;   // GOG Df.exe 0x450c26..0x450c2c: every one-way path end
+                if (!world.df2Rules) v.home = o.pos;   // GOG Df.exe 0x450c26..0x450c2c: every one-way path end
+                else if (!v.hasHome) v.home = o.pos;
+                v.hasHome = true;
                 return false;
             }
         }
@@ -359,7 +364,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h -= 3 * kPi / 8; use(8.f, 1.f, 7); }
             else { v.targetSpeed = 5; v.mode = 1; use(8.f, 1.f, 5); }
             v.targetHeading = h;
-        } else if (!v.dead && (v.flags & 2) && homeDist(world, v) > 4.f) {
+        } else if (!v.dead && (v.flags & 2) && v.hasHome && homeDist(world, v) > 4.f) {
             // Back home (GOG Df.exe 0x4509f0): the load position or the latest
             // one-way path end; within 4 m (0x40000) it returns 0 and the
             // idle branch below decides.
@@ -438,7 +443,20 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             const float floor = std::max(world.terrain->heightAt(o.pos.x, o.pos.z), v.probe) + rest;
             if (o.pos.y < floor) {
                 o.pos.y = floor;
-                if (v.vz < -0x1000 * unit && !v.dead && o.hp > 0) world.damage(v.object, o.hp + 100);
+                // 0x45170e..0x45174e: under -0x1000 a tick the impact calls the
+                // three blasts 0x450d50 and sets flags 0x10c whether or not the
+                // helicopter was already destroyed (flag 4 is not tested), so a
+                // shot-down one goes off again when it hits the ground (once).
+                if (v.vz < -0x1000 * unit && !v.impactBlast) {
+                    v.impactBlast = true;
+                    if (!v.dead && o.hp > 0) world.damage(v.object, o.hp + 100);   // the destroy blasts follow
+                    else if (detonate) {
+                        const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
+                        detonate(o.pos + Vec3{0, 1, 0}, 40, o.heading);
+                        detonate(o.pos + fwd * 4.f, 10, o.heading);
+                        detonate(o.pos - fwd * 4.f, 10, o.heading);
+                    }
+                }
             }
         }
     }
@@ -665,9 +683,10 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
     }
     if (v.gunTarget == -1) {
         if (v.giveUp > 0) { --v.giveUp; return; }
-        // The scan 0x45e280 first: while not alerted, a dead person of its own
-        // side within 50 m (2D) and in sight (1..2) sets ai+0x9c = 2 and the
-        // team's alert word (0x44a3e0).
+        // The scan 0x45e280 first (GOG Df2.exe 0x42bff0 -> 0x417830 the same):
+        // while not alerted, a dead person of its own side within 50 m (2D)
+        // and in sight (1..2) sets ai+0x9c = 2 and the team's alert word
+        // (0x44a3e0 / Df2.exe 0x4045c0).
         if (v.alert != 2)
             for (size_t qi = 0; qi < world.objects.size(); ++qi) {
                 const WorldObject& q = world.objects[qi];
@@ -707,8 +726,9 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         if (v.losTimer > 0xBA) {
             v.losTimer = 0;
             v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
-            // GOG Df.exe 0x45051a: each sight re-check that holds marks the team spotted.
-            if (v.seen) ai.markSpotted(o.team, v.gunTarget == -3 ? player_.team : world.objects[size_t(v.gunTarget)].team);
+            // GOG Df.exe 0x45051a: each sight re-check that holds marks the
+            // team spotted (Delta Force only: not traced in Df2.exe).
+            if (v.seen && !world.df2Rules) ai.markSpotted(o.team, v.gunTarget == -3 ? player_.team : world.objects[size_t(v.gunTarget)].team);
         }
         if (v.seen) {
             if (!targetAlive(world, v.gunTarget)) v.deadSeen = true;

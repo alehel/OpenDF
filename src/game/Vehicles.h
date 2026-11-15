@@ -73,6 +73,7 @@ private:
         float rotor = 0;          // rotor speed, binary angle per tick
         int mode = 1;             // 2 path, 1 hover, 0 land
         Vec3 home{0, 0, 0};       // ai+0x54..0x5c: the load position, then each one-way path end
+        bool hasHome = false;     // DF1: always (the load position); DF2: from the first one-way path end
         float bank = 0, yawRate = 0;
         float floorHeight = 0;    // the controller's last floor (DF1 +0xb4 / DF2 +0xCC = z - floor)
         float accel = 0;          // +0xb0: m per tick^2, set by the think, added to vz every tick (DF1)
@@ -81,6 +82,7 @@ private:
         float vzAccel = 0;
         float probe = 0;          // DF1 +0xdc (0x486fd0) / DF2 +0xF4 (0x445f50): the surface under the hub
         int probeTimer = 0;       // DF1 ai+0x2c / DF2 ai+0x3C: think ticks since the probe was refreshed
+        bool impactBlast = false; // DF1: the ground impact's blasts (0x45171f) have gone off
         int gunTarget = -1;       // ai+0x44: world object, -3 the player
         Vec3 lastKnown{0, 0, 0};  // ai+0x48: aimed and fired at
         Vec3 acquiredAt{0, 0, 0}; // obj+0xBC: own position when the target was taken
