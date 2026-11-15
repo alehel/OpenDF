@@ -146,12 +146,17 @@ bool Controls::init(const ExeImage* exe) {
 
 bool Controls::initDf2(const ExeImage& exe) {
     if (!exe.loaded()) return false;
-    constexpr uint32_t kTable = 0x4a5cd4, kEntry = 44;
+    // CD DF2.EXE 0x4a5cd4: 44-byte entries, name +4, key +36. GOG Df2.exe
+    // 0x4b1738 (flags read at +2 by 0x41f150): 112-byte entries, name
+    // +0x4C, key +0x6C, 162 of them.
+    const bool gog = df2Build(exe) == Df2Build::Gog;
+    const uint32_t kTable = gog ? 0x4b1738 : 0x4a5cd4, kEntry = gog ? 112 : 44, kName = gog ? 0x4C : 4, kKey = gog ? 0x6C : 36,
+                   kCount = gog ? 162 : 160;
     std::vector<std::pair<std::string, uint32_t>> found;
-    for (uint32_t i = 0; i < 160; ++i) {
-        const std::string name = exe.str(kTable + i * kEntry + 4, 32);
+    for (uint32_t i = 0; i < kCount; ++i) {
+        const std::string name = exe.str(kTable + i * kEntry + kName, 32);
         uint32_t key = 0;
-        if (!exe.u32(kTable + i * kEntry + 36, key)) break;
+        if (!exe.u32(kTable + i * kEntry + kKey, key)) break;
         if (name.empty()) {
             if (i > 0 && found.empty()) break;
             continue;

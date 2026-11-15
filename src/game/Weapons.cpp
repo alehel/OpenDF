@@ -315,9 +315,18 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
 }
 
 bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout lo) {
-    constexpr uint32_t kModes = 0x4C7238, kTypes = 0x4C5150, kAmmo = 0x4C4310, kCurve = 0x4C86B8;
-    constexpr int kModeN = 57, kTypeN = 39, kAmmoN = 38, kCurveN = 44;
-    if (!exe.loaded()) return false;
+    // The tables as DF2.EXE 0x46b230 / GOG Df2.exe 0x4758f0 set them up:
+    // modes (92 bytes), weapon types (216), ammo, the drag curve (12). The
+    // GOG build's ammo records are 100 bytes: a new int at +0x0C (the clips
+    // Extra Ammo adds) moves every later field by 4, the flags are stored
+    // << 16 (+0x34), and there is a 39th ammo type (38, the video camera).
+    const Df2Build build = df2Build(exe);
+    if (build == Df2Build::Unknown) return false;
+    const bool gog = build == Df2Build::Gog;
+    const uint32_t kModes = gog ? 0x4DC5E0 : 0x4C7238, kTypes = gog ? 0x4DA4F8 : 0x4C5150, kAmmo = gog ? 0x4D95B8 : 0x4C4310,
+                   kCurve = gog ? 0x4DDA60 : 0x4C86B8;
+    const uint32_t kAmmoSize = gog ? 100 : 96, x = gog ? 4 : 0;   // x: the GOG shift past +0x08
+    const int kModeN = 57, kTypeN = 39, kAmmoN = gog ? 39 : 38, kCurveN = 44;
     bool ok = true;
     auto rd = [&](uint32_t va) { int32_t v = 0; ok = ok && exe.i32(va, v); return v; };
     std::vector<ModeDef> modes(kModeN);
@@ -357,26 +366,29 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
             }
     }
     for (int a = 0; a < kAmmoN; ++a) {
-        const uint32_t b = kAmmo + uint32_t(a) * 96;
+        const uint32_t b = kAmmo + uint32_t(a) * kAmmoSize;
         GunDef& g = guns[size_t(a)];
         g.n = rd(b + 0x04);
         g.magazine = rd(b + 0x08);
-        g.velocity = rd(b + 0x0C);
-        g.power = rd(b + 0x10);
-        g.falloff = std::max(1, rd(b + 0x14));
-        g.lifetime = rd(b + 0x18);
-        g.accuracy = rd(b + 0x1C);
-        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
-        g.flags = rd(b + 0x30);
-        // 0x46b230: thresholds / 62 (C truncation), coefficients 2^32 / c.
+        if (gog) g.extraClips = rd(b + 0x0C);   // GOG Df2.exe 0x44dfc0 (Extra Ammo)
+        g.velocity = rd(b + x + 0x0C);
+        g.power = rd(b + x + 0x10);
+        g.falloff = std::max(1, rd(b + x + 0x14));
+        g.lifetime = rd(b + x + 0x18);
+        g.accuracy = rd(b + x + 0x1C);
+        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + x + 0x20 + 4 * uint32_t(k));
+        // GOG: the CD's flag bits << 16 (tested as 0x10000, 0x100000, ... by
+        // the projectiles it spawns, GOG Df2.exe 0x451ae0).
+        g.flags = gog ? int(uint32_t(rd(b + x + 0x30)) >> 16) : rd(b + x + 0x30);
+        // 0x46b230 / GOG 0x4758f0: thresholds / 62 (C truncation), coefficients 2^32 / c.
         for (int k = 0; k < 5; ++k) {
-            g.dragThr[k] = int64_t(rd(b + 0x34 + 8 * uint32_t(k))) / 62;
-            const int64_t c = rd(b + 0x38 + 8 * uint32_t(k));
+            g.dragThr[k] = int64_t(rd(b + x + 0x34 + 8 * uint32_t(k))) / 62;
+            const int64_t c = rd(b + x + 0x38 + 8 * uint32_t(k));
             g.dragCoef[k] = c ? (int64_t(1) << 32) / c : 0;
         }
-        // +0x58 is both the fifth band's coefficient and the one under water.
+        // +0x58 (GOG +0x5C) is both the fifth band's coefficient and the one under water.
         g.waterCoef = g.dragCoef[4];
-        const int64_t grains = int64_t(rd(b + 0x5C)) << 16;
+        const int64_t grains = int64_t(rd(b + x + 0x5C)) << 16;
         const int64_t kg = (grains << 16) / 0x3c480000;
         g.mass = (kg << 16) / 0xa7;
     }
@@ -407,8 +419,11 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     prevSlot_ = 3;
     gear_ = lo.gear;
     df2_ = true;
+    df2Gog_ = gog;
+    df2Lo_ = lo;
     fromExe_ = true;
-    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips.
+    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips
+    // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
     kit_ = lo.secondary == 1 ? 1 : 0;
     refill();
     current_ = 3;
@@ -469,6 +484,10 @@ void Arsenal::refill() {
     chambered_.assign(guns_.size(), 0);
     mag_.assign(guns_.size(), 0);
     spares_.assign(guns_.size(), 0);
+    if (df2_ && df2Gog_) {
+        refillDf2Gog();
+        return;
+    }
     for (int i = 0; i < kSlots; ++i) {
         if (!slots_[size_t(i)]) continue;
         const int g = modes_[size_t(slots_[size_t(i)])].gun;
@@ -477,6 +496,45 @@ void Arsenal::refill() {
         spares_[size_t(g)] = doubled ? 2 * gd.n - 1 : gd.n - 1;
         mag_[size_t(g)] = gd.magazine;
         chambered_[size_t(g)] = 1;
+    }
+    reloadTicks_ = 0;
+}
+
+void Arsenal::refillDf2Gog() {
+    // GOG Df2.exe 0x44dfc0: per weapon's ammo n - 1 spare clips, a full
+    // magazine, a round chambered, for slots 2-7 and 9 and the two mounted
+    // guns' modes 55 and 56 (slots 0, 1 and 8 use ammo 0, which OpenDF
+    // fills as the CD does). Slot 7 holding slot 6's mode (the same item as
+    // secondary and gear) adds n clips to it. Extra Ammo as the secondary
+    // (+0xb7) and again as the gear (+0xb8) each add the ammo's +0x0C clips
+    // to slot 3's weapon, and to slot 4's when the primary is type 9 or 10.
+    auto fill = [&](int mode) {
+        if (mode <= 0 || mode >= int(modes_.size())) return;
+        const int g = modes_[size_t(mode)].gun;
+        if (g < 0 || g >= int(guns_.size())) return;
+        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
+        mag_[size_t(g)] = guns_[size_t(g)].magazine;
+        chambered_[size_t(g)] = 1;
+    };
+    auto gunOf = [&](int slot) {
+        const int m = slots_[size_t(slot)];
+        return m > 0 && m < int(modes_.size()) ? modes_[size_t(m)].gun : -1;
+    };
+    for (int i : {0, 1, 8}) fill(slots_[size_t(i)]);
+    for (int i : {2, 3, 4, 5, 6}) fill(slots_[size_t(i)]);
+    if (slots_[7] && slots_[7] == slots_[6]) {
+        if (const int g = gunOf(7); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].n;
+    } else {
+        fill(slots_[7]);
+    }
+    fill(slots_[9]);
+    fill(55);
+    fill(56);
+    for (int kit : {df2Lo_.secondary, df2Lo_.gear}) {
+        if (kit != 1) continue;
+        if (const int g = gunOf(3); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].extraClips;
+        if (df2Lo_.primary == 9 || df2Lo_.primary == 10)
+            if (const int g = gunOf(4); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].extraClips;
     }
     reloadTicks_ = 0;
 }

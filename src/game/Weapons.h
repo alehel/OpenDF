@@ -69,6 +69,8 @@ struct GunDef {
     int64_t dragThr[5] = {0, 0, 0, 0, 0}, dragCoef[5] = {0, 0, 0, 0, 0};
     int64_t waterCoef = 0;
     int64_t mass = 0;
+    // GOG Df2.exe ammo +0x0C: the clips Extra Ammo adds (0x44dfc0); 0 on the CD.
+    int extraClips = 0;
 };
 
 // Things the weapons ask the game to do: place a charge (satchel 4020,
@@ -293,6 +295,9 @@ private:
     std::vector<ModeDef> modes_;
     std::vector<GunDef> guns_;
     bool df2_ = false;
+    bool df2Gog_ = false;   // DF2's tables from GOG's Df2.exe (its refill, 0x44dfc0)
+    Df2Loadout df2Lo_;
+    void refillDf2Gog();
     int gear_ = 0, zero_ = 0;
     struct DragPoint { int64_t x, y, slope; };
     std::vector<DragPoint> dragCurve_;

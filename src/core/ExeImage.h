@@ -35,4 +35,12 @@ std::filesystem::path findGameExe(const std::filesystem::path& gameDir);
 // read only for DF2's own tables, never by the DF.EXE readers.
 std::filesystem::path findDf2Exe(const std::filesystem::path& gameDir);
 
+// Which Delta Force 2 executable a loaded image is: the CD's DF2.EXE or the
+// GOG release's Df2.exe 1.06.15, which keeps its tables at other addresses
+// (and its ammo records are 100 bytes, not 96). Told apart by the M4's ammo
+// record (7: a 30-round magazine at 915 m/s), CD 0x4C4310 + 7·96 (+0x08,
+// +0x0C) or GOG Df2.exe 0x4D95B8 + 7·100 (+0x08, +0x10).
+enum class Df2Build { Unknown, Cd, Gog };
+Df2Build df2Build(const ExeImage& exe);
+
 } // namespace df

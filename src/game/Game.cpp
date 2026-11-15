@@ -3836,9 +3836,11 @@ void Game::df2Picture(HudImage& img, int w, int h, double px, double py, double 
 }
 
 int Game::df2TypeCategory(int type) const {
-    // The weapon-type table [0x4f05a4] = 0x4C5150, 216 bytes each, +0x94 menu category.
+    // The weapon-type table [0x4f05a4] = 0x4C5150 (GOG Df2.exe [0x5151c4] =
+    // 0x4DA4F8, the same records), 216 bytes each, +0x94 menu category.
     int32_t v = 0;
-    if (type <= 0 || type >= 39 || !df2Exe_.i32(0x4C5150 + uint32_t(type) * 216 + 0x94, v)) return 0;
+    const uint32_t table = df2Build(df2Exe_) == Df2Build::Gog ? 0x4DA4F8 : 0x4C5150;
+    if (type <= 0 || type >= 39 || !df2Exe_.i32(table + uint32_t(type) * 216 + 0x94, v)) return 0;
     return v;
 }
 

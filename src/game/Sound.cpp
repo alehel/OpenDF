@@ -182,9 +182,11 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
         // DF2.EXE 0x4B85A8: 469 records of DF1's 40-byte layout, ids below
         // 0x400 (sorted at load by 0x45DA50: the first record of an id wins).
         if (df2Exe && df2Exe->loaded()) {
+            // GOG Df2.exe: the same records at 0x4CD7C8 (sorted by 0x467880).
+            const uint32_t table = df2Build(*df2Exe) == Df2Build::Gog ? 0x4CD7C8 : 0x4B85A8;
             int found = 0;
             for (uint32_t i = 0; i < 469; ++i) {
-                const uint32_t rec = 0x4B85A8 + i * 40;
+                const uint32_t rec = table + i * 40;
                 uint32_t w = 0, fl = 0;
                 if (!df2Exe->u32(rec, w) || !df2Exe->u32(rec + 0x24, fl)) break;
                 const int id = int(int16_t(w & 0xFFFF));
@@ -241,9 +243,10 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
         phrases_.assign(22 * 12, 0);
         if (df2Exe && df2Exe->loaded()) {
             phrasesOk = true;
+            const uint32_t sets = df2Build(*df2Exe) == Df2Build::Gog ? 0x4CBCC0 : 0x4B70FC;   // GOG Df2.exe (read by 0x44f340)
             for (uint32_t i = 0; i < 22 * 12; ++i) {
                 int32_t v = 0;
-                if (!df2Exe->i32(0x4B70FC + 4 * i, v)) { phrasesOk = false; break; }
+                if (!df2Exe->i32(sets + 4 * i, v)) { phrasesOk = false; break; }
                 phrases_[i] = v;
             }
             phrasesOk = phrasesOk && phrases_[12 + 1] == 150 && phrases_[16 * 12 + 1] == 700;

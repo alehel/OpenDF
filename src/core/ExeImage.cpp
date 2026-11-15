@@ -76,6 +76,16 @@ fs::path findDf2Exe(const fs::path& gameDir) {
     return {};
 }
 
+Df2Build df2Build(const ExeImage& exe) {
+    if (!exe.loaded()) return Df2Build::Unknown;
+    int32_t mag = 0, speed = 0;
+    if (exe.i32(0x4D95B8 + 7 * 100 + 0x08, mag) && exe.i32(0x4D95B8 + 7 * 100 + 0x10, speed) && mag == 30 && speed == 915)
+        return Df2Build::Gog;
+    if (exe.i32(0x4C4310 + 7 * 96 + 0x08, mag) && exe.i32(0x4C4310 + 7 * 96 + 0x0C, speed) && mag == 30 && speed == 915)
+        return Df2Build::Cd;
+    return Df2Build::Unknown;
+}
+
 fs::path findGameExe(const fs::path& gameDir) {
     // Delta Force's DF.EXE (the later games' executables are not read: their
     // tables are at other addresses, docs/OTHER-GAMES.md).
