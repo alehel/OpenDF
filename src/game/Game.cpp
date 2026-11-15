@@ -6299,6 +6299,10 @@ int Game::run() {
     // Force Dagger have a HUD.DEF too, with other art).
     if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
         df2Hud_.on = df2Hud_.def.parse(def);
+    // GOG Df2.exe 0x41bb90 (through 0x4577a0 / 0x4577f0, 0x41be40 /
+    // 0x41bdf0): plain glyph pixels in the colour, no shadow pass; the
+    // goals' shadow is its own +1,+1 draw (0x448b10).
+    if (df2Hud_.on) hud_.setTextShadow(false);
     // GOG Df2.exe 0x466ba0: a fresh mission start (param 0, 0x465322) sets the
     // friendly tags to 1 (names); the Space replay (0x466ad0) keeps them.
     if (df2Hud_.on) friendlyTags_ = 1;

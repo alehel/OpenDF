@@ -430,7 +430,7 @@ float Hud::textWidth(const std::string& s, float scale) const {
 float Hud::text(float x, float y, const std::string& s, Color c, float scale) {
     setMode(1, font_);
     const float start = x;
-    for (int pass = 0; pass < 2; ++pass) {
+    for (int pass = textShadow_ ? 0 : 1; pass < 2; ++pass) {
         // Pass 0 draws a 1-pixel dark shadow so text reads on any background.
         float px = start + (pass == 0 ? scale : 0), py = y + (pass == 0 ? scale : 0);
         Color col = pass == 0 ? Color{0, 0, 0, c.a * 0.8f} : c;
