@@ -316,7 +316,7 @@ private:
     void clickLink();
     void drawBriefingText(const MnuButton& b);
     void drawBriefingMap(const MnuButton& b);
-    void menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip = nullptr);
+    void menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip = nullptr, bool solid = false);
     int briefLine_ = 0, briefTotal_ = 0, briefVisible_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
@@ -453,12 +453,6 @@ MenuFont& Frontend::font(const std::string& name) {
     if (fi == mnu_.fonts.end() || !vfs_.read(upperCase(fi->second.file), data) || !decodePcx(data, img)) return f;
     const int W = img.width, H = img.height;
     auto px = [&](int x, int y) { return img.pixels[size_t(y) * size_t(W) + size_t(x)]; };
-    std::vector<int> lines;
-    for (int y = 0; y < H; ++y) {
-        bool full = true;
-        for (int x = 0; x < W && full; ++x) full = px(x, y) == 1;
-        if (full) lines.push_back(y);
-    }
     // The menu fonts are loaded with flags 3 (0x40624c): bit 2 cuts the
     // glyphs (0x4422f0), zeroing the width markers 3 and 2 (0x442231,
     // 0x442249); bit 1 sets the font's blend flag (0x44263c), so a glyph
@@ -474,28 +468,34 @@ MenuFont& Frontend::font(const std::string& name) {
         rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
         rgba[i * 4 + 3] = uint8_t((a * 255 + 64) / 128);
     }
-    // Bands repeat every `period` rows (the first separator line's y): band
-    // k is above the separator at period * (k + 1); band 0 starts at the top.
-    const int period = lines.empty() ? 0 : lines[0];
-    for (int band = 0; period > 0 && band < 16 && period * (band + 1) <= H; ++band) {
-        const int y0 = band == 0 ? 0 : period * band + 1, y1 = period * (band + 1);
-        if (y1 <= y0) continue;
-        if (!f.height) f.height = period - 1;
+    // Glyph bands (0x44bac0): band k scans down from its start row for the
+    // first row whose column-0 pixel is 1 (or the image end); the band is
+    // the rows in between (0x44b9a0 stores its height and start row) and
+    // the next starts two rows below that separator (0x44bb0d). 16 bands at
+    // most, 16 codes each.
+    for (int band = 0, y0 = 0; band < 16 && y0 < H; ++band) {
+        int y1 = y0;
+        while (y1 < H && px(0, y1) != 1) ++y1;
         int code = band * 16;
-        for (int x = 0; x < W && code < band * 16 + 16;) {
-            auto ink = [&](int cx) {
-                for (int y = y0; y < y1; ++y) {
-                    const uint8_t v = px(cx, y);
-                    if (v >= 8 || v == 3 || v == 4) return true;
-                }
-                return false;
-            };
+        auto ink = [&](int cx) {
+            for (int y = y0; y < y1; ++y) {
+                const uint8_t v = px(cx, y);
+                if (v >= 8 || v == 3 || v == 4) return true;
+            }
+            return false;
+        };
+        for (int x = 0; y1 > y0 && x < W && code < band * 16 + 16;) {
             if (!ink(x)) { ++x; continue; }
             const int start = x;
             while (x < W && ink(x)) ++x;
             f.glyphs[size_t(code++)] = {start, y0, x - start, y1 - y0};
         }
+        if (y1 >= H) break;
+        y0 = y1 + 2;
     }
+    // The line height everywhere is the byte at table + 0x20c: the height
+    // of glyph 'A' (band 4, entry 1).
+    f.height = f.glyphs['A'].h;
     f.tex = hud().makeImage(W, H, rgba);
     f.ok = f.height > 0;
     return f;
@@ -909,11 +909,17 @@ void Frontend::drawButton(MnuButton& b) {
             blit(im, float(b.x), float(b.y), 0, ch * float(cell), float(im.width), ch, true);
         }
     } else if (!b.image.empty() && (b.type == 2 || b.type == 3) && !(b.attrib & 2) && b.drawstate != 4) {
-        // Knob at x + pos * width / size, or y + pos * height / size (0x40886c).
+        // Knob at x + pos * width / size, or y + pos * height / size (0x40886c),
+        // drawn by 0x40e780 (0x40f75a, 0x40f78f, 0x40f7fe, 0x40f833), which
+        // skips palette index 0: SLIDER.PCX's red index-0 column stays clear.
         const HudImage im = image(b.image);
+        const auto mi = mnu_.images.find(upperCase(b.image));
+        const std::string pcx = mi == mnu_.images.end() ? std::string() : upperCase(mi->second), key = pcx + "#k";
+        if (!images_.count(key)) images_[key] = hud().loadImage(vfs_, pcx, false, true);
+        const HudImage& knob = images_[key];
         const float f = b.sliderSize > 0 ? float(b.sliderPos) / float(b.sliderSize) : 0.f;
-        if (b.type == 2) blit(im, float(b.x) + f * float(b.width), float(b.y), 0, 0, float(im.width), float(im.height), false);
-        else blit(im, float(b.x), float(b.y) + f * float(b.height), 0, 0, float(im.width), float(im.height), false);
+        if (b.type == 2) blit(knob, float(b.x) + f * float(b.width), float(b.y), 0, 0, float(im.width), float(im.height), false);
+        else blit(knob, float(b.x), float(b.y) + f * float(b.height), 0, 0, float(im.width), float(im.height), false);
     } else if (!b.image.empty() && b.type == 6 && !(b.attrib & 0x20)) {
         const HudImage im = image(b.image);
         blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), false);
@@ -1084,7 +1090,7 @@ void Frontend::centreMap(int x, int y) {
     if (MnuButton* v = mnu_.button("but_mi_vscrsl")) v->sliderPos = mapTgt_[1];
 }
 
-void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip) {
+void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip, bool solid) {
     // A 1-px line in 640x480 space; clipped to [clip] (Liang-Barsky) if given.
     if (clip) {
         float t0 = 0, t1 = 1;
@@ -1100,10 +1106,11 @@ void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, 
         x0 = ax; y0 = ay; x1 = bx; y1 = by;
     }
     // DF.EXE's pixel op (0x409964): colour/2 plus half the background's
-    // blue; the alpha byte is ignored.
+    // blue; the alpha byte is ignored. `solid` lines plot through 0x410730
+    // instead, which stores the colour as it is.
     Color c = argb(color);
     c.a = 1;
-    hud().setBlend(3);
+    hud().setBlend(solid ? 0 : 3);
     hud().line(offX_ + (x0 + 0.5f) * scale_, offY_ + (y0 + 0.5f) * scale_, offX_ + (x1 + 0.5f) * scale_, offY_ + (y1 + 0.5f) * scale_,
                scale_, c);
     hud().setBlend(0);
@@ -1139,13 +1146,14 @@ void Frontend::drawBriefingMap(const MnuButton& b) {
     menuLine(bx + 255, by + 255, bx, by + 255, green);
     menuLine(bx, by + 255, bx, by, green);
     const float clip[4] = {bx, by, bx + 255, by + 255};
-    // Route: items of type 1 or 3 joined in order, clipped to the window.
+    // Route: items of type 1 or 3 joined in order, clipped to the window,
+    // drawn solid (0x414fbb -> 0x411210, plotting with 0x410730).
     bool have = false;
     float px = 0, py = 0;
     for (const MapItem& it : mapItems_) {
         if (it.type != 1 && it.type != 3) continue;
         const float sx = bx + float(it.x - ox), sy = by + float(it.y - oy);
-        if (have) menuLine(px, py, sx, sy, route, clip);
+        if (have) menuLine(px, py, sx, sy, route, clip, true);
         px = sx; py = sy; have = true;
     }
     auto inside = [](int x, int y, int x0, int y0, int x1, int y1) { return x >= x0 && x <= x1 && y >= y0 && y <= y1; };
@@ -1174,11 +1182,12 @@ void Frontend::drawBriefingMap(const MnuButton& b) {
             drawText("LCD10", sx + 4, sy - 6, std::to_string(number), 0xFFAAFFAA);
         if (inside(it.x - 4, it.y - 4, ox + 4, oy + 4, ox + 247, oy + 247)) icon("ImageYellowIcons", it.type - 1, sx - 4, sy - 4);
     }
-    // The link marker: a crosshair across the window.
+    // The link marker: a crosshair across the window, solid and clipped only
+    // to the screen (0x41519b, 0x4151ca -> 0x410e50, plotting with 0x410730).
     if (markerOn_ && inside(marker_[0], marker_[1], ox, oy, ox + 254, oy + 254)) {
         const float mx = bx + float(marker_[0] - ox), my = by + float(marker_[1] - oy);
-        menuLine(mx, by, mx, by + 255, route);
-        menuLine(bx, my, bx + 255, my, route);
+        menuLine(mx, by, mx, by + 255, route, nullptr, true);
+        menuLine(bx, my, bx + 255, my, route, nullptr, true);
     }
 }
 
