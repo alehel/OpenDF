@@ -2706,6 +2706,7 @@ int FrontendDf2::run() {
                 const int scopeSens = std::clamp(soldier().get(0x5d8) + 0x80, 0x80, 0x1ff);
                 g.mouseScale = mouseSens;
                 g.df2ScopeSens = scopeSens;
+                g.df2Zero = soldier().get(0x5c4);   // GOG Df2.exe 0x43c280: [0x67cdac] = +0x5c4
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
@@ -2736,18 +2737,19 @@ int FrontendDf2::run() {
                 // marked done. Nothing on a loss. The flags word goes back
                 // every time (it only changes on a win, 0x464140). +0x2b0 /
                 // +0x2ac (from the mission's per-player stats) are not tracked.
-                auto record = [&](bool won, int kills) {
+                auto record = [&](bool won, int kills, int zero) {
+                    soldier().set(0x5c4, zero);   // every run, won or lost: +0x5c4 = [0x67cdac]
                     if (!won) return;
                     if (fromCampaign_ && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
                     soldier().set(0x29c, soldier().get(0x29c) + kills);
                     if (!cdExe_) soldier().set(0x2a4, soldier().get(0x2a4) + 1);   // CD 0x437550 has no +0x2a4
                 };
-                for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills);
+                for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills, r.zero);
                 if (out.quit) {
                     if (!out.replayed.empty()) soldier().set(flagsAt, int32_t(flags));
                     break;
                 }
-                record(out.won, out.kills);
+                record(out.won, out.kills, out.played ? out.df2Zero : soldier().get(0x5c4));
                 soldier().set(flagsAt, int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;

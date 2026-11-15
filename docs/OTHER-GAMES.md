@@ -1029,7 +1029,8 @@ First differences from DF1:
     0x41ac30); area condition 1/10 (0x41b200, 0x4152a0): the first and last
     marker of the tag, both axes must differ, live positions of groups 0
     and 3 with no alive test, a height range between the markers' absolute
-    heights when either record z is non-zero; pungi sticks (0x446050 case
+    heights when either record z is non-zero, objects removed by action 4
+    left out (0x418ce0 -> 0x418110 zeroes the record); pungi sticks (0x446050 case
     0x42a): hp -= 2 a tick in contact when airborne or running uncrouched,
     the player and AI alike (INFERRED for the AI: running = a Running move);
     events (0x41ad40): flag-2 events get one visit at load before the team
@@ -1050,6 +1051,27 @@ First differences from DF1:
     a loss adds nothing; the flags word of the soldier's campaign (+0x28)
     is what both kinds start with and get back; a DF2 profile with face
     10-14 plays the female soldier (0x43c280);
+  - *settled since* (mission, second pass): the team table (0x404310 after
+    the flag-2 events and before the player spawn: totals of decorations,
+    organics and items, the player not among them, alive a copy; 0x4043e0
+    every 63 ticks of the never-reset [0x67ffe8] and after action 17
+    0x4151a0: the objects not destroyed, the player while alive); the
+    scheduler's eighth [0x4e029c] is never reset, so it runs on across
+    missions; action 5 sets or clears switch p1 & 31 by p2 (0x41b6c0);
+    follow path (0x418040 -> 0x4032f0): every organic and item of the team
+    with an AI block, dead or alive, from the point nearest in whole metres
+    in x, y and height, a tie to the later point, the think timer left
+    alone; teleport (0x418be0): every organic of the team in use, bodies
+    too, and the player for team 1; Triggered Text (action 6, 0x465cc0)
+    from the mission's own table (header +0x64 with "bin", 0x465980; no
+    shipped mission uses action 6); the scope zero is the soldier's +0x5c4
+    (0x43c280 -> [0x67cdac] -> 0x44eeb0) and goes back after every run
+    (0x43c6f0); the loading screen (0x465ed0: df2_wait.pcx, then the
+    Loading Text lines STRLTEXT1, 4..9 in f_sml and 0xff8000 at (50, 150 +
+    20 k) of 1024 x 768) on a fresh start, none on the Space replay. Still
+    open: the default labels and radar shapes of 0x467430 (STROVER19..72;
+    items found only in multiplayer missions) and their names beside the
+    blips (0x4273b0 with Names on);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key

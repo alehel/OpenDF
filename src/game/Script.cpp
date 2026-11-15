@@ -10,6 +10,10 @@ uint32_t g_savedFlags = 0, g_flags = 0;
 // DF.EXE 0x4e5854: starts at 1 and flips on every mission load; condition
 // class 4 reads it, so missions can alternate between two variants.
 int g_loadToggle = 1;
+// The eighth of the events visited next in Delta Force 2: never reset, so it
+// runs on across missions (GOG Df2.exe [0x4e029c], only stepped (i + 1) & 7
+// by 0x41ae50).
+int g_df2Visit = 0;
 constexpr int kVisit = 128;   // ticks between visits of one event
 constexpr uint32_t kItemArea = 6013;   // "Area Trigger" marker (ITEMS.DEF 106013)
 } // namespace
@@ -148,7 +152,14 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
         case 0: break;
         case 2: host.killTeam(p1); break;
         case 4: host.removeTeam(p1); break;
-        case 5: if (p1 >= 0 && p1 < 32) g_flags |= 1u << p1; break;
+        case 5:
+            if (mission_->version >= 0x0F) {
+                // GOG Df2.exe 0x41b6c0: p2 sets or clears bit p1 & 31.
+                const uint32_t b = 1u << (p1 & 31);
+                if (a[4]) g_flags |= b;
+                else g_flags &= ~b;
+            } else if (p1 >= 0 && p1 < 32) g_flags |= 1u << p1;
+            break;
         case 6: host.showText(p1); break;
         case 7: host.radio(p1); break;
         // Only latches the result (GOG Df.exe 0x42e810 -> 0x444ca0(1)); the
@@ -215,7 +226,9 @@ void MissionScript::tick(ScriptHost& host) {
     // Df2.exe 0x41ae50) visits one eighth of the events, those with flag 2
     // (mission start) or 4 (mission end) left out.
     if (++ticks_ % 16) return;
-    const int k = visitCount_++ % 8;
+    int& visits = mission_->version >= 0x0F ? g_df2Visit : visitCount_;
+    const int k = visits;
+    visits = (visits + 1) & 7;
     for (size_t i = size_t(k); i < events_.size(); i += 8)
         if (!(events_[i].flags & 6)) visit(i, host);
 }

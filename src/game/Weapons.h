@@ -217,6 +217,7 @@ public:
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
+    void setZero(int z) { zero_ = std::clamp(z, 0, 15); }   // OpenDF clamps a stored value to the table
     float zeroElevation() const {
         const auto& e = mode().elevation;
         return current_ >= 3 && current_ <= 5 && zero_ < int(e.size()) ? float(e[size_t(zero_)]) * 65536.f / 4294967296.f * 6.28318531f : 0.f;

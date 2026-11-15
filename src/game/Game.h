@@ -63,6 +63,10 @@ struct GameOptions {
     // Delta Force 2: df2.cfg "sp_wind" (GOG Df2.exe [0x67cf4c], 0x43c280):
     // single player's wind, 0 the mission's, 1 none, 2 random.
     int df2Wind = 0;
+    // Delta Force 2: the scope zero of the soldier (+0x5c4; GOG Df2.exe
+    // 0x43c280 -> [0x67cdac], the primary slots' zero at the mission start
+    // 0x44eeb0), written back by 0x43c6f0.
+    int df2Zero = 0;
     // df.cfg CONTROLS / MUSIC: crosshairs (0x40200d), flipmouse and
     // mousescale (0x42eba1: turn per count = mousescale << 14 binary angle),
     // dialog_volume (0x472f44).
@@ -104,8 +108,9 @@ struct MissionOutcome {
     // Runs finished earlier with Space ("replay mission"), in order: GOG
     // Df2.exe 0x466ad0 records each one (0x464140 -> 0x43c6f0) before the
     // replay starts.
-    struct Run { bool won = false; int kills = 0; };
+    struct Run { bool won = false; int kills = 0; int zero = 0; };
     std::vector<Run> replayed;
+    int df2Zero = 0;         // DF2: the scope zero at the end (soldier +0x5c4, 0x43c6f0)
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when

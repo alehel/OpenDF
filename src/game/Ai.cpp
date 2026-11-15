@@ -1093,12 +1093,46 @@ bool AiSystem::reached(int team, int path, int point) const {
     return it != reached_.end() && point >= 0 && point < 32 && (it->second >> point & 1);
 }
 
+// GOG Df2.exe 0x4032f0: the path point nearest in whole metres, each axis
+// of (object - marker) shifted >> 16 (floor), x, y and the height squared
+// and summed; on a tie the later point wins (<=). Markers stand at ground +
+// record z (0x465490).
+int df2NearestPoint(const World& world, const Mission& m, const MissionPath& mp, const WorldObject& o) {
+    const float ext = world.extent();
+    int64_t best = 0x7fffffff;
+    int pick = 0;
+    for (size_t k = 0; k < mp.points.size(); ++k) {
+        const MissionObject* wp = m.inGroup(2, mp.points[k]);
+        if (!wp) continue;
+        const Vec3 at = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos);
+        const int64_t dx = int64_t(std::floor(double(o.pos.x) - at.x));
+        const int64_t dy = int64_t(std::floor(double(at.z) - o.pos.z));   // DF y is -z
+        const int64_t dz = int64_t(std::floor(double(o.base) - (world.terrain->heightAt(at.x, at.z) + wp->z)));
+        const int64_t d = dx * dx + dy * dy + dz * dz;
+        if (d <= best) best = d, pick = int(k);
+    }
+    return pick;
+}
+
 void AiSystem::followPath(World& world, int team, int path) {
     // 0x46bbe8 (GOG Df.exe 0x45f670): teams below 3 are ignored; each member
     // takes the path from its nearest point (0x45c5e0, 0 for an empty path).
     // Path 0 is taken too: the next path step ends path mode (see patrol).
     if (team < 3 || !mission_ || path < 0 || path >= int(mission_->paths.size())) return;
     const MissionPath& mp = mission_->paths[size_t(path)];
+    if (world.df2Rules) {
+        // GOG Df2.exe 0x418040: every organic of the team with an AI block,
+        // dead or alive (a removed one is zeroed, team 0), from the point
+        // 0x4032f0 picks; the think timer is left alone.
+        for (auto& p : people_) {
+            const WorldObject& o = world.objects[size_t(p.object)];
+            if (o.team != team || o.removed) continue;
+            p.pathMode = 1;
+            p.path = path;
+            p.waypoint = df2NearestPoint(world, *mission_, mp, o);
+        }
+        return;
+    }
     for (auto& p : people_) {
         WorldObject& o = world.objects[size_t(p.object)];
         if (o.team != team || !o.alive()) continue;

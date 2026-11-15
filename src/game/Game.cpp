@@ -143,20 +143,14 @@ std::string missionName(const std::string& title) {
 
 class Game : public ScriptHost {
 public:
-    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o), letterbox_(std::clamp(o.letterbox, 1, 2)) {}
+    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o), letterbox_(std::clamp(o.letterbox, 1, 2)) { arsenal_.setZero(o.df2Zero); }
     int run();
 
     // ScriptHost: what the mission's events can see and do.
-    // Delta Force: the team table (GOG Df.exe [0x7936a8] totals, [0x7936ac]
-    // alive, 64 teams of 0x40 bytes); Delta Force 2 counts live.
-    int teamTotal(int team) const override {
-        if (world_.df2Rules) return teamCount(team, false);
-        return team > 0 && team < 64 ? teamTotal_[size_t(team)] : 0;
-    }
-    int teamAlive(int team) const override {
-        if (world_.df2Rules) return teamCount(team, true);
-        return team > 0 && team < 64 ? teamAlive_[size_t(team)] : 0;
-    }
+    // The team table (GOG Df.exe [0x7936a8] totals, [0x7936ac] alive, 64
+    // teams of 0x40 bytes; GOG Df2.exe [0xd81b28] / [0xd81b2c] the same).
+    int teamTotal(int team) const override { return team > 0 && team < 64 ? teamTotal_[size_t(team)] : 0; }
+    int teamAlive(int team) const override { return team > 0 && team < 64 ? teamAlive_[size_t(team)] : 0; }
     bool teamInArea(int team, const AreaBox& a) const override;
     void killTeam(int team) override;
     void removeTeam(int team) override;
@@ -386,6 +380,7 @@ public:
         o.earlierKills = earlierKills_;
         o.letterbox = letterbox_;
         o.replayed = replayed_;
+        o.df2Zero = arsenal_.zeroSetting();
         return o;
     }
     // The player's kills: counted before the objects are freed at the end
@@ -429,9 +424,8 @@ private:
     int routeIndex_ = 0;
     void buildRoute();
     void updateRoute();
-    int teamCount(int team, bool aliveOnly) const;
     std::array<int, 64> teamTotal_{}, teamAlive_{};
-    uint32_t teamRecountClock_ = 0;       // GOG Df.exe [0x6e4738] (never reset)
+    uint32_t teamRecountClock_ = 0;       // GOG Df.exe [0x6e4738], GOG Df2.exe [0x67ffe8] (never reset)
     void countTeams(bool atStart);
     void drawMissionEnd(const Screen& s);
     void drawGoals(const Screen& s);
@@ -451,6 +445,7 @@ private:
     MissionScript script_;
     DialogIndex dialogs_;                 // DFDLGnn.DBF
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
+    TextTable df2Text_;                   // DF2: the same .BIN as a section table (GOG Df2.exe [0xa6df94])
     // Ambience (ai_function timers, 0x45a5a8 / 0x45a830 / sndN): objects
     // that repeat their interrupt_sound_id.
     // section: the BMS group (0x436c74 visits 1 every 32 ticks, 2 every 64);
@@ -557,9 +552,12 @@ private:
             if (o.team == team) o.side = side;
     }
     void moveTeam(int team, int newTeam) override {
+        // GOG Df2.exe 0x4151a0: decorations, organics and items of the team
+        // change team, then the alive counts are redone (0x4043e0).
         if (team == 0) return;
         for (auto& o : world_.objects)
             if (o.team == team) o.team = newTeam;
+        countTeams(false);
     }
     // DF2.EXE's marker pass (GOG Df2.exe 0x45c4b0, CD 0x4544a0): a start or
     // teleport marker more than 0x62FFFF (just under 99 m, 16.16) above the
@@ -570,20 +568,27 @@ private:
         // DF2.EXE 0x416960 (GOG Df2.exe 0x418be0): the target's position and
         // angles to every person of the team, and the target's flag 0x20
         // (the parachute, set by the marker pass 0x45c4b0 for markers over
-        // 99 m) ORed into theirs (0x4169e2).
+        // 99 m) ORed into theirs (0x4169e2). Every organic in use (item
+        // index != 0) is moved, the dead too, and for team 1 the player.
         for (const auto& mo : mission_.objects) {
             if (mo.type != 6088 || (mo.raw[18] & 0xFF) != team) continue;
             if (reinterpret_cast<const uint8_t*>(mo.raw)[0x4A] != value) continue;
             const float ext = terrain_.mapExtent();
             const Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
             for (auto& o : world_.objects) {
-                if (!o.person || o.team != team || !o.alive()) continue;
+                if (!o.person || o.team != team || o.removed) continue;
+                const float lift = o.alive() ? o.hip : o.pos.y - o.base;   // a body keeps its lying height
                 o.pos.x = at.x;
                 o.pos.z = at.z;
                 o.heading = mo.heading * kPi / 180.f;
                 o.base = terrain_.heightAt(at.x, at.z) + mo.z;
                 if (df2ChuteMarker(mo.z)) o.chute = true;   // ORed in (0x4169e8), never cleared; vz is kept
-                o.pos.y = o.base + o.hip;
+                o.pos.y = o.base + lift;
+            }
+            if (team == kPlayerTeam) {
+                player_.feet = {at.x, terrain_.heightAt(at.x, at.z) + mo.z, at.z};
+                player_.yaw = mo.heading * kPi / 180.f;
+                if (df2ChuteMarker(mo.z)) player_.chute = true;
             }
             break;
         }
@@ -1326,6 +1331,7 @@ bool Game::loadMission(int index) {
         const std::string set = toUpper(mission_.version >= 0x0F ? mission_.dialogue.substr(0, mission_.dialogue.find('.')) : mission_.dialogue);
         dialogs_ = DialogIndex{};
         dialogText_.clear();
+        df2Text_ = TextTable{};
         activeDialogs_.clear();
         sound_.stopAll();
         ambients_.clear();
@@ -1412,7 +1418,13 @@ bool Game::loadMission(int index) {
         }
         if (!set.empty()) {
             if (vfs_.read(set + ".DBF", raw)) dialogs_.parse(raw);
-            if (vfs_.read(set + ".BIN", raw)) parseRtxt(raw, dialogText_);
+            if (vfs_.read(set + ".BIN", raw)) {
+                parseRtxt(raw, dialogText_);
+                // Delta Force 2 (GOG Df2.exe 0x465980): the header +0x64 name
+                // with "bin" after the '.' (0x46a920) is also the mission's
+                // section table (0x476a90), read by "Triggered Text".
+                if (mission_.version >= 0x0F) df2Text_.parse(raw);
+            }
             sound_.loadDialogBank(vfs_, set + ".PWF");
         }
         int c = 0;
@@ -1443,7 +1455,7 @@ bool Game::loadMission(int index) {
     // removals: GOG Df.exe 0x404e30 -> 0x42eb60, then the team totals
     // 0x44a110; GOG Df2.exe 0x41aeb0 (single player sets [0x67cd34]).
     script_.visitFlagged(2, *this);
-    if (!world_.df2Rules) countTeams(true);
+    countTeams(true);
     // 0x40c550 (from the mission start 0x466ba0) zeroes the list and the
     // settings scroll positions; the briefing's [0xc088a0] is never reset.
     df2Map_.scrollPlayers = df2Map_.scrollTeam = df2Map_.scrollSettings = 0;
@@ -1658,9 +1670,14 @@ void Game::loadingLine(const char* key) {
     // (0x4037b0) and presented; then each step draws its 'Loading Text'
     // line in green at (50, 150 + 20 k) display pixels and presents
     // (0x472b70, 0x496c50). OpenDF shows the mode's 4:3 area centred.
+    // Delta Force 2 (GOG Df2.exe 0x466ba0, single player): df2_wait.pcx
+    // scaled to the mode (0x465ed0 -> 0x465210) and presented (0x424c90);
+    // its lines (DF2GAME.BIN, 0x464f20) in the mode's f_sml (0x465a20) and
+    // 0xff8000 at (50, 150 + 20 k) of 1024 x 768 (0x4577a0 -> 0x456b90).
     if (!loadingScreen_) return;
+    const bool df2 = df2Hud_.on;
     if (!loadingWait_.texture) {
-        loadingWait_ = hud_.loadImage(vfs_, "DF_WAIT.PCX", false);
+        loadingWait_ = hud_.loadImage(vfs_, df2 ? "DF2_WAIT.PCX" : "DF_WAIT.PCX", false);
         if (!loadingWait_.texture) { loadingScreen_ = false; return; }
         glBindTexture(GL_TEXTURE_2D, loadingWait_.texture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -1680,8 +1697,10 @@ void Game::loadingLine(const char* key) {
     glClear(GL_COLOR_BUFFER_BIT);
     hud_.begin(dw, dh);
     hud_.image(loadingWait_.texture, x0, 0, 640.f * u, 480.f * u);
-    for (size_t k = 0; k < loadingLines_.size(); ++k)
-        hud_.text(x0 + 50.f * px, (150.f + 20.f * float(k)) * px, loadingLines_[k], kHudPureGreen, px);
+    for (size_t k = 0; k < loadingLines_.size(); ++k) {
+        if (df2) hud_.text(x0 + 50.f * 640.f * u / 1024.f, (150.f + 20.f * float(k)) * 480.f * u / 768.f, loadingLines_[k], kDf2Amber, px);
+        else hud_.text(x0 + 50.f * px, (150.f + 20.f * float(k)) * px, loadingLines_[k], kHudPureGreen, px);
+    }
     hud_.end();
     SDL_GL_SwapWindow(win_);
 }
@@ -3367,19 +3386,12 @@ void Game::countTeams(bool atStart) {
         if (atStart) ++teamTotal_[size_t(o.team)];
         if (atStart || o.alive() || o.carried) ++teamAlive_[size_t(o.team)];
     }
-    if (atStart) ++teamTotal_[kPlayerTeam];
-    if (atStart || !playerDead()) ++teamAlive_[kPlayerTeam];
-}
-
-int Game::teamCount(int team, bool aliveOnly) const {
-    // DF.EXE 0x440904/0x4409f4 counts the players and every object of a team
-    // in file groups 0 (moving objects), 1 (scenery and props) and 3 (people);
-    // markers (group 2) are not counted.
-    if (team == 0) return 0;
-    int n = team == kPlayerTeam ? 1 : 0;   // the player (cannot be killed yet)
-    for (const auto& o : world_.objects)
-        if (o.team == team && o.missionGroup != 2 && (!aliveOnly || o.alive())) ++n;
-    return n;
+    // Delta Force 2 (GOG Df2.exe 0x404310, called in 0x466ba0 after the
+    // flag-2 events 0x41aeb0 and before the player spawn 0x45c150): the
+    // totals leave the player out and alive is a copy of them; the recount
+    // (0x4043e0) takes the player's organic while it is not destroyed.
+    if (atStart && !world_.df2Rules) ++teamTotal_[kPlayerTeam];
+    if (atStart ? !world_.df2Rules : !playerDead()) ++teamAlive_[kPlayerTeam];
 }
 
 // Delta Force 2 (GOG Df2.exe 0x453510 -> 0x41ac30): a projectile with a
@@ -3441,6 +3453,9 @@ bool Game::teamInArea(int team, const AreaBox& a) const {
         const float ext = terrain_.mapExtent();
         for (const auto& o : world_.objects) {
             if (o.team != team || (o.missionGroup != 0 && o.missionGroup != 3) || o.missionIndex < 0) continue;
+            // Removed (action 4, 0x418ce0 -> 0x45e420 -> 0x418110) zeroes the
+            // record, so its team is 0.
+            if (o.removed && !o.carried) continue;
             // Mission coordinates of the live position: the spawn's plus the
             // wrapped move since.
             const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
@@ -3517,7 +3532,12 @@ void Game::removeTeam(int team) {
 void Game::showText(int id) {
     char key[16];
     std::snprintf(key, sizeof key, "ID%03d", id);
-    if (const std::string* t = campText_.find("Triggered Text", key)) pushMessage(*t);
+    // Delta Force 2 (GOG Df2.exe 0x465cc0 -> 0x464ea0): from the mission's
+    // own table, shown (0x421440) when not empty. 0x464ea0 returns an empty
+    // string while [0x67d3e8] & 0x2000, a bit nothing sets (0x466ba0 zeroes
+    // the word).
+    const TextTable& table = mission_.version >= 0x0F ? df2Text_ : campText_;
+    if (const std::string* t = table.find("Triggered Text", key); t && (mission_.version < 0x0F || !t->empty())) pushMessage(*t);
 }
 
 void Game::radio(int id) {
@@ -3628,7 +3648,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             leaveMissionFlags();
             if (world_.df2Rules) {
                 const MissionOutcome o = outcome();
-                replayed_.push_back({o.won, o.kills});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
+                replayed_.push_back({o.won, o.kills, o.df2Zero});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
             }
             loadMission(current_);
             return;
@@ -8060,20 +8080,22 @@ int Game::run() {
     if (!loadGl(&missing)) { std::fprintf(stderr, "missing OpenGL function %s\n", missing); rc = 1; }
     else if (!models_.init(&err) || !hud_.init(vfs_, &err)) { std::fprintf(stderr, "%s\n", err.c_str()); rc = 1; }
     else {
-        // Delta Force (not DF2) shows df_wait.pcx while the mission loads.
-        loadingScreen_ = !vfs_.exists("DF2.PWF");
+        // Delta Force 2's HUD: its strips and HUD.DEF (Land Warrior and Task
+        // Force Dagger have a HUD.DEF too, with other art); known before the
+        // load, whose loading screen draws in the HUD font.
+        if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
+            df2Hud_.on = df2Hud_.def.parse(def);
+        // GOG Df2.exe 0x41bb90 (through 0x4577a0 / 0x4577f0, 0x41be40 /
+        // 0x41bdf0): plain glyph pixels in the colour, no shadow pass; the
+        // goals' shadow is its own +1,+1 draw (0x448b10).
+        if (df2Hud_.on) hud_.setTextShadow(false);
+        // Both games show a loading screen while the mission loads: Delta
+        // Force df_wait.pcx, Delta Force 2 df2_wait.pcx (GOG Df2.exe 0x465ed0,
+        // a fresh start only: the Space replay, 0x466ba0(1), shows none).
+        loadingScreen_ = true;
         if (!loadMission(int(it - missions_.begin()))) rc = 1;
         loadingScreen_ = false;
     }
-
-    // Delta Force 2's HUD: its strips and HUD.DEF (Land Warrior and Task
-    // Force Dagger have a HUD.DEF too, with other art).
-    if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
-        df2Hud_.on = df2Hud_.def.parse(def);
-    // GOG Df2.exe 0x41bb90 (through 0x4577a0 / 0x4577f0, 0x41be40 /
-    // 0x41bdf0): plain glyph pixels in the colour, no shadow pass; the
-    // goals' shadow is its own +1,+1 draw (0x448b10).
-    if (df2Hud_.on) hud_.setTextShadow(false);
     // GOG Df2.exe 0x466ba0: a fresh mission start (param 0, 0x465322) sets the
     // friendly tags to 1 (names); the Space replay (0x466ad0) keeps them.
     if (df2Hud_.on) friendlyTags_ = 1;
@@ -8822,7 +8844,12 @@ int Game::run() {
                 if (!world_.df2Rules) {
                     script_.tick(*this);
                     if (++teamRecountClock_ > 0x3e) { countTeams(false); teamRecountClock_ = 0; }
-                } else if (missionResult_ < 0) script_.tick(*this);
+                } else if (missionResult_ < 0) {
+                    // GOG Df2.exe 0x45fc50: the events, then every 63 ticks
+                    // the alive recount 0x4043e0 ([0x67ffe8], never reset).
+                    script_.tick(*this);
+                    if (++teamRecountClock_ > 0x3e) { countTeams(false); teamRecountClock_ = 0; }
+                }
             }
             std::vector<std::string> msgs;
             // The listener (0x4735b8): the player, or the external camera once
