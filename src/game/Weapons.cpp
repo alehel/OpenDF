@@ -1063,6 +1063,20 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         b.vel = {0, 0, 0};
         return false;
     };
+    // Delta Force's whiz-by (GOG Df.exe 0x464eb0 -> 0x464e00): sound 0x41 at
+    // the point of the whole step s..next nearest the listener, when it lies
+    // at 0 <= t < the step's length, and the step's start or its end e (the
+    // hit point 0x4000 back on a hit, else next) is within 40 m of the
+    // listener on x, and the start or the end on the other horizontal axis.
+    auto whiz = [&](Vec3 s, Vec3 next, Vec3 e) {
+        const auto near = [](float a, float b, float l) { return std::abs(a - l) < 40.f || std::abs(b - l) < 40.f; };
+        if (!near(s.x, e.x, listener_.x) || !near(s.z, e.z, listener_.z)) return;
+        const Vec3 d = next - s;
+        const float dd = dot(d, d);
+        if (dd <= 0) return;
+        const float t = dot(listener_ - s, d) / dd;
+        if (t >= 0 && t < 1) sounds_.push_back({0x41, s + d * t});
+    };
     for (auto& b : bullets_) {
         if (!df2_ && !b.tracerSet) { b.tracer = df1TracerColour(b, world); b.tracerSet = true; }
         // DF2 penetration (GOG Df2.exe 0x453860): a tick is up to 20 passes
@@ -1338,20 +1352,24 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     stopAt = hit.point - u * (0x4000 / 65536.f);
                     stopped = true;
                 } else {
+                    // Delta Force (GOG Df.exe 0x464eb0): a hitting step goes on
+                    // to the whiz-by test too (LAB_00465273), its end the hit
+                    // point 0x4000 back.
+                    if (!df2_) whiz(b.pos, next, hit.point - dir * 0.25f);
                     b.age = b.lifetime;
                     break;
                 }
             }
-            // Whiz-by (0x44f330): the point of this step nearest the listener,
-            // if it lies inside the step and the round is within 40 m of the
-            // listener on both horizontal axes.
-            {
+            if (df2_) {
+                // Whiz-by (0x44f330): the point of this step nearest the listener,
+                // if it lies inside the step and the round is within 40 m of the
+                // listener on both horizontal axes.
                 const Vec3 d = next - b.pos;
                 const float dd = dot(d, d);
                 const float t = dd > 0 ? dot(listener_ - b.pos, d) / dd : -1;
                 if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
                     sounds_.push_back({0x41, b.pos + d * t});
-            }
+            } else whiz(b.pos, next, next);
             if (!stopped) tracer(b, next);   // the whole step (0x465273)
             b.pos = stopped ? stopAt : next;
             if (!recorded) recordTracer(b, passStart, b.pos, tickStart);
