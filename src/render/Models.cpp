@@ -419,6 +419,10 @@ void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model, bool wea
 
 void ModelRenderer::drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes, int frame) {
     drawBatches(m, lod, model, false, false, 0, frame, &meshes);
+    if (defer_) {
+        deferred_.push_back({&m, lod, model, false, 0, frame, true, meshes, {tint_[0], tint_[1], tint_[2], tint_[3]}, tintReplace_, tintRaw_});
+        return;
+    }
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
@@ -428,19 +432,42 @@ void ModelRenderer::drawPosed(const GpuModel& m, int lod, const Mat4& model, con
 }
 
 void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame) {
+    if (defer_) {
+        deferred_.push_back({&m, lod, model, weapon, flash, frame, false, {}, {tint_[0], tint_[1], tint_[2], tint_[3]}, tintReplace_, tintRaw_});
+        return;
+    }
+    drawTranslucentNow(m, lod, model, weapon, flash, frame, nullptr);
+}
+
+void ModelRenderer::drawTranslucentNow(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame,
+                                       const std::vector<Mat4>* meshes) {
     // Translucent faces test depth but do not write it, in submission order.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-1.f, -4.f);
-    drawBatches(m, lod, model, true, weapon, flash, frame);
+    if (!meshes) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-1.f, -4.f);
+    }
+    drawBatches(m, lod, model, true, weapon, flash, frame, meshes);
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 }
 
+void ModelRenderer::drawDeferred() {
+    for (const auto& d : deferred_) {
+        setTint(d.tint[0], d.tint[1], d.tint[2], d.tint[3], d.replace, d.raw);
+        drawTranslucentNow(*d.m, d.lod, d.model, d.weapon, d.flash, d.frame, d.posed ? &d.meshes : nullptr);
+    }
+    deferred_.clear();
+    setTint(1, 1, 1, 1);
+}
+
 void ModelRenderer::setTint(float r, float g, float b, float a, bool replace, bool raw) {
+    tint_[0] = r; tint_[1] = g; tint_[2] = b; tint_[3] = a;
+    tintReplace_ = replace;
+    tintRaw_ = raw;
     glUniform4f(glGetUniformLocation(prog_, "uTint"), r, g, b, a);
     glUniform1i(glGetUniformLocation(prog_, "uOverride"), replace ? 1 : 0);
     glUniform1i(glGetUniformLocation(prog_, "uTintRaw"), raw ? 1 : 0);

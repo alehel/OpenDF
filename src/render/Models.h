@@ -91,6 +91,13 @@ public:
     // 0x481344..0x481356).
     void drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes, int frame = 0);
     void drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon = false, int flash = 0, int frame = 0);
+    // Delta Force's deferred faces (GOG Df.exe 0x46b1d0 queues blended faces,
+    // flags & 0x700; 0x485610 draws them after the water, 0x46bf60 /
+    // 0x46bf10): while on, the translucent halves of draw calls are recorded
+    // (with the tint) instead of drawn; drawDeferred() draws and forgets them
+    // (between begin and end).
+    void setDeferTranslucent(bool on) { defer_ = on; }
+    void drawDeferred();
     void end();
     // Multiplies the colour and alpha of what is drawn next; `replace`: the
     // colour instead replaces the material colour of texel-as-alpha parts
@@ -115,6 +122,16 @@ private:
     GLint locModel_ = -1, locColor_ = -1, locTextured_ = -1, locMode_ = -1, locSpec_ = -1, locSpecPow_ = -1,
           locBright_ = -1, locKey_ = -1, locGradeTexel_ = -1, locRoot_ = -1, locPose_ = -1, locPoseCount_ = -1;
     bool grade_ = false;   // begin(): the scene has a TRN grade
+    bool defer_ = false;
+    float tint_[4] = {1, 1, 1, 1};
+    bool tintReplace_ = false, tintRaw_ = false;
+    struct Deferred {
+        const GpuModel* m; int lod; Mat4 model; bool weapon; int flash, frame;
+        bool posed; std::vector<Mat4> meshes; float tint[4]; bool replace, raw;
+    };
+    std::vector<Deferred> deferred_;
+    void drawTranslucentNow(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame,
+                            const std::vector<Mat4>* meshes);
     static constexpr int kMaxPoses = 32;   // uPose[] in the vertex shader
     std::map<std::string, std::unique_ptr<GpuModel>> cache_;
     std::map<std::string, std::string> failed_;

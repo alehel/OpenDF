@@ -236,11 +236,12 @@ uniform vec3 uEye;
 uniform float uLevel, uExtent;
 uniform mat4 uViewProj;
 uniform bool uBelow;
+uniform float uQuadDepth;   // the full-screen quad's NDC z
 out vec3 vWorld;
 void main() {
     vWorld = vec3(uEye.x + aPos.x * uExtent, uLevel, uEye.z + aPos.y * uExtent);
     // Under water: the whole view (a full-screen quad).
-    gl_Position = uBelow ? vec4(aPos, 0.0, 1.0) : uViewProj * vec4(vWorld, 1.0);
+    gl_Position = uBelow ? vec4(aPos, uQuadDepth, 1.0) : uViewProj * vec4(vWorld, 1.0);
 }
 )";
 
@@ -254,7 +255,8 @@ const char* kWaterFS = R"(#version 330 core
 in vec3 vWorld;
 uniform sampler2D uWaterIdx, uGradient, uScene;
 uniform vec4 uViewport;     // x, y, w, h of the 3D view
-uniform float uOpacity, uPhase;
+uniform float uOpacity, uPhase, uMaxDepth;   // uMaxDepth: the surface seen from below, view depth limit
+uniform vec3 uEye, uFwd;
 uniform bool uBelow, uDf2, uTint;
 uniform vec3 uWaterColor;
 out vec4 oColor;
@@ -275,6 +277,7 @@ void main() {
     vec3 under = texture(uScene, (gl_FragCoord.xy - uViewport.xy) / uViewport.zw).rgb * 255.0;
     float lum = floor((under.r + 2.0 * under.g + under.b) / 4.0);
     float r = 0.0;
+    if (uMaxDepth > 0.0 && dot(vWorld - uEye, uFwd) > uMaxDepth) discard;
     if (!uBelow) {
         vec2 t = vWorld.xz * 16.0;                                // texels
         float iu = mod(t.x * 4.0 + uPhase, 1024.0), iv = mod(t.y * 4.0 + uPhase, 1024.0);
@@ -931,10 +934,22 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         glBindVertexArray(0);
         return;
     }
-    // Under water the tint covers the whole view: once, in the near pass.
-    if (eye.y < level && pass == Pass::Far) return;
-    glUseProgram(progWater_);
-    glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
+    // Under water nothing here: drawUnderwater() after the objects
+    // (GOG Df.exe 0x48d570, called near the end of 0x485610).
+    if (eye.y <= level) return;
+    df1WaterSetup(eye, ticks);
+    // The surface out to 1023 m, only where it is in front (depth test).
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
+    setM4(progWater_, "uViewProj", proj * view);
+    setF(progWater_, "uLevel", level);
+    setF(progWater_, "uExtent", 1023.f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDepthMask(GL_TRUE);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void Terrain::df1WaterSetup(Vec3 eye, float phaseTicks) {
     // What is already drawn: copied so the water can read its luminance.
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
@@ -947,14 +962,12 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     glActiveTexture(GL_TEXTURE0 + 2);
     glBindTexture(GL_TEXTURE_2D, texScene_);
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
-
     glUseProgram(progWater_);
-    const bool below = eye.y < level;
+    glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
     glUniform4f(glGetUniformLocation(progWater_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
     setF(progWater_, "uOpacity", desc_.waterOpacity);
     // Phase: tick << 23 in table units of 2^22 -> 2 entries per tick.
-    setF(progWater_, "uPhase", std::fmod(ticks * 2.f, 1024.f));
-    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), below);
+    setF(progWater_, "uPhase", std::fmod(phaseTicks * 2.f, 1024.f));
     setV3(progWater_, "uEye", eye);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texWater_);
@@ -962,22 +975,61 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     glBindTexture(GL_TEXTURE_2D, texWaterGrad_);
     glBindVertexArray(waterVao_);
     glDepthMask(GL_FALSE);
-    if (below) {
-        // Under water: everything is tinted through row 0 (0x43c500).
-        glDisable(GL_DEPTH_TEST);
-        setM4(progWater_, "uViewProj", Mat4{});
-        setF(progWater_, "uLevel", 0.f);
-        setF(progWater_, "uExtent", 1.f);
-        setV3(progWater_, "uEye", {0, 0, 0});
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glEnable(GL_DEPTH_TEST);
-    } else {
-        // The surface out to 1023 m, only where it is in front (depth test).
-        setM4(progWater_, "uViewProj", proj * view);
-        setF(progWater_, "uLevel", level);
-        setF(progWater_, "uExtent", 1023.f);
+}
+
+bool Terrain::df1UnderWater(Vec3 eye) const { return !gen2_ && hasWater_ && eye.y <= waterLevel(); }
+
+void Terrain::drawUnderwater(const Mat4& view, const Mat4& projNear, const Mat4& projFar, Vec3 eye, float phaseTicks) {
+    // GOG Df.exe 0x48d570 (view z <= the water level): every pixel through
+    // the water table with r = 0 (0x43c500), except where the surface is in
+    // front: there the ripple texel as above water, mapped from below with
+    // the phase of the 20 Hz timer ([0x491014] << 0x17), out to 1023 m of
+    // view depth (0x3feffff). Both read the colours as drawn before it.
+    if (!df1UnderWater(eye)) return;
+    df1WaterSetup(eye, phaseTicks);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
+    setM4(progWater_, "uViewProj", Mat4{});
+    setF(progWater_, "uLevel", 0.f);
+    setF(progWater_, "uExtent", 1.f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glEnable(GL_DEPTH_TEST);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
+    setV3(progWater_, "uEye", eye);
+    setF(progWater_, "uLevel", waterLevel());
+    setF(progWater_, "uExtent", 1023.f);
+    setF(progWater_, "uMaxDepth", 1023.f);
+    setV3(progWater_, "uFwd", Vec3{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)});
+    // The caller's two depth ranges (far 0.5..1, near 0..0.5).
+    for (int range = 0; range < 2; ++range) {
+        glDepthRange(range ? 0.0 : 0.5, range ? 0.5 : 1.0);
+        setM4(progWater_, "uViewProj", (range ? projNear : projFar) * view);
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
+    glDepthRange(0.0, 1.0);
+    setF(progWater_, "uMaxDepth", 0.f);
+    glDepthMask(GL_TRUE);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void Terrain::tintUnderwaterOver(Vec3 eye) {
+    // (OpenDF) What was drawn after drawUnderwater() with depth cleared first
+    // (the first-person weapon): GOG Df.exe draws the gun before 0x48d570,
+    // so it is tinted with r = 0 too. Only where depth was written since.
+    if (!df1UnderWater(eye)) return;
+    df1WaterSetup(eye, 0.f);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
+    glUniform1f(glGetUniformLocation(progWater_, "uQuadDepth"), 0.99999f);
+    setM4(progWater_, "uViewProj", Mat4{});
+    setF(progWater_, "uLevel", 0.f);
+    setF(progWater_, "uExtent", 1.f);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_GREATER);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDepthFunc(GL_LESS);
+    glUniform1f(glGetUniformLocation(progWater_, "uQuadDepth"), 0.f);
     glDepthMask(GL_TRUE);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);

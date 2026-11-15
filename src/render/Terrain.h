@@ -63,6 +63,13 @@ public:
     int surfaceAt(float x, float z) const;
     // Water, after everything else is drawn (DF.EXE 0x43bfd8); `ticks` drives the waves.
     void drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks);
+    // Delta Force under water (GOG Df.exe 0x48d570, the camera at or below
+    // the level): after the objects and the translucent faces, over both of
+    // the caller's depth ranges; `phaseTicks` the 20 Hz timer.
+    void drawUnderwater(const Mat4& view, const Mat4& projNear, const Mat4& projFar, Vec3 eye, float phaseTicks);
+    // The same r = 0 tint over what was drawn since with depth (the gun).
+    void tintUnderwaterOver(Vec3 eye);
+    bool df1UnderWater(Vec3 eye) const;
     float saturationFactor() const { return gen2_ ? desc_.saturation / 128.f : 1.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
@@ -120,6 +127,7 @@ public:
 private:
     struct Mesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
     void buildMeshes();
+    void df1WaterSetup(Vec3 eye, float phaseTicks);   // scene copy, program and textures for the DF1 water
     void release();
     Mesh makeGrid(int resolution);
 

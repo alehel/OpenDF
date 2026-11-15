@@ -3074,6 +3074,10 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
         glDepthRange(pass ? 0.0 : 0.5, pass ? 0.5 : 1.0);
         drawWeather(view, pass ? projNear : projFar, eye);
     }
+    // Delta Force under water (GOG Df.exe 0x48d570, before the tracers in
+    // 0x485610): the r = 0 tint and the surface overhead; the phase runs on
+    // the 20 Hz timer (OpenDF: game ticks / 3).
+    if (!world_.df2Rules) terrain_.drawUnderwater(view, projNear, projFar, eye, float(ticks_ / 3));
     // Delta Force's round tracers, the last of the 3D view (GOG Df.exe
     // 0x485731 -> 0x4634d0).
     arsenal_.tracers().age(ticks_, paused_);
@@ -3103,6 +3107,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     const Vec3 fwd = viewDir();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
+    models_.setDeferTranslucent(!world_.df2Rules);   // drawn after the water below
     struct Visible { const WorldObject* o; Vec3 at; int lod; };
     std::vector<Visible> visible;
     // Delta Force 2 (GOG Df2.exe 0x4501b0, for people, objects and the
@@ -3448,6 +3453,15 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
+    // Delta Force: the blended faces after the water (GOG Df.exe 0x485610:
+    // 0x48d040 water, then 0x46bf60 / 0x46bf10), so the water does not
+    // tint them.
+    if (!world_.df2Rules) {
+        models_.begin(proj * view, light);
+        models_.setDeferTranslucent(false);
+        models_.drawDeferred();
+        models_.end();
+    }
     // DF2's tracers, after the scene (GOG Df2.exe 0x44f8d0 -> 0x452610).
     if (world_.df2Rules) {
         arsenal_.ageTracers(ticks_);
@@ -7015,7 +7029,13 @@ int Game::run() {
                     glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
                     drawViewModel(s);
                 } else {
+                    // Under water GOG Df.exe draws the gun (0x483f30) before
+                    // the tint (0x48d570): tint what the gun drew (only
+                    // there is depth written after this clear).
+                    const bool underWater = terrain_.df1UnderWater(viewEye());
+                    if (underWater) glClear(GL_DEPTH_BUFFER_BIT);
                     drawViewModel(s);
+                    if (underWater) terrain_.tintUnderwaterOver(viewEye());
                     drawZoomInset(s, view, fovY);
                 }
                 glViewport(0, 0, dw, dh);
