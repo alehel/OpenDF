@@ -57,6 +57,10 @@ public:
 
     bool exists(const std::string& name) const;
     bool read(const std::string& name, std::vector<uint8_t>& out);
+    // A file on disk read under `name` before the archives (Delta Force 2's
+    // own missions saved by Df2med.exe in the game folder, listed by the
+    // Quick Missions page); list() names it too.
+    void addLoose(const std::string& name, const std::filesystem::path& file);
 
     // All file names with the given extension (e.g. ".TRN"), sorted.
     std::vector<std::string> list(const std::string& extension = "") const;
@@ -67,6 +71,7 @@ private:
     std::vector<std::unique_ptr<PffArchive>> archives_;
     std::unordered_map<std::string, Ref> index_;
     bool firstWins_ = false;   // DF.EXE's lookup order (GOG 0x48fd00)
+    std::unordered_map<std::string, std::filesystem::path> loose_;
 };
 
 std::string toUpper(std::string s);

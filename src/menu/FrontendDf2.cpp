@@ -458,6 +458,18 @@ private:
     void ownerDraw(D2Button& b);
     void event(D2Button& b, int ev);
     void key(const SDL_KeyboardEvent& k);
+    // GOG Df2.exe 0x433f20, the menus' mouse handler: ev 1 move, 2 / 4 left
+    // down / up, 8 / 0x10 right, 0x20 / 0x40 middle (0x4799e0).
+    void mouseEvent(int ev);
+    void buttonEvent(int ev, D2Button& b);   // 0x433ec0: by type
+    void pushEvent(int ev, D2Button& b);     // 0x433a30
+    void sliderEvent(int ev, D2Button& b);   // 0x433d10 / 0x433b60
+    void commitEdit();                       // 0x433330
+    void cancelEdit();                       // 0x433370
+    // GOG Df2.exe 0x4333c0: during a page's entry stage the key queue
+    // (0x4798e0) is not read; what was typed is handled once it ends.
+    std::deque<SDL_Event> pendingKeys_;
+    void textInput(const SDL_TextInputEvent& t);
 
     // Data.
     void loadSoldiers();
@@ -638,6 +650,13 @@ private:
     void campaignTick();
     bool fromCampaign_ = true;
     std::vector<std::string> quick_;   // quick missions (D06*)
+    // GOG Df2.exe 0x442960's list (0x4f49b0, 0x44 bytes each): a mission
+    // file of the game folder has flag 1 (+0x40), its file name as title
+    // and the briefing of its header (+0x108, read by 0x404530).
+    std::vector<bool> quickLoose_;
+    std::vector<std::string> quickFile_, quickBrief_;
+    bool bmsLoose_ = false;            // [0x4f39f0]: the chosen mission is such a file
+    std::string bmsBrief_;
     int quickTop_ = 0, quickSel_ = -1;
     std::string bms_;                 // the chosen mission
     std::string helpText_;
@@ -1411,11 +1430,15 @@ D2Button* FrontendDf2::hit(int x, int y) {
 }
 
 // 0x43d4c0: the default drawing (skipped for C or state 0), then a G
-// button's owner draw (event 7) on top of it.
+// button's owner draw (event 7) on top of it. GOG Df2.exe 0x443760 (its
+// end): while the page waits to close (stage 2, [0x4f2054]) the owner draws
+// get event 0xC instead, which only mm_Rect (0x43afc0) draws on; the others
+// (mb_TextBrief 0x43d120, mb_Map 0x43d250, opt4_Explain 0x4409b0,
+// ca_DrawRegion 0x434ae0, ...) draw on 7 alone.
 void FrontendDf2::drawButton(D2Button& b) {
     if (b.drawstate == 0) return;
     if (!(b.attrib & 4)) drawDefault(b);
-    if (b.attrib & 0x40) ownerDraw(b);
+    if ((b.attrib & 0x40) && (!leaving_ || b.callback == "mm_Rect")) ownerDraw(b);
 }
 
 void FrontendDf2::drawDefault(D2Button& b) {
@@ -1425,15 +1448,30 @@ void FrontendDf2::drawDefault(D2Button& b) {
         const float fh = float(im.height / frames);
         if (b.type == 1) {
             int f = std::clamp(b.drawstate - 1, 0, frames - 1);
-            if (b.selected || b.flash > 0) f = std::min(2, frames - 1);
+            // GOG Df2.exe 0x443760: a hot key's flash (+0xa0) counts down
+            // once in the image branch and once more in the text branch,
+            // per draw (the image shows it two draws, the text one).
+            if (b.selected || b.flash > 0) {
+                if (b.flash > 0) --b.flash;
+                f = std::min(2, frames - 1);
+            }
             blit(im, float(b.x), float(b.y), 0, fh * float(f), float(im.width), fh);
         } else if (b.type == 4) {
             blit(im, float(b.x), float(b.y), 0, fh * float(std::clamp(b.p2, 0, frames - 1)), float(im.width), fh);
         } else if (b.type == 2 || b.type == 3) {
             // 0x43d8a0 / 0x43d919: a disabled slider is not drawn.
             if (b.drawstate == 4) return;
-            const float pos = b.p1 > 0 ? float(b.p2) * float(b.p3) / float(b.p1) : 0;
-            blit(im, float(b.x) + (b.type == 2 ? pos : 0), float(b.y) + (b.type == 3 ? pos : 0), 0, 0, float(im.width), fh);
+            // GOG Df2.exe 0x443be2 (type 2) / 0x443b70 (type 3): r = range /
+            // length (+0x74 / +0x78, the track p3), 1 when 0; the knob at
+            // trunc(value / r) (value · r when r < 0), kept within
+            // [0, length - knob width / height].
+            const bool across = b.type == 2;
+            const int len = across ? b.w : b.h;
+            double r = double(b.p1) / double(len ? len : 1);
+            if (r == 0) r = 1;
+            int pos = int(r < 0 ? double(b.p2) * r : double(b.p2) / r);
+            pos = std::max(0, std::min(pos, len - (across ? im.width : im.height)));
+            blit(im, float(b.x + (across ? pos : 0)), float(b.y + (across ? 0 : pos)), 0, 0, float(im.width), fh);
         }
         // 0x43d98e: other types draw no image, only their text.
     }
@@ -1472,6 +1510,7 @@ void FrontendDf2::drawDefault(D2Button& b) {
     // 0x43d5d2 (push buttons): lit in state 2 or while selected / flashing,
     // disabled in state 4.
     const bool lit = b.selected || b.flash > 0;
+    if (b.flash > 0) --b.flash;   // 0x443760: the text branch's count-down
     const uint32_t c = b.drawstate == 4 ? df.fg[2] : (lit || b.drawstate == 2) ? df.fg[1] : df.fg[0];
     // 0x43d653: the box starts as (x, y)-(x, y + h): F/H/E/D only set the
     // justification (4 / 2 / 1); their box sizes are all overwritten below by
@@ -1626,43 +1665,70 @@ void FrontendDf2::ownerDraw(D2Button& b) {
         if (region >= 0 && region < 5) {
             const HudImage im = image(kRegionImage[region]);
             blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height));
-            // Titles of the available missions under their dots (LCD10N; LCD10S selected).
+            // GOG Df2.exe 0x434b52: every mission whose dot is drawn
+            // (drawstate != 0) gets its TITLE under it, measured in LCD10N,
+            // centred on the dot ((w >> 1) - (textW >> 1)), not left of the
+            // picture's x, moved left while its end passes user1; at
+            // dot y + h + 4, LCD10S for the selected mission ([0x4c3f70]).
             for (int i = 0; i < 28; ++i) {
-                if (kMissions[i].region != region || kMissions[i].campaign != campaign_ || !missionOpen(i)) continue;
                 char name[16];
                 std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
                 const D2Button* dot = btn(name);
                 const std::string* t = briefText_.find("TITLE", kMissions[i].bms);
-                if (!dot || !t) continue;
+                if (!dot || dot->drawstate == 0 || !t) continue;
                 const std::string title = t->substr(0, t->find('\r'));
-                const float w = textWidth("LCD10N", title);
-                const float x = std::clamp(float(dot->x + dot->w / 2) - w / 2, float(b.x + 2), float(b.user1) - w - 2);
-                text(i == missionSel_ ? "LCD10S" : "LCD10N", x, float(dot->y + dot->h + 1), title,
-                     mnu_.fonts[i == missionSel_ ? "LCD10S" : "LCD10N"].fg[0]);
+                const int w = int(textWidth("LCD10N", title));
+                int x = dot->x + (dot->w >> 1) - (w >> 1);
+                if (x < b.x) x = b.x;
+                while (x + w > b.user1) --x;
+                const char* f = i == missionSel_ ? "LCD10S" : "LCD10N";
+                text(f, float(x), float(dot->y + dot->h + 4), title, mnu_.fonts[f].fg[0]);
             }
         }
-    } else if (cb == "ca_CampaignBrief") {
-        std::string key = campaign_ == 1 ? "C03" : "C05";
-        if (missionSel_ >= 0) key = kMissions[missionSel_].bms;
-        if (const std::string* t = briefText_.find("CABRIEF", key))
-            wrapped("LCD10S", float(b.x), float(b.y), float(b.user1), float(b.user2), *t, mnu_.fonts["LCD10S"].fg[0]);
-    } else if (cb == "qm_Brief") {
-        if (quickSel_ >= 0 && quickSel_ < int(quick_.size()))
-            if (const std::string* t = briefText_.find("QMBRIEF", quick_[size_t(quickSel_)]))
-                wrapped("LCD10S", float(b.x), float(b.y), float(b.user1), float(b.user2), *t, mnu_.fonts["LCD10S"].fg[0]);
+    } else if (cb == "ca_CampaignBrief" || cb == "qm_Brief") {
+        // GOG Df2.exe 0x434d90 / 0x442cc0, event 7, not in drawstate 0: the
+        // mm_Rect border (0x43afc0), then the text in the button's font,
+        // coloured by state, through 0x41c0e0(x + 5, y + 3, w - 5, h - 2)
+        // for the campaign and (x + 5, y + 5, w - 8, h - 5) for quick
+        // missions (w = user1 - x, h = user2 - y).
+        if (b.drawstate == 0) return;
+        const std::string* t = nullptr;
+        if (cb == "ca_CampaignBrief") {
+            std::string key = campaign_ == 1 ? "C03" : "C05";
+            if (missionSel_ >= 0) key = kMissions[missionSel_].bms;
+            t = briefText_.find("CABRIEF", key);
+        } else if (quickSel_ >= 0 && quickSel_ < int(quick_.size())) {
+            // 0x442ad0: QMBRIEF by the first six letters, or a mission
+            // file's own briefing.
+            t = quickLoose_[size_t(quickSel_)] ? &quickBrief_[size_t(quickSel_)]
+                                               : briefText_.find("QMBRIEF", quick_[size_t(quickSel_)].substr(0, 6));
+        }
+        rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), b.drawstate == 4 ? 0x844030 : 0xCA4409);
+        auto fi = mnu_.fonts.find(b.font);
+        const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
+        const bool ca = cb == "ca_CampaignBrief";
+        const int x = b.x + 5, y = b.y + (ca ? 3 : 5), w = b.user1 - b.x - (ca ? 5 : 8), h = b.user2 - b.y - (ca ? 2 : 5);
+        if (t)
+            wrapped(b.font, float(x), float(y), float(x + w), float(y + h), *t,
+                    b.drawstate == 4 ? df.fg[2] : b.drawstate == 2 ? df.fg[1] : df.fg[0]);
     } else if (cb == "qm_SelMis") {
+        // GOG Df2.exe 0x442780, event 7, not in drawstate 0: frame 2 when
+        // selected (+0x98), else drawstate - 1; then the whole TITLE wrapped
+        // in the button's font (FRK12N) by 0x41c0e0(x + 5, y + 5, w - 5,
+        // h - 5), fg[2] disabled, fg[1] hovered or selected, else fg[0].
         const int i = quickTop_ + b.user1;
-        if (i < int(quick_.size())) {
+        if (i < int(quick_.size()) && b.drawstate != 0) {
+            const bool sel = i == quickSel_;
             const HudImage im = image(b.image);
             const float fh = float(im.height / 4);
-            blit(im, float(b.x), float(b.y), 0, fh * float(i == quickSel_ ? 2 : b.drawstate == 2 ? 1 : 0), float(im.width), fh);
-            const std::string* t = briefText_.find("TITLE", quick_[size_t(i)]);
-            std::string title = t ? *t : quick_[size_t(i)];
-            const size_t br = title.find('\r');
-            const std::string l1 = title.substr(0, br), l2 = br == std::string::npos ? "" : title.substr(title.find('\n', br) + 1);
-            const uint32_t c = mnu_.fonts["FRK12N"].fg[i == quickSel_ ? 1 : 0];
-            text("FRK12N", float(b.x + 6), float(b.y + 4), l1, c);
-            text("FRK11N", float(b.x + 6), float(b.y + 20), l2, mnu_.fonts["FRK11N"].fg[0]);
+            blit(im, float(b.x), float(b.y), 0, fh * float(sel ? 2 : std::clamp(b.drawstate - 1, 0, 3)), float(im.width), fh);
+            // 0x442ad0: TITLE by the first six letters, or the file name.
+            const std::string* t = quickLoose_[size_t(i)] ? &quickFile_[size_t(i)] : briefText_.find("TITLE", quick_[size_t(i)].substr(0, 6));
+            const std::string title = t ? *t : quick_[size_t(i)];
+            auto fi = mnu_.fonts.find(b.font);
+            const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
+            const uint32_t c = b.drawstate == 4 ? df.fg[2] : (b.drawstate == 2 || sel) ? df.fg[1] : df.fg[0];
+            wrapped(b.font, float(b.x + 5), float(b.y + 5), float(b.x + 5 + b.w - 5), float(b.y + 5 + b.h - 5), title, c);
         }
     } else if (cb == "mb_TextBrief") {
         // GOG Df2.exe 0x43d120, event 7, not in drawstate 0: the border
@@ -1747,14 +1813,22 @@ void FrontendDf2::refreshSoldier() {
             b->selected = i == current_;
         }
     }
+    // GOG Df2.exe 0x436c30: "%s: %s" / "%s: %d" (0x4b0470 / 0x4c4e34),
+    // MENU label and value; an empty slot (no name, record +4) shows none
+    // of the six. 0x436f30: ACCEPT SOLDIER is disabled (drawstate 4) for an
+    // empty slot, else drawstate 1.
     const Soldier& s = soldier();
     auto set = [&](const char* name, const std::string& t) { if (D2Button* b = btn(name)) b->text = t; };
-    set("but_cs_ontxt", menuText("OPERATIVE_NAME", "Operative Name:") + " " + s.name());
-    set("but_cs_cktxt", menuText("CAMPAIGN_KILLS", "Campaign Kills:") + " " + std::to_string(s.get(0x29c)));
-    set("but_cs_cmtxt", menuText("COMPLETED_MISSIONS", "Completed Missions:") + " " + std::to_string(s.get(0x2a4)));
-    set("but_cs_mktxt", menuText("MULTIPLAYER_KILLS", "Multiplayer Kills:") + " " + std::to_string(s.get(0x280)));
-    set("but_cs_mdtxt", menuText("MULTIPLAYER_DEATHS", "Multiplayer Deaths:") + " " + std::to_string(s.get(0x288)));
-    set("but_cs_mwtxt", menuText("TEAM_GAMES_WON", "Team Games Won:") + " " + std::to_string(s.get(0x294)));
+    auto stat = [&](const char* name, const char* key, const std::string& v) {
+        set(name, s.empty() ? std::string() : menuText(key, ("??" + std::string(key) + "??").c_str()) + ": " + v);
+    };
+    stat("but_cs_ontxt", "OPERATIVE_NAME", s.name());
+    stat("but_cs_cktxt", "CAMPAIGN_KILLS", std::to_string(s.get(0x29c)));
+    stat("but_cs_cmtxt", "COMPLETED_MISSIONS", std::to_string(s.get(0x2a4)));
+    stat("but_cs_mktxt", "MULTIPLAYER_KILLS", std::to_string(s.get(0x280)));
+    stat("but_cs_mdtxt", "MULTIPLAYER_DEATHS", std::to_string(s.get(0x288)));
+    stat("but_cs_mwtxt", "MULTIPLAYER_TEAM_GAMES_WON", std::to_string(s.get(0x294)));
+    if (D2Button* b = btn("but_cs_mmtxt")) b->drawstate = s.empty() ? 4 : 1;
     char img[24];
     std::snprintf(img, sizeof img, "IMAGEFACE%02d", std::clamp(s.get(0x278), 0, 14) + 1);
     if (D2Button* b = btn("but_cs_fcimg")) b->image = img;
@@ -1871,10 +1945,49 @@ void FrontendDf2::refreshCampaign() {
 
 void FrontendDf2::refreshQuick() {
     // The D06*.BMS missions in the archives (0x43c190).
+    // GOG Df2.exe 0x442960: first the *.bms files of the game folder
+    // (FindFirstFile, the current folder), then the archive's D06*.BMS; each
+    // kept only when its header's +0x78 & 0xFE800000 is 0 (a header that is
+    // not "BMS" version 15 reads as zeroes, 0x404530 / 0x4044a0).
     quick_.clear();
+    quickLoose_.clear();
+    quickFile_.clear();
+    quickBrief_.clear();
+    {
+        std::vector<std::filesystem::path> files;
+        std::error_code ec;
+        for (auto& e : std::filesystem::directory_iterator(saveDir_, ec)) {
+            const std::string ext = upper(e.path().extension().string());
+            if (ext == ".BMS" && e.is_regular_file(ec)) files.push_back(e.path());
+        }
+        std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return upper(a.filename().string()) < upper(b.filename().string()); });
+        for (const auto& f : files) {
+            std::array<char, 0x208> h{};
+            std::ifstream in(f, std::ios::binary);
+            in.read(h.data(), std::streamsize(h.size()));
+            if (in.gcount() != std::streamsize(h.size()) || std::memcmp(h.data(), "BMS\x0f", 4) != 0) h.fill(0);
+            uint32_t flags;
+            std::memcpy(&flags, &h[0x78], 4);
+            if (flags & 0xFE800000u) continue;
+            const std::string name = upper(f.stem().string());
+            vfs_.addLoose(name + ".BMS", f);
+            quick_.push_back(name);
+            quickLoose_.push_back(true);
+            quickFile_.push_back(f.filename().string());
+            quickBrief_.push_back(std::string(&h[0x108], strnlen(&h[0x108], 0x100)));
+        }
+    }
+    std::vector<std::string> pff;
     for (const auto& n : vfs_.list(".BMS"))
-        if (n.size() >= 3 && upper(n).compare(0, 3, "D06") == 0) quick_.push_back(upper(n.substr(0, n.size() - 4)));
-    std::sort(quick_.begin(), quick_.end());
+        if (n.size() >= 3 && upper(n).compare(0, 3, "D06") == 0) pff.push_back(upper(n.substr(0, n.size() - 4)));
+    std::sort(pff.begin(), pff.end());
+    for (const std::string& n : pff) {
+        if (header(n, 0x78) & 0xFE800000u) continue;
+        quick_.push_back(n);
+        quickLoose_.push_back(false);
+        quickFile_.emplace_back();
+        quickBrief_.emplace_back();
+    }
     if (D2Button* b = btn("but_qm_mbtxt")) b->drawstate = quickSel_ >= 0 ? 1 : 4;
     if (D2Button* b = btn("but_qm_map")) {
         b->image = "IMAGEMAP1";
@@ -1884,7 +1997,8 @@ void FrontendDf2::refreshQuick() {
         }
         layout(*b);
     }
-    if (D2Button* b = btn("but_qm_vsl")) { b->p1 = std::max(1, int(quick_.size()) - 8); b->p2 = quickTop_; }
+    // 0x442960: the list slider's range is n - 8 from 9 missions on, else 0.
+    if (D2Button* b = btn("but_qm_vsl")) { b->p1 = quick_.size() < 9 ? 0 : int(quick_.size()) - 8; b->p2 = quickTop_; }
 }
 
 void FrontendDf2::loadBriefing() {
@@ -1893,7 +2007,9 @@ void FrontendDf2::loadBriefing() {
     // of lines it breaks into (0x41bf70 at the text's width user1 - x - 10)
     // less the 25 the box shows, at least 0, and its value 0.
     if (D2Button* t = btn("but_mb_mbrct")) {
-        const std::string* brief = briefText_.find("MBBRIEF", bms_.substr(0, std::min<size_t>(6, bms_.size())));
+        // A mission file of the game folder ([0x4f39f0]) has its own
+        // briefing (header +0x108, 0x404530).
+        const std::string* brief = bmsLoose_ ? &bmsBrief_ : briefText_.find("MBBRIEF", bms_.substr(0, std::min<size_t>(6, bms_.size())));
         t->text = brief ? *brief : std::string();
         if (D2Button* sl = btn("but_mb_brvsl")) {
             sl->p1 = std::max(0, breakLines(t->font, t->user1 - t->x - 10, t->text) - 25);
@@ -1990,12 +2106,12 @@ void FrontendDf2::refreshGear() {
         if (D2Button* b = btn(p.rnd)) {
             b->text.clear();
             if (g && g->rounds > 0)
-                b->text = menuText("MAGAZINE", "Magazine:") + " " + std::to_string(g->rounds) + " " +
+                b->text = menuText("MAGAZINE", "Magazine") + ": " + std::to_string(g->rounds) + " " +
                           (g->rounds == 1 ? menuText("ROUND", "Round") : menuText("ROUNDS", "Rounds"));
         }
         if (D2Button* b = btn(p.rng)) {
             b->text.clear();
-            if (g && g->range > 0) b->text = menuText("RANGE", "Range:") + " " + std::to_string(g->range) + " " + menuText("METERS", "Meters");
+            if (g && g->range > 0) b->text = menuText("RANGE", "Range") + ": " + std::to_string(g->range) + " " + menuText("METERS", "Meters");
         }
     }
     if (D2Button* b = btn("but_cg_gntxt"))
@@ -2017,7 +2133,7 @@ void FrontendDf2::gearStep(size_t slot, int category, int dir, int altCategory) 
 void FrontendDf2::refreshOptions() {
     auto set = [&](const char* name, const std::string& t) { if (D2Button* b = btn(name)) b->text = t; };
     if (screen_ == Screen::Options1) {
-        if (D2Button* b = btn("but_opt1_mssl")) { b->p1 = 512; b->p2 = soldier().get(0x5b0); b->p3 = 260; }
+        if (D2Button* b = btn("but_opt1_mssl")) { b->p1 = 512; b->p2 = soldier().get(0x5b0); }
         // GOG Df2.exe 0x43e683 / 0x43ec70: SCOPE SENSITIVITY 0..0x180, the
         // soldier's +0x5d8.
         if (D2Button* b = btn("but_opt1_sshsl")) { b->p1 = 0x180; b->p2 = soldier().get(0x5d8); }
@@ -2029,9 +2145,9 @@ void FrontendDf2::refreshOptions() {
         std::snprintf(res, sizeof res, "%dx%d", dw, dh);
         set("but_opt1_rstxt", res);
         set("but_opt1_tutxt", cfg_.get("turbo") ? menuText("YES", "YES") : menuText("NO", "NO"));
-        if (D2Button* b = btn("but_opt1_sfsl")) { b->p1 = 256; b->p2 = soldier().get(0x5b8); b->p3 = 260; }
-        if (D2Button* b = btn("but_opt1_mvsl")) { b->p1 = 256; b->p2 = cfg_.get("music_volume"); b->p3 = 260; }
-        if (D2Button* b = btn("but_opt1_dvsl")) { b->p1 = 256; b->p2 = soldier().get(0x5c0); b->p3 = 260; }
+        if (D2Button* b = btn("but_opt1_sfsl")) { b->p1 = 256; b->p2 = soldier().get(0x5b8); }
+        if (D2Button* b = btn("but_opt1_mvsl")) { b->p1 = 256; b->p2 = cfg_.get("music_volume"); }
+        if (D2Button* b = btn("but_opt1_dvsl")) { b->p1 = 256; b->p2 = soldier().get(0x5c0); }
     } else {
         const int at = cfg_.get("attributes");
         set("but_opt3_aitxt", (at & 0x10) ? menuText("HARD", "HARD") : menuText("NORMAL", "NORMAL"));
@@ -2158,6 +2274,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
         }
     } else if (cb == "ca_MissionBriefing" && missionSel_ >= 0) {
         bms_ = kMissions[missionSel_].bms;
+        bmsLoose_ = false;
         fromCampaign_ = true;
         returnTo_ = Screen::Campaign;
         next_ = Screen::Briefing;
@@ -2174,6 +2291,8 @@ void FrontendDf2::event(D2Button& b, int ev) {
     else if (cb == "qm_ScrollDown") { quickTop_ = std::clamp(quickTop_ + 1, 0, std::max(0, int(quick_.size()) - 8)); refreshQuick(); }
     else if (cb == "qm_MissionBriefing" && quickSel_ >= 0 && quickSel_ < int(quick_.size())) {
         bms_ = quick_[size_t(quickSel_)];
+        bmsLoose_ = quickLoose_[size_t(quickSel_)];
+        bmsBrief_ = quickBrief_[size_t(quickSel_)];
         fromCampaign_ = false;
         returnTo_ = Screen::Quick;
         next_ = Screen::Briefing;
@@ -2305,22 +2424,24 @@ void FrontendDf2::event(D2Button& b, int ev) {
 
 void FrontendDf2::key(const SDL_KeyboardEvent& k) {
     const SDL_Keycode sym = k.keysym.sym;
+    // GOG Df2.exe 0x4333c0: in the entry stage (0) the queue is left alone
+    // and read on the tick the stage ends (replayed from run()); in the
+    // leaving stage (2) it is not read either and is emptied when the page
+    // closes (stage 3), so those keys are lost.
+    if (leaveTicks_ > 0) return;
+    if (stageTicks_ > 0) {
+        SDL_Event e{};
+        e.key = k;
+        pendingKeys_.push_back(e);
+        return;
+    }
     if (!editing_.empty()) {
         // 0x42eb80: Backspace removes, Enter commits (cb 8), Esc restores (cb 9).
         if (sym == SDLK_BACKSPACE || sym == SDLK_DELETE) { if (!editText_.empty()) editText_.pop_back(); }
-        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
-            if (!editText_.empty()) soldier().setName(editText_);
-            editing_.clear();
-            SDL_StopTextInput();
-            refreshSoldier();
-        } else if (sym == SDLK_ESCAPE) {
-            editing_.clear();
-            SDL_StopTextInput();
-            refreshSoldier();
-        }
+        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) commitEdit();
+        else if (sym == SDLK_ESCAPE) cancelEdit();
         return;
     }
-    if (busy()) return;
     // Options2 capture: the Options tick takes the key-down before the menu sees it.
     if (keyCapture_ && (screen_ == Screen::Options1 || screen_ == Screen::Options2 || screen_ == Screen::Options3 || screen_ == Screen::Options4)) {
         if (!k.repeat) {
@@ -2364,6 +2485,132 @@ void FrontendDf2::key(const SDL_KeyboardEvent& k) {
             event(*hit, 3);
             event(*hit, 4);
         }
+    }
+}
+
+void FrontendDf2::textInput(const SDL_TextInputEvent& t) {
+    if (leaveTicks_ > 0) return;
+    if (stageTicks_ > 0) {   // 0x4333c0: kept with the key-downs (see key())
+        SDL_Event e{};
+        e.text = t;
+        pendingKeys_.push_back(e);
+        return;
+    }
+    if (editing_.empty()) return;
+    for (const char* p = t.text; *p; ++p)
+        if (editText_.size() < 15 && static_cast<unsigned char>(*p) >= 32 && static_cast<unsigned char>(*p) < 128) editText_ += *p;
+}
+
+// GOG Df2.exe 0x433330: the edit ends at the caret, then the button's
+// callback gets event 8 - cs_GetName (0x437119) copies the text (up to 16
+// characters, empty or not) into the slot's name, makes it the current
+// soldier and refreshes the page (0x436f30, 0x436c30) - and a move is sent
+// through the mouse handler (0x433f20(1, 0)).
+void FrontendDf2::commitEdit() {
+    if (editing_.empty()) return;
+    const std::string e = editing_;
+    editing_.clear();
+    SDL_StopTextInput();
+    if (e.size() > 7 && e.compare(0, 7, "but_cs_") == 0) {
+        current_ = std::clamp(e.back() - '0', 0, 4);
+        soldier().setName(editText_);
+    }
+    refreshSoldier();
+    mouseEvent(1);
+}
+
+// GOG Df2.exe 0x433370: the text from before the edit comes back, event 9
+// (cs_GetName does nothing with it), then a move through the mouse handler.
+void FrontendDf2::cancelEdit() {
+    if (editing_.empty()) return;
+    editing_.clear();
+    SDL_StopTextInput();
+    refreshSoldier();
+    mouseEvent(1);
+}
+
+// GOG Df2.exe 0x433f20 (CD 0x42f3a0), only in stage 1 (busy() is checked by
+// the caller): the button under the mouse (0x4337a0). A move is dropped
+// while a name is edited ([0x4f2038]) and goes to the held slider alone
+// ([0x4f2034]); a left button-up lets go of it. Whenever the hit button is
+// none or not the previous one ([0x4f2024]), the previous one gets event 4
+// (then 0x10, which no handler takes) and an edit is accepted (0x433330);
+// then the event goes to the hit button and that becomes the previous one.
+void FrontendDf2::mouseEvent(int ev) {
+    D2Button* h = hit(mouseX_, mouseY_);
+    if (ev == 1) {
+        if (!editing_.empty()) return;
+        if (D2Button* d = btn(dragging_)) { buttonEvent(1, *d); return; }
+    } else if (ev == 4) {
+        dragging_.clear();
+    }
+    D2Button* prev = btn(hover_);
+    if (!h || h != prev) {
+        if (prev) buttonEvent(4, *prev);
+        commitEdit();
+    }
+    if (h) buttonEvent(ev, *h);
+    hover_ = h ? h->name : std::string();
+}
+
+void FrontendDf2::buttonEvent(int ev, D2Button& b) {
+    if (b.type == 1) pushEvent(ev, b);
+    else if (b.type == 2 || b.type == 3) sliderEvent(ev, b);
+}
+
+// GOG Df2.exe 0x433a30 (CD 0x42ec80), not in drawstate 0 or 4. Down (2):
+// drawstate 3, btn_slct on channel 3 (an M button, 0x1000, gets event 0x67
+// instead), event 3. Move (1): unless pressed (3) or already lit (2),
+// btn_roll on channel 4 (M: event 100) and event 1; then lit. Up (4) - also
+// what a button gets when the mouse leaves it: (M: event 0x68) event 4 when
+// pressed, event 2 when lit, then drawstate 1; if it is still under the
+// mouse it is lit again, with event 1 (no sound) when it was not lit.
+void FrontendDf2::pushEvent(int ev, D2Button& b) {
+    if (b.drawstate == 0 || b.drawstate == 4) return;
+    const bool m = (b.attrib & 0x1000) != 0, cb = !b.callback.empty();
+    if (ev == 2) {
+        b.drawstate = 3;
+        if (!m) sound("btn_slct", 3);
+        else if (!cb) return;
+        else event(b, 0x67);
+        if (cb) event(b, 3);
+    } else if (ev == 1) {
+        if (b.drawstate == 3) return;
+        if (b.drawstate != 2 && (!m || cb)) {
+            if (!m) sound("btn_roll", 4);
+            else event(b, 100);
+            if (cb) event(b, 1);
+        }
+        b.drawstate = 2;
+    } else if (ev == 4) {
+        if (m && cb) event(b, 0x68);
+        if (cb) {
+            if (b.drawstate == 3) event(b, 4);
+            if (b.drawstate == 2) event(b, 2);
+        }
+        b.drawstate = 1;
+        if (hit(mouseX_, mouseY_) != &b) return;
+        if (cb) event(b, 1);
+        b.drawstate = 2;
+    }
+}
+
+// GOG Df2.exe 0x433d10 (type 2) / 0x433b60 (type 3), not in drawstate 0 or
+// 4: down presses (sliderPress), a move while one is held follows the mouse
+// (dragTo, drawstate 3), up ends a press with event 0xA, drawstate 1.
+void FrontendDf2::sliderEvent(int ev, D2Button& b) {
+    if (b.drawstate == 0 || b.drawstate == 4) return;
+    if (ev == 2) {
+        dragging_.clear();
+        sliderPress(b);
+    } else if (ev == 1) {
+        if (dragging_.empty()) return;
+        b.drawstate = 3;
+        dragTo(b);
+        dragging_ = b.name;
+    } else if (ev == 4) {
+        if (b.drawstate == 3) sliderChanged(b);
+        b.drawstate = 1;
     }
 }
 
@@ -2570,10 +2817,7 @@ int FrontendDf2::run() {
         while (SDL_PollEvent(&e)) {
             if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) { next_ = Screen::Quit; leaveTicks_ = 0; windowQuit = true; break; }
-            if (e.type == SDL_TEXTINPUT && !editing_.empty()) {
-                for (const char* p = e.text.text; *p; ++p)
-                    if (editText_.size() < 15 && static_cast<unsigned char>(*p) >= 32 && static_cast<unsigned char>(*p) < 128) editText_ += *p;
-            }
+            if (e.type == SDL_TEXTINPUT) textInput(e.text);
             if (e.type == SDL_KEYDOWN) key(e.key);
             if (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
                 const int mx = e.type == SDL_MOUSEMOTION ? e.motion.x : e.button.x, my = e.type == SDL_MOUSEMOTION ? e.motion.y : e.button.y;
@@ -2587,7 +2831,9 @@ int FrontendDf2::run() {
                 offY_ = (float(dh) - 480.f * scale_) / 2;
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
-                if (busy() || !editing_.empty()) continue;
+                // 0x433f20 acts only in stage 1 (not while a page is entered
+                // or waits to close).
+                if (busy()) continue;
                 // 0x43a740: while capturing, a button-down is the binding (left 1,
                 // right 2, middle 3) and goes no further.
                 if (screen_ == Screen::Options2 && keyCapture_ && e.type == SDL_MOUSEBUTTONDOWN) {
@@ -2595,57 +2841,16 @@ int FrontendDf2::run() {
                                 : e.button.button == SDL_BUTTON_MIDDLE ? 3 : 0;
                     if (m) { keyMouse_ = m; pressed_.clear(); continue; }
                 }
-                // GOG Df2.exe 0x433f20: while a slider is held (0x4f2034) a
-                // move goes to it alone; letting go ends the hold (state 1,
-                // event 0xA) and is then handled as any button-up.
-                const bool leftDown = e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT;
-                const bool leftUp = e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT;
-                if (D2Button* d = btn(dragging_)) {
-                    if (e.type == SDL_MOUSEMOTION) { dragTo(*d); continue; }
-                    if (leftUp) {
-                        dragging_.clear();
-                        if (d->drawstate == 3) { d->drawstate = 1; sliderChanged(*d); }
-                    }
+                // 0x4799e0: WM_MOUSEMOVE 1, L down / up 2 / 4, R 8 / 0x10, M 0x20 / 0x40.
+                int ev = 0;
+                if (e.type == SDL_MOUSEMOTION) ev = 1;
+                else {
+                    const bool down = e.type == SDL_MOUSEBUTTONDOWN;
+                    if (e.button.button == SDL_BUTTON_LEFT) ev = down ? 2 : 4;
+                    else if (e.button.button == SDL_BUTTON_RIGHT) ev = down ? 8 : 0x10;
+                    else if (e.button.button == SDL_BUTTON_MIDDLE) ev = down ? 0x20 : 0x40;
                 }
-                // 0x433ec0: the hit button's type picks its handler: 1 push
-                // (0x433a30), 2 / 3 slider (0x433d10 / 0x433b60), any other
-                // type nothing. Each ignores drawstate 0 and 4.
-                D2Button* b = hit(mouseX_, mouseY_);
-                const std::string name = b ? b->name : std::string();
-                auto live = [](const D2Button* x) { return x && x->drawstate != 0 && x->drawstate != 4; };
-                if (name != hover_) {
-                    if (D2Button* old = btn(hover_)) {
-                        if (old->type == 1 && live(old)) {
-                            if (old->drawstate == 2 || old->drawstate == 3) old->drawstate = 1;
-                            event(*old, 2);
-                        } else if ((old->type == 2 || old->type == 3) && old->drawstate == 3) {
-                            old->drawstate = 1;
-                        }
-                    }
-                    hover_ = name;
-                    // 0x433a30 event 1: btn_roll unless M (0x1000), whether
-                    // or not there is a callback.
-                    if (b && b->type == 1 && live(b)) {
-                        b->drawstate = 2;
-                        if (!(b->attrib & 0x1000)) sound("btn_roll", 4);
-                        event(*b, 1);
-                    }
-                }
-                if (b && b->type == 1 && live(b)) {
-                    if (leftDown) {
-                        b->drawstate = 3;
-                        if (!(b->attrib & 0x1000)) sound("btn_slct", 3);
-                        pressed_ = name;
-                        event(*b, 3);
-                    } else if (leftUp && pressed_ == name) {
-                        pressed_.clear();
-                        b->drawstate = 2;
-                        event(*b, 4);
-                    }
-                } else if (b && (b->type == 2 || b->type == 3) && live(b)) {
-                    if (leftDown) sliderPress(*b);
-                    else if (leftUp && b->drawstate == 3) { b->drawstate = 1; sliderChanged(*b); }
-                }
+                if (ev) mouseEvent(ev);
             }
         }
         const Uint64 now = SDL_GetPerformanceCounter();
@@ -2656,7 +2861,7 @@ int FrontendDf2::run() {
             ++ticks_;
             // Testing: OPENDF_FE2EVENTS="TICK OP ARGS; ..." pushes real SDL
             // events (OP m = move to x y, c = left click at x y, r = right
-            // click, k = key by SDL name) in 640x480 screen coordinates.
+            // click, k = key by SDL name, t = typed text) in 640x480 screen coordinates.
             if (const char* ev = std::getenv("OPENDF_FE2EVENTS")) {
                 std::istringstream all(ev);
                 std::string item;
@@ -2691,6 +2896,14 @@ int FrontendDf2::run() {
                                 b.button.y = wy;
                                 SDL_PushEvent(&b);
                             }
+                    } else if (op == "t") {
+                        std::string text;
+                        std::getline(in >> std::ws, text);
+                        // Straight in (a pushed SDL_TEXTINPUT is not portable).
+                        SDL_TextInputEvent t{};
+                        t.type = SDL_TEXTINPUT;
+                        std::snprintf(t.text, sizeof t.text, "%s", text.c_str());
+                        textInput(t);
                     } else if (op == "k") {
                         std::string name;
                         std::getline(in >> std::ws, name);
@@ -2702,7 +2915,15 @@ int FrontendDf2::run() {
                     }
                 }
             }
-            if (stageTicks_ > 0) --stageTicks_;
+            // The entry stage's end (0x4333c0, tick 13): the keys typed
+            // meanwhile are handled now, in order.
+            if (stageTicks_ > 0 && --stageTicks_ == 0)
+                while (!pendingKeys_.empty() && stageTicks_ == 0 && leaveTicks_ == 0) {
+                    const SDL_Event k = pendingKeys_.front();
+                    pendingKeys_.pop_front();
+                    if (k.type == SDL_KEYDOWN) key(k.key);
+                    else if (k.type == SDL_TEXTINPUT) textInput(k.text);
+                }
             if (leaveTicks_ > 0) --leaveTicks_;
             // Teletype boxes (0x43d040 / 0x43d110): one character a tick; while
             // unfinished, every frame plays a random TTY_CLK1..9 on channel 2 (0x43d000).
@@ -2713,11 +2934,6 @@ int FrontendDf2::run() {
             if (screen_ == Screen::Options1 || screen_ == Screen::Options2 || screen_ == Screen::Options3 || screen_ == Screen::Options4)
                 captureTick();
             if (screen_ == Screen::Credits) creditTick();
-            if (D2Menu* m = menu())
-                for (int i : m->buttons) {
-                    D2Button& b = mnu_.buttons[size_t(i)];
-                    if (b.flash > 0) --b.flash;
-                }
             if (screen_ == Screen::Campaign) campaignTick();   // GOG 0x43457b
             if (screen_ == Screen::Briefing) { mapTick(); voiceTick(); }   // GOG 0x43ca20 (CD 0x437820), the page's tick
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
@@ -2731,8 +2947,9 @@ int FrontendDf2::run() {
         if (!editing_.empty())
             if (D2Button* b = btn(editing_)) b->text = editText_ + ((ticks_ / 15) & 1 ? "_" : "");
         // 0x42c800 starts stage 2: only the Main Menu (0x4356a0) and the Mission
-        // Briefing (0x437811) wait it out, 12 ticks with input ignored; nothing
-        // is drawn differently (the fade hooks are empty in the retail game).
+        // Briefing (0x437811) wait it out, 12 ticks with input ignored; the
+        // owner draws other than mm_Rect are left out meanwhile (drawButton;
+        // the fade hooks are empty in the retail game).
         if (next_ != screen_ && !windowQuit && (screen_ == Screen::Main || screen_ == Screen::Briefing)) {
             if (!leaving_) { leaving_ = true; leaveTicks_ = 13; }
             if (leaveTicks_ > 0) goto draw;
@@ -2770,6 +2987,7 @@ int FrontendDf2::run() {
                 const int scopeSens = std::clamp(soldier().get(0x5d8) + 0x80, 0x80, 0x1ff);
                 g.mouseScale = mouseSens;
                 g.df2ScopeSens = scopeSens;
+                g.df2Zeroing = soldier().get(0x5c4);   // GOG Df2.exe 0x43c280: [0x67cdac] = +0x5c4
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
@@ -2798,20 +3016,26 @@ int FrontendDf2::run() {
                 // only); a
                 // campaign mission ([0x4c3f88], index [0x4c3f70] >= 0) is also
                 // marked done. Nothing on a loss. The flags word goes back
-                // every time (it only changes on a win, 0x464140). +0x2b0 /
-                // +0x2ac (from the mission's per-player stats) are not tracked.
-                auto record = [&](bool won, int kills) {
+                // every time (it only changes on a win, 0x464140), and so
+                // does the scope zeroing (+0x5c4 = [0x67cdac], 0x43c869).
+                // +0x2b0 / +0x2ac add the player's deaths and a 16.16
+                // figure x kills from the results block 0x67f460 (slot
+                // +0x20 / +0x24): in single player a won run has no deaths
+                // and nothing writes +0x24 (0x408150 fills +0x10..+0x20,
+                // 0x466c2c clears it), so both add 0 and are left out.
+                auto record = [&](bool won, int kills, int zeroing) {
+                    soldier().set(0x5c4, zeroing);
                     if (!won) return;
                     if (fromCampaign_ && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
                     soldier().set(0x29c, soldier().get(0x29c) + kills);
                     if (!cdExe_) soldier().set(0x2a4, soldier().get(0x2a4) + 1);   // CD 0x437550 has no +0x2a4
                 };
-                for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills);
+                for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills, r.df2Zeroing);
                 if (out.quit) {
                     if (!out.replayed.empty()) soldier().set(flagsAt, int32_t(flags));
                     break;
                 }
-                record(out.won, out.kills);
+                record(out.won, out.kills, out.df2Zeroing);
                 soldier().set(flagsAt, int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;

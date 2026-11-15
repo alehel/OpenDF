@@ -77,6 +77,9 @@ struct GameOptions {
     // Delta Force 2: the scope sensitivity [0x67ccfc] (soldier +0x5d8 +
     // 0x80, GOG Df2.exe 0x43c352), the scoped mouse turn rate (0x41eb50).
     int df2ScopeSens = 0x80;
+    // Delta Force 2: the scope zeroing [0x67cdac] the mission starts with
+    // (soldier +0x5c4, GOG Df2.exe 0x43c280; CD 0x4371c0).
+    int df2Zeroing = 0;
     // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
     // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
     int displayGamma = 128;
@@ -107,7 +110,10 @@ struct MissionOutcome {
     // Runs finished earlier with Space ("replay mission"), in order: GOG
     // Df2.exe 0x466ad0 records each one (0x464140 -> 0x43c6f0) before the
     // replay starts.
-    struct Run { bool won = false; int kills = 0; };
+    struct Run { bool won = false; int kills = 0, df2Zeroing = 0; };
+    // Delta Force 2: the scope zeroing [0x67cdac] at the end, written back
+    // to the soldier (+0x5c4, GOG Df2.exe 0x43c869; CD 0x437550).
+    int df2Zeroing = 0;
     std::vector<Run> replayed;
 };
 

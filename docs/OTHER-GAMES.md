@@ -678,8 +678,12 @@ First differences from DF1:
     missions left, a complete one making the next blink every 30 ticks,
     GOG 0x434440 / 0x434a90 / 0x434a20 / 0x43457b, with campaign 2's blink
     word shared with the timer as in the EXE; the Main Menu resets the
-    campaign to 1, 0x43a5c9), Quick Missions (D06*, TITLE, QMBRIEF,
-    pictures), Mission Briefing (MBBRIEF at (x + 5, y + 5) in its border,
+    campaign to 1, 0x43a5c9), Quick Missions (GOG 0x442960: first the
+    game folder's *.bms files, titled by their file name with the header's
+    briefing (+0x108, 0x404530; the Mission Briefing shows it too), then
+    the archive's D06*, TITLE, QMBRIEF, pictures; each only when header
+    +0x78 & 0xFE800000 is 0; OpenDF loads such a file through the VFS by
+    its name), Mission Briefing (MBBRIEF at (x + 5, y + 5) in its border,
     scrolled by but_mb_brvsl over max(0, lines - 25), GOG 0x43d000 /
     0x43d120; the map, GOG 0x43ce90: the
     version-15 header's terrain name with .JPG for .TRN (DFS1.JPG, 256²)
@@ -697,7 +701,7 @@ First differences from DF1:
     mission's header defaults +0x94..+0x97), Settings pages 1 and 3 (df2.cfg,
     sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
     mission back to Campaigns / Quick Missions (no debriefing in DF2), the
-    win marking the mission done and the unlock mask kept; the voice briefing
+    win marking the mission done and the unlock mask kept, every run saving the scope zeroing (+0x5c4, read back at the next start; GOG 0x43c280 / 0x43c869); a fresh mission start shows df2_wait.pcx (scaled nearest, no text, GOG 0x466ba0(0) -> 0x465ed0; the Space replay does not); the voice briefing
     (0x4384f0: on entering the briefing once per chosen mission, and from
     PLAY BRIEFING; `<mission>NN.WAV`, NN 01..19, filed by NN and played in
     slot order, each when the last has ended; the music first ramps over 60
@@ -771,11 +775,18 @@ First differences from DF1:
     0x4342d0 -> 0x4758b0 -> 0x442e40), not scaled by the SFX slider (the
     soldier's +0x5b8 goes to 0x67cd20, which nothing reads). While the music
     is on, the menu loop forces Var1 to the screen's value every frame
-    before the stream update (GOG 0x468b3f..0x468b4d, 0x442f60). Screen changes: no fade is drawn
-    (the hooks 0x468c00/40/70 call an empty table); input is ignored for 12
-    ticks after entering a screen; only the Main Menu and the Mission
-    Briefing wait 12 more ticks after a click before switching (0x4356a0,
-    0x437811), the others switch at once. A soldier saved by earlier OpenDF
+    before the stream update (GOG 0x468b3f..0x468b4d, 0x442f60). Screen changes: no fade
+    is drawn (the hooks 0x468c00/40/70 call an empty table); the mouse is
+    ignored for 12 ticks after entering a screen and keys typed meanwhile
+    are handled when those ticks end (GOG 0x4333c0 leaves its key queue
+    unread); only the Main Menu and the Mission Briefing wait 12 more ticks
+    after a click before switching (0x4356a0, 0x437811; keys then are lost,
+    and owner draws other than mm_Rect get event 0xC and draw nothing, so
+    the briefing text and map blank), the others switch at once. Push
+    buttons (GOG 0x433f20 / 0x433a30): a button pressed and then left by
+    the mouse fires as it is left; releasing over a lit button sends it
+    event 2 then 1 again; while a soldier name is edited a click on any
+    other button (or none) accepts the name before the click goes on. A soldier saved by earlier OpenDF
     builds with no bindings at all gets the defaults when loaded (an OpenDF
     repair). Not yet: multiplayer (out of scope).
   - **command map** (key C; 0x40b370): instead of the 3D view, a 640×480
