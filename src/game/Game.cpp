@@ -2939,6 +2939,16 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (df2Hud_.on) df2NextWaypoint();
         else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
         break;
+    case Action::PrevWaypoint:
+        // GOG Df.exe 0x484d00: with two or more entries and one still alive
+        // (entry +4), step back, wrapping, to the previous live one. Delta
+        // Force 2's binding of the name is not traced: nothing there.
+        if (!df2Hud_.on && route_.size() >= 2 &&
+            std::any_of(route_.begin(), route_.end(), [](const RoutePoint& r) { return r.object != nullptr; }))
+            do {
+                if (--routeIndex_ < 0) routeIndex_ = int(route_.size()) - 1;
+            } while (!route_[size_t(routeIndex_)].object);
+        break;
     // DF2 0x41bdf4 (mapterrain, F9): elevation on -> off and the flag set,
     // else the flag toggled. 0x41be2e (mapelevation, F10): elevation on ->
     // the flag toggled (elevation stays on), else the flag set and elevation

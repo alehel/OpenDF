@@ -37,11 +37,11 @@ Color argb(uint32_t c) {
 }
 
 // A soldier profile (playerNN.ply, 0xA90 bytes, DF.EXE 0x40f40c / 0x40f630):
-// "PLY" + version 0x1A, name +0x04, flags +0x24 (bit 0 in use), campaign
+// "PLY" + version 0x1A (CD; GOG 0x1B), name +0x04, flags +0x24 (bit 0 in use), campaign
 // +0x28, per campaign c mission-done flags +0x30 + c*0x44 + 4i and campaign
 // flags +0x70 + c*0x44, selected mission +0x470 + 4c, face +0x640, campaign
 // kills +0x664, sidearm/primary/secondary item +0x680/+0x684/+0x688, list
-// indices +0x694/+0x698/+0x69C.
+// indices +0x694/+0x698/+0x69C, key bindings +0x6a0 (12 bytes, 44 rows; GOG 46).
 struct Profile {
     std::array<uint8_t, kProfileSize> d{};
     int32_t get(int off) const { int32_t v; std::memcpy(&v, &d[size_t(off)], 4); return v; }
@@ -173,6 +173,12 @@ private:
     bool loadData();
     void loadProfiles();
     void saveProfile(int i);
+    // The CD's 44 key rows and profile version 0x1A, or the GOG Df.exe's 46
+    // and 0x1B (its defaults from DFDK.KEY, 0x407040).
+    bool gogProfile_ = false;
+    int keyRows_ = kKeyRowsCd;
+    std::array<std::array<uint32_t, 3>, kKeyRowsGog> keyDefaults_{};
+    void loadKeyDefaults();
     Profile& prof() { return profiles_[size_t(cur_)]; }
 
     HudImage file(const std::string& pcx, bool transparent = false);
@@ -255,7 +261,7 @@ private:
     void refreshSettings();
     void refreshMacros();
     // Keyboard Remap (0x422c10 init, 0x422d3c update, 0x423048 draw).
-    std::array<std::array<uint32_t, 2>, 44> kbWork_{}, kbRevert_{};
+    std::array<std::array<uint32_t, 2>, kKeyRowsGog> kbWork_{}, kbRevert_{};
     int kbScroll_ = 0, kbSel_ = -1, kbMode_ = 0, kbCapture_ = 0, kbTimer_ = -1, kbLastSlider_ = -1;
     std::string kbMsg_;
     size_t kbShown_ = 0;
@@ -373,9 +379,42 @@ bool Frontend::loadData() {
     return mnu_.parse(mnuSource_, menuText_);
 }
 
+void Frontend::loadKeyDefaults() {
+    // The GOG Df.exe (and an unknown build on its tables); without the
+    // executable, a DFDK.KEY in the archives says the same.
+    gogProfile_ = false;
+    if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
+        ExeImage img;
+        std::string err;
+        gogProfile_ = img.load(exe, &err) && img.build() == ExeBuild::Df1Gog;
+    } else {
+        gogProfile_ = vfs_.exists("DFDK.KEY");
+    }
+    keyRows_ = gogProfile_ ? kKeyRowsGog : kKeyRowsCd;
+    for (int i = 0; i < kKeyRowsGog; ++i) keyDefaults_[size_t(i)] = {kKeyRows[i].vk, kKeyRows[i].mouse, 0};
+    if (!gogProfile_) return;
+    // GOG 0x407040: DFDK.KEY [KEYS] "KEY=index,vk,mouse,joy" over the table
+    // at 0x4e7ddc (12-byte rows).
+    std::vector<uint8_t> raw;
+    if (!vfs_.read("DFDK.KEY", raw)) return;
+    std::istringstream in(std::string(raw.begin(), raw.end()));
+    std::string line;
+    bool keys = false;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty() && line[0] == '[') { keys = upperCase(line).compare(0, 6, "[KEYS]") == 0; continue; }
+        if (!keys || upperCase(line).compare(0, 4, "KEY=") != 0) continue;
+        int idx = -1;
+        unsigned vk = 0, mouse = 0, joy = 0;
+        if (std::sscanf(line.c_str() + 4, "%d,%u,%u,%u", &idx, &vk, &mouse, &joy) >= 1 && idx >= 0 && idx < kKeyRowsGog)
+            keyDefaults_[size_t(idx)] = {vk, mouse, joy};
+    }
+}
+
 void Frontend::loadProfiles() {
-    // 0x40f40c: nine files; an absent or unused one is zeroed with defaults;
-    // with no soldier at all slot 0 becomes "BLACKHAWK" (NSDELETEME).
+    // 0x40f40c (GOG 0x408e30): nine files; an absent or unused one is zeroed
+    // with defaults; with no soldier at all slot 0 becomes "BLACKHAWK" (NSDELETEME).
+    loadKeyDefaults();
     bool any = false;
     for (int i = 0; i < 9; ++i) {
         Profile& p = profiles_[size_t(i)];
@@ -383,9 +422,16 @@ void Frontend::loadProfiles() {
         std::snprintf(name, sizeof name, "player%02d.ply", i + 1);
         std::ifstream f(o_.gameDir / name, std::ios::binary);
         std::array<uint8_t, kProfileSize> buf{};
+        // CD 0x40f630: "PLY" and version 0x1A or later. GOG 0x409060: any
+        // "PLY"; one older than 0x1B gets rows 44-45 of the defaults
+        // (0x4e7fec) at +0x8b0 and becomes 0x1B.
         if (f && f.read(reinterpret_cast<char*>(buf.data()), kProfileSize) && buf[0] == 'P' && buf[1] == 'L' && buf[2] == 'Y' &&
-            buf[3] >= 0x1A) {
+            (gogProfile_ || buf[3] >= 0x1A)) {
             p.d = buf;
+            if (gogProfile_ && p.d[3] < 0x1B)
+                for (int r = kKeyRowsCd; r < kKeyRowsGog; ++r)
+                    for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * r + 4 * k, int32_t(keyDefaults_[size_t(r)][size_t(k)]));
+            if (gogProfile_) p.d[3] = 0x1B;
         } else {
             profileDefaults(p);
         }
@@ -399,13 +445,13 @@ void Frontend::loadProfiles() {
             profileDefaults(fresh);
             std::memcpy(&p.d[0x4b0], &fresh.d[0x4b0], 400);
         }
-        // Likewise key bindings (all 44 empty: never written by DF.EXE).
+        // Likewise key bindings (all empty: never written by DF.EXE).
         bool noKeys = true;
-        for (int m = 0; m < 44; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
+        for (int m = 0; m < keyRows_; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
         if (noKeys) {
             Profile fresh;
             profileDefaults(fresh);
-            std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], 44 * 12);
+            std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], size_t(keyRows_) * 12);
         }
         any = any || p.valid();
         std::memset(&p.d[0x14], 0, 16);
@@ -424,7 +470,9 @@ void Frontend::loadProfiles() {
 void Frontend::saveProfile(int i) {
     // GOG 0x409180 (CD 0x40f718): every slot is written, unused ones too (the
     // save-all loop 0x408b90 / CD 0x40f17c), so a deleted soldier stays deleted.
+    // The header is set on every write: "PLY" + 0x1B (GOG) / 0x1A (CD).
     Profile& p = profiles_[size_t(i)];
+    p.d[0] = 'P'; p.d[1] = 'L'; p.d[2] = 'Y'; p.d[3] = gogProfile_ ? 0x1B : 0x1A;
     char name[32];
     std::snprintf(name, sizeof name, "player%02d.ply", i + 1);
     std::ofstream f(o_.gameDir / name, std::ios::binary);
@@ -696,7 +744,7 @@ void Frontend::enter(Screen s) {
     if (screen_ == Macros && s != Macros) saveProfile(cur_);   // Macros exit hook 0x420ed4
     if (screen_ == Keyboard && s != Keyboard) {
         // 0x423118: any exit stores the working copy and saves the profile.
-        for (int i = 0; i < 44; ++i) { prof().set(0x6a0 + 12 * i, int32_t(kbWork_[size_t(i)][0])); prof().set(0x6a4 + 12 * i, int32_t(kbWork_[size_t(i)][1])); }
+        for (int i = 0; i < keyRows_; ++i) { prof().set(0x6a0 + 12 * i, int32_t(kbWork_[size_t(i)][0])); prof().set(0x6a4 + 12 * i, int32_t(kbWork_[size_t(i)][1])); }
         kbCapture_ = 0;
         kbSel_ = -1;
         saveProfile(cur_);
@@ -741,7 +789,7 @@ void Frontend::enter(Screen s) {
         // 0x422c10: working copy and revert snapshot from the profile; mode
         // ASSIGN KEY (DELETE KEY enabled); "Please select a key ..." (no music var).
         setMenu("KBDMenu");
-        for (int i = 0; i < 44; ++i) kbWork_[size_t(i)] = {uint32_t(prof().get(0x6a0 + 12 * i)), uint32_t(prof().get(0x6a4 + 12 * i))};
+        for (int i = 0; i < keyRows_; ++i) kbWork_[size_t(i)] = {uint32_t(prof().get(0x6a0 + 12 * i)), uint32_t(prof().get(0x6a4 + 12 * i))};
         kbRevert_ = kbWork_;
         kbSel_ = -1;
         kbCapture_ = 0;
@@ -1044,10 +1092,9 @@ void Frontend::profileDefaults(Profile& p) {
     // 0x40ee14 loadout etc., then the message macros DEFAULTMACRO1..10 from
     // DFMENU.BIN "Macros" into +0x4b0, 40 bytes each (0x40f6ac).
     p.defaults();
-    for (int i = 0; i < 44; ++i) {   // key bindings from 0x4dd190
-        p.set(0x6a0 + 12 * i, int32_t(kKeyRows[i].vk));
-        p.set(0x6a4 + 12 * i, int32_t(kKeyRows[i].mouse));
-    }
+    if (gogProfile_) p.d[3] = 0x1B;
+    for (int i = 0; i < keyRows_; ++i)   // key bindings from 0x4dd190 (GOG 0x4e7ddc, 0x408e30 copies 46 rows)
+        for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * i + 4 * k, int32_t(keyDefaults_[size_t(i)][size_t(k)]));
     for (int i = 0; i < 10; ++i) {
         char k[32];
         std::snprintf(k, sizeof k, "DEFAULTMACRO%d", i + 1);
@@ -1356,7 +1403,7 @@ void Frontend::refreshKeys() {
     // 0x4227bc: rows scroll .. scroll+10: label, then "key or Mouse n".
     auto t = [&](const char* k) { const std::string* x = menuText_.find("GroupMainMenu", k); return x ? *x : std::string(k); };
     for (int r = 0; r < 11; ++r) {
-        const int i = std::clamp(kbScroll_ + r, 0, 43);
+        const int i = std::clamp(kbScroll_ + r, 0, keyRows_ - 1);
         char n[32];
         std::snprintf(n, sizeof n, "but_kbd_%d", r + 1);
         if (MnuButton* b = mnu_.button(n)) { b->text = t(kKeyRows[i].label); b->attrib |= 0x40; }
@@ -1387,10 +1434,10 @@ void Frontend::kbCaptured(int type, uint32_t code) {
                vk == 0x08 || vk == 0x09 || vk == 0x21 || vk == 0x22 || vk == 0xBB || vk == 0xBD || vk == 0xBC || vk == 0xBE ||
                vk == 0xBA || vk == 0xDB || vk == 0xDD;
     };
-    const int i = std::clamp(kbScroll_ + kbSel_, 0, 43);
+    const int i = std::clamp(kbScroll_ + kbSel_, 0, keyRows_ - 1);
     if (kbCapture_ == 1 && type == 1) {
         if (allowed(code)) {
-            for (int j = 0; j < 44; ++j)   // unbound elsewhere (0x422764)
+            for (int j = 0; j < keyRows_; ++j)   // unbound elsewhere (0x422764, GOG 0x4217a0)
                 if (j != i && kbWork_[size_t(j)][0] == code) kbWork_[size_t(j)][0] = 0;
             kbWork_[size_t(i)][0] = code;
             kbMessage("KBDACCEPTEDKEY", 120);
@@ -1398,7 +1445,7 @@ void Frontend::kbCaptured(int type, uint32_t code) {
             kbMessage("KBDRESERVEDKEY", 180);
         }
     } else if (kbCapture_ == 2 && type == 2) {
-        for (int j = 0; j < 44; ++j)
+        for (int j = 0; j < keyRows_; ++j)
             if (j != i && kbWork_[size_t(j)][1] == code) kbWork_[size_t(j)][1] = 0;
         kbWork_[size_t(i)][1] = code;
         kbMessage("KBDACCEPTEDKEY", 120);
@@ -1766,7 +1813,7 @@ void Frontend::event(MnuButton& b, int ev) {
             if (kbMode_ == 0) { kbCapture_ = 1; kbMessage("KBDASSIGNKEYTXT", -1); }
             else if (kbMode_ == 1) { kbCapture_ = 2; kbMessage("KBDASSIGNMOUSETXT", -1); }
             else {
-                const int i = std::clamp(kbScroll_ + b.userid, 0, 43);
+                const int i = std::clamp(kbScroll_ + b.userid, 0, keyRows_ - 1);
                 kbWork_[size_t(i)] = {0, 0};
                 refreshKeys();
                 b.drawstate = 1;
@@ -1791,7 +1838,7 @@ void Frontend::event(MnuButton& b, int ev) {
         if (ev == 1) { b.drawstate = 3; sound("CLICK9.WAV", 128); }
         else if (ev == 2) {
             b.drawstate = 1;
-            kbScroll_ = std::clamp(kbScroll_ + (upperCase(b.name) == "BUT_KBD_UP" ? -1 : 1), 0, 33);
+            kbScroll_ = std::clamp(kbScroll_ + (upperCase(b.name) == "BUT_KBD_UP" ? -1 : 1), 0, keyRows_ - 11);
             if (MnuButton* sl = mnu_.button("but_kbd_sl")) sl->sliderPos = kbScroll_;
             refreshKeys();
         } else if (ev == 6) b.drawstate = 2;
@@ -1801,7 +1848,7 @@ void Frontend::event(MnuButton& b, int ev) {
     if (cb == "MNU_KBD_DEFAULT" || cb == "MNU_KBD_REVERT")
         return standard(b, ev, [this, cb] {
             // 0x423490 / 0x423528.
-            if (cb == "MNU_KBD_DEFAULT") for (int i = 0; i < 44; ++i) kbWork_[size_t(i)] = {kKeyRows[i].vk, kKeyRows[i].mouse};
+            if (cb == "MNU_KBD_DEFAULT") for (int i = 0; i < keyRows_; ++i) kbWork_[size_t(i)] = {keyDefaults_[size_t(i)][0], keyDefaults_[size_t(i)][1]};
             else kbWork_ = kbRevert_;
             refreshKeys();
             kbMessage(cb == "MNU_KBD_DEFAULT" ? "KBDDEFAULTSETTINGSTXT" : "KBDREVERTSETTINGSTXT", 180);
@@ -1972,7 +2019,7 @@ void Frontend::ownerDraw(MnuButton& b) {
     if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
     if (cb == "MNU_MIS_SCROLLBAR" && b.type == 3) { briefLine_ = std::max(0, b.sliderPos); return; }   // 0x412b10
     if (cb == "MNU_KBD_SCROLLBAR" && b.type == 3) {
-        kbScroll_ = std::clamp(b.sliderPos, 0, 33);
+        kbScroll_ = std::clamp(b.sliderPos, 0, keyRows_ - 11);   // DF.MNU's slider: 33 (CD), 35 (GOG)
         if (kbScroll_ != kbLastSlider_) { kbLastSlider_ = kbScroll_; refreshKeys(); }
         return;
     }
@@ -2422,10 +2469,11 @@ int Frontend::run() {
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
                 g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
-                // 0x41cca0: the profile's 44 bindings over the game table;
+                // 0x41cca0 (GOG 0x41ce20): the profile's 44 (GOG 46: +0x8b0
+                // PrevWaypoint, +0x8bc server) bindings over the game table;
                 // mouse 1/2/3 -> mask 1/2/0x10; Fire also sets attack_2.
                 g.bindings.clear();
-                for (int i = 0; i < 44; ++i) {
+                for (int i = 0; i < keyRows_; ++i) {
                     const uint32_t vk = uint32_t(prof().get(0x6a0 + 12 * i)) & 0xFFFF, m = uint32_t(prof().get(0x6a4 + 12 * i));
                     const uint32_t mask = m == 1 ? 1 : m == 2 ? 2 : m == 3 ? 0x10 : 0;
                     g.bindings.push_back({kKeyRows[i].game, vk | mask << 16});
