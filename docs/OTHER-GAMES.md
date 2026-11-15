@@ -690,6 +690,20 @@ First differences from DF1:
     -16.9..0° pitch, any other type unclamped with no fire refusal (0x42bb5e,
     0x42bccf); rotor loop 503 for the Black Hawk, 502 for the Gazelle, Havoc,
     Hind and Ka-29 (0x42c8d4);
+    the altitude is chosen at think time (0x42b520) and applied every tick
+    (0x42c960: z += vz, vz += it, no cap; falling, it lands on max(ground,
+    probe) + rest): floor = max(the object probe 0x445f50 from 3 m under
+    the origin, refreshed every ~8 thinks, the terrain 4 m to each side, the
+    water level), raised by samples 1, 2 and 4 s of speed ahead, the
+    climb/descent ×k (1, 2 after the first raising sample, +1 per further
+    one); the band moves by 0x100 << shift (down when sinking, up
+    otherwise); too low +0x100·k (−0x100 above 0x7ff), too high −0x100·k
+    (+0x100 under −0x7ff), in the band ∓0x80 − 0x4D; 7..11 tail hits climb,
+    12+ −0x134. Hover 8 m / band 1 m, path 18 m / 4 m (shift 1, or the tail
+    hits up to 5); the attack approach (only with lift) 18 m / 4 m shift 4
+    beyond 80 m, else 8 m / 1 m shift 5, 7 in the 8..30 m hover band, by
+    0x41e880's distance; landing, unlifted and destroyed ones fall to /
+    settle on the probe floor (at least the water while intact);
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
     and the player and teleported teams at a start or teleport marker more
     than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe

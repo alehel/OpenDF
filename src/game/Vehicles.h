@@ -73,6 +73,11 @@ private:
         bool hasHome = false;
         float bank = 0, yawRate = 0;
         float floorHeight = 0;
+        // DF2 (GOG Df2.exe 0x42b520 / 0x42c960): the vertical acceleration
+        // +0xC8 chosen by the think, the probe floor +0xF4 (0x445f50) and its
+        // refresh timer ai+0x3C.
+        float vzAccel = 0, probe = -1e9f;
+        int probeTimer = 0;
         int gunTarget = -1;       // ai+0x44: world object, -3 the player
         Vec3 lastKnown{0, 0, 0};  // ai+0x48: aimed and fired at
         Vec3 acquiredAt{0, 0, 0}; // obj+0xBC: own position when the target was taken
@@ -99,6 +104,8 @@ private:
     void drive(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void driveTrain(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
+    void df2Altitude(World& world, Vehicle& v, bool hadTarget, int attackShift, float attackH, float attackBand);
+    float heloProbe(const World& world, const Vehicle& v) const;
     void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound);
     void heloTargeting(World& world, AiSystem& ai, Vehicle& v);
     void brdmThink(World& world, AiSystem& ai, Vehicle& v);
