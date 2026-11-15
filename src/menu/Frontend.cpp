@@ -211,6 +211,7 @@ private:
     void captureTo(GLuint& tex);
     void drawCaptured(GLuint tex, float x, float y, float w, float h);
     void drawWipe();
+    void pushTestEvents(const char* events);
 
     void enter(Screen s);
     void setMenu(const std::string& name);
@@ -564,8 +565,8 @@ void Frontend::drawWipe() {
     drawCaptured(startTex_, 0, 0, 640, 480);
     if (wipeStep_ > 0) {
         drawCaptured(endTex_, 0, 0, float(128 * wipeStep_), 480);
-        // The bar: 50 %, black skipped (0x4083f8).
-        const HudImage bar = image("ImageLightBarRt");
+        // The bar: 50 %, black pixels skipped (0x4083f8; GOG 0x40f1e0).
+        const HudImage bar = image("ImageLightBarRt", true);
         if (bar.texture)
             hud().imageUV(bar.texture, offX_ + float(128 * (wipeStep_ - 1) + 44) * scale_, offY_, 84 * scale_, 480 * scale_, 0, 0, 84.f / float(bar.width),
                           480.f / float(bar.height), {1, 1, 1, 0.5f});
@@ -2378,8 +2379,11 @@ int Frontend::run() {
         const Uint64 now = SDL_GetPerformanceCounter();
         clock += double(now - last) / double(SDL_GetPerformanceFrequency());
         last = now;
+        static const char* testEvents = std::getenv("OPENDF_FEEVENTS");   // testing
+        if (testEvents && !o_.screenshot.empty()) clock = 0.016 * 4;
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
+            if (testEvents) pushTestEvents(testEvents);
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             ++screenTicks_;
             static const int leadTicks = std::getenv("OPENDF_LEADTICKS") ? std::atoi(std::getenv("OPENDF_LEADTICKS")) : 600;   // testing
@@ -2577,6 +2581,58 @@ int Frontend::run() {
     music_.stop();
     closeWindow();
     return quitCode_;
+}
+
+void Frontend::pushTestEvents(const char* ev) {
+    // Testing: OPENDF_FEEVENTS="TICK OP ARGS; ..." pushes real SDL events at
+    // menu tick TICK (OP m = move to x y, c = left click at x y, r = right
+    // click, k = key by SDL name, t = text input) in 640x480 coordinates.
+    std::istringstream all(ev);
+    std::string item;
+    while (std::getline(all, item, ';')) {
+        std::istringstream in(item);
+        int at = 0;
+        std::string op;
+        if (!(in >> at >> op) || at != ticks_) continue;
+        if (op == "m" || op == "c" || op == "r") {
+            float x = 0, y = 0;
+            in >> x >> y;
+            int ww, wh, dw, dh;
+            SDL_GetWindowSize(win_, &ww, &wh);
+            SDL_GL_GetDrawableSize(win_, &dw, &dh);
+            const int wx = int((offX_ + x * scale_) * float(ww) / float(std::max(1, dw)));
+            const int wy = int((offY_ + y * scale_) * float(wh) / float(std::max(1, dh)));
+            SDL_Event m{};
+            m.type = SDL_MOUSEMOTION;
+            m.motion.x = wx;
+            m.motion.y = wy;
+            SDL_PushEvent(&m);
+            if (op != "m")
+                for (Uint32 t : {Uint32(SDL_MOUSEBUTTONDOWN), Uint32(SDL_MOUSEBUTTONUP)}) {
+                    SDL_Event b{};
+                    b.type = t;
+                    b.button.button = op == "c" ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+                    b.button.x = wx;
+                    b.button.y = wy;
+                    SDL_PushEvent(&b);
+                }
+        } else if (op == "k") {
+            std::string name;
+            std::getline(in >> std::ws, name);
+            SDL_Event k{};
+            k.type = SDL_KEYDOWN;
+            k.key.keysym.scancode = SDL_GetScancodeFromName(name.c_str());
+            k.key.keysym.sym = SDL_GetKeyFromScancode(k.key.keysym.scancode);
+            SDL_PushEvent(&k);
+        } else if (op == "t") {
+            std::string text;
+            std::getline(in >> std::ws, text);
+            SDL_Event t{};
+            t.type = SDL_TEXTINPUT;
+            std::snprintf(t.text.text, sizeof t.text.text, "%s", text.c_str());
+            SDL_PushEvent(&t);
+        }
+    }
 }
 
 int runFrontend(Vfs& vfs, const FrontendOptions& options) {
