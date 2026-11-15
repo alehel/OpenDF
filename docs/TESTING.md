@@ -40,7 +40,7 @@ prints the stance origin heights and head sphere from PLAYER01.CHR.
 
 The Delta Force 2 front end takes scripted input too: `OPENDF_FE2EVENTS="TICK OP ARGS; …"`
 pushes real SDL events through its event loop (`m X Y` move, `c X Y` left click, `r X Y` right
-click, `k NAME` key by SDL name; 640×480 screen coordinates; with `--screenshot` four ticks pass
+click, `k NAME` key by SDL name, `t TEXT` typed text; 640×480 screen coordinates; with `--screenshot` four ticks pass
 per frame). Example, remapping STRAFE LEFT to K on the Keyboard page:
 `OPENDF_FE2EVENTS="30 c 325 130; 40 k K" opendf --game games/DF2 play keyboard --screenshot k.ppm --frames 20`
 (this saves the soldier file, so keep a copy of `df2plyrs.sav`).

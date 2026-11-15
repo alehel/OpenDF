@@ -726,12 +726,20 @@ First differences from DF1:
     (−1 forever), drawn in slot order; at the end back to the Main Menu.
     Teletype boxes play a random TTY_CLK1..9 on channel 2 each tick while
     typing (0x43d110 calls 0x43d000 while unfinished; DF2.EXE does it per
-    drawn frame); menu sounds use their channels (mnu_tran 1, btn_slct 3,
-    btn_roll 4: a new sound cuts the old). Screen changes: no fade is drawn
-    (the hooks 0x468c00/40/70 call an empty table); input is ignored for 12
-    ticks after entering a screen; only the Main Menu and the Mission
-    Briefing wait 12 more ticks after a click before switching (0x4356a0,
-    0x437811), the others switch at once. A soldier saved by earlier OpenDF
+    drawn frame); menu sounds play at their DF2.MNU volume (btn_slct 150,
+    the rest 80) on a free voice: GOG 0x4342d0 -> 0x4758b0 drops the
+    channel argument, so nothing cuts anything off. Screen changes: no fade
+    is drawn (the hooks 0x468c00/40/70 call an empty table); the mouse is
+    ignored for 12 ticks after entering a screen and keys typed meanwhile
+    are handled when those ticks end (GOG 0x4333c0 leaves its key queue
+    unread); only the Main Menu and the Mission Briefing wait 12 more ticks
+    after a click before switching (0x4356a0, 0x437811; keys then are lost,
+    and owner draws other than mm_Rect get event 0xC and draw nothing, so
+    the briefing text and map blank), the others switch at once. Push
+    buttons (GOG 0x433f20 / 0x433a30): a button pressed and then left by
+    the mouse fires as it is left; releasing over a lit button sends it
+    event 2 then 1 again; while a soldier name is edited a click on any
+    other button (or none) accepts the name before the click goes on. A soldier saved by earlier OpenDF
     builds with no bindings at all gets the defaults when loaded (an OpenDF
     repair). Not yet: multiplayer (out of scope).
   - **command map** (key C; 0x40b370): instead of the 3D view, a 640×480
