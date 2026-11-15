@@ -69,7 +69,7 @@ public:
 
     // A shot (0x44d71f / 0x46c228) is noise() of half its sound's range with
     // flags 2 plus markFired(): the shooter counts as firing (x6 to be seen)
-    // until the flags are cleared (every 0x1f0 ticks); -3 the player.
+    // until the flags are cleared (every 0x1f1 ticks); -3 the player.
     void markFired(int object);
     // Any other noise (DF2.EXE 0x412840 with flags 0: footsteps, a building
     // collapsing): a box of +-r on all three axes; heard by relaxed soldiers
@@ -164,11 +164,16 @@ private:
     void patrol(World& world, Person& p);
     // The scan's score (0x46a804; GOG Df.exe 0x45e280): the best target x
     // perception, x2 when hard, a quarter when relaxed; no random draw.
-    // DF2: `deadFriend` is set when the scan's dead-friend check alerted the
+    // `deadFriend` is set when the scan's dead-friend check alerted the
     // scanner (the caller applies it: alert, team alert, bark 1).
     float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer = nullptr,
                     bool* deadFriend = nullptr) const;
     bool scan(World& world, Person& p, const PlayerView& player, SoundSystem& sound);
+    // The scan's dead-friend check (GOG Df.exe 0x45e280, Df2.exe 0x417830):
+    // `alert` set to 2 for a body of the scanner's side (see Ai.cpp).
+    void deadFriendScan(const World& world, int selfId, int side, int& alert) const;
+    // Delta Force's best target in 16.16 (GOG Df.exe 0x45e280), before perception.
+    int64_t bestTargetDf1(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const;
     void deadFriendAlert(World& world, Person& p, SoundSystem& sound);
     // Delta Force 2's team share (GOG Df2.exe 0x414350): 0, or 1 / 2 / 3.
     int teamShare(World& world, Person& p);
@@ -200,6 +205,7 @@ private:
     std::map<int, uint32_t> reached_;             // team * 128 + path -> point bits
     std::array<int, 64> teamSpeed_{};
     int ticks_ = 0;
+    int noiseClock_ = 0, firedClock_ = 0;   // GOG Df.exe [0x6e4748] / [0x6e4744]
     bool playerFired_ = false;
     uint32_t rng_ = 0x5FC;
 };
