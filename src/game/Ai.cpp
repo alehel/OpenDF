@@ -184,7 +184,12 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
             if (a < b) std::swap(a, b);
             if (a < c) std::swap(a, c);
             if (b < c) std::swap(b, c);
-            const float m = float((a + (b * 11 >> 5) + (c >> 2)) >> 16);
+            // 32-bit wrap as the EXE's imul / add (past ~2979 m on the middle
+            // axis the sum goes negative there too), done unsigned to avoid UB;
+            // then arithmetic shifts (sar) as 0x41e880 and 0x417830's >> 0x10.
+            const int32_t mid = int32_t(uint32_t(b) * 11u) >> 5;
+            const int32_t sum = int32_t(uint32_t(a) + uint32_t(mid) + uint32_t(c >> 2));
+            const float m = float(sum >> 16);
             if (m < *nearPlayer) *nearPlayer = m;
         }
         const float d = len3(tp - eye);
