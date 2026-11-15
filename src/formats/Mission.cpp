@@ -186,7 +186,11 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
             ob.x = fixed16(d, o + 0x10);
             ob.y = fixed16(d, o + 0x14);
             ob.z = fixed16(d, o + 0x18);
-            ob.heading = float(u32(d, o + 0x34) % 360);
+            // The heading is the signed word at +0x34 (GOG Df.exe 0x449710,
+            // CD 0x43ff24: yaw (90 - s32 +0x32 >> 16) / 360; GOG Df2.exe
+            // 0x403790: (short) +0x34); the word at +0x36 is the pitch (the
+            // DF1 searchlights: -20 and -30 degrees).
+            ob.heading = float((int(int16_t(u32(d, o + 0x34) & 0xFFFF)) % 360 + 360) % 360);
             ob.group = g;
             ob.indexInGroup = int(i);
             for (int k = 0; k < 24; ++k) ob.raw[k] = int32_t(u32(d, o + 4 * k));

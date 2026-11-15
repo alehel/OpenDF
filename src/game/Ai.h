@@ -76,6 +76,11 @@ public:
     // binary angles (yaw anticlockwise from east). See Ai.cpp.
     float lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
                     int& bestId, Vec3& bestPos) const;
+    // Delta Force's searchlight scan (GOG Df.exe 0x44f540, CD 0x47b074):
+    // the same over people of another side (side 0 never), DF's own binary
+    // angles, whole-metre distances; the best score before perception.
+    float lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
+                       int& bestId) const;
     // 0x418960(a, b): sets bit b of row a of the "spotted" table that the
     // script condition 1 (team a spotted team b) reads.
     void markSpotted(int a, int b) {
@@ -148,6 +153,9 @@ private:
 
     void think(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player);
     void patrol(World& world, Person& p);
+    // The scan's score (0x46a804; GOG Df.exe 0x45e280): the best target x
+    // perception, x2 when hard, a quarter when relaxed; no random draw.
+    float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const;
     bool scan(World& world, Person& p, const PlayerView& player);
     Vec3 targetPos(const World& world, const Person& p, const PlayerView& player) const;
     bool targetAlive(const World& world, const Person& p, const PlayerView& player) const;

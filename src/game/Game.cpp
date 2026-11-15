@@ -268,9 +268,15 @@ private:
         // whose item has +0x24 & 4, 0x403740, the light included).
         float perception = 1;
         int alert = 0;                   // AI byte +0xb4, from record byte +0x42 (0x403811)
+        // Delta Force (GOG Df.exe 0x4519a0 / 0x451cb0): its own yaw +0x30 and
+        // pitch +0x34 as DF binary angles, and AI flag 0x40 (target seen dead).
+        uint32_t yaw = 0;
+        int32_t pitch = 0;
+        bool targetDead = false;
     };
     std::vector<Searchlight> lights_;
     void tickDf2Items();
+    void tickDf1Lights();
     void df2Blast(Vec3 at, int fragments, float heading);
     void fragmentBurst(Vec3 at, int fragments, float heading);
     bool df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const;
@@ -738,20 +744,32 @@ bool Game::loadMission(int index) {
     ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
     lights_.clear();
-    if (world_.df2Rules)
-        for (size_t i = 0; i < world_.objects.size(); ++i) {
-            const WorldObject& o = world_.objects[i];
-            if (!o.item || o.item->aiFunction != "slgt") continue;
-            Searchlight l;
-            l.object = int(i);
-            if (o.missionIndex >= 0) {
-                const int32_t v = mission_.objects[size_t(o.missionIndex)].raw[0x24 / 4];
-                l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
-                l.alert = reinterpret_cast<const uint8_t*>(mission_.objects[size_t(o.missionIndex)].raw)[0x42];
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        WorldObject& o = world_.objects[i];
+        if (!o.item || o.item->aiFunction != "slgt") continue;
+        Searchlight l;
+        l.object = int(i);
+        if (o.missionIndex >= 0) {
+            const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
+            const int32_t v = mo.raw[0x24 / 4];
+            l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
+            l.alert = reinterpret_cast<const uint8_t*>(mo.raw)[0x42];
+            if (!world_.df2Rules) {
+                // GOG Df.exe 0x449710 (CD 0x43ff24): yaw (90 - word +0x34) and
+                // pitch word +0x36, degrees / 360 as 16.16 << 16; perception
+                // and alert from +0x24 / +0x42 (no night change); the first
+                // think after load counter % 60, the counter +11 an object
+                // (INFERRED: counted within group 0, where the lights are).
+                const int head = int16_t(uint32_t(mo.raw[0x34 / 4]) & 0xFFFF), tilt = int16_t(uint32_t(mo.raw[0x34 / 4]) >> 16);
+                l.yaw = uint32_t((90 - head) * 0x10000 / 0x168) << 16;
+                l.pitch = int32_t(uint32_t(tilt * 0x10000 / 0x168) << 16);
+                l.wait = (mo.indexInGroup * 11) % 60;
+                o.pitch = float(l.pitch) / 4294967296.f * 2 * kPi;
             }
-            if ((mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
-            lights_.push_back(l);
         }
+        if (world_.df2Rules && (mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
+        lights_.push_back(l);
+    }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
     vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
@@ -2218,6 +2236,120 @@ void Game::tickDf2Items() {
                 mineContact(int(i));
                 break;
             }
+    }
+}
+
+// Delta Force's searchlights (glight, ai and move function `slgt`), group-0
+// objects: every tick the think when its timer is below 1 (GOG Df.exe
+// 0x4519a0, CD 0x47d46c), then the move (0x451cb0, CD 0x47d77c), then the
+// timer -1 (the group-0 object loop in GOG 0x487ea0).
+void Game::tickDf1Lights() {
+    auto rnd = [this]() {   // GOG Df.exe 0x477860: x = rol(x,11) + x, x = rol(x,4) ^ 1, 16 bits
+        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+        df2Rng_ = rol(df2Rng_, 11) + df2Rng_;
+        df2Rng_ = rol(df2Rng_, 4) ^ 1;
+        return df2Rng_ & 0xFFFF;
+    };
+    auto ang = [](double y, double x) { return uint32_t(int64_t(std::llround(std::atan2(y, x) / (2 * kPi) * 4294967296.0))); };
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    for (auto& l : lights_) {
+        WorldObject& o = world_.objects[size_t(l.object)];
+        if (l.dead) continue;
+        // 0x4519a0: dead (+0x6c & 4) or hp below 1, the light stops for good.
+        if (o.removed || o.wrecked || o.hp <= 0) { l.dead = true; continue; }
+        if (l.wait < 1) {
+            l.wait = 0x10;
+            if (!l.init) {
+                // First think: home yaw = yaw | 1 (+0xe0), home pitch (+0xe4),
+                // sweep 0x20000000 (+0xe8), aiming at home + sweep; it goes on
+                // into the rest of the think.
+                l.init = true;
+                l.homeYaw = l.yaw | 1;
+                l.homePitch = uint32_t(l.pitch);
+                l.sweep = 0x20000000;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+            bool done = false;
+            if (l.target != -1 && --l.counter > 0) {
+                if (!l.targetDead) {
+                    // Tracking (AI +0x38 > 0): aim at the target's origin, each
+                    // angle + (rand << 6) - 0x200000, the yaw within
+                    // +-0x20000000 of home and the pitch +-0x8000000; think 0x20.
+                    // A target seen dead sets AI flag 0x40 (dropped next think).
+                    const bool isPlayer = l.target == -3;
+                    if (isPlayer ? playerDead() : !world_.objects[size_t(l.target)].alive()) l.targetDead = true;
+                    const Vec3 tp = world_.nearest(isPlayer ? player_.origin() : world_.objects[size_t(l.target)].pos, o.pos);
+                    const int32_t dx = fx(tp.x - o.pos.x), dy = fx(o.pos.z - tp.z), dz = fx(tp.y - o.pos.y);
+                    const int64_t hx = dx >> 16, hy = dy >> 16;
+                    const int64_t horiz = std::llround(std::sqrt(double(hx * hx + hy * hy))) << 16;
+                    const int32_t wantY = int32_t(ang(dy, dx) - l.homeYaw) + int32_t(rnd() * 0x40) - 0x200000;
+                    l.targetYaw = l.homeYaw + uint32_t(std::clamp(wantY, -0x20000000, 0x20000000));
+                    const int32_t wantP = int32_t(ang(dz, double(horiz)) - l.homePitch) + int32_t(rnd() * 0x40) - 0x200000;
+                    l.targetPitch = l.homePitch + uint32_t(std::clamp(wantP, -0x8000000, 0x8000000));
+                    l.wait = 0x20;
+                    done = true;
+                } else {
+                    l.target = -1;
+                }
+            }
+            if (!done) {
+                // The scan (0x44f540): best score x perception (AI +0x74), a
+                // quarter when AI byte +0x9c is 0; seen when above a 16-bit
+                // draw: the spotted mark 0x42edd0(light team, target team),
+                // tracked for 8 thinks. A failed draw keeps the old target.
+                AiSystem::PlayerView pv;
+                pv.alive = !playerDead();
+                pv.origin = player_.origin();
+                const int mn = moveNumber(player_.move());
+                pv.moveNumber = mn >= 0 ? mn : 2;
+                pv.side = kPlayerSide;
+                pv.team = kPlayerTeam;
+                int id = -1;
+                float score = ai_.lightScanDf1(world_, l.object, o.pos, l.yaw, l.pitch, o.side, pv, id);
+                int32_t s = int32_t(int64_t(std::lround(double(score) * 65536.0)) * int64_t(std::lround(double(l.perception) * 65536.0)) >> 16);
+                if (l.alert == 0) s >>= 2;
+                if (id == -1) l.target = -1;
+                else if (s > int32_t(rnd())) {
+                    ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
+                    l.counter = 8;
+                    l.target = id;
+                    l.targetDead = false;
+                    if (std::getenv("OPENDF_DEBUGAI")) std::fprintf(stderr, "searchlight %d spots %d, score %.3f\n", l.object, id, s / 65536.f);
+                }
+            }
+        }
+        if (l.init) {
+            // 0x451850: the yaw speed (+0xec, 1/65536 turn a tick) rises by
+            // R >> 3 while more than 8R away and below R, else falls by R >> 3
+            // while above R >> 3 (R = item +0xe0, turn_rate); the yaw snaps
+            // when closer than the speed, else moves by it (+0x90). The pitch
+            // moves R a tick and snaps within R.
+            const int R = std::max(1, int(o.item->turnRate));
+            l.moving = 0;
+            if (l.yaw != l.targetYaw) {
+                const int d = int32_t(l.targetYaw - l.yaw) >> 16, ad = std::abs(d);
+                if (ad > 8 * R) { if (l.speed < R) l.speed += R >> 3; }
+                else if ((R >> 3) < l.speed) l.speed -= R >> 3;
+                if (ad < l.speed) l.yaw = l.targetYaw;
+                else { l.moving = d > 0 ? (l.speed << 16) : -(l.speed << 16); l.yaw += uint32_t(l.moving); }
+            }
+            if (uint32_t(l.pitch) != l.targetPitch) {
+                const int dp = int32_t(l.targetPitch - uint32_t(l.pitch)) >> 16;
+                if (std::abs(dp) < R) l.pitch = int32_t(l.targetPitch);
+                else l.pitch += dp > 0 ? (R << 16) : -(R << 16);
+            }
+            // 0x451cb0: with no target and the turn done, the sweep swings to
+            // the other side of home.
+            if (l.target == -1 && l.moving == 0) {
+                l.sweep = -l.sweep;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+        }
+        --l.wait;
+        o.heading = kPi * 0.5f - float(l.yaw) / 4294967296.f * 2 * kPi;
+        o.pitch = float(l.pitch) / 4294967296.f * 2 * kPi;
     }
 }
 
@@ -5659,6 +5791,7 @@ int Game::run() {
                 // origin +0x24..+0x2c into the carried item every tick.
                 if (carried_ >= 0 && world_.objects[size_t(carried_)].carried) world_.objects[size_t(carried_)].pos = player_.origin();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
+                else tickDf1Lights();
                 // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
                 weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
                               [this](Vec3 at) { spawnEffect(17, at); });
