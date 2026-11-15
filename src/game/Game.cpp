@@ -2968,6 +2968,16 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (df2Hud_.on) df2NextWaypoint();
         else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
         break;
+    case Action::PrevWaypoint:
+        // GOG Df.exe 0x477d40 command 0x2f -> 0x484d00: with two or more
+        // route points and one of them created (route[i]+4), step back,
+        // wrapping to the last, past points never created.
+        if (!df2Hud_.on && route_.size() >= 2 &&
+            std::any_of(route_.begin(), route_.end(), [](const RoutePoint& r) { return !r.object->omitted; }))
+            do {
+                if (--routeIndex_ < 0) routeIndex_ = int(route_.size()) - 1;
+            } while (route_[size_t(routeIndex_)].object->omitted);
+        break;
     // DF2 0x41bdf4 (mapterrain, F9): elevation on -> off and the flag set,
     // else the flag toggled. 0x41be2e (mapelevation, F10): elevation on ->
     // the flag toggled (elevation stays on), else the flag set and elevation
@@ -5942,6 +5952,12 @@ void Game::drawHelp(const Screen& s) {
     put(520, 750, y, label("HELPWAYPOINT"), keyOf(Action::NextWaypoint));
     y += 25;
     put(520, 750, y, label("HELPBIGMAP"), keyOf(Action::BigMap));
+    // GOG Df.exe 0x42be00 (lines from 0x42b0b0): HELPPREVWP and HELPSERVER
+    // 25 and 50 lower, with the profile's +0x8b0 / +0x8bc keys.
+    if (exe_.build() == ExeBuild::Df1Gog) {
+        put(520, 750, y + 25, label("HELPPREVWP"), bindingText("PrevWaypoint"));
+        put(520, 750, y + 50, label("HELPSERVER"), bindingText("server"));
+    }
 }
 
 void Game::drawPaused(const Screen& s) {
