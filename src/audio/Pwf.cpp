@@ -90,7 +90,13 @@ bool Pwf::load(std::vector<uint8_t> file, std::string* error) {
                 }
                 d.layers.push_back(std::move(l));
             }
-            defs_[upper(d.name)] = std::move(d);
+            // A name defined twice keeps its first record: the bank lookup
+            // is a linear strcmp that stops at the first match (GOG Df2.exe
+            // 0x47b300 = CD 0x4704a0). DF2.PWF holds 8 such names
+            // (GS_M16_SHOT, EXPLO_WATER, SATCHEL_SET, ...). Layers with no
+            // variants are kept (EXPLO_WATER's first copy plays nothing).
+            const std::string key = upper(d.name);
+            defs_.try_emplace(key, std::move(d));
         }
     }
     return true;
