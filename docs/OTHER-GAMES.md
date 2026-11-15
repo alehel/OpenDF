@@ -613,11 +613,11 @@ First differences from DF1:
     of 16..47 ticks, one round per 16, pauses 64..127, the bias ×3/4 each
     time (0x423ac0, 0x424550); `brdm` draws the turret, gun, steered front
     wheels and the muzzle flash for one frame after a round (0x4295f0);
-  - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up
-    (and, INFERRED from the missions, the player's start marker and
-    teleport targets that high: the trace found no code that sets the chute
-    flag on markers, but starts like D06M06's 160 m only make sense with
-    one) descend 0x2222 a tick under
+  - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
+    and the player and teleported teams at a start or teleport marker more
+    than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe
+    0x45c4b0 (CD 0x4544a0) flags those markers 0x20, which the start
+    (0x460810) and the teleport (0x418be0) copy, descend 0x2222 a tick under
     `parachut` (PFoil items) or `pararnd`; landing (on the ground, an
     object's volume or the water) leaves the canopy, which tips over and
     sinks for 1800 ticks (`para` 0x42c570). There is no wind drift: with
@@ -656,21 +656,12 @@ First differences from DF1:
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:
-  - *unverified guesses* (INFERRED, listed above): the player's parachute
-    start and teleported paratroopers' chutes. A full sweep of DF2.EXE
-    (1999-10-19) finds the chute flag set only by the soldiers' start pass
-    (0x45bb10); the player and teleports copy a marker flag that is never
-    set, so that EXE would drop the player to its death at the ten missions
-    starting 100-160 m up and kill its scripted paradrop teams. OpenDF applies
-    the soldiers' 100 m rule to them too: the start heights sit on that test,
-    the D06M06 briefing says the player paradrops, reviews and walkthroughs
-    describe DF2 missions opening with an automatic parachute drop, and the
-    Land Warrior mission editor manual (same engine family) says a "Start,
-    Player" marker with Z between 100.00 and 300.00 makes the player
-    parachute in, and that this also works for AI units. (DF2's own editor
-    manual says nothing about it; a patched DF2.EXE, the last official patch
-    being 1.06.15, may set the flag where this one does not.) Below 100 m the player
-    starts at the marker's height and drops, as DF2.EXE does;
+  - *the player's parachute* (settled 2026-11-15): earlier traces missed
+    the marker pass GOG Df2.exe 0x45c4b0 / CD 0x4544a0 (its flag write goes
+    through a pointer 0x28 into the record, so it reads as +0x3C); it sets
+    flag 0x20 on start and teleport markers more than 99 m up, and the
+    start and teleport copy it. Below that the player starts at the
+    marker's height and drops, as DF2.EXE does;
   - *settled since*: the ammo display's kinds (DF2's own record +0x0C, with
     grenades red while firing or empty and binoculars red unless up), radar
     shapes (signed byte +0x4C, live positions, 0x403590 / 0x421510), rounds

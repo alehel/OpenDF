@@ -426,13 +426,16 @@ private:
         for (auto& o : world_.objects)
             if (o.team == team) o.team = newTeam;
     }
+    // DF2.EXE's marker pass (GOG Df2.exe 0x45c4b0, CD 0x4544a0): a start or
+    // teleport marker more than 0x62FFFF (just under 99 m, 16.16) above the
+    // ground gets flag 0x20, the parachute, which the start and teleport
+    // copy to whoever is placed there.
+    static bool df2ChuteMarker(float zAboveGround) { return std::lround(double(zAboveGround) * 65536.0) > 0x62FFFF; }
     void teleportTeam(int team, int value) override {
-        // DF2.EXE 0x416960: the target's position and angles to every person
-        // of the team. INFERRED: a target 100 m or more above the ground puts
-        // them on a chute (DF2.EXE 0x4169e2 copies the target's own flag
-        // 0x20, which nothing sets, so its paradrops would kill their teams;
-        // INFERRED from the missions: a target 100 m or more up is a chute
-        // drop, as the soldiers' start rule 0x45bb10).
+        // DF2.EXE 0x416960 (GOG Df2.exe 0x418be0): the target's position and
+        // angles to every person of the team, and the target's flag 0x20
+        // (the parachute, set by the marker pass 0x45c4b0 for markers over
+        // 99 m) ORed into theirs (0x4169e2).
         for (const auto& mo : mission_.objects) {
             if (mo.type != 6088 || (mo.raw[18] & 0xFF) != team) continue;
             if (reinterpret_cast<const uint8_t*>(mo.raw)[0x4A] != value) continue;
@@ -444,7 +447,7 @@ private:
                 o.pos.z = at.z;
                 o.heading = mo.heading * kPi / 180.f;
                 o.base = terrain_.heightAt(at.x, at.z) + mo.z;
-                if (mo.z >= 100.f) o.chute = true;   // ORed in (0x4169e8), never cleared; vz is kept
+                if (df2ChuteMarker(mo.z)) o.chute = true;   // ORed in (0x4169e8), never cleared; vz is kept
                 o.pos.y = o.base + o.hip;
             }
             break;
@@ -863,20 +866,17 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    // Delta Force 2: the player starts at ground + the marker's z (0x457fc0,
-    // 0x458133; no clamp) and drops from there. A start 100 m or more up is
-    // a parachute drop 1 m higher, as for soldiers (0x45bb10). INFERRED for
-    // the player: in DF2.EXE (1999-10-19) only the soldiers' start pass sets
-    // the chute flag and markers never carry it (df2_parachute.md), so the
-    // player would free-fall and die at the ten missions that start 100-160 m
-    // up (D03M04, D03M11, D03M15, D05M03, D05M12, D06M03, D06M05, D06M06,
-    // D06M14, D06M16); the start heights sit on the 100 m test, the D06M06
-    // briefing says the player will paradrop, and the Land Warrior mission
-    // editor manual gives the rule: a "Start, Player" Z of 100.00..300.00
-    // parachutes the player in (also AI units).
-    player_.chute = mission_.version >= 0x0F && startLift >= 100.f;
-    if (player_.chute) player_.feet.y += startLift + 1.f;
-    else if (mission_.version >= 0x0F && startLift > 0) player_.feet.y = terrain_.heightAt(player_.feet.x, player_.feet.z) + startLift;
+    // Delta Force 2: the player starts at the marker's absolute height,
+    // ground + its z (0x465490 adds the terrain height to every marker; the
+    // start 0x460810 copies the position, GOG Df2.exe; CD 0x457fc0), with
+    // no clamp and no extra metre, and drops from there. The marker pass
+    // GOG Df2.exe 0x45c4b0 (CD 0x4544a0, run after 0x465490 via 0x45c270)
+    // flags every start and teleport marker whose height above the ground
+    // exceeds 0x62FFFF (99 m) with 0x20, and 0x460810 copies that flag to
+    // the player: a parachute drop (D03M04, D03M11, D03M15, D05M03, D05M12,
+    // D06M03, D06M05, D06M06, D06M14, D06M16 start 100-160 m up).
+    player_.chute = mission_.version >= 0x0F && df2ChuteMarker(startLift);
+    if (mission_.version >= 0x0F && startLift > 0) player_.feet.y = terrain_.heightAt(player_.feet.x, player_.feet.z) + startLift;
     {
         Loadout lo;
         if (const int r = loadoutRow(o_.sidearm); r >= 0) lo.sidearm = r;
