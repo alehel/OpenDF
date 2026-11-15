@@ -25,7 +25,7 @@ const ActionName kNames[] = {
     {Action::Briefing, "briefing"}, {Action::Help, "help"},
     {Action::ScopeInc, "scopeinc"}, {Action::ScopeDec, "scopedec"}, {Action::NightVision, "NVG"},
     {Action::MapTerrain, "mapterrain"}, {Action::MapElevation, "mapelevation"},
-    {Action::Escape, "escape"},
+    {Action::Escape, "escape"}, {Action::VCam, "VCam"},
 };
 
 // Built-in copy of DF.EXE's defaults (virtual-key code | mouse << 16).

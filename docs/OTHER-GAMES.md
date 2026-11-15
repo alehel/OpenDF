@@ -287,8 +287,15 @@ First differences from DF1:
     angles (0x44dd50 -> 0x416e90), and the gun's "ewpn" pose (0x450c60)
     turns meshes 1 and 2 about hardpoint 1 by the gunner's heading less
     the gun's and his pitch. A destroyed gun lets go (0x4467d0's end).
-    Not done: the gun's own weapon (HUD slots 11 / 12, 0x44c840 /
-    0x44f160) and the multiplayer mount 0x4183d0. Only TKH_G21 places
+    The gun's own weapon: slots 11 / 12 hold modes 0x37 (.50 cal, ammo
+    36, 200 rounds, cooldown 6, full auto) and 0x38 (ammo 37, 40 rounds,
+    cooldown 16) (0x44eeb0); after each weapon tick (0x44c840's end) a
+    manned gun selects 12 for item 4080 (glaunch), else 11, and none
+    held returns to slot 3; 0x44f160 refuses 11 / 12 without a gun
+    (a weapon key switches away for one tick), 0x44d3c0 does not cycle
+    off them, and the rounds leave the mounted eye (0x44dd50 ->
+    0x416e90). Not done: the HUD's name and icon for modes 55 / 56
+    and the multiplayer mount 0x4183d0. Only TKH_G21 places
     guns (two 50Cal_K); walking into one there seats the player.
     READ quirks kept: the sum of a mesh is
     cleared only when a point reaches the mesh box, so a mesh no point
@@ -436,6 +443,22 @@ First differences from DF1:
     ([0x93367c], a flag that moving clears, 0x4373ab). Kevlar is checked on every person
     (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that
     byte (0x45429d and the network copies); placed soldiers have none.
+    GOG Df2.exe's video camera (secondary or gear type 36, mode 48, kind
+    13, ammo 38: one camera): firing sets the inset flag [0x79a6b4]
+    (0x44d8a0) and, chambered and out of cooldown, places item 4138 1 m
+    ahead like a satchel (0x44d460 -> 0x406d00; the host removes the
+    player's older camera first, 0x459b80 -> 0x418190, and 0x414850 takes
+    the new one as [0x79a6b8] with its yaw and pitch), with the satchel's
+    kick and the load sound; its cooldown ends like a satchel's (0x44cc20).
+    0x44c840 lets the camera go once destroyed or removed and keeps its
+    pitch within 45 degrees. While the flag is on and the scope is not
+    shown, 0x465f90 -> 0x4568a0 draws the camera's view (0.5 m above it,
+    90 degrees across) at x 0x2c0..0x3c0, y view top + 0x40..+0x100 of the
+    1024x768 frame, or clears the flag when there is no camera. VCam (F12,
+    0x41f150 case 0x28) toggles the flag; holding mode 48 with the view on
+    the mouse turns the camera instead of the player (0x41eb50 -> commands
+    0x35..0x38, cases 0x29..0x2c). Mode flag 0x100 (modes 31, 48) hides the
+    first-person model once no clip or chambered one is left (0x44ea10).
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),

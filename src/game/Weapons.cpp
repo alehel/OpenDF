@@ -415,6 +415,16 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
         if (s < 0 || s >= int(modes_.size()) || !modes_[size_t(s)].works()) s = 0;
     // Slot 10: T[35] mode 0 (47, the binoculars, kind 12: fires nothing).
     if (const int b = typeMode(35, 0); b > 0 && b < int(modes_.size())) slots_[kBinocularSlot] = b;
+    // GOG Df2.exe 0x44eeb0: slots 11 / 12 = modes 0x37 / 0x38, the emplaced
+    // guns' (filled by 0x44dfc0 as refillDf2Gog's fill(55) / fill(56)).
+    if (t->ammoShift && int(modes_.size()) > 0x38) {
+        slots_[kMountSlot] = 0x37;
+        slots_[kMountGlSlot] = 0x38;
+    }
+    mount_ = -1;
+    mountGl_ = false;
+    camera_ = -1;
+    camView_ = false;
     prevSlot_ = 3;
     gear_ = lo.gear;
     df2_ = true;
@@ -593,6 +603,9 @@ void Arsenal::refillDf2Gog() {
 
 void Arsenal::select(int slot) {
     if (slot < 0 || slot >= int(slots_.size())) return;   // 10: DF2's binoculars (0x41b6e3)
+    // GOG Df2.exe 0x44f160: slots 11 / 12 only with a gun manned (player
+    // +0x8c), and not again while held.
+    if ((slot == kMountSlot || slot == kMountGlSlot) && (mount_ < 0 || slot == current_)) return;
     // DF.EXE 0x44aa74 / DF2.EXE 0x4480b0 (the key handlers 0x42de85 /
     // 0x41bced call it for any slot 0-9): no test for an empty slot or for
     // the slot already held, so the same key again cancels a running
@@ -615,13 +628,14 @@ void Arsenal::select(int slot) {
     // +0x24 (0x44a290 / 0x44a4c0; DF2 0x447f40(0)). Others: nothing.
     const int type = mode().type;
     if (type == 1) { if (magRef() == 0) startReload(); }
-    else if ((type == 2 || type == 7 || type == 9 || type == 11) && !chambered() && sparesRef() > 0) {
+    else if ((type == 2 || type == 7 || type == 9 || type == 11 || type == 13) && !chambered() && sparesRef() > 0) {
         cooldown_ = mode().cooldown;
         sound(1);
     }
 }
 
 void Arsenal::cycle() {
+    if (current_ >= kMountSlot) return;   // GOG Df2.exe 0x44d3c0: nothing from slots 11 / 12
     for (int k = 1; k <= kSlots; ++k) {
         const int s = (current_ + k) % kSlots;
         if (slots_[size_t(s)]) { select(s); return; }
@@ -677,6 +691,21 @@ void Arsenal::fire(Player& player) {
         const int item = md.type == 9 ? 4020 : slots_[size_t(current_)] == 37 ? 4014 : 4040;
         events_.push_back({WeaponEvent::Place, item,
                            player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
+        return;
+    }
+    if (md.type == 13) {
+        // GOG Df2.exe 0x44d460, the video camera: item 4138 1 m ahead at the
+        // player's heading (0x406d00; the host places it as a satchel,
+        // 0x459b80, and first removes the player's older one, 0x418190),
+        // the satchel's kick, and the cooldown with the load sound +0x24
+        // (0x44f000(0)).
+        const float r = turn(rng_);
+        kick_[0] -= 0x1000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
+        events_.push_back({WeaponEvent::Place, 4138,
+                           player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
+        sound(1);
         return;
     }
     if (md.type == 8) {
@@ -744,7 +773,12 @@ void Arsenal::fire(Player& player) {
     // at the table offset plus the kick, aligned with the view). Launchers
     // always fire from the model (0x44a120).
     Vec3 origin;
-    if (zoomed() && md.type == 1) {
+    if (df2Gog_ && md.type == 1 && mount_ >= 0 && player.mounted()) {
+        // GOG Df2.exe 0x44dd50 -> 0x416e90: a manned gun fires from its
+        // hardpoint 2 through the posed mesh 1 (the mounted eye) with the
+        // player's yaw and pitch.
+        origin = player.eye();
+    } else if (zoomed() && md.type == 1) {
         origin = player.eye() + Vec3{0, -0x200 / 65536.f, 0};
     } else {
         const Vec3 fwd = player.forward();
@@ -841,8 +875,32 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
         const float step = 0x80 / 65536.f * 60.f * dt;
         k = k > 0 ? std::max(0.f, k - step) : std::min(0.f, k + step);
     }
-    for (clock_ += dt; clock_ >= kTick; clock_ -= kTick) tick(triggerDown, player, messages);
+    // GOG Df2.exe 0x44c840: the camera is let go once destroyed (+0x64 & 4)
+    // or removed; its pitch is kept within +-0x20000000 (45 degrees).
+    if (camera_ >= 0) {
+        if (size_t(camera_) >= world.objects.size() || !world.objects[size_t(camera_)].alive()) camera_ = -1;
+        else camPitch_ = std::clamp(camPitch_, -kPi / 4, kPi / 4);
+    }
+    mount_ = df2Gog_ && world.playerMount >= 0 && size_t(world.playerMount) < world.objects.size() ? world.playerMount : -1;
+    {
+        const ItemDef* it = mount_ >= 0 ? world.objects[size_t(mount_)].item : nullptr;
+        mountGl_ = it && it->id == 100000 + 0xff0;
+    }
+    for (clock_ += dt; clock_ >= kTick; clock_ -= kTick) {
+        tick(triggerDown, player, messages);
+        mountTick();
+    }
     moveProjectiles(dt, world);
+}
+
+// GOG Df2.exe 0x44c840's end, after the weapon's tick: no gun manned (player
+// +0x8c) and slot 11 or 12 held -> 0x44f160(3); a gun manned and neither
+// held -> 0x44f160(12) for item 4080 (+0x20 == 0xff0), else 0x44f160(11).
+void Arsenal::mountTick() {
+    if (!df2Gog_) return;
+    const bool onGun = current_ == kMountSlot || current_ == kMountGlSlot;
+    if (mount_ < 0) { if (onGun) select(3); }
+    else if (!onGun) select(mountGl_ ? kMountGlSlot : kMountSlot);
 }
 
 // One 60 Hz tick of the weapon: DF.EXE 0x449830 / DF2.EXE 0x446050, the
@@ -900,6 +958,7 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     // checks the binoculars (0x44a947; DF2's are a mode of kind 12, which fires
     // nothing). A press during the cooldown is lost.
     auto command = [&](bool followUp) {
+        if (md.type == 13 && !shot) camView_ = true;   // GOG Df2.exe 0x44d8a0 case 0xd, before 0x44d460's tests
         if (shot || cooldown_ > 0 || binoculars_) return;
         if (md.type == 8 || md.type == 10) {
             fire(player);   // the detonator and the designator need no round
@@ -923,9 +982,9 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             // the cooldown (select clears it) cannot leave it dead. DF2 keeps
             // the chamber test (0x44691b) until DF2.EXE's knife is checked.
             if (!df2_ || chambered()) fire(player);
-        } else if (md.type == 7 || md.type == 9) {
+        } else if (md.type == 7 || md.type == 9 || md.type == 13) {
             // Claymore, satchel: nothing without a chambered one, no click
-            // (0x44aecb; DF2 0x446a5a).
+            // (0x44aecb; DF2 0x446a5a); GOG's video camera the same (0x44d460).
             if (chambered()) fire(player);
         }
         shot = true;

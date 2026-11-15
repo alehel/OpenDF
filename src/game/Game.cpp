@@ -186,6 +186,8 @@ private:
     void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
+    void drawCameraInset(const Screen& s);
+    const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     void drawHud(const Screen& s, const Mat4& viewProj);
     void drawTopBar(const Screen& s);
     void drawBottomBar(const Screen& s);
@@ -1593,6 +1595,16 @@ void Game::weaponEvent(const WeaponEvent& e) {
         } else {
             at.y = world_.groundHeight({at.x, player_.feet.y + 0.25f, at.z}, 0.25f);
         }
+        if (e.item == 4138) {
+            // GOG Df2.exe 0x459b80: a video camera first removes the
+            // player's others (0x418190 -> 0x45e420); the new one becomes
+            // the camera with its yaw and pitch (0x414850).
+            for (WorldObject& o : world_.objects)
+                if (o.item && o.item->id == 104138 && !o.removed) { o.removed = true; o.boxes.clear(); }
+            const int obj = world_.spawn(item, m, at, e.heading);
+            arsenal_.setCamera(obj, e.heading, 0.f);
+            break;
+        }
         const int obj = world_.spawn(item, m, at, e.heading);
         charges_.push_back({obj, e.item, -1});
         playSound(e.item == 4020 ? 0x79 : 0x78, at);
@@ -2003,6 +2015,7 @@ Vec3 Game::viewDir() const {
 }
 
 Vec3 Game::viewEye() const {
+    if (eyeOverride_) return *eyeOverride_;
     if (!playerDead()) return player_.eye();
     const float th = camYaw_ + float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi;
     const float p = float(0x4000000) / 4294967296.f * 2 * kPi;
@@ -2917,6 +2930,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Weapon8: arsenal_.select(8); break;
     case Action::Weapon9: arsenal_.select(9); break;
     case Action::Cycle: arsenal_.cycle(); break;
+    case Action::VCam: arsenal_.toggleCameraView(); break;   // GOG Df2.exe 0x41f150 case 0x28
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
@@ -3491,6 +3505,7 @@ void Game::drawViewModel(const Screen& s) {
     // The original hides the weapon while the zoom inset is up.
     // Nor is it drawn once the player is dead (0x4042df).
     if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_) return;   // 0x4042ff
+    if (!arsenal_.viewModelShown()) return;   // DF2 mode flag 0x100 (GOG Df2.exe 0x44ea10)
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
     glClear(GL_DEPTH_BUFFER_BIT);
@@ -3599,6 +3614,38 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
         hud_.nightVision(cx, cy, r, 1.f);
         hud_.end();
     }
+}
+
+// GOG Df2.exe 0x465f90 -> 0x4568a0, the video camera's inset (not while
+// the scope shows): without a camera the flag [0x79a6b4] is cleared;
+// otherwise, unless the player is dead (+0x64 & 4), the view from the
+// camera's position 0x8000 (0.5 m) up with the camera's yaw and pitch
+// ([0x79a6c0] / [0x79a6bc]), FOV 0x5a0000 (90 degrees across), into x
+// 0x2c0..0x3c0, y view top + 0x40..+0x100 of the 1024x768 frame.
+void Game::drawCameraInset(const Screen& s) {
+    if (!arsenal_.cameraView() || scopeShown() || showMap_) return;
+    const int c = arsenal_.camera();
+    if (c < 0 || size_t(c) >= world_.objects.size() || world_.objects[size_t(c)].removed) {
+        arsenal_.clearCameraView();
+        return;
+    }
+    if (playerDead()) return;
+    const float x0 = s.vx(0x2c0), x1 = s.vx(0x3c0), y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const Vec3 eye = world_.objects[size_t(c)].pos + Vec3{0, 0x8000 / 65536.f, 0};
+    const float yaw = arsenal_.cameraYaw(), pitch = arsenal_.cameraPitch();
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    eyeOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
 }
 
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
@@ -6347,8 +6394,15 @@ int Game::run() {
                     const float zoomScale = arsenal_.df2() ? (arsenal_.scopeShown() ? 0.125f : 1.f) : (arsenal_.zoomed() ? 0.25f : 1.f);
                     const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * zoomScale;
                     const float dy = o_.flipMouse ? -float(e.motion.yrel) : float(e.motion.yrel);
-                    player_.yaw += e.motion.xrel * sens;
-                    player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                    // GOG Df2.exe 0x41eb50: the video camera's view takes the
+                    // mouse instead (commands 0x35..0x38, 0x41f150 cases
+                    // 0x29..0x2c), turned as the player would be.
+                    if (arsenal_.cameraSteered()) {
+                        arsenal_.turnCamera(e.motion.xrel * sens, -dy * sens);
+                    } else {
+                        player_.yaw += e.motion.xrel * sens;
+                        player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                    }
                 } else if (e.type == SDL_TEXTINPUT && df2Hud_.on && showMap_ && df2Map_.prompt) {
                     // The command map's name prompt (chat input 0x41d320, max 16).
                     for (const char* c = e.text.text; *c; ++c)
@@ -6845,6 +6899,10 @@ int Game::run() {
                 arsenal_.setListener(at);
             }
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
+            // Placed at once, before this frame is drawn: GOG Df2.exe's
+            // video camera inset (0x4568a0) finds the new camera the frame
+            // it is fired.
+            for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
             prevTrigger = trigger;
             for (auto& m : msgs) pushMessage(m);
             for (auto& m : messages_) m.age += dt;
@@ -6916,6 +6974,7 @@ int Game::run() {
                     // DF2.EXE 0x45c610: the scope inset, the night vision
                     // (0x449450), then the weapon pass (0x448980).
                     drawZoomInset(s, view, fovY);
+                    drawCameraInset(s);
                     glViewport(0, 0, dw, dh);
                     if (nvg_ && !showMap_) {
                         hud_.begin(dw, dh);

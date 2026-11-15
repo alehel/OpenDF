@@ -25,6 +25,8 @@ enum class Action {
     // Delta Force 2: the map's elevation view (F9 mapterrain / F10
     // mapelevation, actions 362 / 363).
     MapTerrain, MapElevation,
+    // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
+    VCam,
     Count
 };
 

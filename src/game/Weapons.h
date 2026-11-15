@@ -29,6 +29,7 @@ constexpr float kTick = 1.f / 60.f;
 // Player weapon table record (0x4E97D0, 168 bytes, 39 modes).
 struct ModeDef {
     int type = 0;               // +0x6C fire type: 1 gun, 2 launcher, 6 knife, 7 claymore, 8 detonator, 9 satchel, 10 laser, 11 grenade
+                                // (DF2: 12 binoculars, 13 GOG's video camera)
     int gun = 0;                // +0x74 gun table index (ammunition is kept per gun)
     int item = 0;               // +0x64 first-person item (ITEMS.DEF id - 100000)
     int offset[3] = {};         // +0x78 first-person model offset: forward, left, up in 1/256 m
@@ -48,8 +49,9 @@ struct ModeDef {
     bool automatic() const { return flags & 0x20; }
     bool zoomable() const { return (flags & 1) && scope > 1; }
     // Fire types OpenDF handles: 1 guns, 2 launchers, 6 knife, 7 claymore,
-    // 8 radio detonator, 9 satchel, 10 laser designator, 11 grenade.
-    bool works() const { return type == 1 || type == 2 || (type >= 6 && type <= 11); }
+    // 8 radio detonator, 9 satchel, 10 laser designator, 11 grenade; 13 the
+    // video camera (GOG Df2.exe mode 48; no DF1 mode has it).
+    bool works() const { return type == 1 || type == 2 || (type >= 6 && type <= 11) || type == 13; }
 };
 
 // Gun table record (0x4E9060, 52 bytes).
@@ -76,7 +78,8 @@ struct GunDef {
 };
 
 // Things the weapons ask the game to do: place a charge (satchel 4020,
-// claymore 4014 motion / 4040 radio; 1 m ahead, the player's heading), set
+// claymore 4014 motion / 4040 radio; GOG DF2's video camera 4138; 1 m
+// ahead, the player's heading), set
 // off the player's satchels and radio claymores, ask for a fire mission
 // (the laser designator: pressed, then the request 180 ticks later).
 struct WeaponEvent {
@@ -164,6 +167,11 @@ public:
     // DF2.EXE: slot 10 holds T[35] mode 0 = 47, the binoculars (0x447e20);
     // only the binoculars command reaches it (0x41b6e3). Empty in DF1.
     static constexpr int kBinocularSlot = 10;
+    // GOG Df2.exe: slots 11 and 12 hold the emplaced guns' modes 0x37 (the
+    // .50 cal) and 0x38 (the grenade launcher, item 4080) (0x44eeb0); only
+    // manning a gun selects them (0x44c840's end), 0x44f160 refuses them
+    // otherwise. Empty in DF1 and on the CD.
+    static constexpr int kMountSlot = 11, kMountGlSlot = 12;
 
     // `gameText`: DFGAME.BIN strings (mode names); `exe`: the original
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
@@ -211,7 +219,7 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
-    void cycle();                 // 0x44b81c: next slot with a mode, wrapping
+    void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
     void reload();                // 0x44a004
     void toggleZoom();
     // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10
@@ -223,6 +231,30 @@ public:
     }
     // DF2: the binoculars mode is held (its +0x3C 0x200 bit).
     bool binocularsHeld() const { return df2_ && mode().binoculars; }
+
+    // GOG Df2.exe's video camera (mode 48, kind 13): the player's placed
+    // camera 4138 ([0x79a6b8], -1 none), its view yaw / pitch ([0x79a6c0] /
+    // [0x79a6bc], OpenDF heading sense, set from the object when it is
+    // created, 0x414850) and the inset flag [0x79a6b4] (set by firing kind
+    // 13, 0x44d8a0; toggled by VCam, 0x41f150 case 0x28; cleared when the
+    // inset finds no camera, 0x4568a0).
+    int camera() const { return camera_; }
+    void setCamera(int object, float yaw, float pitch) { camera_ = object; camYaw_ = yaw; camPitch_ = pitch; }
+    float cameraYaw() const { return camYaw_; }
+    float cameraPitch() const { return camPitch_; }
+    bool cameraView() const { return camView_; }
+    void toggleCameraView() { camView_ = !camView_; }
+    void clearCameraView() { camView_ = false; }
+    // 0x41eb50: the mouse steers the camera (commands 0x35..0x38 -> 0x41f150
+    // cases 0x29..0x2c) instead of the player while mode 0x30 is held, the
+    // camera is there and alive and the view is on.
+    bool cameraSteered() const { return camera_ >= 0 && camView_ && modeIndex() == 0x30; }
+    void turnCamera(float dyaw, float dpitch) { camYaw_ += dyaw; camPitch_ += dpitch; }
+    // DF2 mode flag 0x100 (modes 31, 48; GOG Df2.exe 0x44ea10): the
+    // first-person model only while a clip or a chambered one is left.
+    bool viewModelShown() const {
+        return !(df2_ && (mode().df2Flags & 0x100)) || spares() > 0 || chambered();
+    }
 
     // Runs the weapon on 60 Hz ticks. Messages go to the HUD.
     void update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
@@ -336,7 +368,15 @@ private:
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick
     bool fromExe_ = false;
-    std::array<int, kSlots + 1> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars
+    std::array<int, kSlots + 3> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars, [11]/[12] GOG's emplaced guns
+    // GOG Df2.exe: the player's manned gun (+0x8c; World::playerMount, -1
+    // none) and whether its item is 4080 (+0x20 == 0xff0), as of this update.
+    int mount_ = -1;
+    bool mountGl_ = false;
+    int camera_ = -1;
+    float camYaw_ = 0, camPitch_ = 0;
+    bool camView_ = false;
+    void mountTick();
     int prevSlot_ = 3;   // DF2 [0x76553c]: the slot the binoculars came from
     int current_ = 3;
     int kit_ = 1;
