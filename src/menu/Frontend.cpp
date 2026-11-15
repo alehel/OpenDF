@@ -2562,13 +2562,14 @@ int Frontend::run() {
                     cfg_.set("showgun", outcome_.showGun ? 1 : 0);
                 }
                 if (outcome_.quit) break;
-                // 0x40e5d4 (GOG 0x407de0): a win marks the mission done and
-                // adds the kills; the flags are kept only on a win.
+                // 0x40e5d4 (GOG Df.exe 0x407de0): only a win records
+                // anything, the mission done and its kills (+0x664; the two
+                // other stats it adds, +0x678 and +0x674, are not kept yet);
+                // the flags are kept only on a win. Attempts won and then
+                // replayed with Space were recorded the same way.
                 prof().set(0x70 + camp_ * 0x44, int32_t(flags));
-                if (outcome_.won) {
-                    prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
-                    prof().set(0x664, prof().get(0x664) + outcome_.kills);
-                }
+                if (outcome_.won || outcome_.earlierWin) prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
+                prof().set(0x664, prof().get(0x664) + (outcome_.won ? outcome_.kills : 0) + outcome_.earlierKills);
                 if (!openWindow()) return 1;
                 // Post Menu (0x41e480): music_start, then Var00=1 (single
                 // player); Debf init sets Var02 (GOG 0x41f320).

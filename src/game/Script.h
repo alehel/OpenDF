@@ -45,7 +45,9 @@ public:
     virtual bool squadMembers() const { return true; }
     // AI (0x45c0e4 conditions, 0x46bbe8 / 0x46c444 / 0x46cafc actions).
     virtual bool teamSpotted(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
-    virtual bool teamEngaging(int team) const { (void)team; return false; }
+    // Condition 1.2: team has engaged targetTeam (GOG Df.exe 0x42e550, bit
+    // targetTeam of row team at [0x6d7e50]; GOG Df2.exe 0x41b180 the same).
+    virtual bool teamEngaging(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
     virtual bool teamAlerted(int team) const { (void)team; return false; }
     virtual bool reachedWaypoint(int team, int path, int point) const { (void)team; (void)path; (void)point; return false; }
     virtual void followPath(int team, int path) { (void)team; (void)path; }
@@ -71,6 +73,12 @@ public:
     void load(const Mission& mission);
     // Call once per 60 Hz tick.
     void tick(ScriptHost& host);
+    // One visit of every event with flag `bit`, in order: 2 = mission start
+    // (GOG Df.exe 0x42eb60, from the mission start 0x404e30 after the start
+    // removals and before the team totals 0x44a110; GOG Df2.exe 0x41aeb0),
+    // 4 = mission end (GOG Df.exe 0x42eba0 from 0x401e70, network games
+    // only; GOG Df2.exe 0x41aef0 from 0x464140, single player too).
+    void visitFlagged(uint32_t bit, ScriptHost& host);
 
     bool goalDone(int n) const { return n >= 0 && n < 32 && (goals_ >> n & 1); }
     bool failDone(int n) const { return n >= 0 && n < 32 && (fails_ >> n & 1); }

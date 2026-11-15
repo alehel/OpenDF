@@ -31,7 +31,7 @@ void AiSystem::init(World& world, const Mission& mission) {
     noise_.clear();
     teamAlert_.fill(0);
     spotted_.fill(0);
-    engaging_.fill(false);
+    engaging_.fill(0);
     reached_.clear();
     teamSpeed_.fill(0);
     ticks_ = 0;
@@ -568,8 +568,11 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                 p.scanTimer = 0;
                 if (scan(world, p, player)) {
                     bark(world, p, sound, 3);
-                    spotted_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
-                    engaging_[size_t(o.team & 63)] = true;
+                    // GOG Df.exe 0x45bd90 / 0x45bda6: 0x42edd0 and 0x42ee00
+                    // (own team, target team) set the spotted and engaged bits.
+                    const int tt = (p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63;
+                    spotted_[size_t(o.team & 63)] |= 1ull << tt;
+                    engaging_[size_t(o.team & 63)] |= 1ull << tt;
                     p.alert = 2;
                     alertTeam(o.team);
                     p.state = 2;
@@ -611,7 +614,8 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     }
 
     // Has a target.
-    engaging_[size_t(o.team & 63)] = true;   // 0x45c918
+    // 0x45c918 (GOG Df.exe 0x45b643: 0x42ee00(own team, target team)).
+    engaging_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
     if (!targetAlive(world, p, player)) {
         // 0x40: the target is dead; GOTONE if this soldier killed it.
         p.flags |= 0x40;
@@ -915,7 +919,9 @@ bool AiSystem::spotted(int team, int targetTeam) const {
     return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (spotted_[size_t(team)] >> targetTeam & 1);
 }
 
-bool AiSystem::engaging(int team) const { return team >= 0 && team < 64 && engaging_[size_t(team)]; }
+bool AiSystem::engaging(int team, int targetTeam) const {
+    return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (engaging_[size_t(team)] >> targetTeam & 1);
+}
 
 bool AiSystem::alerted(int team) const { return team >= 0 && team < 64 && teamAlert_[size_t(team)] == 2; }
 

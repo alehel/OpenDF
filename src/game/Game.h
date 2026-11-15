@@ -82,6 +82,10 @@ struct MissionOutcome {
     // The in-mission option toggles as the mission ended, copied back to the
     // menu's settings (GOG Df.exe 0x401e70 -> 0x407980).
     bool crosshairs = true, showGun = true;
+    // Delta Force: earlier attempts of this run won and then replayed with
+    // Space (GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 records each one).
+    bool earlierWin = false;
+    int earlierKills = 0;
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when

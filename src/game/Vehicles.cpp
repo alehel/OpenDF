@@ -914,13 +914,16 @@ void VehicleSystem::property(const World& world, int team, int subtype, int valu
     // GOG Df.exe 0x45ff20 (Df2.exe 0x4185b0) on a vehicle's AI block. The
     // helicopter reads flags bit 1 (no targeting) and 2 (100 m leash, home),
     // the alert byte, field of view and perception; the BRDM (DF2) also the
-    // accuracy (ai+0x80). The rest is kept for completeness. Team 0 is
+    // accuracy (ai+0x80). The rest (3 / 4 set flags 0x10 / 0x20) is kept for
+    // completeness. Team 0 is
     // skipped (0x4601a0).
     if (team == 0) return;
     for (auto& v : vehicles_) {
         if (world.objects[size_t(v.object)].team != team) continue;
         switch (subtype) {
         case 2: if (value) v.flags |= 2; else v.flags &= ~2u; break;
+        case 3: if (value) v.flags |= 0x10; else v.flags &= ~0x10u; break;
+        case 4: if (value) v.flags |= 0x20; else v.flags &= ~0x20u; break;
         case 5: v.alert = 2; break;
         case 6: v.alert = 0; break;
         case 7: {
