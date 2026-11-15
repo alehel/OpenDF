@@ -2271,11 +2271,21 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
         // repeats too) go into the key queue (0x485a3a); a left click goes
         // to the Start Screen's mouse hook, registered before the intro
         // (0x418b91 -> 0x418b50), which marks DF_LEAD as done (0x4d9120).
+        // The GOG Df.exe's player (0x49ae00) swaps that hook for its own
+        // (0x49ae4b -> 0x49ade0, the Start Screen's back at 0x49aea5): a
+        // left press (code 2), a right or middle press or release (8..0x40)
+        // or a wheel step (0x100 / 0x200, from 0x497a90) ends the intro, and
+        // the click does not reach DF_LEAD.
         SDL_Event e;
+        bool mouseEnd = false;
         while (SDL_PollEvent(&e)) {
             if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) ++keys;
+            else if (gogProfile_ && (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)) {
+                const int b = e.button.button;
+                if ((b == SDL_BUTTON_LEFT && e.type == SDL_MOUSEBUTTONDOWN) || b == SDL_BUTTON_RIGHT || b == SDL_BUTTON_MIDDLE) mouseEnd = true;
+            } else if (gogProfile_ && e.type == SDL_MOUSEWHEEL && e.wheel.y != 0) mouseEnd = true;
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) introLeadSkip_ = true;
             else if (e.type == SDL_WINDOWEVENT && !fixed) {
                 // WM_SETFOCUS / WM_KILLFOCUS (0x48580b, 0x485c64): no frames
@@ -2285,9 +2295,10 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
             }
         }
         if (shown == testKey) ++keys;
-        if (shown == testClick) introLeadSkip_ = true;
+        if (shown == testClick) (gogProfile_ ? mouseEnd : introLeadSkip_) = true;
         if (quit) break;                   // 0x490024: the quit flag
         if (keys > 0) { --keys; break; }   // 0x48ffcc: one key from the queue skips
+        if (mouseEnd) break;               // GOG 0x49ae88: [0xd09970] set by 0x49ade0
         hear();
         if (!active) { SDL_Delay(10); continue; }
         // 0x486c15: the end, or an invalid chunk (0x49000b; INTRO.KDV ends
