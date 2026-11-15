@@ -778,10 +778,11 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
     const float deg = kPi / 180.f;
     const Vec3 d = world.nearest(v.lastKnown, o.pos) - gunPoint(world, v);
     const float yaw = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
-    // Delta Force (GOG Df.exe 0x450710): the flat range is the integer
-    // square root of the whole-metre differences (0x477620), in metres.
+    // Delta Force (GOG Df.exe 0x450710): the flat range is the EXE's
+    // rounding integer square root (0x477620, dfIsqrt) of the whole-metre
+    // differences, in metres.
     const float flatRange = world.df2Rules ? std::sqrt(d.x * d.x + d.z * d.z)
-                                           : std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(-d.z) * std::floor(-d.z)));
+                                           : dfFlatRange(d.x, -d.z);
     const float pitch = std::atan2(d.y, flatRange) - o.pitch;
     // GOG Df2.exe 0x42bb5e / 0x42bba8: a helicopter that is neither the
     // Gazelle nor the Black Hawk stores the aim unclamped.
@@ -831,7 +832,7 @@ void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& sho
     {
         const float ry = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
         const float rp = std::atan2(d.y, shots.df2() ? std::sqrt(d.x * d.x + d.z * d.z)
-                                                     : std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(-d.z) * std::floor(-d.z)))) - o.pitch;
+                                                     : dfFlatRange(d.x, -d.z)) - o.pitch;
         // GOG Df2.exe 0x42bccf: no limits for the other types.
         if (type != HeloType::Other && (ry < (hawk ? -135 * deg : -45 * deg) || ry > (hawk ? -45 * deg : 45 * deg) ||
             rp < (hawk ? -float(0x0C000000) * turn : -45 * deg) || rp > 0))
@@ -856,7 +857,7 @@ void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& sho
     const float yaw = std::atan2(d.x, -d.z) - err() - v.bias * turn - spread();
     // Delta Force (GOG Df.exe 0x450830): the flat range as 0x450710's.
     const float flatRange = shots.df2() ? std::sqrt(d.x * d.x + d.z * d.z)
-                                        : std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(-d.z) * std::floor(-d.z)));
+                                        : dfFlatRange(d.x, -d.z);
     const float pitch = std::atan2(d.y, flatRange) + err() + spread();
     const ModeDef& md = shots.modeAt(gunMode);
     const GunDef& g = shots.gunAt(md.gun);
@@ -950,7 +951,7 @@ void VehicleSystem::brdmThink(World& world, AiSystem& ai, Vehicle& v) {
     }
     // Aim (0x424470), the horizontal distance in whole metres.
     const Vec3 d = world.nearest(v.lastKnown, o.pos) - brdmGunPoint(world, v);
-    const float flat = std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(d.z) * std::floor(d.z)));
+    const float flat = dfFlatRange(d.x, d.z);
     const float yaw = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
     const float pitch = std::atan2(d.y, flat) - o.pitch;
     v.gunTgtYaw = std::clamp(yaw, -float(0x60000000) * turn, float(0x60000000) * turn);
@@ -988,7 +989,7 @@ void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& 
     if (--v.burst & 0xF) return;
     const Vec3 muzzle = brdmGunPoint(world, v);
     const Vec3 d = world.nearest(v.lastKnown, muzzle) - muzzle;
-    const float flat = std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(d.z) * std::floor(d.z)));
+    const float flat = dfFlatRange(d.x, d.z);
     float yaw = std::atan2(d.x, -d.z), pitch = std::atan2(d.y, flat);
     {
         const float ry = -wrapAngle(yaw - o.heading), rp = pitch - o.pitch;

@@ -335,7 +335,7 @@ float AiSystem::lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw
         const uint32_t dyaw = fold(ang(dy, dx) - yaw);
         if (dyaw > 0x10) return;
         const int64_t hx = dx >> 16, hy = dy >> 16;
-        const int64_t horiz = std::llround(std::sqrt(double(hx * hx + hy * hy)));
+        const int64_t horiz = dfIsqrt(uint32_t(hx * hx + hy * hy));   // 0x477620
         if (fold(ang(dz, double(horiz << 16)) - uint32_t(pitch)) > 0x10) return;
         int32_t a = std::abs(dx), b = std::abs(dy), c = std::abs(dz);
         if (a < b) std::swap(a, b);
@@ -671,13 +671,14 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         // At the target's own origin while it is in sight (flag 0x80:
         // 0x46b963 / 0x415e11), else at the last known position with errMul 5;
         // from the body origin, the horizontal distance in whole metres
-        // (isqrt((dx >> 16)^2 + (dy >> 16)^2) << 16, 0x46b8a4 / 0x415eb4).
+        // (isqrt((dx >> 16)^2 + (dy >> 16)^2) << 16, 0x46b8a4 / 0x415eb4; the
+        // isqrt rounds, GOG 0x477620 / 0x41e830).
         // Error x errMul: 16 - seconds of sight, down to the target move's aim
         // factor.
         const Vec3 at = (p.flags & 0x80) ? targetPos(world, p, player) : p.lastKnown;
         const Vec3 aim = world.nearest(at, o.pos) - o.pos;
         yaw = std::atan2(aim.x, -aim.z);
-        const float flat = std::floor(std::sqrt(std::floor(aim.x) * std::floor(aim.x) + std::floor(aim.z) * std::floor(aim.z)));
+        const float flat = dfFlatRange(aim.x, aim.z);   // GOG Df.exe 0x477620 / Df2.exe 0x41e830 (dfIsqrt)
         pitch = std::atan2(aim.y, flat);
         int move = 2;
         if (p.target == -3) move = player.moveNumber;

@@ -936,9 +936,7 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
         const int32_t dx = fx(d.x), dy = fx(-d.z), dz = fx(d.y);
         auto sq = [](int32_t v) { return uint32_t(uint64_t(int64_t(v) * v) >> 22); };
         const uint32_t sum = sq(dx) + sq(dy) + sq(dz);
-        uint32_t root = uint32_t(std::sqrt(double(sum)));
-        while (uint64_t(root) * root > sum) --root;
-        while (uint64_t(root + 1) * (root + 1) <= sum) ++root;
+        const uint32_t root = dfIsqrt(sum);   // 0x41e830 rounds
         const int32_t length = int32_t(root << 11);
         if (length == 0) return 1;
         const int32_t inv = int32_t(0x100000000LL / length);
