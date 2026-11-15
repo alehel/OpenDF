@@ -185,9 +185,13 @@ First differences from DF1:
     to 40960 m unless fogged). Near ground relief (0x471c00): every sample
     raised by e/256 m (no threshold), e from the detail elevation's 2×2-max
     pyramid at the band's level, nearest texel (OpenDF's ¼ m mesh samples
-    the finest bands coarsely). Not done: the Turbo option's 4 near bands,
-    the far bands' detail-mean tint and height-weighted mips (0x46e0f0,
-    0x46dc00) and the stored map's +2·max detail bias (line tests, radar);
+    the finest bands coarsely). The far bands (mip 0 too) sample a copy of
+    the colour map blended per cell with its detail tile's mean, c·s_t +
+    m_t, s_t = 255 − mean alpha, m_t the mean alpha-weighted colour (GOG
+    0x46e0f0, 0x46d970); the near rings keep the raw map. Not done: the
+    Turbo option's 4 near bands, 0x46dc00's height-weighted mip filter and
+    max-filtered far heights, and the stored map's +2·max detail bias (line
+    tests, radar);
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
     born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
