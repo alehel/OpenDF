@@ -354,6 +354,7 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
         d.icon = -1;
         // Bursts (0x414ad0): 6, 8 and 51 (shot 8 then 9), 21, 35, 36.
         d.burst = m == 6 || m == 8 || m == 51 || m == 21 || m == 35 || m == 36;
+        d.df2Flags = f;
         d.binoculars = (f & 0x200) != 0;   // tested by the move chooser 0x43f690 (0x43f76a / 0x43f7b3)
         if (items && d.item > 0)
             if (const ItemDef* it = items->byId(100000 + d.item); it && !it->graphic.empty()) {

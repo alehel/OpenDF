@@ -304,7 +304,7 @@ void Player::leaveWater(float z) {
 }
 
 // One tick of DF2.EXE's person move for the player (READ unless marked):
-// the jump key 0x440cd0 and the move chooser 0x43f690 on odd ticks (the
+// the jump key 0x440cd0 and the move chooser 0x43f690 (GOG 0x445980) on odd ticks (the
 // motion they give is stored and repeated on even ticks, 0x440858), then
 // 0x440400: x, y += the step; z += vz + dz; the volume push-out (0x440984);
 // the ground (terrain, or d = 0 standing on an object) and the state table
@@ -345,26 +345,54 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
             moving_ = swimMove_;
             move_ = swimMove_ ? "Swimming" : "Floating";
             poseOrigin_ = swimMove_ ? swimOrigin : floatOrigin;
-        } else if (ladder_ && moving_) {
-            // On a ladder (0x43f951 walk, 0x43fa42 run; jump tables 0x43fb40 /
-            // 0x43fb60): z moves at once by direction: forward +0x800 (run
-            // +0x1000) Ladder_Up, back the same down Ladder_Down, left /
-            // right Ladder_Left / Ladder_Right, the diagonals half the climb.
-            static const int climb[8] = {2, 1, 0, -1, -2, -1, 0, 1};
-            static const char* name[8] = {"Ladder_Up", "Ladder_Left", "Ladder_Left", "Ladder_Left", "Ladder_Down",
-                                          "Ladder_Right", "Ladder_Right", "Ladder_Right"};
-            z += float(climb[dir]) * (in.walk ? 0x400 : 0x800) / 65536.f;
-            move_ = name[dir];
-            poseOrigin_ = landOrigin();
         } else {
-            // Land moves, as DF.EXE's controller (see update).
-            if (moving_) {
-                move_ = stance == Stance::Prone ? "Crawling_CR" + std::to_string(dir)
-                                                : std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) +
-                                                      (in.shooting ? "_S" : "") + (oneHanded ? "_1HW" : "_2HW");
+            // Land and ladder moves (GOG Df2.exe 0x445980; CD 0x43f690). The
+            // hand class comes from the mode's raw flags +0x3C: & 0x18 the
+            // _2HW moves, & 4 the _1HW ones, else the plain WalkingN /
+            // RunningN (knife, grenades, explosives, laser, binoculars).
+            const int f = df2ModeFlags;
+            const char* hand = (f & 0x18) ? "_2HW" : (f & 4) ? "_1HW" : "";
+            const bool crouch = stance == Stance::Crouch;
+            if (stance == Stance::Prone) {
+                // Prone (+0x74 & 0x20) is tested before the ladder: crawling,
+                // or Prone_BIN / _SLW / _2HW (& 8) / _1HW.
+                move_ = moving_ ? "Crawling_CR" + std::to_string(dir)
+                                : (f & 0x200) ? "Prone_BIN" : (f & 0x10) ? "Prone_SLW" : (f & 8) ? "Prone_2HW" : "Prone_1HW";
+            } else if (!moving_) {
+                // Still: on a ladder and not shooting Ladder_Stand (0xf);
+                // crouched BIN / SLW / 2HW / 1HW / KNIFE; standing the same
+                // with SCW while the scope is in (+0x74 & 0x80, 0x44eba0),
+                // the _S set while shooting (+0x64 & 0x8000000).
+                if (ladder_ && !in.shooting) move_ = "Ladder_Stand";
+                else if (crouch)
+                    move_ = (f & 0x200) ? "Crouched_BIN" : (f & 0x10) ? "Crouched_SLW" : (f & 8) ? "Crouched_2HW"
+                          : (f & 4) ? "Crouched_1HW" : "Crouched_KNIFE";
+                else if (f & 0x200) move_ = "Standing_BIN";
+                else
+                    move_ = std::string(in.shooting ? "Standing_S" : "Standing") +
+                            ((f & 0x10) ? "_SLW" : scoped ? "_SCW" : (f & 8) ? "_2HW" : (f & 4) ? "_1HW" : "_KNIFE");
+            } else if (ladder_ && (dir <= 2 || dir >= 6)) {
+                // On a ladder (+0x64 & 0x400000; standing walk 0x445d1b, run
+                // 0x445df7, crouched walk 0x445b4e, run 0x445beb): up or down
+                // by the view pitch (+0x34 in (0, 0x7fffffff) up, level or
+                // down down): forward 0x800 (run 0x1000) Ladder_Up, the front
+                // diagonals half with Ladder_Left / Ladder_Right, left and
+                // right those moves without a climb. Ladder_Down is never
+                // chosen.
+                const float s = pitch > 0 ? 1.f : -1.f;
+                static const int climb[8] = {2, 1, 0, 0, 0, 0, 0, 1};
+                static const char* name[8] = {"Ladder_Up", "Ladder_Left", "Ladder_Left", "", "", "", "Ladder_Right", "Ladder_Right"};
+                z += s * float(climb[dir]) * (in.walk ? 0x400 : 0x800) / 65536.f;
+                move_ = name[dir];
+            } else if (ladder_ && in.walk && !crouch) {
+                // Back and its diagonals on a ladder, standing and walking:
+                // move 0 Null (0x445eb7), no motion. Running, or crouched,
+                // they are the land moves: the player steps off.
+                move_ = "Null";
             } else {
-                const char* base = stance == Stance::Prone ? "Prone" : stance == Stance::Crouch ? "Crouched" : "Standing";
-                move_ = std::string(base) + (in.shooting && stance == Stance::Stand ? "_S" : "") + (oneHanded ? "_1HW" : "_2HW");
+                // Walking / running (crouched the same moves), _S_ while
+                // shooting for the hand classes only.
+                move_ = std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) + (in.shooting && *hand ? "_S" : "") + hand;
             }
             poseOrigin_ = landOrigin();
         }
@@ -410,7 +438,8 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
             } else if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) {
                 sliding_ = true;
             } else if (moving_ && stance != Stance::Prone && gx * along.x + gz * along.z > kSlideStop && moves) {
-                const std::string walk = "Walking" + std::to_string(dir) + (oneHanded ? "_1HW" : "_2HW");
+                const char* hand = (df2ModeFlags & 0x18) ? "_2HW" : (df2ModeFlags & 4) ? "_1HW" : "";   // 0x445980
+                const std::string walk = "Walking" + std::to_string(dir) + hand;
                 if (const AnimMove* w = moves->find(walk); w && w->velocity < vel) {
                     speed_ = w->velocity;
                     step = along * (w->velocity / 60.f);
