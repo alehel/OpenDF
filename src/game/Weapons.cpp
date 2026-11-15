@@ -312,6 +312,7 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
     impacts_.clear();
+    tracers_.clear();
 }
 
 bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout lo) {
@@ -432,6 +433,7 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
     impacts_.clear();
+    tracers_.clear();
     return true;
 }
 
@@ -899,6 +901,33 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     ++debugTick_;
 }
 
+// The round's colour +0x88 (GOG Df.exe 0x462f20): with a shooter, green at
+// night (0x8000ff00), else by the shooter's side (1 0xb9a0a0ff, 2
+// 0xb9ffa0a0, other 0xffffffff); without one 0. M203 rounds (gun flag 1) and
+// the LAW (0x40, not a hand grenade 0x10) white. Shrapnel's 0x01010101 is
+// set by its spawner (0x463200).
+uint32_t Arsenal::tracerColour(const Projectile& b, const World& world) const {
+    uint32_t c = 0;
+    if (b.shooter != -1) {
+        const int side = b.shooter == -3 ? playerSide
+                         : b.shooter >= 0 && size_t(b.shooter) < world.objects.size() ? world.objects[size_t(b.shooter)].side
+                                                                                     : 0;
+        c = night ? 0x8000ff00u : side == 1 ? 0xb9a0a0ffu : side == 2 ? 0xb9ffa0a0u : 0xffffffffu;
+    }
+    if ((b.flags & 0x01) || (!(b.flags & 0x10) && (b.flags & 0x40))) c = 0xffffffffu;
+    return c;
+}
+
+// GOG Df.exe 0x465273..0x4652a9 (single player): with the Tracers option off
+// (attributes 0x1000) only shrapnel and the LAW (flags & 0x60) leave a line;
+// otherwise every round but hand grenades (0x10) and silenced guns (0x80).
+// (Multiplayer tests its own option bit, [0x67f548] & 1, the same way.)
+void Arsenal::tracer(const Projectile& b, Vec3 to) {
+    if (df2_) return;
+    if (tracersOff ? !(b.flags & 0x60) : (b.flags & 0x90)) return;
+    tracers_.push(b.pos, to, b.tracer);
+}
+
 void Arsenal::moveProjectiles(float dt, World& world) {
     // Projectiles (0x44f3e4), per 60 Hz tick: trace the segment pos..pos+v,
     // the nearest hit stops it (no penetration); otherwise move, gravity
@@ -908,6 +937,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
     // from the round's reversed velocity.
     auto hitFrom = [&](const Projectile& p, const RayHit& h) { return df2_ ? h.point - p.vel : p.from; };
     for (auto& b : bullets_) {
+        if (!b.tracerSet) { b.tracer = tracerColour(b, world); b.tracerSet = true; }
         int passes = 0;   // DF2: up to 20 hits in a tick (penetration)
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
             const Vec3 next = b.pos + b.vel * kTick;
@@ -1006,6 +1036,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.material = hit.material;
                 im.shooter = b.shooter;
                 impacts_.push_back(im);
+                tracer(b, im.pos);   // to the hit point (0x465273)
                 if (std::getenv("OPENDF_DEBUGHITS")) {
                     std::fprintf(stderr, "hit obj %d part %d mesh %d material %08x at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part,
                                  hit.mesh, hit.material, hit.point.x, hit.point.y, hit.point.z, b.age);
@@ -1140,6 +1171,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
                     sounds_.push_back({0x41, b.pos + d * t});
             }
+            if (!stopped) tracer(b, next);   // the whole step (0x465273)
             b.pos = stopped ? stopAt : next;
             if (df2_) {
                 // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14

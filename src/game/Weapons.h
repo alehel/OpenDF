@@ -12,6 +12,7 @@
 #include "../core/ExeImage.h"
 #include "../formats/Mission.h"
 #include "Player.h"
+#include "Tracers.h"
 #include "World.h"
 
 #include <array>
@@ -107,6 +108,10 @@ struct Projectile {
         yaw = std::atan2(vel.x, -vel.z);
         pitch = std::atan2(vel.y, std::sqrt(vel.x * vel.x + vel.z * vel.z));
     }
+    // Delta Force: the round's tracer colour +0x88 (GOG Df.exe 0x462f20 /
+    // shrapnel 0x463200), set on its first tick.
+    uint32_t tracer = 0;
+    bool tracerSet = false;
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }
 };
@@ -279,6 +284,12 @@ public:
     bool underwaterRule = false;
     int playerArmourClass = 0;   // DF2: the player's second hp value (Kevlar's n)
     float waterLevel = 0;
+    // Delta Force tracers (GOG Df.exe 0x465273): night mission (header
+    // +0x7A & 0x10, [0x8cf982]), the Tracers option off (attributes 0x1000,
+    // [0x67f548]) and the player's side (the round colour by side, 0x462f20).
+    bool night = false, tracersOff = false;
+    int playerSide = 1;
+    Tracers& tracers() { return tracers_; }
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
     // Knife strikes since the last call: the point 0.5 m along the view
     // from the body origin (0x42ca8c), for blast kind 2.
@@ -327,6 +338,9 @@ private:
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
     std::vector<Projectile> bullets_;
+    Tracers tracers_;
+    uint32_t tracerColour(const Projectile& b, const World& world) const;
+    void tracer(const Projectile& b, Vec3 to);
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
     std::vector<SoundEvent> sounds_;

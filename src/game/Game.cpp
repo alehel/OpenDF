@@ -766,6 +766,10 @@ bool Game::loadMission(int index) {
     world_.build(vfs_, models_, items_, mission_);
     ai_.df2 = mission_.version >= 0x0F;
     ai_.night = (mission_.lightFlags & 0x10) != 0;
+    // Delta Force's tracers (GOG Df.exe 0x462f20 colour, 0x465273 gate).
+    arsenal_.night = ai_.night;
+    arsenal_.tracersOff = (o_.attributes & 0x1000) != 0;
+    arsenal_.playerSide = kPlayerSide;
     ai_.playerGear = o_.df2Gear;
     // Squad members off, before the AI lists: DF.EXE 0x402cc5 (attributes
     // 0x200) -> 0x402a38, DF2.EXE 0x45bf44 (df2.cfg attributes 0x20, the
@@ -1513,6 +1517,8 @@ void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor) {
     p.power = 1;
     p.falloff = 0x40;
     p.flags = 0x20;
+    p.tracer = 0x01010101;   // 0x463200: dark streaks
+    p.tracerSet = true;
     if (world_.df2Rules) p.gun = 31;   // DF2 0x44ac70: ammo 31 (100 grains; water drag)
     arsenal_.addProjectile(p);
 }
@@ -2974,6 +2980,13 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     for (int pass = 0; pass < 2; ++pass) {
         glDepthRange(pass ? 0.0 : 0.5, pass ? 0.5 : 1.0);
         drawWeather(view, pass ? projNear : projFar, eye);
+    }
+    // Delta Force's round tracers, the last of the 3D view (GOG Df.exe
+    // 0x485731 -> 0x4634d0).
+    arsenal_.tracers().age(ticks_, paused_);
+    for (int pass = 0; pass < 2; ++pass) {
+        glDepthRange(pass ? 0.0 : 0.5, pass ? 0.5 : 1.0);
+        arsenal_.tracers().draw(view, pass ? projNear : projFar, [&](Vec3 p) { return world_.nearest(p, eye); });
     }
     glDepthRange(0.0, 1.0);
 }
