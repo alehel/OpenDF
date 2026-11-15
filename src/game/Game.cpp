@@ -1302,6 +1302,8 @@ bool Game::loadMission(int index) {
             const GpuModel* m = name.empty() ? nullptr : models_.get(vfs_, name);
             return m ? &m->points : nullptr;
         };
+        arsenal_.df2Seed = [this](uint32_t v) { df2Rng_ = v; };
+        arsenal_.df2Rand = [this]() { return shrapRand(); };
     }
     loadingLine("STRLTEXT7");   // 0x403e32
     // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
@@ -1440,8 +1442,11 @@ bool Game::loadMission(int index) {
             const std::string& f = o.item->aiFunction;
             // Delta Force 2 adds snd3 (random ambient markers, GOG Df2.exe
             // 0x402910; graphic-less ones are handled below) and
-            // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0).
-            if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
+            // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0) and
+            // oakt (the regional oaks, 0x42e8b0: alive, the item's sound 4 m
+            // up, the next wait ((r >> 14) + 5) << 6 with r from the shared
+            // 0x41ea20; destroyed (flag 4 / hp <= 0) the wait 0x400).
+            if ((f == "dec0" || f == "tree" || f == "palm" || (f == "oakt" && world_.df2Rules) || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
                 o.missionIndex >= 0) {
                 // First wait: the think_timer GOG Df.exe 0x449710 gives
                 // (df1FirstThink_); Delta Force 2 sets its own below.
@@ -1809,6 +1814,15 @@ void Game::spawnEffect(int slot, Vec3 pos) {
                                    // Delta Force 2 (table 0xbb8b20, built at 0x414500): 17 rain poink,
                                    // 18 snow, 19 gex5, 20 boomd, 21 parachut, 22 pararnd, 23-27.
                                    107017, 107018, 107030, 107023, 107037, 107038, 107044, 105311, 105310, 105313, 105312};
+    // Delta Force 2 (GOG Df2.exe 0x4156b0, CD 0x413850; the terrain hit
+    // 0x415a60 inlines it): every effect takes two numbers from the shared
+    // generator 0x41ea20 (shrapRand), the yaw rand << 16 (effects are not
+    // turned in OpenDF) and the scale rand + 0x8000, whatever it makes.
+    float df2Scale = 1.f;
+    if (world_.df2Rules) {
+        (void)shrapRand();
+        df2Scale = float(shrapRand() + 0x8000) / 65536.f;
+    }
     const int count = mission_.version >= 0x0F ? 27 : 16;
     if (slot < 1 || slot > count) return;
     const ItemDef* item = items_.byId(kItems[slot]);
@@ -1826,6 +1840,8 @@ void Game::spawnEffect(int slot, Vec3 pos) {
     if (gogRand()) {
         yaw = uint32_t(shrapRand()) << 16;   // +0x30, the heading an ef3d draw uses
         scale = float(shrapRand() + 0x8000) / 65536.f;
+    } else if (world_.df2Rules) {
+        scale = df2Scale;
     } else {
         if (ef3d) yaw = uint32_t(std::uniform_int_distribution<int>(0, 0xffff)(effectRng_)) << 16;
         scale = u(effectRng_);
@@ -1985,7 +2001,9 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team, bool airbo
     const float water = terrain_.waterLevel();
     if (water != 0 && origin.y - 0.8f < water) {
         const Vec3 at{origin.x, water, origin.z};
-        spawnEffect(2, at);
+        // GOG Df2.exe 0x415780 (0x4157bb push 0x17, CD 0x413920): Delta
+        // Force 2 shows slot 0x17, 107044 sploosh.
+        spawnEffect(mission_.version >= 0x0F ? 0x17 : 2, at);
         playSound(set1 ? SoundSystem::FsWaterR : SoundSystem::FsWaterL, at);
         // DF2.EXE 0x413975/0x413985: a +-10 m noise with the walker's team, flags 0.
         if (mission_.version >= 0x0F) ai_.noise(origin, 10.f, team, 0);
@@ -2213,10 +2231,7 @@ void Game::weaponEvent(const WeaponEvent& e) {
 void Game::bigBlast(Vec3 at, float heading, int owner) {
     if (world_.df2Rules) {
         shrapSeed();
-        shrapRand();   // the effect's yaw (effects are not turned in OpenDF)
-        effectScale_ = float(shrapRand() + 0x8000) / 65536.f;
-        explode(at, 1, true, 12.f, true, owner, 0x13, false);
-        effectScale_ = 0;
+        explode(at, 1, true, 12.f, true, owner, 0x13, false);   // the effect draws its yaw and scale (spawnEffect)
         ai_.noise(at, 200.f, 0, 0);
         // DF2's binary yaw runs anticlockwise from east: OpenDF heading = pi/2 - yaw.
         const uint32_t base = uint32_t(int64_t(std::llround(double(kPi / 2 - heading) / (2 * kPi) * 4294967296.0)));
@@ -2370,6 +2385,10 @@ void Game::tickCollapses() {
             return lo + float((int64_t(shrapRand()) * int64_t((hi - lo) * 65536.f)) >> 16) / 65536.f;
         };
         const float* b = c.box;
+        // GOG Df2.exe 0x402ab0: each rubble step first draws one number for
+        // an unused sine/cosine (0x41e8c0(rand << 16)); the effects draw two
+        // each (0x4156b0, spawnEffect).
+        if (c.step < c.rubble) (void)shrapRand();
         if (c.step < c.rubble)
             for (int k = 0; k < 2; ++k) {
                 // Two rubble bursts on the inset edges: odd steps the x edges at
@@ -2394,7 +2413,11 @@ void Game::tickCollapses() {
                 default: y = b[3]; break;
                 }
                 const Vec3 at = world(x, y);
-                spawnSmk2(at, true, at.x - o.pos.x, at.z - o.pos.z, 0);
+                Effect* e = spawnSmk2(at, true, at.x - o.pos.x, at.z - o.pos.z, 0);
+                // GOG Df2.exe 0x402f54: the oil rigs' clouds (items 3072 / 3073 /
+                // 3102) rise at (rand & 0x3ff) a tick; no draw when none was made.
+                if (e && o.item && (o.item->id == 103072 || o.item->id == 103073 || o.item->id == 103102))
+                    e->vel[2] = int32_t(shrapRand() & 0x3ff);
             }
             // Smoke only on a step that spawned no dust (0x402d7e): up to 6
             // puffs, a random angle, radius (rand·R >> 16) / 2, height up to
@@ -2468,18 +2491,29 @@ void Game::blowCharge(Charge& c) {
             const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
             shrapnel(at, yaw, pitch, 0x1E);
         }
+    } else if (world_.df2Rules) {
+        // Delta Force 2's claymore (GOG Df2.exe 0x415520): effect 3, blast
+        // type 1, sound 0x32 and a +-200 m noise (0x414660) at the charge
+        // itself, no smoke generator, no reseed; the fragments from 0x3333
+        // (0.2 m) above it at the binary yaw Y + (-30 + 1.8 k) degrees, k
+        // 0..39 (Y anticlockwise from east, so OpenDF's heading minus the
+        // offset: 30 degrees to the right, 40.2 to the left), pitch -2, 3,
+        // 8, 13; speed (rand | 0x100) * 0x3c (0x452120), owned by the placer.
+        explode(o.pos, 1, false, 10.f, true, -3);
+        ai_.noise(o.pos, 200.f, 0, 0);
+        for (int k = 0; k < 40; ++k)
+            for (int p = 0; p < 4; ++p)
+                shrapnel(at, o.heading - (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C, -3);
     } else {
-        explode(at, 0, false, 10.f, true, -1, 0, df2);
+        explode(at, 0, false, 10.f, true, -1, 0, false);
         // GOG Df.exe 0x4607e0 (not seeded): DF yaw heading - 30 degrees +
         // k x 1.8 (its loop adds k x 0.3 to the 1.5-degree steps, so the fan
         // is lopsided: 40.2 degrees to the left, 30 to the right), pitch -2,
         // 3, 8, 13.
-        const Vec3 from = df2 ? at : o.pos + Vec3{0, 0x3333 / 65536.f, 0};
-        const float sense = df2 ? 1.f : -1.f;
+        const Vec3 from = o.pos + Vec3{0, 0x3333 / 65536.f, 0};
         for (int k = 0; k < 40; ++k)
             for (int p = 0; p < 4; ++p)
-                shrapnel(from, o.heading + sense * (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f,
-                         0x3C);
+                shrapnel(from, o.heading - (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C);
     }
 }
 
@@ -3116,11 +3150,14 @@ void Game::gnrcExplode(int index) {
 // DF2.EXE 0x4524d0 -> 0x412b00, the common blast: effect 3 (0x413850),
 // blast type 1 of 10 m (0x44d460), sound 0x32 (0x45e910), a +-200 m noise
 // with flags 0 (0x412b5c), then `fragments` seeded rounds; no smoke
-// generator of its own.
+// generator of its own. GOG Df2.exe 0x414960 (from 0x45a1e0: vehicles,
+// helicopters 0x42c120 with 40 + 10 + 10, barrels, mines, ...): the seed
+// 0x5FC comes first, so the effect (0x4156b0) takes the first two numbers
+// and the fragments start at the third.
 void Game::df2Blast(Vec3 at, int fragments, float heading) {
+    shrapSeed();
     explode(at, 1);   // surface 1: effect 3, no smoke generator
     ai_.noise(at, 200.f, 0, 0);
-    shrapSeed();
     fragmentBurst(at, fragments, heading);
 }
 
@@ -3519,13 +3556,12 @@ void Game::tickDf1Lights() {
 // rand<<16 (a full turn) for the second; speed ((rand*2) | 0x100) * 20 >> 6
 // (16.16 m per tick, up to 18.75 m/s); flags 0x20, 400 ticks, power 1,
 // falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
+// Delta Force 2 (GOG Df2.exe 0x45a1e0 -> 0x414960, CD 0x4524d0 -> 0x412b00):
+// the common blast (df2Blast), with no smoke generator.
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
+    if (world_.df2Rules) { df2Blast(at, shrapnel, heading); return; }
     if (gogRand()) shrapSeed();   // GOG Df.exe 0x4606b0: before the effect
-    explode(at, 0, false, 10.f, true, -1, 0, world_.df2Rules);   // Delta Force: the callers make the smoke
-    if (world_.df2Rules) {
-        shrapSeed();   // DF2 0x412b00
-        ai_.noise(at, 200.f, 0, 0);   // 0x412b5c: +-200 m, flags 0
-    }
+    explode(at, 0, false, 10.f, true, -1, 0, false);   // Delta Force: the callers make the smoke
     fragmentBurst(at, shrapnel, heading);
 }
 
@@ -3535,11 +3571,11 @@ void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
         for (int k = 0; k < shrapnel / 2; ++k) {
             const uint32_t turn = shrapRand() << 16;
             const uint32_t pitchBits = shrapRand() << (group ? 16 : 15);
-            // Delta Force (GOG Df.exe 0x4606b0): DF yaw + rand << 16 runs
-            // anticlockwise, so the random turn is taken off OpenDF's
-            // clockwise heading (the seeded pattern keeps its side).
-            const float yaw = world_.df2Rules ? float(headingBits + turn) / 4294967296.f * 2 * kPi
-                                              : heading - float(turn) / 4294967296.f * 2 * kPi;
+            // GOG Df.exe 0x4606b0, GOG Df2.exe 0x414960: DF yaw + rand << 16
+            // runs anticlockwise (DF yaw = pi/2 - OpenDF heading), so the
+            // random turn is taken off OpenDF's clockwise heading (the seeded
+            // pattern keeps its side).
+            const float yaw = float(headingBits - turn) / 4294967296.f * 2 * kPi;
             const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
             this->shrapnel(at, yaw, pitch, 20);
         }
@@ -9482,11 +9518,11 @@ int Game::run() {
                     Vec3 at = o.pos;
                     const bool sound = f.rfind("snd", 0) == 0;   // snd0..3: at the marker itself
                     if (!sound) at.y += 4.f;
-                    if (f == "tree" && !o.alive()) { a.wait = 0x400; continue; }
+                    if ((f == "tree" || f == "oakt") && !o.alive()) { a.wait = 0x400; continue; }
                     if (o.alive() || sound) playSound(o.item->interruptSound, at);
                     // GOG Df.exe (0x45c180 dec0 / palm, 0x45c340 snd0, 0x45c3a0
                     // snd1, 0x45c400 snd2, 0x45c460 tree): r from 0x477860, 16 bits.
-                    const int r = gogRand() ? int(shrapRand()) : crtRand() * 2;
+                    const int r = gogRand() || (world_.df2Rules && f == "oakt") ? int(shrapRand()) : crtRand() * 2;
                     a.wait = f == "snd0" ? (((r * 6) >> 16) + 20) << 6 : f == "snd1" ? (((r * 4) >> 16) + 8) << 6
                            : f == "snd2" ? (((r * 2) >> 16) + 3) << 6 : ((r >> 14) + 5) << 6;
                     // snd3 (GOG Df2.exe 0x402910): acceleration·64 + rand·axle_dist·64 ticks

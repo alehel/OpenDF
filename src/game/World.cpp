@@ -922,9 +922,9 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
                 if (q.y < terrain->sightHeight(q.x, q.z)) return 0;
             }
         }
-    } else {
-        // GOG Df2.exe 0x4063d0 -> 0x46e740, in its 16.16 axes (x east, y
-        // north = -z, z up): the length isqrt(sum of d^2 >> 22) << 11, the
+    } else if (fog) {
+        // GOG Df2.exe 0x4063d0 -> 0x46e740 (CD 0x406180 -> 0x464710), in
+        // its 16.16 axes (x east, y north = -z, z up): the length isqrt(sum of d^2 >> 22) << 11, the
         // unit direction d * (2^32 / length) >> 16, and n = length >> 12
         // steps i of 1/16 m from the start. Every 1 m a coarse test against
         // the word grid's vertex at (x >> 16, y >> 16); a point at or below
@@ -963,6 +963,10 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
             }
             if (clear) break;
         }
+    } else if (RayHit h; raycast(a, b, h, false)) {
+        // The line of fire (fog off: 0x406610 -> 0x46e610, blasts) tests the
+        // plain ground like a round.
+        return 0;
     }
     const Vec3 mid = a + d * 0.5f;
     int extra = 0;
@@ -1385,10 +1389,24 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int own
             // DF2.EXE 0x44d4a0: type 5 (12 m) 512 - 16 d, type 3 128 - 16 d,
             // type 1 32 - 4 d; blast class 3 / 2 / 0, +1 inside the object's
             // box, must reach the item's third hp value (def+0x9c).
+            // GOG Df2.exe 0x454b60 (0x454f6c..0x45503c): the amounts from
+            // the 16.16 distance, 0x200 - (d >> 12), 0x80 - (d >> 12), 0x20 -
+            // (d >> 14); the +1 when the blast point, in the object's frame
+            // (0x4308d0 / 0x430870 / 0x430320), lies strictly inside the LOD
+            // 0 header box +0x28..+0x3c.
             const bool five = radius > 11.f;
-            amount = five ? int(512 - 16 * d) : heavy ? int(128 - 16 * d) : int(32 - 4 * d);
+            const int32_t df = int32_t(d * 65536.f);
+            amount = five ? 0x200 - (df >> 12) : heavy ? 0x80 - (df >> 12) : 0x20 - (df >> 14);
             int cls = five ? 3 : heavy ? 2 : 0;
-            if (d <= 0.f) ++cls;
+            {
+                const Mat4 m = o.matrix(o.pos);
+                const Vec3 r = at - p;
+                float l[3];
+                for (int j = 0; j < 3; ++j) l[j] = m.at(0, j) * r.x + m.at(1, j) * r.y + m.at(2, j) * r.z;
+                const float fx = l[0], fy = -l[2], fz = l[1];   // OpenDF model axes -> file x forward, y left, z up
+                const float* bx = o.model->box;
+                if (bx[0] < fx && fx < bx[1] && bx[2] < fy && fy < bx[3] && bx[4] < fz && fz < bx[5]) ++cls;
+            }
             if (o.item && cls < o.item->hp3) continue;
         }
         if (sight(p, target, int(i), -1, !df2Rules) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1, !df2Rules) <= 0) {

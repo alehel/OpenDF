@@ -138,7 +138,7 @@ First differences from DF1:
     terrain hits make an AI noise by class (5/2/2/10/5/10 m for 1..6; GOG 0x415a60 all of 1..11: sound 3C/40/3A/3D/3A/3C/3C/37/3C/3A/3C, effect slot 5/7/9/13/8/6/5/11/5/9/5, noise 5/2/2/10/5/10/10/10/5/5/2 m);
   - **rotor loops** (GOG 0x42c2da): 502 for the gazelle, Havoc, Hind and
     Ka-29, 503 for the Black Hawk only; **whiz-by** 0x41 (0x4547a2): never for
-    hand or delay grenades in the GOG build (the CD's 0x44d146 has no such test), the step's start or end within 40 m on each axis;
+    hand or delay grenades in the GOG build (the CD's 0x44d146 has no such test), on every pass of a tick (the one that hits too), the pass's start or end (the hit backed off, or the tick's end) within 40 m on each axis, at the point of the rest of the tick's segment nearest the listener (0x453770);
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
     body pre-test and nearest-along-the-ray rule are DF1's;
@@ -443,7 +443,9 @@ First differences from DF1:
     wind by the ammo's speed band and the curve (×(1 + depth/10) under water,
     at most 0.5 a tick), rounds under the water spent below 15.5 m/s; people
     take max(1, |v|²·M / 25) (×8 head, 0x44bf40/0x44bff0); the MasterKey's
-    12 pellets within ±5.625°; the Barrett's 1/32 m push. Water (0x44bd40,
+    12 pellets within ±5.625° (GOG 0x451eb0: the shared generator seeded
+    with the binary yaw >> 16, each pellet (r + 0x1f8000)·0x800 about the
+    yaw and pitch truncated to 16 bits); the Barrett's 1/32 m push. Water (0x44bd40,
     hit type 4, handled at 0x44cee5): a round crossing the surface splashes
     (effect 2, sound 0x3B) and its tick ends 0.125 m below it, velocity kept,
     so rounds go on under the water (and a rising one is pushed back down);
@@ -458,8 +460,11 @@ First differences from DF1:
     unharmed, buildings take nothing, vehicles only rockets (64) and
     shells/impact grenades (16), others max(1, E/25); explosions (0x44d4a0):
     people base 8 (32 for the 12 m charge) full/half/quarter by 4 m/8 m,
-    objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
-    that must reach the item's third hp value; the blast's line of fire for
+    objects 0x200/0x80 − (d >> 12) or 0x20 − (d >> 14) (16.16 d) with a
+    blast class (3/2/0, +1 when the blast point, in the object's frame, is
+    strictly inside the LOD 0 header box, GOG 0x454fab) that must reach the
+    item's third hp value; rounds with ammo flag 0x1000000 (0x17..0x1a) do
+    nothing to `noak` items (0x453510); the blast's line of fire for
     people, the player and objects is GOG 0x406610 (terrain, decorations and
     items in the way, no fog cutoff); the blast carries its owner (the
     round's shooter, the charge's placer, the strike's requester): objects of
@@ -481,7 +486,17 @@ First differences from DF1:
     palmdebris pieces with sound 300 (0x429e40(-1), as GOG Df.exe's
     0x44e6b0(-1); DF2's gdeb mover 0x42e6a0 is DF1's); the owner of a vehicle's or
     charge's own detonate / fragment chain (0x414960) is not passed on
-    either (the boat's five big blasts take its +0xF8). The bld2
+    either (the boat's five big blasts take its +0xF8); nor the cactus and
+    oak debris (cact 0x42e620 -> 0x429880, oakt 0x42e8b0 -> 0x429a80: DF2's
+    debris objects, whose move OpenDF does not have yet; the live oaks'
+    ambient sound is done). Every effect takes two numbers from the shared
+    generator 0x41ea20 (0x4156b0: yaw, scale rand + 0x8000); the common
+    blast (0x414960: vehicles, helicopters, barrels, mines) seeds it first,
+    so its fragments start at the third number, and leaves no smoke
+    generator; the claymore (0x415520) blasts at the charge, no smoke, its
+    fan Y + (−30 + 1.8k)° about the anticlockwise yaw from 0.2 m up. AI
+    sight lines (0x4063d0 -> 0x46e740) test the ground raised by the detail
+    elevation (the stored grid), rounds and blasts the plain ground. The bld2
     crush (0x45cd80) takes 100 hp from people, every item-list object and
     every non-building decoration in its box. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
@@ -1225,8 +1240,13 @@ First differences from DF1:
     its snow, night and female variants by id (0x4128d0), the ghillie and
     LAR V models drawn in their place (0x415410);
   - **delay grenade** (0x44ae50): no impact fuse; it slides off object
-    faces (v −= n·(v·n)·1.07, × 0.85), stops on other surfaces, and goes
-    off (type 1) with 10 ticks of its fuse left; the fuse is 444 −
+    faces (v −= n·(v·n)·1.07, × 0.85), stops on people, keeps its velocity
+    on the ground (each tick ends at the hit backed off, 0x2000 in GOG,
+    0x4000 in the CD), and goes off (type 1) once its ttl is below 11
+    (before that tick's decrement); in GOG the water keeps 1/8 of its
+    velocity (the CD's stops it), it can be thrown under the water at 1/8
+    speed (0x416a30 / 0x451ae0), and no round drifts with the wind under
+    the water; the fuse is 444 −
     ((heading >> 16) & 0x7f) ticks, from the throw's 32-bit binary heading
     (GOG 0x451ae0), and it is drawn in flight as the grenade item 4033.
 

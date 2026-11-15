@@ -380,6 +380,10 @@ public:
     // The first-person model's points (LOD 0 vertices in file order) by
     // graphic name, for the muzzle (player table +0x90); null if unknown.
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
+    // Delta Force 2's shared generator (GOG Df2.exe 0x41ea10 seed, 0x41ea20
+    // the next 16 bits; the game's shrapRand), for the shotgun's pellets.
+    std::function<void(uint32_t)> df2Seed;
+    std::function<uint32_t()> df2Rand;
     // Delta Force 2's rule for shots from under the water (set by the game).
     bool underwaterRule = false;
     int playerArmourClass = 0;   // DF2: the player's second hp value (Kevlar's n)
@@ -493,7 +497,9 @@ private:
     // tick), damage max(1, E / 25.0).
     int df2Damage(const Projectile& b) const;
     // Delta Force 2 (0x44c2f0): one tick of drag toward the wind.
-    void df2Drag(Projectile& b, float water) const;
+    // `speed` is the round's speed (16.16 per tick) at the start of the tick.
+    void df2Drag(Projectile& b, float water, int64_t speed) const;
+    static int64_t df2Speed(const Projectile& b);
     std::mt19937 rng_{1998};
     std::function<uint32_t()> sharedRand_;
     bool infiniteAmmo_ = false;   // GOG Df.exe [0x67dbc9] & 1

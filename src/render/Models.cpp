@@ -267,7 +267,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     g->headerRadius = src.radius > 0 ? src.radius : 1.f;
     g->flatRadius = src.flatRadius;
     g->height = src.height;
-    std::copy(src.box, src.box + 4, g->box);
+    std::copy(src.box, src.box + 6, g->box);
     for (auto& t : src.textures) {
         g->textures.push_back(uploadTexture(t));
         g->indexTextures.push_back(uploadIndices(t));
