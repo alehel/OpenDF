@@ -817,7 +817,11 @@ First differences from DF1:
     sets resolution index 4, closing restores it, 0x45d9ea), and the mode
     set reloads f_sml%i / f_LG%i at i = min(width, 800) (0x45c0a0), so the
     map's text is F_SML640 / F_LG640 at any display mode (the Players
-    headings no longer overlap); the rain's lines test but do
+    headings no longer overlap; f_sml goes through the band scanner
+    0x41ba90 -> 0x41b9a0 / 0x41b8a0 like f_LG and is drawn opaque by
+    0x41bb90, advance width + 1, a code without a glyph as glyph 0, so
+    F_SML640 (277x240, 14-row bands) loads instead of DF1's fixed
+    16-pixel cells keeping F_SML800); the rain's lines test but do
     not write depth (0x46014f); the software water writes its rows' depth
     (0x485e17) and is fogged by the fog pass, its fog quad 0x467568 being
     the hardware path's;
