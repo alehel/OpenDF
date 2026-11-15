@@ -481,6 +481,16 @@ First differences from DF1:
     the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
     header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
     as spelt), binocular texts in orange at the view's centre − 15; the
+    help (F1; GOG Df2.exe 0x41e5d0 at the mission start, drawn by
+    0x41e620): the action table's 0x200 rows with the soldier's bindings,
+    rows without a key or mouse button and category 11 left out, sorted by
+    category then name, named by DF2GAME.BIN HelpScreenActions, a page per
+    category or 14 rows titled "Help - <HelpScreenText category>", "Page %i
+    of %i", key texts from HelpScreenKeys (Ctrl-/Alt-/Shift- by flags
+    0x100/0x80/0x40, " or " a mouse button, " *" for flag 0x200), drawn at
+    x + 20, y + 100 of 1024x768 in the view's darkened, outlined box;
+    PgUp / PgDn turn the pages with wrap (0x41e240). The CD build's table
+    has no categories, so with CD DF2.EXE OpenDF keeps its old layout; the
     scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
     half-blended navy inner segments, "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
