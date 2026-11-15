@@ -137,11 +137,29 @@ struct D2Mnu {
                 buttons.push_back(b);
             }
         }
-        // 0x42e2f0 / 0x42e290: per-menu lists by descending zorder (stable).
-        for (size_t i = 0; i < buttons.size(); ++i)
-            if (auto it = menus.find(buttons[i].menu); it != menus.end()) it->second.buttons.push_back(int(i));
-        for (auto& [name, m] : menus)
-            std::stable_sort(m.buttons.begin(), m.buttons.end(), [&](int a, int b) { return buttons[size_t(a)].zorder > buttons[size_t(b)].zorder; });
+        // GOG Df2.exe 0x433210 (CD 0x42e460): 0x432ba0 first qsorts all the
+        // buttons by name (_strcmpi), then 0x4330a0 (CD 0x42e2f0) appends
+        // them to their menus' lists in that order and 0x433040 (CD
+        // 0x42e290) sorts each list by descending zorder with its unstable
+        // i<j swap loop. The order of equal-z buttons decides which one is
+        // drawn on top (Campaign's region buttons over C_WORLD). The buttons
+        // vector itself keeps file order; only the lists follow the name order.
+        auto lowerByte = [](unsigned char c) { return (c >= 'A' && c <= 'Z') ? c + 32 : int(c); };
+        std::vector<int> byName(buttons.size());
+        for (size_t i = 0; i < buttons.size(); ++i) byName[i] = int(i);
+        std::stable_sort(byName.begin(), byName.end(), [&](int a, int b) {
+            const std::string &x = buttons[size_t(a)].name, &y = buttons[size_t(b)].name;
+            return std::lexicographical_compare(x.begin(), x.end(), y.begin(), y.end(),
+                                                [&](char p, char q) { return lowerByte(p) < lowerByte(q); });
+        });
+        for (int i : byName)
+            if (auto it = menus.find(buttons[size_t(i)].menu); it != menus.end()) it->second.buttons.push_back(i);
+        for (auto& [name, m] : menus) {
+            auto& L = m.buttons;
+            for (size_t i = 0; i + 1 < L.size(); ++i)
+                for (size_t j = i; j < L.size(); ++j)
+                    if (buttons[size_t(L[i])].zorder < buttons[size_t(L[j])].zorder) std::swap(L[i], L[j]);
+        }
         return !menus.empty() && !buttons.empty();
     }
     D2Button* button(const std::string& name) {
@@ -185,7 +203,8 @@ bool df2KeyAllowed(uint32_t vk) {
 
 // ---------------------------------------------------------------- soldiers
 
-// df2plyrs.sav (0x431ba0 / 0x431c90): 'FPBC', version 10, 5 records of 0x6E8.
+// df2plyrs.sav (GOG Df2.exe 0x436890 / 0x4369f0; CD 0x431ba0 / 0x431c90):
+// 'FPBC', version 14 (the CD wrote and read 10), 5 records of 0x6E8.
 struct Soldier {
     std::array<uint8_t, 0x6E8> d{};
     int32_t get(size_t o) const { int32_t v; std::memcpy(&v, &d[o], 4); return v; }
@@ -773,8 +792,41 @@ void FrontendDf2::loadSoldiers() {
     for (auto& s : soldiers_) s.defaults();
     std::ifstream f(saveDir_ / "df2plyrs.sav", std::ios::binary);
     char head[8] = {};
-    if (f.read(head, 8) && std::memcmp(head, "FPBC", 4) == 0 && head[4] == 10)
-        for (auto& s : soldiers_) f.read(reinterpret_cast<char*>(s.d.data()), std::streamsize(s.d.size()));
+    // GOG Df2.exe 0x4369f0: 'FPBC' with version 10..14 reads the five
+    // records, then patches by the file's version, one patch per version (not
+    // cumulative); version 14 needs none. The CD's 0x431c90 took 10 only.
+    if (f.read(head, 8) && std::memcmp(head, "FPBC", 4) == 0) {
+        int32_t ver;
+        std::memcpy(&ver, head + 4, 4);
+        if (ver >= 10 && ver <= 14) {
+            for (auto& s : soldiers_) f.read(reinterpret_cast<char*>(s.d.data()), std::streamsize(s.d.size()));
+            if (ver == 10) {
+                for (auto& s : soldiers_) { s.set(0x5c8, 1); s.set(0x5cc, 0x7f); }
+            } else if (ver == 11) {
+                // Key rows 48..57 (30 dwords) from the default key table
+                // (0x4c7190 + 0x240), which 0x425170 fills from df2.dfk; the
+                // table built into Df2.exe when the file is missing.
+                static const uint8_t kRows[10] = {'I', 'o', 'j', 'm', 'k', 'a', 'c', '`', 'n', 0xdc};
+                std::array<uint8_t, 0x2d0> dfk{};
+                for (size_t i = 0; i < 10; ++i) dfk[0x240 + 12 * i] = kRows[i];
+                std::ifstream k(saveDir_ / "Df2.dfk", std::ios::binary);
+                std::array<uint8_t, 0x2d0> file{};
+                if (k.read(reinterpret_cast<char*>(file.data()), std::streamsize(file.size()))) dfk = file;
+                for (auto& s : soldiers_) std::memcpy(&s.d[0x520], &dfk[0x240], 30 * 4);
+            } else if (ver == 12) {
+                // MACRO_0..MACRO_9 (MENU text, "??key??" when missing as
+                // 0x4338d0 does) into the 40-byte macro slots at +0xe8.
+                for (auto& s : soldiers_)
+                    for (int i = 0; i < 10; ++i) {
+                        const std::string key = "MACRO_" + std::to_string(i);
+                        const std::string t = menuText(key.c_str(), ("??" + key + "??").c_str());
+                        std::strncpy(reinterpret_cast<char*>(&s.d[0xe8 + 0x28 * size_t(i)]), t.c_str(), 0x28);
+                    }
+            } else if (ver == 13) {
+                for (auto& s : soldiers_) s.set(0x598, 0x45); // key row 58: 'E'
+            }
+        }
+    }
     // OpenDF's first DF2 builds wrote soldiers without the default bindings;
     // a named soldier with all 48 rows empty gets 0x4b2cb8's (an OpenDF repair).
     for (auto& s : soldiers_) {
@@ -789,9 +841,10 @@ void FrontendDf2::loadSoldiers() {
     if (!any) soldiers_[0].setName(menuText("CS_DEFAULTNAME", "Blackhawk"));
 }
 
+// GOG Df2.exe 0x436890: 'FPBC', version 14, the five records.
 void FrontendDf2::saveSoldiers() {
     std::ofstream f(saveDir_ / "df2plyrs.sav", std::ios::binary);
-    const char head[8] = {'F', 'P', 'B', 'C', 10, 0, 0, 0};
+    const char head[8] = {'F', 'P', 'B', 'C', 14, 0, 0, 0};
     f.write(head, 8);
     for (auto& s : soldiers_) f.write(reinterpret_cast<const char*>(s.d.data()), std::streamsize(s.d.size()));
 }
