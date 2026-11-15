@@ -61,7 +61,13 @@ struct MissionObject {
     float x = 0, y = 0;        // map metres; x east, y north (terrain row = -y)
     float z = 0;               // height above the ground, metres
     float heading = 0;         // degrees clockwise from north; model +X faces it
-    int group = 0;             // which of the file's four object groups (0..3)
+    // The signed 16-bit degrees at +0x36 (GOG Df2.exe 0x403790 / GOG Df.exe
+    // 0x449710 -> object +0x34): the pitch, model +X up positive.
+    float pitch = 0;
+    // Dropped by the single-player record filter (dropMultiplayerRecords):
+    // the slot stays, zeroed, so paths and events keep their indices.
+    bool absent = false;
+    int group = 0;            // which of the file's four object groups (0..3)
     int indexInGroup = 0;      // paths and events refer to objects by this
     int32_t raw[24] = {};      // the whole 96-byte record, for fields not yet decoded
 };
@@ -122,5 +128,14 @@ struct Mission {
 };
 
 bool parseMission(const std::vector<uint8_t>& file, Mission& out, std::string* error);
+
+// The BMS loader's record filter, single player (GOG Df2.exe 0x403790, GOG
+// Df.exe 0x449710): a record that fails is left as an all-zero slot (type 0,
+// no item, team 0), so it is never drawn, counted, used as a start, area or
+// teleport marker, or given AI; the group sizes and indices stay. Single
+// player drops flags 0x10 and 0x80 (network games only) and keeps 0x20 and
+// 0x40. Delta Force 2 (version 0x0F) also drops '4Team' items (attrib
+// 0x4000) and, with mp_numteams != 4, records of side 3 or 4 (byte +0x43).
+void dropMultiplayerRecords(Mission& mission, const ItemDefs& items);
 
 } // namespace df

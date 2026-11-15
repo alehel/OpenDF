@@ -595,6 +595,22 @@ First differences from DF1:
     map prompt y = (H − bottom strip)·768/H − 160 (0x45cb40, 0x443e21);
     the scroll bar's thumb and zones (0x40c7d0, 0x40c8c0); the image-button
     text placement (0x43d4c0); the software z-buffer's depth (0x484077);
+  - *settled since* (mission, GOG Df2.exe 1.06.15): the single-player record
+    filter (0x403790: flags 0x10 / 0x80 dropped, 0x20 / 0x40 kept, '4Team'
+    items and side-3/4 records dropped with mp_numteams 2; the slot stays
+    zeroed), so the player starts on the first loaded 6001 (D05M13 at
+    (-149, -962); 0x460810 takes 106094 markers first, none in the data);
+    the same filter in Df.exe (0x449710) puts DF1 C02M01 at (-191, -113);
+    record yaw = int16 +0x34 and pitch = int16 +0x36 (both games, e.g. the
+    tilted pungi stakes); kill team (0x416380) destroys every object of the
+    team through its ai function, `null` / `dec0` excepted; condition 1/13
+    "team hit team" (table 0xabbe00, set on a direct hit 0x453510 ->
+    0x41ac30); area condition 1/10 (0x41b200, 0x4152a0): the first and last
+    marker of the tag, both axes must differ, live positions of groups 0
+    and 3 with no alive test, a height range between the markers' absolute
+    heights when either record z is non-zero; pungi sticks (0x446050 case
+    0x42a): hp -= 2 a tick in contact when airborne or running uncrouched,
+    the player and AI alike (INFERRED for the AI: running = a Running move);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key

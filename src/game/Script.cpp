@@ -42,6 +42,29 @@ void MissionScript::load(const Mission& m) {
         const auto& c = m.conditions[i].raw;
         if (c[1] != 1 || c[2] != 10) continue;
         AreaBox box;
+        if (m.version >= 0x0F) {
+            // Delta Force 2 (GOG Df2.exe 0x41b200 at load, 0x4152a0 the test):
+            // the first and the last marker of the tag; with fewer than two
+            // the condition is zeroed (always false). The box is their min/max
+            // x and y, false unless both axes differ; flag 8 when either
+            // marker's record z is non-zero adds the height range.
+            for (int k = 0; k < m.groupSize[2]; ++k) {
+                const MissionObject* o = m.inGroup(2, k);
+                if (o->type != kItemArea || int(int8_t((uint32_t(o->raw[18]) >> 16) & 0xFF)) != c[4]) continue;
+                (box.markerA < 0 ? box.markerA : box.markerB) = m.groupStart[2] + k;
+            }
+            if (box.markerA >= 0 && box.markerB >= 0) {
+                const MissionObject &a = m.objects[size_t(box.markerA)], &b = m.objects[size_t(box.markerB)];
+                box.minX = std::min<double>(a.x, b.x);
+                box.maxX = std::max<double>(a.x, b.x);
+                box.minY = std::min<double>(a.y, b.y);
+                box.maxY = std::max<double>(a.y, b.y);
+                box.zRange = a.z != 0 || b.z != 0;
+                box.valid = box.minX != box.maxX && box.minY != box.maxY;
+            }
+            conditionAreas_[i] = box;
+            continue;
+        }
         bool any = false;
         for (int k = 0; k < m.groupSize[2]; ++k) {
             const MissionObject* o = m.inGroup(2, k);
@@ -77,6 +100,7 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
         case 3: return host.teamAlerted(p1);                  // team alerted (team record +4 == 2)
         case 7: return host.reachedWaypoint(p1, p2, c[5]);    // team reached point p3 of path p2
         case 11: return host.teamCarrying(p1, p2);            // team carries an item of team p2
+        case 13: return host.teamHit(p1, p2);                 // DF2: team p1 has hit team p2 (GOG Df2.exe 0x41b150)
         // 0 and 8 are always false.
         default: return false;
         }

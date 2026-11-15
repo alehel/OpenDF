@@ -119,6 +119,7 @@ struct Impact {
     bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
     int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
     uint32_t material = 0;    // objects: the hit face's material flags (0x44f90a picks effect and sound)
+    int shooter = -1;         // direct hits: the projectile's shooter (-3 the player, -1 none)
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table

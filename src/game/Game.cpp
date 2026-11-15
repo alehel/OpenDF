@@ -382,6 +382,18 @@ private:
     VehicleSystem vehicles_;
     // ScriptHost: the AI's conditions and actions.
     bool teamSpotted(int team, int targetTeam) const override { return ai_.spotted(team, targetTeam); }
+    // Delta Force 2's "team has hit team" table (GOG Df2.exe 0xabbe00: 64
+    // rows of 64 bits, row = shooter team), cleared at every load (0x41b620).
+    std::array<uint64_t, 64> teamHits_{};
+    bool playerRunning_ = false;   // DF2 +0x74 speed bits 2 (pungi sticks)
+    // Pungi sticks (101066, GOG Df2.exe 0x446050 case 0x42a): a mover is hurt
+    // only airborne (+0x64 & 0x2000) or running ((+0x74 & 0x18) >= 9) without
+    // the crouch bit 0x20; a dead mover only springs it (0x45a270).
+    static bool pungiHurts(bool airborne, bool running, bool crouched) { return airborne || (running && !crouched); }
+    bool teamHit(int team, int targetTeam) const override {
+        return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (teamHits_[size_t(team)] >> targetTeam & 1);
+    }
+    void recordHit(const Impact& hit);
     bool teamEngaging(int team) const override { return ai_.engaging(team); }
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
@@ -662,6 +674,7 @@ bool Game::loadMission(int index) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
     }
+    dropMultiplayerRecords(mission_, items_);   // single player (GOG Df2.exe 0x403790, GOG Df.exe 0x449710)
     {
         // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
@@ -767,9 +780,17 @@ bool Game::loadMission(int index) {
     player_.swimOrigin = swimOrigin_;
     player_.feet = {512, 0, 512};
     float startLift = 0;
+    // The first loaded start (dropMultiplayerRecords zeroed the network ones).
+    // Delta Force 2 single player (GOG Df2.exe 0x460810 case 0, counts from
+    // 0x45c4b0): slot 0 of the 106094 "start, primary, player" markers if
+    // any are loaded, else of the 106001 ones.
+    int startItem = kItemPlayerStart;
+    if (mission_.version >= 0x0F)
+        for (const auto& obj : mission_.objects)
+            if (const ItemDef* item = items_.byMissionType(obj.type); item && item->id == 106094) { startItem = 106094; break; }
     for (const auto& obj : mission_.objects) {
         const ItemDef* item = items_.byMissionType(obj.type);
-        if (item && item->id == kItemPlayerStart) {
+        if (item && item->id == startItem) {
             const float ext = terrain_.mapExtent();
             player_.feet = {obj.x, 0, -obj.y};
             player_.wrap(ext);
@@ -955,6 +976,7 @@ bool Game::loadMission(int index) {
         std::sscanf(name.c_str(), "C%dM%d", &c, &missionNumber_);
     }
     script_.load(mission_);
+    teamHits_.fill(0);   // GOG Df2.exe 0x41b620
     scriptClock_ = 0;
     missionResult_ = -1;
     missionTime_ = 0;
@@ -1366,6 +1388,13 @@ void Game::touchPickups() {
                 o.boxes.clear();
                 detonate(o.pos + Vec3{0, 1, 0}, 60, o.heading);
             }
+            break;
+        case 1066:
+            // DF2 pungi sticks, every tick in contact: hp -= 2, killer the
+            // stake, hit move 0x417170(.., 4) = 0xD2, the damage event, and
+            // the red flash += 0x78 (0x44f320, in hurtPlayer).
+            if (world_.df2Rules && pungiHurts(player_.airborne(), playerRunning_, player_.stance == Stance::Crouch))
+                hurtPlayer(2, 4, o.pos);
             break;
         default: break;
         }
@@ -2159,6 +2188,29 @@ void Game::tickDf2Items() {
                 break;
             }
     }
+    // People onto pungi sticks (101066; the person mover 0x4467d0 -> 0x446050
+    // case 0x42a, AI as the player): hp -= 2 a tick in contact, the stake the
+    // killer, the hit move 0xD2 (0x417170 kind 4). INFERRED for the AI's
+    // control word: running = a Running move (60..95).
+    std::vector<size_t> people;
+    for (size_t j = 0; j < world_.objects.size(); ++j)
+        if (world_.objects[j].person && world_.objects[j].alive()) people.push_back(j);
+    if (!people.empty())
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            WorldObject& s = world_.objects[i];
+            if (!s.item || s.item->id != 101066 || s.removed || !s.model) continue;
+            for (size_t j : people) {
+                WorldObject& q = world_.objects[j];
+                if (!q.alive()) continue;
+                const Vec3 at = world_.nearest(q.pos, s.pos);
+                const float reach = s.model->flatRadius + 2.f;   // a quick reject before the volume test
+                if (std::abs(at.x - s.pos.x) > reach || std::abs(at.z - s.pos.z) > reach) continue;
+                const bool running = q.moveNumber >= 60 && q.moveNumber <= 95;
+                if (!pungiHurts(q.airborne, running, false) || !df2Touch(s, q.pos, Vec3{q.pos.x, q.base, q.pos.z})) continue;
+                world_.damage(int(j), 2, 0x7fff, World::deathMoveNumber(true, terrain_.waterLevel() != 0 && terrain_.waterLevel() >= q.pos.y, 4, 0, 0),
+                              int(i));
+            }
+        }
 }
 
 // 0x46cb64: a blast (effect 3, blast type 1, sound 0x32) and smoke
@@ -2261,8 +2313,55 @@ int Game::teamCount(int team, bool aliveOnly) const {
     return n;
 }
 
+// Delta Force 2 (GOG Df2.exe 0x453510 -> 0x41ac30): a projectile with a
+// shooter (+0xF8) hitting an object whose item's second hp value (+0x98) is
+// not negative sets bit (target team) of row (shooter team), before any
+// other test (teammates and the dead too).
+void Game::recordHit(const Impact& hit) {
+    if (!world_.df2Rules || hit.shooter == -1 || (hit.object < 0 && hit.object != -3)) return;
+    auto teamOf = [&](int obj) { return obj == -3 ? kPlayerTeam : obj >= 0 && size_t(obj) < world_.objects.size() ? world_.objects[size_t(obj)].team : -1; };
+    const ItemDef* target = hit.object == -3 ? items_.byId(playerItem_) : world_.objects[size_t(hit.object)].item;
+    if (!target || target->damageClass < 0) return;
+    const int from = teamOf(hit.shooter), to = teamOf(hit.object);
+    if (from >= 0 && from < 64 && to >= 0 && to < 64) teamHits_[size_t(from)] |= uint64_t(1) << to;}
+
 bool Game::teamInArea(int team, const AreaBox& a) const {
     auto inside = [&](double x, double y) { return x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY; };
+    if (world_.df2Rules) {
+        // GOG Df2.exe 0x4152a0: every organic (group 3, the player among
+        // them as team 1) and item (group 0) of the team, at its live
+        // position, alive or not; flag 8 adds the height range between the
+        // markers' absolute heights (ground + record z, 0x465490).
+        if (team == 0 || a.markerA < 0 || a.markerB < 0) return false;
+        float zLo = -16384.f, zHi = 16384.f;   // -0x40000000 .. 0x40000000
+        if (a.zRange) {
+            const float ext = terrain_.mapExtent();
+            auto absZ = [&](const MissionObject& m) {
+                return terrain_.heightAt(std::fmod(std::fmod(m.x, ext) + ext, ext), std::fmod(std::fmod(-m.y, ext) + ext, ext)) + m.z;
+            };
+            const float za = absZ(mission_.objects[size_t(a.markerA)]), zb = absZ(mission_.objects[size_t(a.markerB)]);
+            zLo = std::min(za, zb);
+            zHi = std::max(za, zb);
+        }
+        auto in3 = [&](double x, double y, float z) { return inside(x, y) && z >= zLo && z <= zHi; };
+        if (team == kPlayerTeam && in3(player_.missionX(), player_.missionY(), player_.origin().y)) return true;
+        const float ext = terrain_.mapExtent();
+        for (const auto& o : world_.objects) {
+            if (o.team != team || (o.missionGroup != 0 && o.missionGroup != 3) || o.missionIndex < 0) continue;
+            // Mission coordinates of the live position: the spawn's plus the
+            // wrapped move since.
+            const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
+            auto moved = [&](double now, double spawn) {
+                double d = std::fmod(now - std::fmod(std::fmod(spawn, double(ext)) + ext, double(ext)), double(ext));
+                if (d > ext * 0.5) d -= ext;
+                if (d < -ext * 0.5) d += ext;
+                return d;
+            };
+            const double x = mo.x + moved(o.pos.x, mo.x), y = mo.y - moved(o.pos.z, -double(mo.y));
+            if (in3(x, y, o.pos.y)) return true;
+        }
+        return false;
+    }
     if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
     // Other teams stand where the mission placed them until OpenDF has AI.
     for (const auto& o : world_.objects)
@@ -2272,6 +2371,24 @@ bool Game::teamInArea(int team, const AreaBox& a) const {
 }
 
 void Game::killTeam(int team) {
+    if (world_.df2Rules) {
+        // GOG Df2.exe 0x416380: for team != 0 every decoration, organic and
+        // item of the team gets hp -50, damage 0 and its ai function with
+        // event 1 (+0x110), which destroys it on hp <= 0: buildings,
+        // vehicles, barrels, invisible booms, people. Two ignore it: `null`
+        // (table entry 0 at 0x4af030, also for items with no ai_function:
+        // 0x401230 only sets the think timer) and `dec0` (0x4026e0 returns
+        // on any event but 0).
+        if (team == 0) return;
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            auto& o = world_.objects[i];
+            if (o.team != team || o.missionGroup == 2 || !o.alive() || !o.item) continue;
+            const std::string& f = o.item->aiFunction;
+            if (f.empty() || f == "null" || f == "dec0") continue;
+            if (!o.person && o.hp <= 0) o.hp = 1;   // hp is set, not reduced: an hp-0 item goes too
+            world_.damage(int(i), o.person ? 1000 : o.hp + 50, 0x7fff);        }
+        return;
+    }
     for (size_t i = 0; i < world_.objects.size(); ++i) {
         auto& o = world_.objects[i];
         if (o.team == team && o.missionGroup == 3 && o.alive()) world_.damage(int(i), 1000);
@@ -5342,6 +5459,9 @@ int Game::run() {
             // Dead (0x45a234): no more control. The death sequence itself
             // (animation, mission end 0x444d24 / 0x46c9c0) is not done yet.
             if (showMap_ || playerDead()) in = PlayerInput{};
+            // DF2 control word +0x74 speed bits (GOG Df2.exe 0x41efd0): 2 (run)
+            // with a move direction and no walk key.
+            playerRunning_ = (in.forward != 0 || in.strafe != 0) && !in.walk;
             // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
             // angle per 30 Hz controller tick (84.375°/s), half that with NoRun
             // held; the same for pitch, which stays within -67.5°..+90° (0x437435).
@@ -5393,7 +5513,7 @@ int Game::run() {
             }
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
-            for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
+            for (const auto& hit : arsenal_.takeImpacts()) { recordHit(hit); spawnImpact(hit); }
             // Rockets carry ITEMS.DEF `ambient rocket1` as a loop (0x44d6f9).
             {
                 static const int rocket = sound_.idOf("ROCKET1");

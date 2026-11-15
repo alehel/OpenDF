@@ -62,6 +62,8 @@ public:
     // Body origin (the pelvis; DF.EXE's object z): what blasts measure to.
     Vec3 origin() const { return inWater_ ? Vec3{feet.x, originY_, feet.z} : Vec3{feet.x, feet.y + landOrigin(), feet.z}; }
     bool moving() const { return moving_; }
+    // Off the ground (DF2 +0x64 & 0x2000).
+    bool airborne() const { return !onGround_; }
     // The move being played (an .ANM name), for the body's animation.
     const std::string& move() const { return move_; }
     float speed() const { return speed_; }

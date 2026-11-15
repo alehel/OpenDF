@@ -62,7 +62,8 @@ bool ItemDefs::parse(const std::string& text) {
                                                                         {"noak", 0x80},
                                                                         // Delta Force 2 (DF2.EXE 0x41e020, strings 0x4ab5b8)
                                                                         {"notool", 0x100}, {"snap", 0x200}, {"pfoil", 0x400},
-                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000}};
+                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000},
+                                                                        {"4team", 0x4000}};   // GOG Df2.exe 0x403790 tests it
                 for (const auto& b : bits)
                     if (a == b.first) cur.attrib |= b.second;
             }
@@ -186,7 +187,12 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
             ob.x = fixed16(d, o + 0x10);
             ob.y = fixed16(d, o + 0x14);
             ob.z = fixed16(d, o + 0x18);
-            ob.heading = float(u32(d, o + 0x34) % 360);
+            // The yaw is the signed 16-bit degrees at +0x34 (GOG Df2.exe
+            // 0x403790 and GOG Df.exe 0x449710 turn (90 - yaw) into a binary
+            // angle); the high word +0x36 is the pitch.
+            const int yaw = int16_t(u32(d, o + 0x34) & 0xFFFF);
+            ob.heading = float(((yaw % 360) + 360) % 360);
+            ob.pitch = float(int16_t(u32(d, o + 0x34) >> 16));
             ob.group = g;
             ob.indexInGroup = int(i);
             for (int k = 0; k < 24; ++k) ob.raw[k] = int32_t(u32(d, o + 4 * k));
@@ -228,6 +234,29 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         return false;
     }
     return true;
+}
+
+void dropMultiplayerRecords(Mission& m, const ItemDefs& items) {
+    // Single player: no network game (GOG Df2.exe [0x67cd2c] = 0), and
+    // mp_numteams [0x67cd68] is the config default 2 (0x43bae0; 0x43c280
+    // copies it at every load).
+    constexpr int kNumTeams = 2;
+    const bool df2 = m.version >= 0x0F;
+    for (auto& ob : m.objects) {
+        bool drop = (ob.flags & 0x10) || (ob.flags & 0x80);
+        if (!drop && df2) {
+            const ItemDef* item = items.byMissionType(ob.type);
+            const int side = int8_t((uint32_t(ob.raw[16]) >> 24) & 0xFF);
+            if (item && (item->attrib & 0x4000)) drop = true;   // '4Team': network games of type 2/4/8 with four teams
+            else if (kNumTeams != 4 && (side == 3 || side == 4)) drop = true;
+        }
+        if (!drop) continue;
+        const int group = ob.group, index = ob.indexInGroup;
+        ob = MissionObject{};
+        ob.group = group;
+        ob.indexInGroup = index;
+        ob.absent = true;
+    }
 }
 
 } // namespace df
