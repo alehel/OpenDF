@@ -213,6 +213,7 @@ private:
     // runs the first one-shot command bound to it; the wheel accumulates
     // WM_MOUSEWHEEL deltas (0x4799e0, [0xe0ff24]), each 120 a step.
     void df2MouseButton(int mask);
+    void flushDf2Input();
     void df2MouseWheel(int delta);
     int wheelAccum_ = 0;
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
@@ -4083,6 +4084,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
                 replayed_.push_back({o.won, o.kills, o.df2Zeroing});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
             }
             loadMission(current_);
+            if (world_.df2Rules) flushDf2Input();   // the replay's mission setup 0x466ba0 -> 0x420800
             return;
         }
     }
@@ -4131,7 +4133,21 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (sc != SDL_SCANCODE_LSHIFT && sc != SDL_SCANCODE_RSHIFT && sc != SDL_SCANCODE_LCTRL && sc != SDL_SCANCODE_RCTRL)
             act = (k.keysym.mod & KMOD_SHIFT) ? controls_.shiftActionFor(sc) : Action::Count;   // PrintScreen (flag 0x40)
     }
+    // GOG Df2.exe: zoomin / zoomout (0x168 / 0x169) are held commands (table
+    // 0x4b1710 flags 4), polled every frame in the main loop instead.
+    if (df2Keys && (act == Action::MapZoomIn || act == Action::MapZoomOut)) return;
     runAction(act, df2Keys && shift);
+}
+
+// GOG Df2.exe 0x420800 (mission setup 0x466ba0 -> 0x420a30): the key queue
+// and table are reset (0x479950 / 0x479930), the command state [0xaab0a0]
+// cleared, and the mouse recentred (0x479b80), so what was pressed or moved
+// while the mission loaded is dropped.
+void Game::flushDf2Input() {
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_KEYDOWN, SDL_MOUSEWHEEL);
+    SDL_GetRelativeMouseState(nullptr, nullptr);
+    jumpPressed_ = false;
 }
 
 void Game::df2MouseButton(int mask) {
@@ -9216,6 +9232,7 @@ int Game::run() {
         std::vector<uint8_t> videoFrame;
         float endHold = -1;   // after a watched script ends: keep showing for a moment
         SDL_SetRelativeMouseMode(captured_ ? SDL_TRUE : SDL_FALSE);
+        if (world_.df2Rules) flushDf2Input();   // GOG Df2.exe 0x466ba0 -> 0x420a30 -> 0x420800
         Uint64 last = SDL_GetPerformanceCounter();
         bool running = true, prevTrigger = false;
         int frame = 0;
@@ -9359,6 +9376,15 @@ int Game::run() {
             for (SDL_Scancode sc : inputHeld_) keys[sc] = 1;
             const Uint32 mouse = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
             auto down = [&](Action a) { return controls_.down(a, keys, mouse); };
+            // GOG Df2.exe 0x420940 -> 0x41eae0, once a frame unless the text
+            // prompt is open ([0xab0588]): each held command (flags 4) whose key
+            // is down runs, in table order; zoomin / zoomout (0x41f150 cases
+            // 0x62 / 0x63) scale the map [0x79a69c] by 0.9 (min 0x4000) / 1.1
+            // (max 0x39999).
+            if (arsenal_.df2() && controls_.df2Table() && !(df2Map_.prompt && showMap_)) {
+                if (down(Action::MapZoomIn)) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);
+                if (down(Action::MapZoomOut)) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);
+            }
             PlayerInput in;
             in.forward = float(down(Action::MoveForward)) - float(down(Action::MoveBack));
             in.strafe = float(down(Action::SlideRight)) - float(down(Action::SlideLeft));
@@ -9384,8 +9410,12 @@ int Game::run() {
             // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
             // angle per 30 Hz controller tick (84.375°/s), half that with NoRun
             // held; the same for pitch, which stays within -67.5°..+90° (0x437435).
+            // GOG Df2.exe: 0x41efd0 sets +0x74 0x1000 / 0x2000 / 0x4000 /
+            // 0x8000 from the turn and look keys and 0x447120 (0x44718d) halves
+            // the rate only for +0x74 & 0x800, which no writer of +0x74 sets:
+            // DF2 always turns at the full rate.
             if (!mapHoldsControls) {
-                const float rate = (in.walk ? 42.1875f : 84.375f) * kPi / 180.f * dt;
+                const float rate = ((arsenal_.df2() || !in.walk) ? 84.375f : 42.1875f) * kPi / 180.f * dt;
                 player_.yaw += rate * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
                 player_.pitch += rate * (float(down(Action::LookUp)) - float(down(Action::LookDown)));
             }
@@ -9542,11 +9572,12 @@ int Game::run() {
                 playSound(0x8A, at);
             }
             for (int i : world_.takeLandings()) {
-                // 0x413d70: the canopy left where the person landed, 1800 ticks.
+                // 0x413d70 (GOG 0x415cd0): the canopy left where the person
+                // landed, at its origin (+0x24..+0x2c), 1800 ticks.
                 const WorldObject& o = world_.objects[size_t(i)];
                 if (const ItemDef* ci = items_.byId(o.item && (o.item->attrib & 0x400) ? 107037 : 107038); ci && !ci->graphic.empty())
                     if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) {
-                        Effect e{cm, Vec3{o.pos.x, o.base, o.pos.z}, 1.f, 0, 1800, 1, 1};
+                        Effect e{cm, o.pos, 1.f, 0, 1800, 1, 1};
                         e.canopy = true;
                         e.heading = o.heading;
                         effects_.push_back(e);
@@ -9556,8 +9587,10 @@ int Game::run() {
                 for (auto& m : world_.stab(at, player_.origin())) pushMessage(m);
             for (const auto& sp : player_.takeSpawns()) {
                 if (sp.slot == -1) {
-                    // The player's canopy (PFoil: `parachut`).
-                    if (const ItemDef* ci = items_.byId(107037); ci && !ci->graphic.empty())
+                    // The player's canopy: GOG Df2.exe 0x415cd0 picks it by the
+                    // soldier's PFoil attribute (0x400: [0xbf0e74] `parachut`,
+                    // else [0xbf0e78]), as for everyone.
+                    if (const ItemDef* ci = items_.byId(player_.pfoil ? 107037 : 107038); ci && !ci->graphic.empty())
                         if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) {
                             Effect e{cm, sp.pos, 1.f, 0, 1800, 1, 1};
                             e.canopy = true;
@@ -9567,7 +9600,7 @@ int Game::run() {
                     continue;
                 }
                 spawnEffect(sp.slot, sp.pos);
-                if (sp.sound) playSound(sp.sound, sp.pos);   // DF1 splash 0x8A (GOG Df.exe 0x4877d6)
+                if (sp.sound) playSound(sp.sound, sp.pos);   // the splash (GOG Df.exe 0x4877d6: 0x8A; DF2 see Player)
             }
             bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
             if (paused_)
@@ -9592,11 +9625,12 @@ int Game::run() {
                 // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
                 weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
                               [this](Vec3 at) { spawnEffect(17, at); });
-                // DF2 fall damage (0x43f600, single player): n = trunc(vz /
-                // -10360.5) with vz in 16.16 m a tick, (1 << n) - 1 for n >= 1
+                // DF2 fall damage (0x43f600, GOG 0x4458f0, single player): n =
+                // trunc(vz / -10354) (mulhi by -0x6545c5f3, >> 12) with vz in
+                // 16.16 m a tick, (1 << n) - 1 for n >= 1
                 // (the player's flag 1 skips the -1 others get).
                 if (const float vy = player_.takeLanding(); mission_.version >= 0x0F && vy < 0) {
-                    const int n = int(-vy / 60.f * 65536.f / 10360.5f);
+                    const int n = int(-vy / 60.f * 65536.f / 10354.f);
                     if (n >= 1) hurtPlayer((1 << std::min(n, 20)) - 1, 4, player_.feet);   // kind 4 (0x43f645)
                 }
                 // Testing: OPENDF_TEAMSPEED="TEAM:KMH[,TEAM:KMH...]" sets team

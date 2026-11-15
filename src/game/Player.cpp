@@ -623,8 +623,10 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
     if (!onObject && d <= 0) platform_ = -1;   // 0x440b1f
     const bool below = water != 0 && z < water;
     if (chute) {
+        // The canopy (CD 0x413d70, GOG 0x415cd0) at the person's origin
+        // (+0x24..+0x2c), not the feet.
         if (d > 0 && !below) vz_ = -0x2222 / 65536.f;
-        else { chute = false; spawns_.push_back({-1, {feet.x, feetY, feet.z}}); }   // the canopy (0x413d70)
+        else { chute = false; spawns_.push_back({-1, {feet.x, z, feet.z}}); }
     } else if (!onGround_) {
         if (d <= 0) {
             landingSpeed_ = vz_ * 60.f;   // 0x43f600 (fall damage, by the game)
@@ -632,9 +634,9 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
             vz_ = 0;
             onGround_ = true;
         } else if (below) {
-            // 0x440b9b: effect 4 at the surface; sound 0x8A is not in DF2's
-            // sound data (silent).
-            spawns_.push_back({4, {feet.x, water, feet.z}});
+            // 0x440b9b (GOG 0x446fb6..0x446ffa): effect 4 and sound 0x8A
+            // (FS_WATER_SLOSH) at the surface, as for everyone.
+            spawns_.push_back({4, {feet.x, water, feet.z}, 0x8A});
             enterWater(z);
         } else {
             vz_ -= G;

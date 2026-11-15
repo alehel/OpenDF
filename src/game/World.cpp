@@ -1610,10 +1610,11 @@ void World::personTickDf2(WorldObject& o) {
         else { o.chute = false; landings_.push_back(int(&o - objects.data())); }
     } else if (o.airborne) {
         if (d <= 0) {
-            // Landing (0x43f600, single player): n = trunc(vz / -10360.5) - 1
-            // for everyone but the player, (1 << n) - 1 damage, kind 4.
+            // Landing (0x43f600, GOG 0x4458f0, single player): n = trunc(vz /
+            // -10354) - 1 (mulhi by -0x6545c5f3, >> 12) for everyone but the
+            // player, (1 << n) - 1 damage, kind 4.
             if (o.alive()) {
-                const int n = int(-o.vz * 65536.f / 10360.5f) - 1;
+                const int n = int(-o.vz * 65536.f / 10354.f) - 1;
                 if (n >= 1) {
                     const int idx = int(&o - objects.data());
                     if (auto m = damage(idx, (1 << std::min(n, 20)) - 1, 0x7fff, deathMoveNumber(true, false, 4, 0, 0)); !m.empty())
