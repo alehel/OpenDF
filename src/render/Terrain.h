@@ -37,6 +37,13 @@ public:
     // The nearest cell's raw height, no interpolation (DF.EXE's byte map
     // 0x68c024, e.g. for sound occlusion).
     float cellHeight(float x, float z) const;
+    // Delta Force 2's terrain gradient for sliding (GOG Df2.exe 0x46eaa0):
+    // at the cell holding (x, z), no interpolation, the height change over
+    // +-2 cells / 4 of the word grid [0x535ae8], which holds the smoothed
+    // heights raised by twice the cell's detail tile's top elevation
+    // (0x46e0f0; the ground 0x46e950 takes it off again). In metres a metre,
+    // OpenDF axes (gz = dh/dz). 0 on Delta Force terrains.
+    void df2Gradient(float x, float z, float& gx, float& gz) const;
     float mapExtent() const { return size_ * scale.cellSize; }
     // DF.EXE [0x68bfe8]: the water level in metres, 0 when the map has none
     // (0x430d28); every water test is skipped when it is 0.
@@ -126,6 +133,7 @@ private:
     TerrainDesc desc_;
     int size_ = 0;
     std::vector<float> heights_;   // elevation steps (DF2: smoothed, fractional)
+    std::vector<uint8_t> detailTop_;   // DF2: per cell, its detail tile's top elevation (0x46d970 level 0)
     bool gen2_ = false;            // Delta Force 2 terrain (true-colour map)
     Rgb waterColor_{0, 0, 0};      // DF2: graded water palette entry 255 (under-water tint, radar)
     bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha

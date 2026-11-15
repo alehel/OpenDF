@@ -354,16 +354,47 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
         z = m.y;
     }
     if (odd) {
-        // Jump (0x440cd0): not while airborne or swimming (0x22000) or on a
-        // chute; crouched or prone it stands up ([0x7655dc] = 1); not while
-        // sliding; else z += 0x1000 and vz = 0x1555. move_jump is a held
-        // command (table 0x4a5ca8 flags 0x405, as move_forward; the control
-        // bit +0x74 & 0x10000 is rebuilt each pass, 0x41b18f): no latch.
+        // Jump (GOG Df2.exe 0x447120, 0x44713b..0x447181): not while
+        // airborne or swimming (0x22000) or on a chute (0x20); prone it
+        // asks for the Prone toggle ([0x79a67c] = 1), which stands up just
+        // below; else, not while sliding (0x40000), z += 0x1000 and vz =
+        // 0x1555. The crouch ([0x79a2c4]) is not tested: a crouched soldier
+        // jumps and stays crouched. move_jump is a held command (table
+        // 0x4a5ca8 flags 0x405, as move_forward; the control bit +0x74 &
+        // 0x10000 is rebuilt each pass, 0x41b18f): no latch.
         const bool press = in.jump;
         if (press && onGround_ && !inWater_ && !chute) {
-            if (stance != Stance::Stand) stance = Stance::Stand;
+            if (stance == Stance::Prone) reqProne_ = true;
             else if (!sliding_) { z += 0x1000 / 65536.f; vz_ = 0x1555 / 65536.f; }
         }
+        // The stance commands (0x41f150: Crouch [0x79a678], Prone
+        // [0x79a67c], Stand [0x79a680], latched by requestStance) taken on
+        // this odd tick, in 0x447120's order, wherever the player is.
+        // Prone and Crouch toggle; standing on an object (+0x100) the origin
+        // is lifted 0x8000 (0.5 m) out of prone and 0x4000 (0.25 m) out of a
+        // crouch or from prone to a crouch.
+        // The origin stays where it was (the new pose's feet then fall or
+        // are pushed up to the ground). GOG's eye is the origin plus an eased
+        // offset ([0x79a688], 0x44dd50); OpenDF's is the feet plus an eased
+        // height, so that height takes the change of the origin's height
+        // above the feet, keeping the eye where it was.
+        const float lo0 = landOrigin();
+        const bool onObj = platform_ >= 0;
+        if (reqProne_) {
+            if (stance != Stance::Prone) stance = Stance::Prone;
+            else { if (onObj) z += 0x8000 / 65536.f; stance = Stance::Stand; }
+        }
+        if (reqCrouch_) {
+            if (stance != Stance::Crouch) { if (stance == Stance::Prone && onObj) z += 0x4000 / 65536.f; stance = Stance::Crouch; }
+            else { if (onObj) z += 0x4000 / 65536.f; stance = Stance::Stand; }
+        }
+        if (reqStand_) {
+            if (stance == Stance::Prone) { if (onObj) z += 0x8000 / 65536.f; }
+            else if (stance == Stance::Crouch && onObj) z += 0x4000 / 65536.f;
+            stance = Stance::Stand;
+        }
+        reqProne_ = reqCrouch_ = reqStand_ = false;
+        if (!inWater_) eyeHeight_ += landOrigin() - lo0;
 
         // The move chooser (0x43f690) and its motion (0x4404c8..0x4406ca).
         Vec3 step{0, 0, 0};
@@ -458,44 +489,47 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
         } else {
             step = along * (v * 0.5f);   // 0x440596: half a frame a tick
         }
+        // GOG Df2.exe 0x4467d0 (0x446a9f..0x446bef): the step is stored in
+        // the per-person table 0xa17300 (repeated on even ticks, 0x446c31)
+        // except airborne, where the stored take-off step is used.
         if (chute) {
             // 0x440651: PFoil glides 0x4000 a tick along the heading (+ the
             // Parachute move's direction 0); without PFoil no motion.
             step = pfoil ? flatFwd * (0x4000 / 65536.f) : Vec3{0, 0, 0};
             dz = 0;
+            step_ = step;
         } else if (!onGround_) {
             step = step_;   // airborne: the stored take-off step (0x44082a)
-        } else if (!inWater_ && !ladder_) {
-            // Slopes (0x4406e8, gradient 0x464ba0; DF.EXE's constants): a
-            // slide starts at 1.3 on either axis, stops under 0.7 on both,
-            // and moves -gradient x 0x1999 a tick; uphill steeper than 0.7
-            // along the move forces the walking moves (flag 0x80000).
-            const float h0x = world.terrain->heightAt(feet.x - 0.5f, feet.z), h1x = world.terrain->heightAt(feet.x + 0.5f, feet.z);
-            const float h0z = world.terrain->heightAt(feet.x, feet.z - 0.5f), h1z = world.terrain->heightAt(feet.x, feet.z + 0.5f);
-            const float gx = h1x - h0x, gz = h1z - h0z;
-            if (sliding_) {
-                if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
-                else step = Vec3{-gx, 0, -gz} * (0x1999 / 65536.f);
-            } else if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) {
-                sliding_ = true;
-            } else if (moving_ && stance != Stance::Prone && gx * along.x + gz * along.z > kSlideStop && moves) {
-                const char* hand = (df2ModeFlags & 0x18) ? "_2HW" : (df2ModeFlags & 4) ? "_1HW" : "";   // 0x445980
-                const std::string walk = "Walking" + std::to_string(dir) + hand;
-                if (const AnimMove* w = moves->find(walk); w && w->velocity < vel) {
-                    speed_ = w->velocity;
-                    step = along * (w->velocity / 60.f);
+        } else {
+            step_ = step;
+            if (!inWater_ && !ladder_ && platform_ < 0) {
+                // Slopes, on the terrain only (not 0x422000, +0x100 == 0):
+                // the gradient 0x46eaa0; a slide (0x40000) starts at 1.3 on
+                // either axis, stops under 0.7 on both, and while it lasts
+                // this odd tick moves -gradient x 0x1999 instead of the move
+                // (only the locals; the stored step stays the move's, so
+                // even ticks move by it). Uphill steeper than 0.7 sets
+                // 0x80000, which nothing in GOG reads: the move is kept.
+                float gx = 0, gz = 0;
+                world.terrain->df2Gradient(feet.x, feet.z, gx, gz);
+                if (sliding_) {
+                    if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
+                    else step = Vec3{-gx, 0, -gz} * (0x1999 / 65536.f);
+                } else if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) {
+                    sliding_ = true;
                 }
             }
         }
-        step_ = step;
         stepDz_ = dz;
+        tickStep_ = step;
     }
 
     // Riding the platform +0xF8 (0x440876..0x440944), then the movement
     // (0x440947..0x44096f); +0x64 &= ~0x01400000.
     world.carry(platform_, feet, yaw);
-    feet.x += step_.x;
-    feet.z += step_.z;
+    const Vec3 move = odd ? tickStep_ : step_;   // 0x446c52: the locals this tick
+    feet.x += move.x;
+    feet.z += move.z;
     z += vz_ + stepDz_;
     ladder_ = armory_ = false;
 

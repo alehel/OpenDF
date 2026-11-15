@@ -2913,11 +2913,12 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         // (OpenDF) the box frees the mouse; N / Escape take it back.
         if (captured_) { captured_ = false; quitFreedMouse_ = true; SDL_SetRelativeMouseMode(SDL_FALSE); }
         break;
-    // DF1: latched toggles taken in the player's ground branch (GOG Df.exe
-    // 0x477d40 -> 0x488200); DF2 sets the stance outright.
-    case Action::Stand: if (world_.df2Rules) player_.stance = Stance::Stand; else player_.requestStance(Stance::Stand); break;
-    case Action::Crouch: if (world_.df2Rules) player_.stance = Stance::Crouch; else player_.requestStance(Stance::Crouch); break;
-    case Action::Prone: if (world_.df2Rules) player_.stance = Stance::Prone; else player_.requestStance(Stance::Prone); break;
+    // Latched toggles: DF1 takes them in the player's ground branch (GOG
+    // Df.exe 0x477d40 -> 0x488200), DF2 on the next odd tick (GOG Df2.exe
+    // 0x41f150 -> 0x447120).
+    case Action::Stand: player_.requestStance(Stance::Stand); break;
+    case Action::Crouch: player_.requestStance(Stance::Crouch); break;
+    case Action::Prone: player_.requestStance(Stance::Prone); break;
     // Weapon keys select the original's slots (DF.EXE 0x42de85 -> 0x44aa74):
     // 0 laser designator, 1 knife (neither done yet), 2 sidearm, 3-5 the
     // primary's modes, 6-8 the kit's, 9 frag grenade.

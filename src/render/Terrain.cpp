@@ -593,6 +593,19 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             tiles = t.height / tile;
             dcRgba = t.rgba;
             const bool haveElev = loadImage(vfs, desc_.detailElev, dD) && dD.pixels.size() == size_t(t.width) * size_t(t.height);
+            if (haveElev) {
+                // GOG Df2.exe 0x46f680 copies each used tile's elevation into
+                // the DMap chain and 0x46d970 reduces it by 2x2 maxima to one
+                // byte at level 0: the tile's highest elevation. 0x46e0f0
+                // adds twice that to the cell's word height.
+                const size_t per = size_t(t.width) * size_t(t.width);
+                std::vector<uint8_t> top(size_t(tiles), 0);
+                for (size_t k = 0; k < size_t(tiles); ++k)
+                    top[k] = *std::max_element(dD.pixels.begin() + long(k * per), dD.pixels.begin() + long((k + 1) * per));
+                detailTop_.assign(detail.pixels.size(), 0);
+                for (size_t c = 0; c < detail.pixels.size(); ++c)
+                    if (detail.pixels[c] < tiles) detailTop_[c] = top[detail.pixels[c]];
+            }
             dsRg.resize(size_t(t.width) * size_t(t.height) * 2);
             for (size_t i = 0; i < dsRg.size() / 2; ++i) {
                 dsRg[i * 2] = 128;   // neutral shade
@@ -859,6 +872,23 @@ float Terrain::heightAt(float x, float z) const {
     float a = h(ix, iz) + (h(ix + 1, iz) - h(ix, iz)) * tx;
     float b = h(ix, iz + 1) + (h(ix + 1, iz + 1) - h(ix, iz + 1)) * tx;
     return (a + (b - a) * tz) * scale.heightScale;
+}
+
+void Terrain::df2Gradient(float x, float z, float& gx, float& gz) const {
+    gx = gz = 0;
+    if (size_ == 0 || !gen2_) return;
+    // GOG's cell is (x >> 16, y >> 16) with y = -z; heightAt's corners put
+    // GOG grid row n at OpenDF row -n, so the cell's row is ceil(z).
+    const long ix = long(std::floor(x / scale.cellSize)), iz = long(std::ceil(z / scale.cellSize));
+    auto H = [&](long cx, long cz) {
+        cx = ((cx % size_) + size_) % size_;
+        cz = ((cz % size_) + size_) % size_;
+        const size_t i = size_t(cz) * size_t(size_) + size_t(cx);
+        return long(std::lround(heights_[i] * 256.f)) + (i < detailTop_.size() ? 2L * detailTop_[i] : 0L);
+    };
+    // (H[+2] - H[-2]) * 0x20 in 16.16; heights are 8.8 words of 0.5 m steps.
+    gx = float((H(ix + 2, iz) - H(ix - 2, iz)) * 0x20) / 65536.f;
+    gz = float((H(ix, iz + 2) - H(ix, iz - 2)) * 0x20) / 65536.f;
 }
 
 float Terrain::cellHeight(float x, float z) const {
