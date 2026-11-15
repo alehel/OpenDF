@@ -5901,22 +5901,66 @@ void Game::drawOldMessages(const Screen& s) {
 }
 
 void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
-    // 0x44c72c / 0x44c574: soldiers on the player's side (no alive check)
-    // named in the campaign's "People Names" as NAMEID<record +4> (no name,
-    // no tag); at the origin raised by 1 m on screen, then 25 up; centred,
-    // clipped to x 60..964 and the view (top + 5 .. bottom - 30); colour by
-    // side: 1 blue, 2 red, else green.
-    const Vec3 eye = viewEye();
-    for (const auto& o : world_.objects) {
-        if (!o.person || o.side != kPlayerSide || o.missionIndex < 0) continue;
-        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
-        if (nameId == 0) continue;
-        char key[24];
-        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
-        const std::string* name = campText_.find("People Names", key);
-        if (!name || name->empty()) continue;
-        const Vec3 at = world_.nearest(o.pos, eye);
-        if (std::getenv("OPENDF_DEBUGTAG")) std::fprintf(stderr, "tag %s at (%.1f %.1f %.1f) eye (%.1f %.1f %.1f)\n", name->c_str(), at.x, at.y, at.z, eye.x, eye.y, eye.z);
+    // GOG Df.exe 0x485a90 -> 0x4858d0: nothing with Player Tags off
+    // (attributes 0x8000, [0x67f549] & 0x80); else every entry of the people
+    // draw list (0xc3b570, built by 0x485040 and thinned by 0x4854d0) on the
+    // player's side, the player's own body only in an outside view
+    // ([0x6ba3ec], OpenDF: once dead). The list: people not hidden
+    // (+0x6c & 2), |dx|, |dy| < 0x3fd m from the camera in whole metres,
+    // |view depth| < 0x3fc m, a 1 m sphere not outside the view frustum
+    // (0x44acf0: near plane, depth + 1 m <= 1020 m, the four side planes),
+    // then dropped when the terrain hides it (0x484fb0: no column of the
+    // sphere's top row, x - r .. x + r, in front of the terrain there).
+    // The name ((ai +0xc) +4; OpenDF the campaign's "People Names" as
+    // NAMEID<record +4>, as 0x44c72c), the projected 1 m over half a pixel,
+    // at the origin raised by 1 m on screen, then 25 up; centred, clipped
+    // to x 60..964 and the view (top + 5 .. bottom - 30); colour by side:
+    // 1 blue, 2 red, else green.
+    if (o_.attributes & 0x8000) return;
+    const Vec3 eye = viewEye(), fwd = viewDir();
+    const Terrain* trn = world_.terrain;
+    // INFERRED equivalent of 0x484fb0 for OpenDF's GL view: the sphere's
+    // top row is visible when a terrain march (every 1/4 m) from the eye to
+    // a point 1 m above the origin, at its centre or 1 m to either side
+    // across the view, finds no ground above the line.
+    const Vec3 cr = cross(fwd, Vec3{0, 1, 0});
+    const Vec3 side = dot(cr, cr) > 1e-6f ? normalize(cr) : Vec3{1, 0, 0};
+    auto terrainShows = [&](Vec3 at) {
+        if (!trn) return true;
+        for (float k : {0.f, -1.f, 1.f}) {
+            const Vec3 b = at + Vec3{0, 1.f, 0} + side * k, d = b - eye;
+            const float len = std::sqrt(dot(d, d));
+            const int n = int(len * 4.f);
+            bool clear = true;
+            for (int i = 1; i < n && clear; ++i) {
+                const Vec3 p = eye + d * (float(i) / float(n));
+                if (trn->heightAt(p.x, p.z) > p.y) clear = false;
+            }
+            if (clear) return true;
+        }
+        return false;
+    };
+    auto inList = [&](Vec3 at) {
+        if (std::abs(std::floor(at.x) - std::floor(eye.x)) >= 1021.f || std::abs(std::floor(at.z) - std::floor(eye.z)) >= 1021.f)
+            return false;
+        const Vec3 d = at - eye;
+        const float depth = dot(d, fwd);
+        if (std::abs(depth) >= 1020.f || depth + 1.f > 1020.f) return false;
+        // Side and near planes from the clip rows (view is rigid, so the
+        // plane distances are in metres).
+        auto plane = [&](int r, float sg) {
+            const float px = viewProj.at(3, 0) + sg * viewProj.at(r, 0), py = viewProj.at(3, 1) + sg * viewProj.at(r, 1),
+                        pz = viewProj.at(3, 2) + sg * viewProj.at(r, 2), pw = viewProj.at(3, 3) + sg * viewProj.at(r, 3);
+            const float len = std::sqrt(px * px + py * py + pz * pz);
+            return len > 0 ? (px * at.x + py * at.y + pz * at.z + pw) / len : 0.f;
+        };
+        for (int r = 0; r < 2; ++r)
+            for (float sg : {-1.f, 1.f})
+                if (plane(r, sg) < -1.f) return false;
+        if (depth < -1.f) return false;
+        return terrainShows(at);
+    };
+    auto tag = [&](Vec3 at, const std::string& name, int sideOf) {
         auto project = [&](Vec3 p, float& px, float& py) {
             const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
             const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
@@ -5927,12 +5971,29 @@ void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
             return true;
         };
         float px, py, ux, uy;
-        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) continue;
-        if (py - uy <= 0.5f) continue;   // 1 m must be more than half a pixel
+        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) return;
+        if (py - uy <= 0.5f) return;   // 1 m must be more than half a pixel
         py = uy - s.vy(25);
-        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) continue;
-        const Color c = o.side == 1 ? kHudBlue : o.side == 2 ? kHudRed : kHudPureGreen;
-        hud_.text(px - hud_.textWidth(*name, s.text()) / 2, py, *name, c, s.text());
+        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) return;
+        const Color c = sideOf == 1 ? kHudBlue : sideOf == 2 ? kHudRed : kHudPureGreen;
+        hud_.text(px - hud_.textWidth(name, s.text()) / 2, py, name, c, s.text());
+    };
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide || o.missionIndex < 0) continue;
+        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
+        if (nameId == 0) continue;
+        char key[24];
+        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
+        const std::string* name = campText_.find("People Names", key);
+        if (!name || name->empty()) continue;
+        const Vec3 at = world_.nearest(o.pos, eye);
+        if (!inList(at)) continue;
+        tag(at, *name, o.side);
+    }
+    // The player's own body, in the outside (dead) view.
+    if (playerDead() && !o_.soldierName.empty()) {
+        const Vec3 at = world_.nearest(deadBodyOrigin(), eye);
+        if (inList(at)) tag(at, o_.soldierName, kPlayerSide);
     }
 }
 
