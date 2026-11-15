@@ -589,6 +589,13 @@ private:
     void campaignTick();
     bool fromCampaign_ = true;
     std::vector<std::string> quick_;   // quick missions (D06*)
+    // GOG Df2.exe 0x442960's list (0x4f49b0, 0x44 bytes each): a mission
+    // file of the game folder has flag 1 (+0x40), its file name as title
+    // and the briefing of its header (+0x108, read by 0x404530).
+    std::vector<bool> quickLoose_;
+    std::vector<std::string> quickFile_, quickBrief_;
+    bool bmsLoose_ = false;            // [0x4f39f0]: the chosen mission is such a file
+    std::string bmsBrief_;
     int quickTop_ = 0, quickSel_ = -1;
     std::string bms_;                 // the chosen mission
     std::string helpText_;
@@ -1633,7 +1640,10 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             if (missionSel_ >= 0) key = kMissions[missionSel_].bms;
             t = briefText_.find("CABRIEF", key);
         } else if (quickSel_ >= 0 && quickSel_ < int(quick_.size())) {
-            t = briefText_.find("QMBRIEF", quick_[size_t(quickSel_)]);
+            // 0x442ad0: QMBRIEF by the first six letters, or a mission
+            // file's own briefing.
+            t = quickLoose_[size_t(quickSel_)] ? &quickBrief_[size_t(quickSel_)]
+                                               : briefText_.find("QMBRIEF", quick_[size_t(quickSel_)].substr(0, 6));
         }
         rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), b.drawstate == 4 ? 0x844030 : 0xCA4409);
         auto fi = mnu_.fonts.find(b.font);
@@ -1654,7 +1664,8 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             const HudImage im = image(b.image);
             const float fh = float(im.height / 4);
             blit(im, float(b.x), float(b.y), 0, fh * float(sel ? 2 : std::clamp(b.drawstate - 1, 0, 3)), float(im.width), fh);
-            const std::string* t = briefText_.find("TITLE", quick_[size_t(i)]);
+            // 0x442ad0: TITLE by the first six letters, or the file name.
+            const std::string* t = quickLoose_[size_t(i)] ? &quickFile_[size_t(i)] : briefText_.find("TITLE", quick_[size_t(i)].substr(0, 6));
             const std::string title = t ? *t : quick_[size_t(i)];
             auto fi = mnu_.fonts.find(b.font);
             const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
@@ -1876,10 +1887,49 @@ void FrontendDf2::refreshCampaign() {
 
 void FrontendDf2::refreshQuick() {
     // The D06*.BMS missions in the archives (0x43c190).
+    // GOG Df2.exe 0x442960: first the *.bms files of the game folder
+    // (FindFirstFile, the current folder), then the archive's D06*.BMS; each
+    // kept only when its header's +0x78 & 0xFE800000 is 0 (a header that is
+    // not "BMS" version 15 reads as zeroes, 0x404530 / 0x4044a0).
     quick_.clear();
+    quickLoose_.clear();
+    quickFile_.clear();
+    quickBrief_.clear();
+    {
+        std::vector<std::filesystem::path> files;
+        std::error_code ec;
+        for (auto& e : std::filesystem::directory_iterator(saveDir_, ec)) {
+            const std::string ext = upper(e.path().extension().string());
+            if (ext == ".BMS" && e.is_regular_file(ec)) files.push_back(e.path());
+        }
+        std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return upper(a.filename().string()) < upper(b.filename().string()); });
+        for (const auto& f : files) {
+            std::array<char, 0x208> h{};
+            std::ifstream in(f, std::ios::binary);
+            in.read(h.data(), std::streamsize(h.size()));
+            if (in.gcount() != std::streamsize(h.size()) || std::memcmp(h.data(), "BMS\x0f", 4) != 0) h.fill(0);
+            uint32_t flags;
+            std::memcpy(&flags, &h[0x78], 4);
+            if (flags & 0xFE800000u) continue;
+            const std::string name = upper(f.stem().string());
+            vfs_.addLoose(name + ".BMS", f);
+            quick_.push_back(name);
+            quickLoose_.push_back(true);
+            quickFile_.push_back(f.filename().string());
+            quickBrief_.push_back(std::string(&h[0x108], strnlen(&h[0x108], 0x100)));
+        }
+    }
+    std::vector<std::string> pff;
     for (const auto& n : vfs_.list(".BMS"))
-        if (n.size() >= 3 && upper(n).compare(0, 3, "D06") == 0) quick_.push_back(upper(n.substr(0, n.size() - 4)));
-    std::sort(quick_.begin(), quick_.end());
+        if (n.size() >= 3 && upper(n).compare(0, 3, "D06") == 0) pff.push_back(upper(n.substr(0, n.size() - 4)));
+    std::sort(pff.begin(), pff.end());
+    for (const std::string& n : pff) {
+        if (header(n, 0x78) & 0xFE800000u) continue;
+        quick_.push_back(n);
+        quickLoose_.push_back(false);
+        quickFile_.emplace_back();
+        quickBrief_.emplace_back();
+    }
     if (D2Button* b = btn("but_qm_mbtxt")) b->drawstate = quickSel_ >= 0 ? 1 : 4;
     if (D2Button* b = btn("but_qm_map")) {
         b->image = "IMAGEMAP1";
@@ -1889,7 +1939,8 @@ void FrontendDf2::refreshQuick() {
         }
         layout(*b);
     }
-    if (D2Button* b = btn("but_qm_vsl")) { b->p1 = std::max(1, int(quick_.size()) - 8); b->p2 = quickTop_; }
+    // 0x442960: the list slider's range is n - 8 from 9 missions on, else 0.
+    if (D2Button* b = btn("but_qm_vsl")) { b->p1 = quick_.size() < 9 ? 0 : int(quick_.size()) - 8; b->p2 = quickTop_; }
 }
 
 void FrontendDf2::loadBriefing() {
@@ -1898,7 +1949,9 @@ void FrontendDf2::loadBriefing() {
     // of lines it breaks into (0x41bf70 at the text's width user1 - x - 10)
     // less the 25 the box shows, at least 0, and its value 0.
     if (D2Button* t = btn("but_mb_mbrct")) {
-        const std::string* brief = briefText_.find("MBBRIEF", bms_.substr(0, std::min<size_t>(6, bms_.size())));
+        // A mission file of the game folder ([0x4f39f0]) has its own
+        // briefing (header +0x108, 0x404530).
+        const std::string* brief = bmsLoose_ ? &bmsBrief_ : briefText_.find("MBBRIEF", bms_.substr(0, std::min<size_t>(6, bms_.size())));
         t->text = brief ? *brief : std::string();
         if (D2Button* sl = btn("but_mb_brvsl")) {
             sl->p1 = std::max(0, breakLines(t->font, t->user1 - t->x - 10, t->text) - 25);
@@ -2163,6 +2216,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
         }
     } else if (cb == "ca_MissionBriefing" && missionSel_ >= 0) {
         bms_ = kMissions[missionSel_].bms;
+        bmsLoose_ = false;
         fromCampaign_ = true;
         returnTo_ = Screen::Campaign;
         next_ = Screen::Briefing;
@@ -2179,6 +2233,8 @@ void FrontendDf2::event(D2Button& b, int ev) {
     else if (cb == "qm_ScrollDown") { quickTop_ = std::clamp(quickTop_ + 1, 0, std::max(0, int(quick_.size()) - 8)); refreshQuick(); }
     else if (cb == "qm_MissionBriefing" && quickSel_ >= 0 && quickSel_ < int(quick_.size())) {
         bms_ = quick_[size_t(quickSel_)];
+        bmsLoose_ = quickLoose_[size_t(quickSel_)];
+        bmsBrief_ = quickBrief_[size_t(quickSel_)];
         fromCampaign_ = false;
         returnTo_ = Screen::Quick;
         next_ = Screen::Briefing;

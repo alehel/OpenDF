@@ -638,8 +638,12 @@ First differences from DF1:
     missions left, a complete one making the next blink every 30 ticks,
     GOG 0x434440 / 0x434a90 / 0x434a20 / 0x43457b, with campaign 2's blink
     word shared with the timer as in the EXE; the Main Menu resets the
-    campaign to 1, 0x43a5c9), Quick Missions (D06*, TITLE, QMBRIEF,
-    pictures), Mission Briefing (MBBRIEF at (x + 5, y + 5) in its border,
+    campaign to 1, 0x43a5c9), Quick Missions (GOG 0x442960: first the
+    game folder's *.bms files, titled by their file name with the header's
+    briefing (+0x108, 0x404530; the Mission Briefing shows it too), then
+    the archive's D06*, TITLE, QMBRIEF, pictures; each only when header
+    +0x78 & 0xFE800000 is 0; OpenDF loads such a file through the VFS by
+    its name), Mission Briefing (MBBRIEF at (x + 5, y + 5) in its border,
     scrolled by but_mb_brvsl over max(0, lines - 25), GOG 0x43d000 /
     0x43d120; the map, GOG 0x43ce90: the
     version-15 header's terrain name with .JPG for .TRN (DFS1.JPG, 256²)

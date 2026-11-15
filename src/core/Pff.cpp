@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <iterator>
 
 namespace fs = std::filesystem;
 
@@ -143,7 +144,9 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
     return exists("DF.PFF") || mounted > 0;
 }
 
-bool Vfs::exists(const std::string& name) const { return index_.count(toUpper(name)) != 0; }
+bool Vfs::exists(const std::string& name) const { return loose_.count(toUpper(name)) != 0 || index_.count(toUpper(name)) != 0; }
+
+void Vfs::addLoose(const std::string& name, const fs::path& file) { loose_[toUpper(name)] = file; }
 
 // NovaLogic's text-file scrambler, reversed: drop headerLen bytes, reverse
 // the rest, then XOR each byte with the low byte of the stream
@@ -162,6 +165,13 @@ static void descrambleNova(std::vector<uint8_t>& data, size_t headerLen, uint32_
 }
 
 bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
+    if (auto l = loose_.find(toUpper(name)); l != loose_.end()) {
+        std::ifstream f(l->second, std::ios::binary);
+        if (f) {
+            out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            return true;
+        }
+    }
     auto it = index_.find(toUpper(name));
     if (it == index_.end()) return false;
     if (!it->second.archive->read(it->second.archive->entries()[it->second.index], out)) return false;
@@ -198,6 +208,9 @@ std::vector<std::string> Vfs::list(const std::string& extension) const {
         if (ext.empty() || (name.size() >= ext.size() && name.compare(name.size() - ext.size(), ext.size(), ext) == 0))
             names.push_back(name);
     }
+    for (auto& [name, file] : loose_)
+        if (!index_.count(name) && (ext.empty() || (name.size() >= ext.size() && name.compare(name.size() - ext.size(), ext.size(), ext) == 0)))
+            names.push_back(name);
     std::sort(names.begin(), names.end());
     return names;
 }
