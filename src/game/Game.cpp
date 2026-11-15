@@ -432,6 +432,7 @@ private:
     int teamCount(int team, bool aliveOnly) const;
     std::array<int, 64> teamTotal_{}, teamAlive_{};
     uint32_t teamRecountClock_ = 0;       // GOG Df.exe [0x6e4738] (never reset)
+    uint32_t endCheckClock_ = 0;          // GOG Df.exe [0x6e474c] (never reset)
     void countTeams(bool atStart);
     void drawMissionEnd(const Screen& s);
     void drawGoals(const Screen& s);
@@ -467,6 +468,13 @@ private:
     // reset): every record it creates takes counter % 60 as its first think
     // wait, then the counter goes up 11.
     int df2ThinkCounter_ = 0;
+    // GOG Df.exe 0x449710's counter [0x4f821c] (0 at start, never reset):
+    // every record that passes the single-player filter, in file order over
+    // the four groups (0x449c70), takes counter % 60 as its think_timer,
+    // then the counter goes up 11. df1FirstThink_: that value per record of
+    // the current mission (-1 for a dropped one).
+    int df1ThinkCounter_ = 0;
+    std::vector<int> df1FirstThink_;
     // DF2's ambient loop markers ("Sound: loop" items): mission record,
     // sound id, place (GOG Df2.exe 0x465330, attached through 0x4682b0 at
     // mission load).
@@ -477,6 +485,12 @@ private:
     void tickDialogs(bool drawn);
     float scriptClock_ = 0;
     uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
+    // GOG Df.exe [0x6e471c]: 0x43f560 adds 1 every tick, paused or not (the
+    // game counters [0x6e4720] / [0x6e4724] only when [0x6e4714] is 0); it
+    // drives Delta Force's blinks (tick bit 0x10: 0x402300, 0x466090,
+    // 0x48e070) and the dead player's orbit (0x404640).
+    uint32_t frameClock_ = 0;
+    float pauseClock_ = 0;
     // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
     // billboarded toward the camera, animated frame by frame, removed after
     // frames x ticks-per-frame.
@@ -1016,7 +1030,13 @@ bool Game::loadMission(int index) {
             const int id = o.item ? o.item->id - 100000 : 0;
             if (id == 5002 || id == 5038 || id == 5048 || id == 5049) { o.removed = true; o.boxes.clear(); }
         }
-    ai_.init(world_, mission_);
+    df1FirstThink_.clear();
+    if (!df2Mission)
+        for (const MissionObject& mo : mission_.objects) {
+            df1FirstThink_.push_back(mo.omitted ? -1 : df1ThinkCounter_ % 60);
+            if (!mo.omitted) df1ThinkCounter_ += 11;
+        }
+    ai_.init(world_, mission_, df1FirstThink_);
     // Enemy AI hard: DF.EXE attributes 0x80 ([0x66fa88]), DF2.EXE df2.cfg
     // attributes 0x10 ([0x653000], read by the aim 0x415f16).
     ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
@@ -1038,12 +1058,12 @@ bool Game::loadMission(int index) {
                 // GOG Df.exe 0x449710 (CD 0x43ff24): yaw (90 - word +0x34) and
                 // pitch word +0x36, degrees / 360 as 16.16 << 16; perception
                 // and alert from +0x24 / +0x42 (no night change); the first
-                // think after load counter % 60, the counter +11 an object
-                // (INFERRED: counted within group 0, where the lights are).
+                // think after load counter % 60, the counter +11 a loaded
+                // record (df1FirstThink_).
                 const int head = int16_t(uint32_t(mo.raw[0x34 / 4]) & 0xFFFF), tilt = int16_t(uint32_t(mo.raw[0x34 / 4]) >> 16);
                 l.yaw = uint32_t((90 - head) * 0x10000 / 0x168) << 16;
                 l.pitch = int32_t(uint32_t(tilt * 0x10000 / 0x168) << 16);
-                l.wait = (mo.indexInGroup * 11) % 60;
+                l.wait = df1FirstThink_[size_t(o.missionIndex)];
                 o.pitch = float(l.pitch) / 4294967296.f * 2 * kPi;
             }
         }
@@ -1338,10 +1358,11 @@ bool Game::loadMission(int index) {
             // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0).
             if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
                 o.missionIndex >= 0) {
-                // First wait (0x440071): a counter mod 60, the counter going
-                // up 11 per object loaded, in file order.
+                // First wait: the think_timer GOG Df.exe 0x449710 gives
+                // (df1FirstThink_); Delta Force 2 sets its own below.
                 const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
-                ambients_.push_back({int(i), (11 * o.missionIndex) % 60, mo.group, mo.indexInGroup});
+                const int wait = size_t(o.missionIndex) < df1FirstThink_.size() ? df1FirstThink_[size_t(o.missionIndex)] : (11 * o.missionIndex) % 60;
+                ambients_.push_back({int(i), wait, mo.group, mo.indexInGroup});
             }
         }
         // DF2's sound markers ("Sound: ..." items, ai_function snd0..snd3,
@@ -2495,8 +2516,9 @@ Vec3 Game::viewEye() const {
     const int mode = outsideView();
     if (mode == 0) return player_.eye();
     if (mode == 3) return lookout_;
-    // Dead: [0x6ba424] = tick << 21 every frame (0x404640).
-    const float off = playerDead() ? float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi : camYawOff_;
+    // Dead: [0x6ba424] = [0x6e471c] << 21 every frame (GOG Df.exe 0x404640).
+    const uint32_t clock = world_.df2Rules ? ticks_ : frameClock_;
+    const float off = playerDead() ? float(clock << 21) / 4294967296.f * 2 * kPi : camYawOff_;
     const float th = mode == 1 ? camYaw_ + off : off;
     const float p = camPitch_, d = camDist_;
     const float back = -d * std::cos(p) - 0.5f * std::sin(p), up = -d * std::sin(p) + 0.5f * std::cos(p);
@@ -5172,7 +5194,7 @@ void Game::drawDf1Map(const Screen& s, float x0, float y0, float x1, float y1, b
         if (!type || o.group == 3 || o.omitted) continue;
         const WorldObject* wo = live[i];
         if (wo && wo->removed && !wo->carried) continue;
-        if (o.group == 2 && &o == current && !(ticks_ & 16)) continue;
+        if (o.group == 2 && &o == current && !(frameClock_ & 16)) continue;
         float sx, sy;
         const MapTrack* tr = wo ? &mapTrack_[size_t(wo - world_.objects.data())] : nullptr;
         if (!place(tr ? tr->x : o.x, tr ? tr->y : o.y, sx, sy)) continue;
@@ -5272,7 +5294,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         // [0x6e471c]) centred at (512, 370) in [0x67db5c] (0x4026b4).
         const bool designator = arsenal_.modeIndex() == 0x1b;
         if (designator && !scopeShown()) {
-            if (ticks_ & 0x10) {
+            if (frameClock_ & 0x10) {
                 const std::string nt = df2Text("Misc", "STRMISC15", "No Target");
                 hud_.text(cx - hud_.textWidth(nt, s.text()) / 2, cy - s.vy(14), nt, kHudBright, s.text());
             }
@@ -5375,7 +5397,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             hud_.text(s.vx(770) - hud_.textWidth(buf, s.text()) / 2, s.vy(450), buf, kHudBright, s.text());
             const bool target = range >= 0 && range <= 999;
             const char* status = target ? "Laser Active" : "No Target";
-            if (target || (ticks_ & 0x10))
+            if (target || (frameClock_ & 0x10))
                 hud_.text(s.vx(770) - hud_.textWidth(status, s.text()) / 2, s.vy(300), status, kHudBright, s.text());
         } else {
             if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "1km+");
@@ -8467,8 +8489,11 @@ int Game::run() {
                 spawnEffect(sp.slot, sp.pos);
             }
             bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
+            if (paused_)
+                for (pauseClock_ += realDt; pauseClock_ >= 1.f / 60.f; pauseClock_ -= 1.f / 60.f) ++frameClock_;
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
+                ++frameClock_;
                 tickEffects();
                 tickDialogs(dlgDrawn);
                 dlgDrawn = false;
@@ -8743,7 +8768,11 @@ int Game::run() {
                         const Vec3 fw{std::sin(deadYaw_), 0, -std::cos(deadYaw_)}, lf{-std::cos(deadYaw_), 0, -std::sin(deadYaw_)};
                         deadShift_ = deadShift_ + fw * r[0] + lf * r[1];
                     }
-                    const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
+                    // Delta Force: the phrase set (def +0xd4, 0x43f5a0) of the
+                    // player's own item, by sex, snow and night (GOG Df.exe
+                    // 0x45d520), so 15 for the female soldier.
+                    const ItemDef* soldier = items_.byId(world_.df2Rules ? kItemPlayerSoldier : playerItem_);
+                    if (!soldier) soldier = items_.byId(kItemPlayerSoldier);
                     if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0, kPlayerTeam);
                 }
                 for (const auto& e : world_.takeAnimEvents()) {
@@ -8812,9 +8841,16 @@ int Game::run() {
                 }
                 // 0x449830: the damage flash fades 2 per tick.
                 damageFlash_ = damageFlash_ > 1 ? damageFlash_ - 2 : 0;
-                // 0x446148, every 64 ticks: a dead player ends the mission
-                // (0x44663c(2)); no side wins.
-                if (playerDead() && missionResult_ < 0 && (ticks_ & 63) == 0) endMission(0);
+                // A dead player ends the mission. Delta Force: GOG Df.exe
+                // 0x443c50 runs the end check 0x444630 every 63 ticks (the
+                // counter [0x6e474c], never reset); in single player a
+                // player with +0x6c bit 4 goes to 0x444ca0(2), side 2 wins.
+                if (!world_.df2Rules) {
+                    if (++endCheckClock_ > 0x3e) {
+                        endCheckClock_ = 0;
+                        if (playerDead() && missionResult_ < 0) endMission(2);
+                    }
+                } else if (playerDead() && missionResult_ < 0 && (ticks_ & 63) == 0) endMission(0);
                 // Delta Force runs the events after the mission has ended
                 // too (GOG Df.exe 0x443c50 is called without testing the
                 // end latch [0x67dbc0]; 0x444ca0 keeps the first result),

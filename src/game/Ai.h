@@ -25,7 +25,9 @@ class SoundSystem;
 
 class AiSystem {
 public:
-    void init(World& world, const Mission& mission);
+    // firstThink: per mission record, its first think wait (Delta Force's
+    // load counter, see Game::loadMission); empty: count over the persons.
+    void init(World& world, const Mission& mission, const std::vector<int>& firstThink = {});
     // "Enemy AI: Hard" (0x66fa88 bit 0x80): side 2 sees twice as well and
     // aims four times tighter.
     bool hard = false;

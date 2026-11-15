@@ -10,6 +10,10 @@ uint32_t g_savedFlags = 0, g_flags = 0;
 // DF.EXE 0x4e5854: starts at 1 and flips on every mission load; condition
 // class 4 reads it, so missions can alternate between two variants.
 int g_loadToggle = 1;
+// The eighth of the events the next visit takes (GOG Df.exe [0x4f2be4],
+// GOG Df2.exe [0x4e029c]): 0 at start-up, advanced only by the visit
+// (0x42eaf0 / 0x41ae50) and never reset, so it carries over between missions.
+int g_eighth = 0;
 constexpr int kVisit = 128;   // ticks between visits of one event
 constexpr uint32_t kItemArea = 6013;   // "Area Trigger" marker (ITEMS.DEF 106013)
 } // namespace
@@ -22,7 +26,6 @@ void MissionScript::load(const Mission& m) {
     g_loadToggle ^= 1;
     g_flags = g_savedFlags;
     ticks_ = 0;
-    visitCount_ = 0;
     goals_ = fails_ = 0;
     unhandled_ = 0;
     events_.clear();
@@ -215,7 +218,8 @@ void MissionScript::tick(ScriptHost& host) {
     // Df2.exe 0x41ae50) visits one eighth of the events, those with flag 2
     // (mission start) or 4 (mission end) left out.
     if (++ticks_ % 16) return;
-    const int k = visitCount_++ % 8;
+    const int k = g_eighth;
+    g_eighth = (g_eighth + 1) & 7;
     for (size_t i = size_t(k); i < events_.size(); i += 8)
         if (!(events_[i].flags & 6)) visit(i, host);
 }
