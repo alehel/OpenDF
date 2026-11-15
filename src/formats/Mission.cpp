@@ -205,6 +205,10 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     for (int i = 0; i < 128; ++i, o += 0x88) {
         MissionPath p;
         p.flags = u32(d, o);
+        // A one-point path always ends there: flag 1 (stop at the end) is set
+        // at load (GOG Df.exe 0x449c70 over 0x78f280, GOG Df2.exe the same
+        // pass over 0xd7d700).
+        if (u32(d, o + 4) == 1) p.flags |= 1;
         const uint32_t n = std::min<uint32_t>(u32(d, o + 4), 32);
         for (uint32_t k = 0; k < n; ++k) p.points.push_back(int(u32(d, o + 8 + 4 * k)));
         m.paths.push_back(std::move(p));
