@@ -217,6 +217,8 @@ public:
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
+    // GOG Df2.exe 0x43c280 -> 0x44eeb0: the soldier's saved zeroing, as is.
+    void setZeroSetting(int v) { zero_ = v; }
     float zeroElevation() const {
         const auto& e = mode().elevation;
         return current_ >= 3 && current_ <= 5 && zero_ < int(e.size()) ? float(e[size_t(zero_)]) * 65536.f / 4294967296.f * 6.28318531f : 0.f;

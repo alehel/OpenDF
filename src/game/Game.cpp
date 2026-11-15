@@ -143,7 +143,9 @@ std::string missionName(const std::string& title) {
 
 class Game : public ScriptHost {
 public:
-    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o), letterbox_(std::clamp(o.letterbox, 1, 2)) {}
+    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o), letterbox_(std::clamp(o.letterbox, 1, 2)) {
+        arsenal_.setZeroSetting(o.df2Zeroing);   // kept through Space replays (0x466ba0(1) skips 0x43c280)
+    }
     int run();
 
     // ScriptHost: what the mission's events can see and do.
@@ -386,6 +388,7 @@ public:
         o.earlierKills = earlierKills_;
         o.letterbox = letterbox_;
         o.replayed = replayed_;
+        o.df2Zeroing = arsenal_.zeroSetting();
         return o;
     }
     // The player's kills: counted before the objects are freed at the end
@@ -3628,7 +3631,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             leaveMissionFlags();
             if (world_.df2Rules) {
                 const MissionOutcome o = outcome();
-                replayed_.push_back({o.won, o.kills});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
+                replayed_.push_back({o.won, o.kills, o.df2Zeroing});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
             }
             loadMission(current_);
             return;

@@ -661,7 +661,7 @@ First differences from DF1:
     mission's header defaults +0x94..+0x97), Settings pages 1 and 3 (df2.cfg,
     sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
     mission back to Campaigns / Quick Missions (no debriefing in DF2), the
-    win marking the mission done and the unlock mask kept; the voice briefing
+    win marking the mission done and the unlock mask kept, every run saving the scope zeroing (+0x5c4, read back at the next start; GOG 0x43c280 / 0x43c869); the voice briefing
     (0x4384f0: on entering the briefing once per chosen mission, and from
     PLAY BRIEFING; `<mission>NN.WAV`, NN 01..19, filed by NN and played in
     slot order, each when the last has ended; the music first ramps over 60
