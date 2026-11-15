@@ -32,6 +32,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -3368,10 +3369,21 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         terrain_.drawWater(view, proj, eye, float(ticks_));
         models_.begin(proj * view, light);
     }
+    // Delta Force 2 (GOG Df2.exe 0x44bc00 -> 0x861ec0, flushed by 0x44c480):
+    // the translucent faces of the objects and the effects are drawn after
+    // all of them, far first (0x44c480 shell-sorts by z0 + z1 + z2,
+    // descending). Here per draw, by its view depth; faces within one model
+    // keep their order.
+    std::vector<std::pair<float, std::function<void()>>> translucent;
     for (auto& v : visible)
         if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes) &&
-            !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm"))   // the BRDM's are posed above
-            models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
+            !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm")) {   // the BRDM's are posed above
+            const GpuModel* tm = v.o->model;
+            const int lod = v.lod, frame = codeFrame(v);
+            const Mat4 mm = v.o->matrix(v.at);
+            if (df2Cull) translucent.push_back({dot(v.at - eye, fwd), [this, tm, lod, mm, frame] { models_.drawTranslucent(*tm, lod, mm, false, false, frame); }});
+            else models_.drawTranslucent(*tm, lod, mm, false, false, frame);
+        }
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920).
     if (playerDead() && !playerBody_.angles().empty())
@@ -3417,20 +3429,25 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.size / 65536.f;
             m = m * sc;
             const float a = e.alpha > 0xff0000 ? 1.f : float(std::max(e.alpha >> 16, 1)) / 255.f;
-            models_.setTint(e.tint[0] / 255.f, e.tint[1] / 255.f, e.tint[2] / 255.f, a, true, e.fireball);
-            glEnable(GL_BLEND);
-            // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
-            // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
-            // colour to the screen with saturation (paddusb, 0x4850a1):
-            // additive. (The Direct3D back end [0xa7b6b4] is outside DF2.EXE.)
-            // Their colours skip the scene grade (0x42abc0 has no 0x411f70).
-            glBlendFunc(GL_SRC_ALPHA, e.fireball ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
-            models_.draw(*e.model, 0, m, false, false, frame);
-            models_.drawTranslucent(*e.model, 0, m, false, false, frame);
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-            models_.setTint(1, 1, 1, 1);
+            auto draw = [this, m, a, frame, tint = std::array<uint8_t, 3>{e.tint[0], e.tint[1], e.tint[2]}, fireball = e.fireball,
+                         model = e.model] {
+                models_.setTint(tint[0] / 255.f, tint[1] / 255.f, tint[2] / 255.f, a, true, fireball);
+                glEnable(GL_BLEND);
+                // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
+                // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
+                // colour to the screen with saturation (paddusb, 0x4850a1):
+                // additive. (The Direct3D back end [0xa7b6b4] is outside DF2.EXE.)
+                // Their colours skip the scene grade (0x42abc0 has no 0x411f70).
+                glBlendFunc(GL_SRC_ALPHA, fireball ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                models_.draw(*model, 0, m, false, false, frame);
+                models_.drawTranslucent(*model, 0, m, false, false, frame);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+                models_.setTint(1, 1, 1, 1);
+            };
+            if (df2Cull) translucent.push_back({dot(d, fwd), draw});
+            else draw();
             continue;
         }
         const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
@@ -3449,7 +3466,8 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
         m = m * sc;
         models_.draw(*e.model, 0, m, false, false, frame);
-        models_.drawTranslucent(*e.model, 0, m, false, false, frame);
+        if (df2Cull) translucent.push_back({dot(d, fwd), [this, m, frame, model = e.model] { models_.drawTranslucent(*model, 0, m, false, false, frame); }});
+        else models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
     // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
@@ -3474,6 +3492,8 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
         models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
     }
+    std::stable_sort(translucent.begin(), translucent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& t : translucent) t.second();
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     if (!waterMid) terrain_.drawWater(view, proj, eye, float(ticks_));
