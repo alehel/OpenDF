@@ -74,7 +74,10 @@ private:
         int mode = 1;             // 2 path, 1 hover, 0 land
         Vec3 home{0, 0, 0};       // ai+0x54..0x5c: the load position, then each one-way path end
         float bank = 0, yawRate = 0;
-        float floorHeight = 0;
+        float floorHeight = 0;    // the controller's last floor (+0xb4 = z - floor)
+        float accel = 0;          // +0xb0: m per tick^2, set by the think, added to vz every tick (DF1)
+        float probe = 0;          // +0xdc: terrain or object face under the hub (0x486fd0)
+        int probeTimer = 0;       // ai+0x2c: think ticks since the probe was refreshed
         int gunTarget = -1;       // ai+0x44: world object, -3 the player
         Vec3 lastKnown{0, 0, 0};  // ai+0x48: aimed and fired at
         Vec3 acquiredAt{0, 0, 0}; // obj+0xBC: own position when the target was taken
@@ -114,6 +117,7 @@ private:
     AiSystem::PlayerView player_;
     bool pathStep(World& world, AiSystem& ai, Vehicle& v);
     float homeDist(const World& world, const Vehicle& v) const;
+    void altitude(World& world, Vehicle& v, float H, float band, int shift);
     // GOG Df.exe 0x477860 (Df2.exe 0x41ac40 is the same): x = rol(x,11) + x,
     // x = rol(x,4) ^ 1, 16 uniform bits. The EXEs share one state with every
     // other caller (reseeded to 0x5FC by blasts, 0x477850); here the vehicles

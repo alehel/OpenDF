@@ -151,7 +151,9 @@ public:
     // not near-vertical, not 0x01000000) under (x, z) no higher than feet +
     // step. People are never surfaces.
     // `owner` (if given) gets the object of the face (DF1 +0x100), -1 the terrain.
-    float faceGround(Vec3 feet, float step, int* owner = nullptr) const;
+    // `skip`: an object left out (its own: the neighbour list 0x487c50 never
+    // holds the mover itself).
+    float faceGround(Vec3 feet, float step, int* owner = nullptr, int skip = -1) const;
     // Riding a platform (DF.EXE 0x43634d..0x43643d, DF2.EXE 0x440876..0x440944,
     // READ): x, y += the platform's +0x3C / +0x40; if its turn is not 0, the
     // position is turned by it about the platform's origin (sin/cos tables
