@@ -135,7 +135,9 @@ void main() {
             if (dc.a > 0.5) col = post(dc.rgb);
         } else {
             if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
-            else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
+            // toward raw sky entry 16 ([0xbd67cc], built from the sky file's
+            // bytes by 0x47b590): no saturation or display table on it.
+            else col += (uCloudCol - col) * (2.0 * (sh - 128.0) / 256.0);
             if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
         }
         oColor = vec4(col, 1.0);
@@ -172,7 +174,7 @@ in vec2 vNdc;
 uniform mat4 uInvRot;
 uniform vec2 uTan;
 uniform vec3 uEye;
-uniform float uCloudH, uHorizon, uPitchTan, uTime;
+uniform float uCloudH, uHorizon, uPitchTan, uTime, uSkyF, uSkyStepF, uCloudF;
 uniform bool uDf2, uNoSky;
 uniform vec3 uPal[17];
 uniform sampler2D uClouds, uGrad;
@@ -186,6 +188,18 @@ float cloudTexel(vec3 dir) {
     float t = (uCloudH - uEye.y) / dir.y;
     vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
     return texture(uClouds, p / 512.0).r * 255.0;
+}
+// Delta Force (GOG Df.exe 0x48c650): the level by the row's texel step,
+// depth / F / 8 m, halved while over one texel (at most 8); the map holds
+// the thresholded densities 0..62 (0x47b590) and their mips (0x47d920).
+float cloudDensity(vec3 dir, float viewLen) {
+    if (dir.y <= 0.001 || uEye.y >= uCloudH) return -1.0;
+    float t = (uCloudH - uEye.y) / dir.y;
+    vec2 p = (uEye.xz + dir.xz * t) / 8.0 + vec2(uTime / 64.0);
+    float st = t / viewLen / uCloudF / 8.0;
+    int lod = 0;
+    while (st > 1.0 && lod < 8) { st *= 0.5; ++lod; }
+    return floor(textureLod(uClouds, p / 512.0, float(lod)).r * 255.0 + 0.001);
 }
 void main() {
     vec3 v = vec3(vNdc.x * uTan.x, vNdc.y * uTan.y, -1.0);
@@ -208,20 +222,19 @@ void main() {
         oColor = vec4(sky, 1.0);
         return;
     }
-    // Gradient (0x43b930): index L = 2·horizon per 640-scale row above the
-    // horizon row (centre + tan(pitch)·F + 5); colours 0..15 interpolated
-    // in linear space, 16 sub-steps each.
-    float rows = 320.0 * (v.y / -v.z + uPitchTan) + 5.0;
-    float L = clamp(rows * 2.0 * uHorizon, 0.0, 255.0);
+    // Gradient (0x43b930, GOG Df.exe 0x48c990): index L = s per 640-scale
+    // row above the horizon row (centre + tan(pitch)·F + 5), s from the
+    // view's FOV and width (2·horizon in the 90-degree main view); colours
+    // 0..15 interpolated in linear space, 16 sub-steps each.
+    float rows = uSkyF * (v.y / -v.z + uPitchTan) + 5.0;
+    float L = clamp(rows * uSkyStepF, 0.0, 255.0);
     int kk = int(L) >> 4;
     float j = mod(floor(L), 16.0) / 16.0;
     vec3 sky = kk == 0 ? dec(uPal[0]) : mix(dec(uPal[kk - 1]), dec(uPal[min(kk, 15)]), j);
-    // Pixels over 128 blend toward sky colour 16 in 64 steps.
-    float px = cloudTexel(dir);
-    if (px >= 0.0) {
-        float c = px < 128.0 ? 0.0 : min(62.0, floor((px - 128.0) / 2.0)) / 64.0;
-        sky = mix(sky, dec(uPal[16]), c);
-    }
+    // Pixels over 128 blend toward sky colour 16 in 64 steps (thresholded
+    // at load: 0..62).
+    float px = cloudDensity(dir, length(v));
+    if (px >= 0.0) sky = mix(sky, dec(uPal[16]), px / 64.0);
     oColor = vec4(post(enc(sky)), 1.0);
 }
 )";
@@ -286,7 +299,8 @@ const char* kWaterFS = R"(#version 330 core
 in vec3 vWorld;
 uniform sampler2D uWaterIdx, uGradient, uScene;
 uniform vec4 uViewport;     // x, y, w, h of the 3D view
-uniform float uOpacity, uPhase, uMaxDepth;   // uMaxDepth: the surface seen from below, view depth limit
+uniform float uOpacity, uPhase, uMaxDepth;   // uMaxDepth: the surface's view depth limit
+uniform float uWaterF;   // Delta Force: the view's focal length (original pixels), for the mip level
 uniform vec3 uEye, uFwd;
 uniform bool uBelow, uDf2, uTint;
 uniform vec3 uWaterColor;
@@ -313,7 +327,13 @@ void main() {
         vec2 t = vWorld.xz * 16.0;                                // texels
         float iu = mod(t.x * 4.0 + uPhase, 1024.0), iv = mod(t.y * 4.0 + uPhase, 1024.0);
         vec2 w = t + 4.0 * vec2(cos(kTwoPi * iv / 1024.0), sin(kTwoPi * iu / 1024.0));
-        r = floor(texture(uWaterIdx, w / 256.0).r * 255.0 / 4.0);
+        // GOG Df.exe 0x48d040 / 0x48d570: the level per row by the texel
+        // step depth / F · 16, halved while over one texel, at most 7; the
+        // levels hold the map >> 2 (0..63) and its mips (0x47d920).
+        float st = max(dot(vWorld - uEye, uFwd), 0.0) * 16.0 / uWaterF;
+        int lod = 0;
+        while (st > 1.0 && lod < 7) { st *= 0.5; ++lod; }
+        r = floor(textureLod(uWaterIdx, w / 256.0, float(lod)).r * 255.0 + 0.001);
     }
     float idx = floor((1.0 - uOpacity) * lum + uOpacity * 4.0 * r);
     oColor = vec4(texture(uGradient, vec2((idx + 0.5) / 256.0, 0.5)).rgb, 1.0);
@@ -343,6 +363,37 @@ GLuint makeTex2D(int w, int h, GLint internal, GLenum format, const void* data, 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     mips ? GL_LINEAR_MIPMAP_LINEAR : (linear ? GL_LINEAR : GL_NEAREST));
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
+    return t;
+}
+
+// An 8-bit map with explicit mips as GOG Df.exe 0x47d920 builds them: each
+// texel (a + b + c + d + 2) >> 2, less 1 when not 0; `levels` below level 0.
+GLuint makeIndexMips(int w, int h, std::vector<uint8_t> level, int levels, bool linear) {
+    GLuint t;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    int n = 0;
+    for (;; ++n) {
+        glTexImage2D(GL_TEXTURE_2D, n, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, level.data());
+        if (n == levels || w < 2 || h < 2) break;
+        const int nw = w / 2, nh = h / 2;
+        std::vector<uint8_t> next(size_t(nw) * size_t(nh));
+        for (int y = 0; y < nh; ++y)
+            for (int x = 0; x < nw; ++x) {
+                const size_t a = size_t(2 * y) * size_t(w) + size_t(2 * x), b = a + size_t(w);
+                int v = (level[a] + level[a + 1] + level[b] + level[b + 1] + 2) >> 2;
+                if (v != 0) --v;
+                next[size_t(y) * size_t(nw) + size_t(x)] = uint8_t(v);
+            }
+        level.swap(next);
+        w = nw;
+        h = nh;
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, n);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST);
     return t;
 }
 
@@ -857,7 +908,20 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         clouds.width = clouds.height = 1;
         clouds.pixels = {127};
     }
-    texClouds_ = makeTex2D(clouds.width, clouds.height, GL_R8, GL_RED, clouds.pixels.data(), true, true);
+    if (gen2_) {
+        texClouds_ = makeTex2D(clouds.width, clouds.height, GL_R8, GL_RED, clouds.pixels.data(), true, true);
+    } else {
+        // GOG Df.exe 0x47b590: v < 0x80 -> 0, else (v - 0x80) >> 1 with 0x3f
+        // made 0x3e; levels 1..8 by 0x47d920 (0x47dd10, [0xbd5198] & 1).
+        std::vector<uint8_t> sky(clouds.pixels.size());
+        for (size_t i = 0; i < sky.size(); ++i) {
+            const int v = clouds.pixels[i];
+            int c = v < 0x80 ? 0 : ((v + 0x80) & 0xff) >> 1;
+            if (c == 0x3f) c = 0x3e;
+            sky[i] = uint8_t(c);
+        }
+        texClouds_ = makeIndexMips(clouds.width, clouds.height, sky, 8, true);
+    }
 
     // Water (DF.EXE 0x431b3e, 0x431d04): none if water_height is 0 or the
     // palette is missing; the gradient T from water palette entries 0..15.
@@ -897,8 +961,11 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         }
     } else if (desc_.waterHeight != 0 && loadImage(vfs, desc_.waterMap, water) && loadImage(vfs, desc_.waterPalette, waterPal) &&
         waterPal.hasPalette) {
-        texWater_ = makeTex2D(water.width, water.height, GL_R8, GL_RED, water.pixels.data(), false, true);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+        // GOG Df.exe 0x47b590: the water map >> 2 (0..63); levels 1..7 by
+        // 0x47d920 (0x47dd10, [0xbd5198] & 2).
+        std::vector<uint8_t> w(water.pixels.size());
+        for (size_t i = 0; i < w.size(); ++i) w[i] = uint8_t(water.pixels[i] >> 2);
+        texWater_ = makeIndexMips(water.width, water.height, w, 7, false);
         std::vector<uint8_t> grad(256 * 3);
         // The ramp is mixed from the raw water palette and passes only
         // through the df.cfg table (GOG Df.exe 0x47d080 -> 0x480ca0).
@@ -1218,12 +1285,17 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     // (GOG Df.exe 0x48d570, called near the end of 0x485610).
     if (eye.y <= level) return;
     df1WaterSetup(eye, ticks);
-    // The surface out to 1023 m, only where it is in front (depth test).
+    // The surface out to 1024 m of view depth (GOG Df.exe 0x48d040: a span
+    // stops past 0x3feffff), only where it is in front (depth test); the quad
+    // reaches the diagonal corners.
     glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
     setM4(progWater_, "uViewProj", proj * view);
     setF(progWater_, "uLevel", level);
-    setF(progWater_, "uExtent", 1023.f);
+    setF(progWater_, "uExtent", 1449.f);
+    setF(progWater_, "uMaxDepth", float(0x3feffff) / 65536.f);
+    setV3(progWater_, "uFwd", Vec3{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)});
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    setF(progWater_, "uMaxDepth", 0.f);
     glDepthMask(GL_TRUE);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
@@ -1246,6 +1318,7 @@ void Terrain::df1WaterSetup(Vec3 eye, float phaseTicks) {
     glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
     glUniform4f(glGetUniformLocation(progWater_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
     setF(progWater_, "uOpacity", desc_.waterOpacity);
+    setF(progWater_, "uWaterF", 320.f * ringScale);
     // Phase: tick << 23 in table units of 2^22 -> 2 entries per tick.
     setF(progWater_, "uPhase", std::fmod(phaseTicks * 2.f, 1024.f));
     setV3(progWater_, "uEye", eye);
@@ -1278,8 +1351,8 @@ void Terrain::drawUnderwater(const Mat4& view, const Mat4& projNear, const Mat4&
     glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
     setV3(progWater_, "uEye", eye);
     setF(progWater_, "uLevel", waterLevel());
-    setF(progWater_, "uExtent", 1023.f);
-    setF(progWater_, "uMaxDepth", 1023.f);
+    setF(progWater_, "uExtent", 1449.f);
+    setF(progWater_, "uMaxDepth", float(0x3feffff) / 65536.f);
     setV3(progWater_, "uFwd", Vec3{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)});
     // The caller's two depth ranges (far 0.5..1, near 0..0.5).
     for (int range = 0; range < 2; ++range) {
@@ -1383,7 +1456,19 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
             glUniform4f(glGetUniformLocation(progSky_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
         }
     }
-    setF(progSky_, "uTime", float(SDL_GetTicks()) * 60.f / 1000.f);
+    if (!gen2_) {
+        // GOG Df.exe 0x48c990: s = ((((fov << 16) / W) << 16) / 0x2400 ·
+        // 0x20000 >> 16) · horizon >> 16 per row (2·horizon at 90 / 640).
+        int64_t st = (int64_t(df1SkyFov) << 16) / std::max(1, df1SkyW);
+        st = (st << 16) / 0x2400;
+        st = (st * 0x20000) >> 16;
+        st = (st * int64_t(desc_.horizon * 65536.f)) >> 16;
+        setF(progSky_, "uSkyStepF", float(st) / 65536.f);
+        setF(progSky_, "uSkyF", df1SkyF);
+        setF(progSky_, "uCloudF", 320.f * ringScale);   // view +0x54, the mode's pixels
+    }
+    // Delta Force: 0x485610 -> 0x489980 with the step count [0x67dbf4].
+    setF(progSky_, "uTime", !gen2_ && skyTicks >= 0.f ? skyTicks : float(SDL_GetTicks()) * 60.f / 1000.f);
     for (int i = 0; i < 17; ++i) {
         char name[16];
         std::snprintf(name, sizeof name, "uPal[%d]", i);

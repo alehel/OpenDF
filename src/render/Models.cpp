@@ -35,10 +35,13 @@ float shade(vec3 n) {
     if (uDf2) return min(uBright >= 0.0 ? uBright : float(0x8ccc) / 65536.0 + 0.5 * d, 65535.0 / 65536.0);
     float lit = uBright >= 0.0 ? uBright : 0.55 + 0.5 * d;
     if (uSpec != 0.0) {
-        float s = dot(n, h);
-        if (s > 0.0) {
-            for (int i = 0; i < uSpecPow && i < 8; ++i) s *= s;
-            lit += s * uSpec;
+        // GOG Df.exe 0x46aff0: the dot in 16.16 with its low two bits clear,
+        // squared byte +0x40 times as s = s*s >> 16 with no cap, so a high
+        // power (NIGHT01's 60) truncates to 0 (no highlight).
+        uint si = uint(max(floor(dot(n, h) * 16384.0), 0.0)) * 4u;
+        if (si > 0u) {
+            for (int i = 0; i < uSpecPow && si > 0u && si < 65536u; ++i) si = (si * si) >> 16;
+            lit += float(min(si, 65536u)) / 65536.0 * uSpec;
         }
     }
     return clamp(lit * 32.0, 1.0, 60.0);       // shade level
@@ -402,6 +405,7 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         // 0x44aceb, DF2.EXE 0x44a290 / 0x44a2db; the model's other meshes
         // are never drawn).
         if (weapon && b.mesh != 0 && !(b.mesh <= 2 && (flash & (1 << (b.mesh - 1))))) continue;
+        if (weapon && b.mesh == 0 && (flash & 4)) continue;   // a flash mesh drawn on its own
         if (b.doubleSided) glDisable(GL_CULL_FACE);
         else glEnable(GL_CULL_FACE);
         if (flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)

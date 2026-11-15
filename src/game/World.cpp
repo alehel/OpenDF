@@ -182,7 +182,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
             if (o.chr && o.moves) {
                 startMove(o, 2);
                 o.hip = 0;
-                if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) o.hip = Chr::originHeight(*f);
+                if (o.anim.currentFrame(*o.chr)) o.hip = o.anim.originHeight(*o.chr);
             }
             o.base = origin - o.hip;
             poseUpdate(o);
@@ -270,8 +270,8 @@ void World::poseUpdate(WorldObject& o) {
     if (!o.chr) return;
     if (o.chr->ksa()) o.spheres = o.model ? ksaSpheres(*o.model, *o.chr, o.anim.angles(), o.aimPitch) : decltype(o.spheres){};
     else o.spheres = o.chr->spheres(o.anim.angles());
-    if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) {
-        o.hip = Chr::originHeight(*f);
+    if (o.anim.currentFrame(*o.chr)) {
+        o.hip = o.anim.originHeight(*o.chr);
         o.pos.y = o.base + o.hip;
     }
 }

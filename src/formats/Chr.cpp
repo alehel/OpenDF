@@ -86,7 +86,10 @@ bool Chr::parse(const std::vector<uint8_t>& d) {
                     tr.cond[0] = d[t + 2];
                     tr.cond[1] = d[t + 3];
                     tr.anim = d[t + 4];
-                    tr.frame = int(d[t + 5]) - 1;
+                    // GOG Df.exe 0x43abec passes byte 5 - 1 to the frame walk
+                    // 0x43a150, which steps while the count is not 0 (do / while
+                    // on dec / jg): -1 (byte 0) steps once, so byte 0 is frame 1.
+                    tr.frame = d[t + 5] == 0 ? 1 : int(d[t + 5]) - 1;
                     f.transitions.push_back(tr);
                 }
             }

@@ -34,7 +34,18 @@ void Animator::enter(const Chr& chr, int anim, int frame) {
     if (prev_ && f.anchor < int(f.contacts.size()) && f.anchor < int(prev_->contacts.size()))
         for (int k = 0; k < 3; ++k) d[size_t(k)] += prev_->contacts[size_t(f.anchor)][size_t(k)] - f.contacts[size_t(f.anchor)][size_t(k)];
     rootStep_ = {-d[2] / float(left_), -d[0] / float(left_), d[1] / float(left_)};
-    if (prev_ == &f) rootStep_ = {0, 0, 0};   // holding the last frame
+    // Holding the last frame: Delta Force re-enters it (GOG Df.exe 0x43aa30
+    // -> 0x43a150 -> 0x43a690), so its root offset keeps applying (the
+    // anchor contacts cancel); OpenDF keeps a KSA body still.
+    if (prev_ == &f && chr.ksa()) rootStep_ = {0, 0, 0};
+    // The contact points: from the previous frame's (kept when there is
+    // none) toward this frame's over its ticks.
+    if (prev_ && prev_->contacts.size() == f.contacts.size()) contacts_ = prev_->contacts;
+    else if (contacts_.size() != f.contacts.size()) contacts_ = f.contacts;
+    contactStep_.assign(f.contacts.size(), {0, 0, 0});
+    for (size_t c = 0; c < f.contacts.size(); ++c)
+        for (int k = 0; k < 3; ++k)
+            contactStep_[c][size_t(k)] = (f.contacts[c][size_t(k)] - contacts_[c][size_t(k)]) / float(left_);
     prev_ = &f;
     for (size_t p = 0; p < n; ++p)
         for (int k = 0; k < 3; ++k) {
@@ -48,6 +59,8 @@ int Animator::tick(const Chr& chr) {
     if (frozen_) return 0;
     for (size_t p = 0; p < cur_.size(); ++p)
         for (int k = 0; k < 3; ++k) cur_[p][size_t(k)] += step_[p][size_t(k)];
+    for (size_t c = 0; c < contacts_.size() && c < contactStep_.size(); ++c)
+        for (int k = 0; k < 3; ++k) contacts_[c][size_t(k)] += contactStep_[c][size_t(k)];
     if (--left_ > 0) return 0;
     const ChrAnimation* a = chr.animation(anim_);
     if (!a) { frozen_ = true; return 0; }
@@ -66,6 +79,20 @@ int Animator::tick(const Chr& chr) {
         else frozen_ = true, rootStep_ = {0, 0, 0};
     }
     return event;
+}
+
+float Animator::originHeight(const Chr& chr) const {
+    const ChrFrame* f = currentFrame(chr);
+    if (!f) return 0.f;
+    if (f->hasGround || contacts_.size() != f->contacts.size()) return Chr::originHeight(*f);
+    float lowest = 0;
+    bool any = false;
+    for (size_t k = 0; k < contacts_.size(); ++k) {
+        if (f->flags >> (16 + k) & 1) continue;
+        if (!any || contacts_[k][1] < lowest) lowest = contacts_[k][1];
+        any = true;
+    }
+    return any ? -lowest : 0.f;
 }
 
 const ChrFrame* Animator::currentFrame(const Chr& chr) const {
