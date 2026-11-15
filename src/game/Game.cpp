@@ -2437,16 +2437,24 @@ void Game::tickDf1Lights() {
             // 0x451850: the yaw speed (+0xec, 1/65536 turn a tick) rises by
             // R >> 3 while more than 8R away and below R, else falls by R >> 3
             // while above R >> 3 (R = item +0xe0, turn_rate); the yaw snaps
-            // when closer than the speed, else moves by it (+0x90). The pitch
-            // moves R a tick and snaps within R.
+            // when closer than the speed, else moves by it (+0x90). The snap
+            // test and the step use the speed from before this tick's change
+            // (read into esi at 0x451885; the ramp writes +0xec at 0x4518c2 /
+            // 0x45190a; cmp at 0x4518cf, step 0x451912..0x451946), so the
+            // step lags the ramp by a tick. The first move tick (speed 0)
+            // steps 0 and leaves +0x90 at 0, so the move flips the sweep at
+            // once and the light first heads for home - 45 degrees; the same
+            // zero step follows every snap. The pitch moves R a tick and
+            // snaps within R.
             const int R = std::max(1, int(o.item->turnRate));
             l.moving = 0;
             if (l.yaw != l.targetYaw) {
                 const int d = int32_t(l.targetYaw - l.yaw) >> 16, ad = std::abs(d);
+                const int v = l.speed;
                 if (ad > 8 * R) { if (l.speed < R) l.speed += R >> 3; }
                 else if ((R >> 3) < l.speed) l.speed -= R >> 3;
-                if (ad < l.speed) l.yaw = l.targetYaw;
-                else { l.moving = d > 0 ? (l.speed << 16) : -(l.speed << 16); l.yaw += uint32_t(l.moving); }
+                if (ad < v) l.yaw = l.targetYaw;
+                else { l.moving = d > 0 ? (v << 16) : -(v << 16); l.yaw += uint32_t(l.moving); }
             }
             if (uint32_t(l.pitch) != l.targetPitch) {
                 const int dp = int32_t(l.targetPitch - uint32_t(l.pitch)) >> 16;
@@ -2586,7 +2594,8 @@ bool Game::teamInArea(int team, const AreaBox& a) const {
         // GOG Df.exe 0x460330 (CD 0x46c848): team 0 never; the people list
         // (group 3, the player and squad among them) and then group 0
         // (vehicles, crates, barrels) at their current positions, the dead
-        // too; group 1 is not looked at.
+        // too; group 1 is not looked at. A carried goal item (+0x6c |= 0x102)
+        // is not zeroed, so it counts at the carrier's origin.
         if (team == 0) return false;
         if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
         const double ext = terrain_.mapExtent();
@@ -2600,7 +2609,7 @@ bool Game::teamInArea(int team, const AreaBox& a) const {
         };
         for (int group : {3, 0})
             for (const auto& o : world_.objects)
-                if (o.team == team && o.missionGroup == group && !o.removed &&
+                if (o.team == team && o.missionGroup == group && (!o.removed || o.carried) &&
                     inside(unwrap(o.pos.x, o.missionX), unwrap(-o.pos.z, o.missionY)))
                     return true;
         return false;
@@ -3748,7 +3757,9 @@ void Game::drawCommandMap(const Screen& s) {
     // 1 blue, 2 red), each at its current position (0x48f5d0: +0x24/+0x28),
     // so a driving convoy moves on the map; a soldier shape takes the
     // object's heading (+0x30) and is an X once dead (+0x6C & 4). Removed
-    // and never-created objects are zeroed there and not drawn; records with
+    // and never-created objects are zeroed there and not drawn; a carried
+    // goal item is only flagged (+0x6c |= 0x102), so it stays on the map at
+    // the carrier's origin (C02M02's code book moves with you); records with
     // no world object here (bare markers) are at their file position. Only
     // the group-2 object that is the current route point blinks: drawn while
     // tick bit 0x10 is set ([0x6e471c]; 16 ticks on, 16 off).
@@ -3763,7 +3774,7 @@ void Game::drawCommandMap(const Screen& s) {
         const int type = o.raw[19] & 0xFF;
         if (!type || o.group == 3 || o.omitted) continue;
         const WorldObject* wo = live[i];
-        if (wo && wo->removed) continue;
+        if (wo && wo->removed && !wo->carried) continue;
         if (o.group == 2 && &o == current && !(ticks_ & 16)) continue;
         float sx, sy;
         if (wo) {
