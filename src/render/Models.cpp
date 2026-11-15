@@ -350,6 +350,7 @@ void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
     setV3(prog_, "uHighlight", light.highlight);
     glUniform1f(glGetUniformLocation(prog_, "uSat"), light.saturation);
     grade_ = light.gradeLut != 0;
+    df2Scene_ = light.df2;
     glUniform1i(glGetUniformLocation(prog_, "uGradeOn"), grade_ ? 1 : 0);
     glUniform1f(glGetUniformLocation(prog_, "uGradeSat"), light.gradeSaturation);
     glActiveTexture(GL_TEXTURE3);
@@ -373,7 +374,7 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         glUniformMatrix4fv(locRoot_, 1, GL_FALSE, model.m);
         glUniformMatrix4fv(locPose_, poses, GL_FALSE, (*meshes)[0].m);
     }
-    glUniform1i(locDf2_, m.gen2 ? 1 : 0);
+    glUniform1i(locDf2_, m.gen2 || df2Scene_ ? 1 : 0);
     glBindVertexArray(l.vao);
     for (const auto& b : l.batches) {
         const int bFrame = weapon && b.mesh == 0 ? 0 : frame;

@@ -3979,6 +3979,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
     light.gradeLut = terrain_.gradeLutTexture();
+    light.df2 = world_.df2Rules;
     light.gradeSaturation = terrain_.gradeSaturation();
     light.highlight = modelHighlight();
     const Vec3 fwd = viewDir();
@@ -4220,11 +4221,6 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         }
         models_.draw(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     }
-    if (waterMid) {   // DF2, camera above the water: over the opaque objects, under the translucent faces
-        models_.end();
-        terrain_.drawWater(view, proj, eye, float(ticks_));
-        models_.begin(proj * view, light);
-    }
     // Delta Force 2 (GOG Df2.exe 0x44bc00 -> 0x861ec0, flushed by 0x44c480):
     // the translucent faces of the objects and the effects are drawn after
     // all of them, far first (0x44c480 shell-sorts by z0 + z1 + z2,
@@ -4390,6 +4386,14 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
         models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
     }
+    // DF2, camera above the water: the plane after every opaque world draw
+    // (the bodies, effects and rounds in flight included: GOG Df2.exe
+    // 0x44f570 -> 0x470aa0(0)), under the queued translucent faces (0x44c480).
+    if (waterMid) {
+        models_.end();
+        terrain_.drawWater(view, proj, eye, float(ticks_));
+        models_.begin(proj * view, light);
+    }
     std::stable_sort(translucent.begin(), translucent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     for (const auto& t : translucent) t.second();
     models_.end();
@@ -4447,6 +4451,7 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
     light.gradeLut = terrain_.gradeLutTexture();
+    light.df2 = world_.df2Rules;
     light.gradeSaturation = terrain_.gradeSaturation();
     light.highlight = modelHighlight();
     light.viewer = fwd * -1.f;
@@ -4520,6 +4525,7 @@ void Game::drawViewModel(const Screen& s, const Mat4* worldProj) {
         light.lut = terrain_.lutTexture();
         light.saturation = terrain_.saturationFactor();
         light.gradeLut = terrain_.gradeLutTexture();
+        light.df2 = world_.df2Rules;
         light.gradeSaturation = terrain_.gradeSaturation();
         light.highlight = modelHighlight();
     }

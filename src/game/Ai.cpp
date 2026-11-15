@@ -137,12 +137,6 @@ bool AiSystem::targetAlive(const World& world, const Person& p, const PlayerView
 }
 
 
-void AiSystem::shotFired(Vec3 at, float range, int side, int object) {
-    // 0x46c228 (GOG 0x45fcf0): a box of +-r at the shot (up to 200), flags 2 = a gunshot.
-    noise(at, range, side, 2);
-    markFired(object);
-}
-
 void AiSystem::markFired(int object) {
     // obj+0x6d |= 0x40 (GOG 0x4631ef): x6 visibility until 0x445c80 clears it.
     if (object == -3) playerFired_ = true;
