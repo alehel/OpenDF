@@ -250,10 +250,11 @@ private:
     // DF1 0x404640: the scope inset only in the first-person view of the
     // living player (pinp, which would keep it in the outside views, is not done).
     bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || (outsideView() == 0 && !playerDead())); }
-    // GOG Df2.exe 0x455790: the player not dead (+0x64 & 0x422004), the scope
-    // flag with a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40]
-    // 0; OpenDF's view leaves the player only once he is dead) and not
-    // moving (+0x74 & 0x18): the scope inset is up.
+    // GOG Df2.exe 0x455790: none of the player's +0x64 bits 0x422004 (dead,
+    // airborne, swimming 0x20000, on a ladder 0x400000), the scope flag with
+    // a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40] 0) and not
+    // moving (+0x74 & 0x18): the scope inset is up. Arsenal::scopeShown()
+    // holds all but death through setScopeBlocked (each tick).
     bool df2ScopeActive() const { return arsenal_.scopeShown() && !playerDead(); }
     Vec3 aimDirection() const;
 
@@ -910,8 +911,12 @@ private:
             while (raw.size() > 40) raw.pop_back();
             // The full text is wrapped (not the 0x77 copy); the first line
             // ends up deepest, the last line at entry 0.
+            // (GOG Df2.exe 0x41be90; the CD build keeps the one 0x77 line.)
             auto& h = df2Chat ? df2Chat_ : df2Sys_;
-            for (auto& line : df2Wrap(text, df2Chat)) h.push_front({line, df2Colour});
+            if (arsenal_.df2Gog())
+                for (auto& line : df2Wrap(text, df2Chat)) h.push_front({line, df2Colour});
+            else
+                h.push_front({text.substr(0, 0x77), df2Colour});
             while (h.size() > 40) h.pop_back();
         }
         messages_.push_back({text, 0, df1Colour});
@@ -1645,7 +1650,7 @@ void Game::useHudMode(int modeW) {
     // 0x41ba90(font, name, 2, 0), e.g. F_SML640 (277x240) on the command map.
     const bool ok = df2Hud_.on ? hud_.loadSheetHudFont(vfs_, name, &err) : hud_.loadFont(vfs_, name, &err);
     if (!ok) std::fprintf(stderr, "%s\n", err.c_str());
-    if (df2Hud_.on) df2Rewrap();   // GOG Df2.exe 0x4215e0 after a mode change (0x41f150 case 7)
+    if (df2Hud_.on && arsenal_.df2Gog()) df2Rewrap();   // GOG Df2.exe 0x4215e0 after a mode change (0x41f150 case 7)
 }
 
 void Game::loadingLine(const char* key) {
@@ -4558,7 +4563,7 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     (void)fovY;
     const float size = 2 * r;
     // GOG Df2.exe 0x4557e0 takes the scope power through 0x44e6a0.
-    const int mag = std::max(1, arsenal_.df2() ? arsenal_.df2Zoom() : int(arsenal_.zoom()));
+    const int mag = std::max(1, arsenal_.df2Gog() ? arsenal_.df2Zoom() : int(arsenal_.zoom()));
     float focal;
     if (df2Hud_.on) {
         // GOG Df2.exe 0x4557e0 (at 0x455830): the FOV is 0x46500000 /
@@ -4587,8 +4592,9 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
-    // the scope image is green only, ×4 (paddusb twice, & 0xff00).
-    if (df2Hud_.on && nvg_) {
+    // the scope image is green only, ×4 (paddusb twice, & 0xff00); the CD's
+    // 0x44e2a0 tests the mission's night flag (header 0x100000) instead.
+    if (df2Hud_.on && (arsenal_.df2Gog() ? nvg_ : (mission_.lightFlags & 0x10) != 0)) {
         hud_.begin(int(s.w), int(s.h));
         hud_.nightVision(cx, cy, r, 1.f);
         hud_.end();
@@ -8222,7 +8228,9 @@ int Game::run() {
                 const int scope = std::clamp(o_.df2ScopeSens, 0x80, 0x1ff);
                 const int dy = o_.flipMouse ? -df2MouseY : df2MouseY;
                 int64_t rate = int64_t(mouse) << 14;
-                if (df2ScopeActive()) {   // 0x455790
+                if (!arsenal_.df2Gog()) {
+                    if (arsenal_.scopeShown()) rate /= 8;   // CD 0x41adec..0x41ae13: a fixed eighth
+                } else if (df2ScopeActive()) {   // 0x455790
                     const int modeW = hudMode_ ? hudMode_ : 640;
                     const bool across = std::abs(dy) < std::abs(df2MouseX);
                     const int u = across ? df2MouseX : dy, size = across ? modeW : modeW * 3 / 4;
