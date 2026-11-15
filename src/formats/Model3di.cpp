@@ -363,8 +363,11 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 // and slot +0x1F == 0x7F is drawn with the next material
                 // (+0x78: its texture, flags, blend and brightness), turned
                 // and lit from its back; its front keeps the material.
-                // Only flag 0x0800 is tested on the front material.
-                const bool backMaterial = layout.v8 && (mt.flags & 0x4002) == 0x4002 && mt.slot == 0x7F && matIdx + 1 < nmat;
+                // Only flag 0x0800 is tested on the front material. Delta
+                // Force the same (GOG Df.exe 0x46b1d0: +0x10 & 2, +0x11 &
+                // 0x40, +0x1F == 0x7F -> the next 0x4c record), e.g. the
+                // BGUY01 hat, BAGTENT and BRDM panels.
+                const bool backMaterial = (mt.flags & 0x4002) == 0x4002 && mt.slot == 0x7F && matIdx + 1 < nmat;
                 auto batchFor = [&](int key, const Mat& bm, uint32_t index, bool doubleSided) -> size_t {
                     auto it = batchIndex.find(key);
                     if (it == batchIndex.end()) {
