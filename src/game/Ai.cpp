@@ -548,6 +548,21 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         o.heading = yaw;
         o.aimPitch = pitch;
     }
+    // DF2's under-water rule holds for every shooter (CD 0x414ad0, GOG
+    // Df2.exe 0x416a30 from the soldier's 0x416f60): a muzzle under the
+    // water fires only modes 1, 0x27, 0x28, 0x29 (GOG also 0x31); anything
+    // else plays its gun +0x2C sound at the soldier and fires nothing,
+    // before the gun's spread draws and the burst count (a follow-up's is
+    // kept, so it comes again).
+    if (shots.underwaterRule && shots.waterLevel != 0 && muzzle.y < shots.waterLevel) {
+        const int m = p.weapon;
+        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29 && !(shots.df2Gog() && m == 0x31)) {
+            if (const int id = shots.gunAt(md.gun).sounds[3]; id > 0) sound.play(id, o.pos);
+            if (followUp) ++p.burstLeft;
+            p.think = std::max(1, md.cooldown);
+            return;
+        }
+    }
     // The gun's own spread, per round (0x46af90 / 0x414ad0).
     {
         const GunDef& gs = shots.gunAt(md.gun);

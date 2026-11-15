@@ -2707,6 +2707,7 @@ int FrontendDf2::run() {
                 g.mouseScale = mouseSens;
                 g.df2ScopeSens = scopeSens;
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
+                g.df2Zero = soldier().get(0x5c4);   // [0x67cdac] (GOG Df2.exe 0x43c280, CD 0x4371c0)
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
                 g.bindings.clear();
@@ -2749,6 +2750,9 @@ int FrontendDf2::run() {
                 }
                 record(out.won, out.kills);
                 soldier().set(flagsAt, int32_t(flags));
+                // 0x43c6f0 / CD 0x437550: the scope zeroing back to +0x5c4,
+                // won or lost.
+                soldier().set(0x5c4, out.df2Zero);
                 saveSoldiers();
                 if (!openWindow()) return 1;
                 if (cfg_.get("music_volume") > 0) music_.start();

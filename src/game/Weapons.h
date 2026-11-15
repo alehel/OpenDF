@@ -186,6 +186,10 @@ public:
     // `hudGuns`: the HudGuns names by mode. False (and DF1 left in place) if
     // DF2.EXE is unusable.
     bool initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout loadout);
+    // DF2's Request Weapons (GOG Df2.exe 0x409610 case 0x56): the slots of
+    // the new loadout, refilled, and the held slot selected again; nothing
+    // else changes.
+    void rearmDf2(const Df2Loadout& loadout);
     bool df2() const { return df2_; }
     // The tables in use (DF2's when loaded, else DF.EXE's), for AI and
     // vehicle guns: every shooter goes through the same tables (DF2.EXE
@@ -217,6 +221,12 @@ public:
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
+    // The soldier's saved zero (profile +0x5c4 -> [0x67cdac], GOG Df2.exe
+    // 0x43c280 / CD 0x4371c0; stored back by 0x43c6f0 / 0x437550). The
+    // mission start clears the slots' zeros [0x79a62c..0x79a634] and the
+    // last primary [0x79a6dc] (0x44e7f0), so 0x44eeb0 gives slots 3-5 this
+    // value; every step keeps it equal to theirs (0x44c770).
+    void setZero(int z) { zero_ = z; }
     float zeroElevation() const {
         const auto& e = mode().elevation;
         return current_ >= 3 && current_ <= 5 && zero_ < int(e.size()) ? float(e[size_t(zero_)]) * 65536.f / 4294967296.f * 6.28318531f : 0.f;
@@ -406,7 +416,7 @@ public:
 
 private:
     void tick(bool triggerDown, Player& player, std::vector<std::string>& messages);
-    void fire(Player& player);
+    bool fire(Player& player);   // false: DF2's under-water rule fired nothing
     void startReload();
     void moveProjectiles(float dt, World& world);
     void tracerColour(Projectile& b, const World& world);
@@ -423,6 +433,8 @@ private:
     Df2Loadout df2Lo_;
     void refillDf2Gog();
     int gear_ = 0, zero_ = 0;
+    std::vector<std::array<int, 3>> typeModes_;   // DF2 weapon type -> modes (+0x84..+0x8c)
+    void df2Slots(const Df2Loadout& lo);
     mutable int df2Mag_ = 0;   // GOG Df2.exe [0x79a698]
     struct DragPoint { int64_t x, y, slope; };
     std::vector<DragPoint> dragCurve_;
