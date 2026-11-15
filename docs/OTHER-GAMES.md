@@ -177,7 +177,17 @@ First differences from DF1:
     at D, every pixel blended c + (C − c)·min(255, depth·256/D)/256 after the
     objects (the software frame's pass 0x4485b0; INFERRED: depth = view
     depth), the water plane out to min(D, 2047 m), soldiers see no farther
-    than D (0x406180). DF2 has no ring fog on its far terrain;
+    than D (0x406180). DF2 has no ring fog on its far terrain; its ring
+    table (GOG 0x4722f0 -> 0x472440, divisors p1/p2 2.0 in the main view,
+    3.2 in the binocular moves, the scope's as DF1's, 2.2 in the
+    picture-in-picture views): near bands end at F/(2^k·p1), k 6..1 (80 m
+    at F 320), far band k 0..8 ends at 2^k·F/p2 with colour mip k (terrain
+    to 40960 m unless fogged). Near ground relief (0x471c00): every sample
+    raised by e/256 m (no threshold), e from the detail elevation's 2×2-max
+    pyramid at the band's level, nearest texel (OpenDF's ¼ m mesh samples
+    the finest bands coarsely). Not done: the Turbo option's 4 near bands,
+    the far bands' detail-mean tint and height-weighted mips (0x46e0f0,
+    0x46dc00) and the stored map's +2·max detail bias (line tests, radar);
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
     born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick

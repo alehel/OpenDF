@@ -3045,9 +3045,13 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
     // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
     // inset 2.5 under magnification 5, else 5.0, and 2.5 (0x466090). Delta
-    // Force 2's rings do not use them.
-    terrain_.ringP1 = scopeInset ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : zoomView ? 3.2f : 2.2f;
-    terrain_.ringP2 = scopeInset ? 2.5f : zoomView ? 3.2f : 2.2f;
+    // Force 2 (GOG Df2.exe 0x465f90 -> 0x44f8d0): 2.0 / 2.0 in the main view,
+    // 3.2 / 3.2 in the binocular moves, the scope the same as Delta Force's
+    // (0x4557e0), 2.2 / 2.2 in the picture-in-picture views (0x456480,
+    // 0x456670, 0x4568a0).
+    const float mainP = !world_.df2Rules ? 2.2f : eyeOverride_ ? 2.2f : 2.f;
+    terrain_.ringP1 = scopeInset ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : zoomView ? 3.2f : mainP;
+    terrain_.ringP2 = scopeInset ? 2.5f : zoomView ? 3.2f : mainP;
     // (OpenDF) The depth buffer in two passes, so nothing z-fights: Delta
     // Force 2 keeps objects out to 4080 m and the terrain runs to 12.8 km,
     // and with the 0.1 m near plane a 24-bit buffer resolves only ~9.5 m at

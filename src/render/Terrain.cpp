@@ -41,6 +41,8 @@ layout(location = 1) in vec2 aOrigin;       // per instance: the chunk's first c
 uniform sampler2D uHeight, uDetailIdx;
 uniform sampler2DArray uDetailShade;        // r: shade, g: detail elevation
 uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale, uTiles, uNear, uBumps;
+uniform bool uDf2;
+uniform float uBand0;   // Delta Force 2: the innermost near band's end, F / p1 / 64 m
 uniform vec3 uEye;
 uniform mat4 uViewProj;
 out vec2 vCell;
@@ -55,11 +57,23 @@ void main() {
     vec2 f = fract(c), b = floor(c);
     float h = mix(mix(elev(b), elev(b + vec2(1, 0)), f.x), mix(elev(b + vec2(0, 1)), elev(b + vec2(1, 1)), f.x), f.y);
     // Near rings: detail elevation e >= 128 raises the ground by (e - 128)/128 m
-    // (DF.EXE 0x438fac).
-    if (uBumps > 0.5 && length(c * uCell - uEye.xz) < uNear) {
+    // (DF.EXE 0x438fac). Delta Force 2 (GOG Df2.exe 0x471c00): every
+    // sample by e/256 m (2e in its 8.8 heights, the stored map's 2 x tile
+    // maximum bias taken off again), the texel nearest the sample in the
+    // max pyramid level of its band (bands end at 2^j x F / p1 / 64 m,
+    // level j; 0x4707b0, 0x472440).
+    float dist = length(c * uCell - uEye.xz);
+    if (uBumps > 0.5 && dist < uNear) {
         float tile = min(texelFetch(uDetailIdx, ivec2(mod(b, uMapSize)), 0).r * 255.0, uTiles - 1.0);
-        float e = texture(uDetailShade, vec3(f, tile)).g * 255.0;
-        if (e >= 128.0) h += (e - 128.0) / 128.0;
+        if (uDf2) {
+            int L = int(clamp(ceil(log2(max(dist, 1e-3) / uBand0)), 0.0, 5.0));
+            ivec2 ts = textureSize(uDetailShade, L).xy;
+            ivec2 t = clamp(ivec2(f * vec2(ts)), ivec2(0), ts - 1);
+            h += texelFetch(uDetailShade, ivec3(t, int(tile)), L).g * 255.0 / 256.0;
+        } else {
+            float e = texture(uDetailShade, vec3(f, tile)).g * 255.0;
+            if (e >= 128.0) h += (e - 128.0) / 128.0;
+        }
     }
     h -= aPos.z * uSkirt;
     vWorld = vec3(c.x * uCell, h, c.y * uCell);
@@ -579,7 +593,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             dcRgba[i * 4] = c.r; dcRgba[i * 4 + 1] = c.g; dcRgba[i * 4 + 2] = c.b;
             dcRgba[i * 4 + 3] = dC.pixels[i] ? 255 : 0;
             dsRg[i * 2] = dS.pixels[i] ? dS.pixels[i] : 120;
-            dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 128;
+            dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : (trueColor ? 0 : 128);   // DF2: no relief without the map
         }
     } else {
         // Delta Force 2 (DF2.EXE terrain loader): a 64-wide TGA strip of
@@ -596,7 +610,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             dsRg.resize(size_t(t.width) * size_t(t.height) * 2);
             for (size_t i = 0; i < dsRg.size() / 2; ++i) {
                 dsRg[i * 2] = 128;   // neutral shade
-                dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 128;
+                dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 0;   // no relief without the map
             }
             alphaDetail_ = true;
         } else {
@@ -606,6 +620,26 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     }
     texDetailColor_ = makeTexArray(tile, tile, tiles, GL_RGBA8, GL_RGBA, dcRgba.data());
     texDetailShade_ = makeTexArray(tile, tile, tiles, GL_RG8, GL_RG, dsRg.data());
+    if (alphaDetail_) {
+        // Delta Force 2 (GOG Df2.exe 0x46d970): the detail elevation's
+        // pyramid takes the maximum of each 2x2 block (the near bands sample
+        // the level of their own spacing, 0x471c00); the shade stays neutral.
+        std::vector<uint8_t> lv = dsRg;
+        for (int w = tile, level = 1; w > 1; w /= 2, ++level) {
+            const int h = w / 2;
+            std::vector<uint8_t> next(size_t(h) * h * tiles * 2);
+            for (int t = 0; t < tiles; ++t)
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < h; ++x) {
+                        auto at = [&](int xx, int yy) { return lv[((size_t(t) * w + yy) * w + xx) * 2 + 1]; };
+                        uint8_t* o = &next[((size_t(t) * h + y) * h + x) * 2];
+                        o[0] = 128;
+                        o[1] = std::max(std::max(at(2 * x, 2 * y), at(2 * x + 1, 2 * y)), std::max(at(2 * x, 2 * y + 1), at(2 * x + 1, 2 * y + 1)));
+                    }
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, level, 0, 0, 0, h, h, tiles, GL_RG, GL_UNSIGNED_BYTE, next.data());
+            lv.swap(next);
+        }
+    }
 
     // Sky palette: entries 0..15 the gradient from the horizon up (entry 0 is
     // also the fog colour), entry 16 the cloud/highlight colour (DF.EXE 0x433880).
@@ -1071,12 +1105,15 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     // near rings 0..4 end at 8·F/p1 (F / (2·p1) m, 72.7 m at F 320 and p1
     // 2.2); far ring k ends at 16·2^k·F/p2 (2^k·F/p2 m), and 0x48dc70 draws
     // rings 0..10 only (5 near, far k 0..5), so nothing past 32·F/p2 m
-    // (4654 m). Delta Force 2 keeps OpenDF's 100·F/320 m near region, rings
-    // to k 6 and terrain to 40·F m.
+    // (4654 m). Delta Force 2 (GOG Df2.exe 0x4722f0 -> 0x472440): near
+    // bands k = 6..1 end at F / (2^k·p1) (the last at F / (2·p1), 80 m at
+    // F 320 and p1 2), far bands k = 0..8 end at 2^k·F/p2 and sample colour
+    // mip k, so the terrain reaches 256·F/p2 m (40960 m), cut at the fog
+    // distance.
     const float focalF = 320.f * ringScale;
-    const float nearEnd = gen2_ ? 100.f * ringScale : focalF / (2.f * ringP1);
-    const float farBase = gen2_ ? nearEnd : focalF / (2.f * ringP2);
-    const float ringsEnd = gen2_ ? 40.f * focalF : 32.f * focalF / ringP2;
+    const float nearEnd = focalF / (2.f * ringP1);
+    const float farBase = focalF / (2.f * ringP2);
+    const float ringsEnd = gen2_ ? 256.f * focalF / ringP2 : 32.f * focalF / ringP2;
     glUseProgram(progTerrain_);
     setM4(progTerrain_, "uViewProj", viewProj);
     setF(progTerrain_, "uCell", cell);
@@ -1085,7 +1122,8 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     setF(progTerrain_, "uSkirt", kSkirtDepth);
     setF(progTerrain_, "uNear", nearEnd);
     setF(progTerrain_, "uFarBase", farBase);
-    setF(progTerrain_, "uKMax", gen2_ ? 6.f : 5.f);
+    setF(progTerrain_, "uKMax", gen2_ ? 8.f : 5.f);
+    setF(progTerrain_, "uBand0", focalF / (64.f * ringP1));
     setF(progTerrain_, "uEnd", gen2_ ? 1e9f : ringsEnd);
     setV3(progTerrain_, "uEye", eye);
     setV3(progTerrain_, "uFog", fog);
