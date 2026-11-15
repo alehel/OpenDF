@@ -597,7 +597,7 @@ First differences from DF1:
     0xd34dc0 cleared at mission load; full: nothing made) at the clicked
     ground point, selects it and opens the "Type in a name" prompt (16
     chars, the darkened box 0x4422b0); held left drags waypoints, mission
-    ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show on the map and the HUD radar as
+    ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show in the 3D view (GOG 0x450070: a green line one metre tall straight up the screen, the name centred 15 pixels above), on the map and the HUD radar as
     green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
     (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
     list; W returns to the list at entry 1, 0x446700; a deleted one shows NO

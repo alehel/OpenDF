@@ -715,6 +715,7 @@ private:
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
     void drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawDf2Waypoints3d(const Screen& s, const Mat4& viewProj);
     // Delta Force 2's name of an object (+0x54): the mission record +4 as
     // DF2WPN.BIN PeopleNames STRNAME%03i, at most 15 characters (GOG
     // Df2.exe 0x403790); people only (+0xc, their AI record, is set).
@@ -4011,6 +4012,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // GOG Df2.exe 0x465fde: the friendly tags (0x44fe70) before the
     // crosshair and target identification (0x4642b0).
     if (!showMap_ && friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
+    if (!showMap_ && df2Hud_.on) drawDf2Waypoints3d(s, viewProj);   // 0x450070
     if (showMap_) drawCommandMap(s);
     else if (crosshair_ && df2Hud_.on) {
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
@@ -6090,6 +6092,33 @@ void Game::drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj) {
         const float ty = uy - s.vy(25);
         const std::string label = friendlyTags_ == 2 ? std::string(1, '\x04') : name;
         hud_.text(px - hud_.textWidth(label, s.text()) / 2, ty, label, kHudPureGreen, s.text());
+    }
+}
+
+void Game::drawDf2Waypoints3d(const Screen& s, const Mat4& viewProj) {
+    // GOG Df2.exe 0x465fde -> 0x450070, every frame: each pool waypoint in
+    // use (item_index, +0x6e set, a name at +0x54) whose camera depth is at
+    // least the near plane ([0xc30fc8]): a green (0x00ff00) line straight up
+    // the screen from its projected position, focal / depth pixels long (one
+    // metre), and its name centred 15 pixels above the line's top (0x4577f0
+    // flag 2, frame pixels, no clip).
+    const Vec3 eye = viewEye();
+    // The focal length in window pixels: the y row of viewProj is the
+    // projection's y scale times the view's (unit) up row.
+    const float fy = std::sqrt(viewProj.at(1, 0) * viewProj.at(1, 0) + viewProj.at(1, 1) * viewProj.at(1, 1) +
+                               viewProj.at(1, 2) * viewProj.at(1, 2)) * 0.5f * s.playH;
+    const float t = std::max(1.f, s.art());
+    for (const Df2Waypoint& w : df2Wps_) {
+        if (!w.used || w.name.empty()) continue;
+        const Vec3 p = world_.nearest(Vec3{float(w.x), w.z, float(-w.y)}, eye);
+        const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
+        const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
+        const float cw = viewProj.at(3, 0) * p.x + viewProj.at(3, 1) * p.y + viewProj.at(3, 2) * p.z + viewProj.at(3, 3);
+        if (cw <= 0.1f) continue;   // the near plane
+        const float px = (cx / cw * 0.5f + 0.5f) * s.w, py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH;
+        const float top = py - fy / cw;
+        hud_.rect(px, top, t, py - top, kHudPureGreen);
+        hud_.text(px - hud_.textWidth(w.name, s.text()) / 2, top - 15.f * s.art(), w.name, kHudPureGreen, s.text());
     }
 }
 
