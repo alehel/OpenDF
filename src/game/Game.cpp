@@ -506,8 +506,9 @@ private:
     void gnrcExplode(int index);   // Delta Force: a destroyed gnrc object goes off (0x453270)
     float effectScale_ = 0;        // > 0: the next spawnEffect's scale (effect +0x7c set by its caller)
     void spawnPuff(Vec3 at);
-    // Delta Force's wooden crates and furniture (`wdsm`, `wdmd`) and cacti
-    // (`cact`) at hp <= 0: puffs, `gdeb` debris pieces and a sound.
+    // Delta Force's wooden crates and furniture (`wdsm`, `wdmd`), cacti
+    // (`cact`) and palms (`palm`) at hp <= 0: puffs, `gdeb` debris pieces
+    // and a sound.
     void woodDebris(int index);
     void tickEffects();
     // Delta Force 2's rain and snow (BMS flag 0x78 bit 3, 0x46ba90).
@@ -2141,6 +2142,41 @@ void Game::woodDebris(int index) {
             piece(id, dx, dy, o.pos.y + 1.f + float(k) / 8.f, vx, vy, vz);
         }
         playSound(0x130, o.pos);
+    } else if (f == "palm") {
+        // GOG Df.exe palm 0x453c20 at hp <= 0 -> 0x44e6b0(palm, -1): pieces
+        // up the trunk by the palm's state +0xE0 (0: 48, 1: 16, 2: 40),
+        // starting 1 m up and stepping 0x3400 up and (cos, sin)(yaw + a) ·
+        // k >> 22 across (palm2, item 1018: a 0x70000000, k 0x1000; others
+        // a 0x80000000, k 0x400; sine table 1.0 = 0x400000); each one of
+        // palmdebris1..4 (104064..67) by (r * 4) >> 16, x +-0x2000, y
+        // +-0x1000, vx, vy +-0x800, vz 0x800 + 0..0x1fff. A palm never hit
+        // before (state 0) also throws 20 palmdebris5 (104068) from the top,
+        // x, y + (r << 2) - 0x20000, z +-0x2000. Sound 0x12C.
+        const bool palm2 = o.item->id == 101018;
+        const double yaw = kPi * 0.5 - double(o.heading);   // DF yaw, anticlockwise from east
+        const double a = yaw + (palm2 ? 0x70000000 : 0x80000000) / 4294967296.0 * 2 * kPi;
+        const int k = palm2 ? 0x1000 : 0x400;
+        const int32_t sx = int32_t((int64_t(k) * std::lround(std::cos(a) * 0x400000)) >> 22);
+        const int32_t sy = int32_t((int64_t(k) * std::lround(std::sin(a) * 0x400000)) >> 22);
+        const int n = world_.objects[size_t(index)].palmState == 0 ? 48 : world_.objects[size_t(index)].palmState == 1 ? 16
+                    : world_.objects[size_t(index)].palmState == 2 ? 40 : 0;
+        int32_t cx = 0, cy = 0;
+        float cz = o.pos.y + 1.f;
+        for (int i = 0; i < n; ++i) {
+            const int id = 4064 + ((r() * 4) >> 16);
+            const int32_t dx = (r() & 0x3fff) - 0x2000, dy = (r() & 0x1fff) - 0x1000;
+            const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0x1fff) + 0x800;
+            piece(id, cx + dx, cy + dy, cz, vx, vy, vz);
+            cx += sx, cy += sy, cz += 0x3400 / 65536.f;
+        }
+        if (world_.objects[size_t(index)].palmState == 0)
+            for (int i = 0; i < 20; ++i) {
+                const int32_t dx = ((r() & 0xffff) << 2) - 0x20000, dy = ((r() & 0xffff) << 2) - 0x20000;
+                const float z = cz + m((r() & 0x3fff) - 0x2000);
+                const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0x1fff) + 0x800;
+                piece(4068, cx + dx, cy + dy, z, vx, vy, vz);
+            }
+        playSound(0x12C, o.pos);
     }
 }
 
@@ -6687,7 +6723,7 @@ int Game::run() {
                 }
                 if (mission_.version < 0x0F && world_.objects[size_t(i)].item) {
                     const std::string& f = world_.objects[size_t(i)].item->aiFunction;
-                    if (f == "wdsm" || f == "wdmd" || f == "cact") woodDebris(i);
+                    if (f == "wdsm" || f == "wdmd" || f == "cact" || f == "palm") woodDebris(i);
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
