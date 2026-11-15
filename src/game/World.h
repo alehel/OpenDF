@@ -67,6 +67,8 @@ struct WorldObject {
     uint32_t rotorAngle[2] = {0, 0};
     float rotorSpeed = 0;
     float steer = 0;
+    // Palms (lodCode "palm"): obj+0xE0, 0 intact (no palm breaks yet).
+    int palmState = 0;
     float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5
     int collapse = -1;
     float vz = 0;                      // people: vertical speed, metres a tick (+0x44)
@@ -95,6 +97,15 @@ struct WorldObject {
 
     Mat4 matrix(Vec3 at) const;
 };
+
+// The palm draw / pose (GOG Df.exe 0x44d5e0 / 0x44d2a0, CD 0x479148 /
+// 0x478e08) by state obj+0xE0: 0 meshes 0, 1, 2; 1: 0, 3; 2: 0, 1, 5;
+// 0x10: 1, 2, 4 at T(-hardpoint 0); 0x11: 2 at T(-hardpoint 1); 0x20: 1, 4
+// at T(-hardpoint 0); any other state nothing. `pose[i]` multiplies the
+// object matrix (a zero matrix hides the mesh); `shown[i]` says whether mesh
+// i is drawn (the pose's skip flags, for hits). `points`: the LOD's hardpoints.
+void palmPose(int state, size_t meshes, const std::vector<std::array<float, 3>>& points, std::vector<Mat4>& pose,
+              std::vector<bool>& shown);
 
 struct RayHit {
     float t = 1;          // fraction along the segment

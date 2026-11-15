@@ -632,6 +632,8 @@ int cmdView(Vfs& vfs, Options& o) {
             SceneLighting light;
             light.lut = terrain.lutTexture();
             light.saturation = terrain.saturationFactor();
+            light.gradeLut = terrain.gradeLutTexture();
+            light.gradeSaturation = terrain.gradeSaturation();
             light.highlight = terrain.highlight();
             models.begin(proj * view, light);
             const Vec3 fwdView = cam.forward();

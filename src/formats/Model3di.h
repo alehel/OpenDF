@@ -16,6 +16,9 @@ struct Model3diTexture {
     uint8_t sequence = 0;            // what materials refer to
     bool indexZeroTransparent = false;
     bool alpha16 = false;            // v8: 16-bit texels (index, alpha)
+    // Header +0x16 flag 0x10 (v5): the palette is left out of the TRN grade
+    // (GOG Df.exe 0x4867a0 skips textures flagged 0x10 or 0x80).
+    bool noGrade = false;
     std::vector<uint8_t> rgba;       // width*height*4, decoded
     std::vector<uint8_t> indices;    // the raw 8-bit texels (used as alpha by 0x8000 materials)
 };
@@ -88,6 +91,9 @@ struct MeshVolumes { float box[6] = {0, 0, 0, 0, 0, 0}; std::vector<PlaneVolume>
 struct ModelLod {
     std::vector<ModelBatch> batches;
     int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
+    // LOD header +0x5a (the high word of +0x58) is not 0: the gnrc draw
+    // (GOG Df.exe 0x481060) animates the LOD's 0x4000 materials.
+    bool animated = false;
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
     std::vector<MeshVolumes> meshVolumes;  // v8 LOD 0: per mesh, the plane volumes (DF2.EXE 0x440f80)

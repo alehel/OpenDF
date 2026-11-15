@@ -43,10 +43,11 @@ void main() {
 const char* kModelFS = R"(#version 330 core
 in vec2 vUv;
 in vec2 vLit;
-uniform sampler2D uTex, uIndex, uLut;
+uniform sampler2D uTex, uIndex, uLut, uGrade;
 uniform bool uTextured, uKey;
 uniform vec3 uColor, uHighlight;
-uniform float uSat;
+uniform float uSat, uGradeSat;
+uniform bool uGradeOn, uGradeTexel;   // Delta Force: the TRN grade of material colours / of this texture's palette
 uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha, 3 texture alpha (DF2)
 uniform vec4 uTint;
 uniform bool uOverride;   // DF2 0x445e50: the colour replaces the material's (texel-as-alpha parts)
@@ -61,6 +62,16 @@ vec3 post(vec3 c) {
     return vec3(texture(uLut, vec2(c.r * k + o, 0.5)).r, texture(uLut, vec2(c.g * k + o, 0.5)).g,
                 texture(uLut, vec2(c.b * k + o, 0.5)).b);
 }
+// Delta Force (GOG Df.exe 0x4867a0 -> 0x480bf0): the TRN saturation and
+// table, baked into the palettes and colours before any shading.
+vec3 grade(vec3 c, bool on) {
+    if (!on) return c;
+    float y = (c.r + 2.0 * c.g + c.b) * 0.25;
+    c = clamp(y + (c - y) * uGradeSat, 0.0, 1.0);
+    float k = 255.0 / 256.0, o = 0.5 / 256.0;
+    return vec3(texture(uGrade, vec2(c.r * k + o, 0.5)).r, texture(uGrade, vec2(c.g * k + o, 0.5)).g,
+                texture(uGrade, vec2(c.b * k + o, 0.5)).b);
+}
 void shade();
 void main() {
     shade();
@@ -70,10 +81,11 @@ void main() {
 void shade() {
     float idx = uTextured ? texture(uIndex, vUv).r * 255.0 : 1.0;
     if (uMode == 2) {               // 0x8000: dst += (C - dst) * texel / 256
-        oColor = vec4(uOverride ? (uTintRaw ? uTint.rgb : post(uTint.rgb)) : post(uColor), idx / 256.0);
+        oColor = vec4(uOverride ? (uTintRaw ? uTint.rgb : post(uTint.rgb)) : post(grade(uColor, uGradeOn)), idx / 256.0);
         return;
     }
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
+    c.rgb = grade(c.rgb, uTextured ? uGradeTexel : uGradeOn);
     if (uTextured && (uMode == 1 || uKey) && idx < 0.5) discard;   // texel 0 skipped
     if (uMode == 3) {
         if (c.a < 1.0 / 255.0) discard;
@@ -179,6 +191,8 @@ bool ModelRenderer::init(std::string* error) {
     glUniform1i(glGetUniformLocation(prog_, "uTex"), 0);
     glUniform1i(glGetUniformLocation(prog_, "uIndex"), 1);
     glUniform1i(glGetUniformLocation(prog_, "uLut"), 2);
+    glUniform1i(glGetUniformLocation(prog_, "uGrade"), 3);
+    locGradeTexel_ = glGetUniformLocation(prog_, "uGradeTexel");
     {
         std::vector<uint8_t> lut(256 * 3);
         for (int i = 0; i < 256; ++i) lut[size_t(i) * 3] = lut[size_t(i) * 3 + 1] = lut[size_t(i) * 3 + 2] = uint8_t(i);
@@ -225,6 +239,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     for (auto& t : src.textures) {
         g->textures.push_back(uploadTexture(t));
         g->indexTextures.push_back(uploadIndices(t));
+        g->textureNoGrade.push_back(t.noGrade);
     }
     for (auto& l : src.lods) {
         GpuModel::Lod gl;
@@ -245,6 +260,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         gl.meshRadius = l.meshRadius;
         gl.meshCentre = l.meshCentre;
         gl.ticksPerFrame = l.ticksPerFrame;
+        gl.animated = l.animated;
+        gl.points = l.points;
         glGenVertexArrays(1, &gl.vao);
         glBindVertexArray(gl.vao);
         glGenBuffers(1, &gl.vbo);
@@ -297,6 +314,11 @@ void ModelRenderer::begin(const Mat4& viewProj, const SceneLighting& light) {
     setV3(prog_, "uViewer", normalize(light.viewer));
     setV3(prog_, "uHighlight", light.highlight);
     glUniform1f(glGetUniformLocation(prog_, "uSat"), light.saturation);
+    grade_ = light.gradeLut != 0;
+    glUniform1i(glGetUniformLocation(prog_, "uGradeOn"), grade_ ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog_, "uGradeSat"), light.gradeSaturation);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, grade_ ? light.gradeLut : identityLut_);
     glUniform4f(glGetUniformLocation(prog_, "uTint"), 1, 1, 1, 1);
     glUniform1i(glGetUniformLocation(prog_, "uOverride"), 0);
     glActiveTexture(GL_TEXTURE2);
@@ -336,6 +358,7 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
             texture = l.materialTextures[size_t(b.material + frame)];
         const bool textured = texture >= 0 && texture < int(m.textures.size());
         glUniform1i(locTextured_, textured);
+        glUniform1i(locGradeTexel_, grade_ && textured && !m.textureNoGrade[size_t(texture)]);
         glUniform3f(locColor_, b.color[0], b.color[1], b.color[2]);
         if (textured) {
             glActiveTexture(GL_TEXTURE1);

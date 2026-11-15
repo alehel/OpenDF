@@ -85,6 +85,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         t.sequence = r.u8(p + 0x14 + f);
         const uint8_t tflags = r.u8(p + 0x16 + f);
         t.indexZeroTransparent = !layout.v8 && (tflags & 0x20) != 0;
+        t.noGrade = !layout.v8 && (tflags & 0x10) != 0;
         t.width = r.u16(p + 0x18 + f);
         t.height = r.u16(p + 0x1A + f);
         const size_t pixels = p + layout.texHeader;
@@ -239,6 +240,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         if (li == 0)
             for (int k = 0; k < 4; ++k) m.box[k] = r.i32(p + 0x28 + 4 * size_t(k)) / 65536.f;
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
+        lod.animated = r.u16(p + 0x5a) != 0;
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
         // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.
         for (uint32_t i = 0; i < nvol; ++i) {

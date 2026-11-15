@@ -387,6 +387,12 @@ static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, s
         const bool fast = o.rotorSpeed >= float(0x0C000000);
         for (int i : fast ? std::array<int, 2>{2, 4} : std::array<int, 2>{3, 5})
             if (i < int(hitSkip.size())) hitSkip[size_t(i)] = 1;
+    } else if (code == "palm" && !world.df2Rules) {
+        // GOG Df.exe 0x44d2a0: every slot is the object matrix with its skip
+        // flag clear, then the state's unused meshes are flagged.
+        std::vector<bool> shown;
+        palmPose(o.palmState, meshes, m.points, pose, shown);
+        for (size_t i = 0; i < meshes && i < hitSkip.size(); ++i) hitSkip[i] = shown[i] ? 0 : 1;
     } else if (code == "tire") {
         hitSkip[1] = 1;   // the shadow; slots 0, 2, 3 keep their flags (0x4807e0)
         if (m.points.size() >= 3) {
@@ -401,6 +407,32 @@ static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, s
         if (mi < hitSkip.size() && hitSkip[mi]) continue;
         if (!fn(int(mi), body * pose[mi])) return;
     }
+}
+
+void palmPose(int state, size_t meshes, const std::vector<std::array<float, 3>>& points, std::vector<Mat4>& pose,
+              std::vector<bool>& shown) {
+    std::vector<int> drawn;
+    int hp = -1;
+    switch (state) {
+    case 0: drawn = {0, 1, 2}; break;
+    case 1: drawn = {0, 3}; break;
+    case 2: drawn = {0, 1, 5}; break;
+    case 0x10: drawn = {1, 2, 4}; hp = 0; break;
+    case 0x11: drawn = {2}; hp = 1; break;
+    case 0x20: drawn = {1, 4}; hp = 0; break;
+    default: break;
+    }
+    Mat4 hide;
+    for (float& x : hide.m) x = 0;
+    Mat4 at;
+    if (hp >= 0 && size_t(hp) < points.size()) {
+        const auto& p = points[size_t(hp)];
+        at = translate({-p[0], -p[1], -p[2]});
+    }
+    pose.assign(meshes, hide);
+    shown.assign(meshes, false);
+    for (int i : drawn)
+        if (size_t(i) < meshes) pose[size_t(i)] = at, shown[size_t(i)] = true;
 }
 
 // File axes (x, y, z up) of a world point in a posed mesh.
