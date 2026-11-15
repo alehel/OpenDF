@@ -90,6 +90,10 @@ struct WorldObject {
     Vec3 tickVel{0, 0, 0};
     float tickTurn = 0;
     std::vector<int> neighbours;       // DF2 +0xFC/+0x100: objects near enough to touch (0x43f2b0)
+    // GOG Df2.exe emplaced guns (item attrib EWeap 0x8000, 0x4145a0):
+    // people: the gun manned (+0x8c, -1 none); a gun: who mans it (its
+    // +0xF8, -1 nobody, -3 the player).
+    int mount = -1, gunner = -1;
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
@@ -158,8 +162,33 @@ public:
     // The person push-out of the DF2 person move (0x440984..0x440af1): the
     // 0.5 m cubes at the origin and 0.5 m above the feet (feet = origin +
     // feetOffset), against each neighbour; moves `origin`.
-    struct Df2Contact { bool onObject = false; int platform = -1; bool ladder = false, armory = false; std::vector<int> touched; };
+    // `mounts`: the neighbours with a type-7 volume overlapped (GOG
+    // Df2.exe 0x447450 flags 8), in neighbour order.
+    struct Df2Contact { bool onObject = false; int platform = -1; bool ladder = false, armory = false; std::vector<int> touched, mounts; };
     Df2Contact df2PushOut(Vec3& origin, float feetOffset, const std::vector<int>& neighbours, bool mayClimb) const;
+    // GOG Df2.exe emplaced guns. The player's link (its +0x8c; -1 none) and
+    // view angles (+0x30 / +0x34), for the gun's pose; set by the player.
+    int playerMount = -1;
+    float playerYaw = 0, playerPitch = 0;
+    // 0x4145a0(person, gun), single player (host-side): `person` is an
+    // object index or -3 the player; `moveDir` its control direction (+0x74
+    // & 7), `dead` its +0x64 & 4. Gates: the gun has an item with EWeap
+    // and the person mans nothing or this gun. Moving back (direction 3..5)
+    // or either dead/destroyed clears both links; otherwise, unless already
+    // linked or anyone mans this gun, links them. True when it linked (the
+    // caller then places the person, mountOrigin).
+    bool df2Mount(int person, int gun, int moveDir, bool dead);
+    // 0x418300: the gun's position plus its hardpoint 0 turned by the
+    // person's heading: where the manning person's origin goes.
+    Vec3 mountOrigin(int gun, float personHeading, Vec3 ref) const;
+    // 0x416e90: the eye on a manned gun, hardpoint 2 through the gun's
+    // posed mesh 1 (the "ewpn" pose 0x450c60).
+    Vec3 mountEye(int gun, Vec3 ref) const;
+    // The "ewpn" pose (GOG Df2.exe 0x450c60): with a gunner whose link is
+    // this gun, meshes 1 and 2 turn about hardpoint 1 by the gunner's
+    // heading less the gun's and his pitch; otherwise all as mesh 0.
+    std::vector<Mat4> ewpnPose(const WorldObject& gun, size_t meshes) const;
+    void clearMount(int person);
     // DF2.EXE 0x43fb80: the terrain, or the highest volume top a 1/256 m
     // point at `p` overlaps, no higher than p + step (items placed by
     // 0x4520d6 with step 0x4000).

@@ -40,6 +40,8 @@ const struct { int number; const char* name; float visibility, aim; } kMoves[] =
     {94, "Running6_S_2HW", 4.f, 4.f}, {95, "Running7_S_2HW", 4.f, 4.f}, {100, "Crouched_1HW", 0.5f, 1.f},
     {101, "Crouched_2HW", 0.5f, 1.f}, {102, "Crouched_SLW", 0.5f, 1.f}, {103, "Crouched_SCW", 0.5f, 1.f},
     {104, "Crouched_BIN", 0.5f, 1.f}, {105, "Crouched_SWTCH", 0.5f, 1.f}, {106, "Crouched_KNIFE", 0.5f, 1.f},
+    // GOG Df2.exe's table: 107 Crouched_EWeap, manning an emplaced gun (0x445980).
+    {107, "Crouched_EWeap", 0.5f, 1.f},
     {110, "Prone_1HW", 0.08f, 1.f}, {111, "Prone_2HW", 0.08f, 1.f}, {112, "Prone_SLW", 0.08f, 1.f},
     {113, "Prone_SCW", 0.08f, 1.f}, {114, "Prone_BIN", 0.08f, 1.f}, {115, "Prone_SWTCH", 0.08f, 1.f},
     {116, "Prone_KNIFE", 0.08f, 1.f}, {120, "Crawling_CR0", 0.2f, 1.2f}, {121, "Crawling_CR1", 0.2f, 1.2f},

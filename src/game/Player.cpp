@@ -47,7 +47,7 @@ Vec3 Player::forward() const {
     return {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
 }
 
-void Player::update(float dt, const PlayerInput& in, const World& world) {
+void Player::update(float dt, const PlayerInput& in, World& world) {
     Vec3 flatFwd{std::sin(yaw), 0, -std::cos(yaw)};
     Vec3 right{-flatFwd.z, 0, flatFwd.x};
     Vec3 wish = flatFwd * in.forward + right * in.strafe;
@@ -63,10 +63,17 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     eyeHeight_ = target + (eyeHeight_ - target) * std::pow(0.9f, dt * 60.f);
 
     const float water = world.terrain->waterLevel();
+    mounted_ = false;
     if (world.df2Rules && !fly) {
         // Delta Force 2: its own person move, on the 60 Hz ticks.
         for (df2Clock_ += dt; df2Clock_ >= 1.f / 60.f; df2Clock_ -= 1.f / 60.f) tickDf2(in, world);
         wrap(world.extent());
+        // GOG Df2.exe: the gun's pose follows the player's view, and the
+        // view comes from the gun (0x44dd50 -> 0x416e90).
+        world.playerYaw = yaw;
+        world.playerPitch = pitch;
+        mounted_ = world.playerMount >= 0;
+        if (mounted_) mountEye_ = world.mountEye(world.playerMount, feet);
         return;
     }
     // DF.EXE 0x436158 runs for the player too: riding the platform +0x100
@@ -290,7 +297,7 @@ void Player::leaveWater(float z) {
 // 0x440400: x, y += the step; z += vz + dz; the volume push-out (0x440984);
 // the ground (terrain, or d = 0 standing on an object) and the state table
 // (parachute, airborne, swimming, sliding, normal) with gravity 0xA7.
-void Player::tickDf2(const PlayerInput& in, const World& world) {
+void Player::tickDf2(const PlayerInput& in, World& world) {
     const float water = world.terrain->waterLevel();
     const bool odd = (++df2Ticks_ & 1) != 0;
     const Vec3 flatFwd{std::sin(yaw), 0, -std::cos(yaw)};
@@ -298,6 +305,21 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
     constexpr float G = 0xA7 / 65536.f;
     if (inWater_) eyeOffset_ = kWaterEye + (eyeOffset_ - kWaterEye) * 0.9f;   // 0x4461e7
 
+    if (odd && world.playerMount >= 0) {
+        // GOG Df2.exe 0x447120 (before the person move): manning a gun, the
+        // heading is kept within 0x20000000 (45 degrees) of the gun's and
+        // the pitch within 0x10000000 (22.5 degrees), and the origin is put
+        // back at the gun (0x418300).
+        const WorldObject& g = world.objects[size_t(world.playerMount)];
+        float dy = std::remainder(yaw - g.heading, 2 * 3.14159265f);
+        dy = std::clamp(dy, -3.14159265f / 4, 3.14159265f / 4);
+        yaw = g.heading + dy;
+        pitch = std::clamp(pitch, -3.14159265f / 8, 3.14159265f / 8);
+        const Vec3 m = world.mountOrigin(world.playerMount, yaw, feet);
+        feet.x = m.x;
+        feet.z = m.z;
+        z = m.y;
+    }
     if (odd) {
         // Jump (0x440cd0): not while airborne or swimming (0x22000) or on a
         // chute; crouched or prone it stands up ([0x7655dc] = 1); not while
@@ -319,6 +341,11 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
         if (chute) {
             // 150 Parachute (0x43f704); its motion is replaced below.
             move_ = "Parachute";
+            poseOrigin_ = landOrigin();
+        } else if (world.playerMount >= 0) {
+            // GOG Df2.exe 0x445980: on a gun (+0x8c), 107 Crouched_EWeap
+            // (PLAYANIM.ANM: speed 0), before the water and the stances.
+            move_ = "Crouched_EWeap";
             poseOrigin_ = landOrigin();
         } else if (below) {
             // 141 Swimming with a speed and direction 0, else 140 Floating.
@@ -425,7 +452,20 @@ void Player::tickDf2(const PlayerInput& in, const World& world) {
         if (c.onObject) platform_ = c.platform;   // 0x440a24
         if (c.ladder) { onGround_ = true; ladder_ = true; }   // 0x440abf: not airborne, 0x400000
         armory_ = c.armory;
+        // GOG Df2.exe 0x4467d0: type-7 volumes (flags 8) -> 0x4145a0 with
+        // the control direction (+0x74 & 7, 0x41efd0: the keys held, 0
+        // with none); a new link puts the origin at the gun (0x418300).
+        const int dir = moving_ ? moveDirection(in.forward, in.strafe) : 0;
+        for (int g : c.mounts)
+            if (world.df2Mount(-3, g, dir, false)) {
+                const Vec3 m = world.mountOrigin(g, yaw, feet);
+                feet.x = m.x;
+                feet.z = m.z;
+                z = m.y;
+            }
     }
+    // 0x4467d0's end: a destroyed gun (+0x64 & 4) lets go.
+    if (world.playerMount >= 0 && !world.objects[size_t(world.playerMount)].alive()) world.clearMount(-3);
 
     // Ground and the state table (0x440af6..0x440c9e).
     const float feetY = z - poseOrigin_;

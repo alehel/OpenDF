@@ -102,6 +102,7 @@ void World::refreshBoxes(WorldObject& o) const {
 
 void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const Mission& mission) {
     objects.clear();
+    playerMount = -1;
     // Skeletons and move tables of people (ITEMS.DEF chr_file, anim_def).
     auto load = [&](const ItemDef& item, WorldObject& o) {
         if (item.chrFile.empty() || item.animDef.empty()) return;
@@ -387,6 +388,9 @@ static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, s
         const bool fast = o.rotorSpeed >= float(0x0C000000);
         for (int i : fast ? std::array<int, 2>{2, 4} : std::array<int, 2>{3, 5})
             if (i < int(hitSkip.size())) hitSkip[size_t(i)] = 1;
+    } else if (code == "ewpn") {
+        for (size_t i = 0; i < meshes && i < hitSkip.size(); ++i) hitSkip[i] = 0;
+        pose = world.ewpnPose(o, meshes);
     } else if (code == "tire") {
         hitSkip[1] = 1;   // the shadow; slots 0, 2, 3 keep their flags (0x4807e0)
         if (m.points.size() >= 3) {
@@ -528,7 +532,8 @@ void World::carry(int platform, Vec3& pos, float& heading) const {
 //   bit 0 clear, per point: into the mesh (0x42baa0 inverse, 0x42b550); the
 //   cube must overlap the mesh box (+0x40..+0x54); then sum := 0 and per
 //   volume, per plane s = n.L + d - half, outside at the first s >= 0;
-//   inside: type 4 -> flags |= 1, type 6 -> flags |= 4, others: hit and
+//   inside: type 4 -> flags |= 1, type 6 -> flags |= 4 (GOG Df2.exe
+//   0x447450 also type 7 -> flags |= 8, where the CD build pushes), others: hit and
 //   sum += s_max x n of the least-negative plane. After the points, push +=
 //   the slot's rotation (0x42b680) of sum.
 // READ quirk kept: `sum` is cleared only when a point passes a mesh box, so
@@ -572,6 +577,7 @@ bool World::df2Overlap(const WorldObject& n, const Vec3* pts, const float* halve
                 if (!inside) continue;
                 if (v.type == 4) flags |= 1;
                 else if (v.type == 6) flags |= 4;
+                else if (v.type == 7) flags |= 8;   // GOG Df2.exe 0x447450: an emplaced gun's seat, not solid
                 else {
                     hit = true;
                     if (bp)
@@ -640,8 +646,103 @@ World::Df2Contact World::df2PushOut(Vec3& origin, float feetOffset, const std::v
         }
         if ((flags & 1) && mayClimb) c.ladder = true;
         if (flags & 4) c.armory = true;
+        if (flags & 8) c.mounts.push_back(i);   // GOG Df2.exe 0x4467d0: 0x4145a0(person, it)
     }
     return c;
+}
+
+static Vec3 applyPoint(const Mat4& w, Vec3 p) {
+    return {w.at(0, 0) * p.x + w.at(0, 1) * p.y + w.at(0, 2) * p.z + w.at(0, 3),
+            w.at(1, 0) * p.x + w.at(1, 1) * p.y + w.at(1, 2) * p.z + w.at(1, 3),
+            w.at(2, 0) * p.x + w.at(2, 1) * p.y + w.at(2, 2) * p.z + w.at(2, 3)};
+}
+
+// GOG Df2.exe 0x4145a0 (READ), see World.h. The "anyone mans it" test
+// scans every person's +0x8c (0xc7216c, stride 0x114), the player's too.
+bool World::df2Mount(int person, int gun, int moveDir, bool dead) {
+    if (gun < 0 || size_t(gun) >= objects.size()) return false;
+    WorldObject& g = objects[size_t(gun)];
+    const bool player = person == -3;
+    if (!player && (person < 0 || size_t(person) >= objects.size())) return false;
+    int& link = player ? playerMount : objects[size_t(person)].mount;
+    if (!g.item || (link != -1 && link != gun) || !(g.item->attrib & 0x8000)) return false;
+    if ((moveDir >= 3 && moveDir <= 5) || dead || !g.alive()) {
+        link = -1;
+        g.gunner = -1;
+        return false;
+    }
+    if (link != -1) return false;   // already on this gun
+    if (playerMount == gun) return false;
+    for (const WorldObject& o : objects)
+        if (o.person && o.mount == gun) return false;
+    link = gun;
+    g.gunner = person;    return true;
+}
+
+// GOG Df2.exe 0x4467d0's end: a destroyed gun (+0x64 & 4) lets go.
+void World::clearMount(int person) {
+    int& link = person == -3 ? playerMount : objects[size_t(person)].mount;
+    if (link >= 0 && size_t(link) < objects.size()) objects[size_t(link)].gunner = -1;
+    link = -1;
+}
+
+// GOG Df2.exe 0x418300 (READ): matrix 0x4308d0 from the gun's position and
+// (heading = the person's +0x30, pitch 0, roll 0), applied (0x4301c0) to the
+// gun model's hardpoint 0 (LOD 0 +0xA4, ints 0..2).
+Vec3 World::mountOrigin(int gun, float personHeading, Vec3 ref) const {
+    const WorldObject& g = objects[size_t(gun)];
+    const Vec3 at = nearest(g.pos, ref);
+    if (!g.model || g.model->points.empty()) return at;
+    const auto& p = g.model->points[0];
+    return applyPoint(translate(at) * rotateY(kPi * 0.5f - personHeading), {p[0], p[1], p[2]});
+}
+
+// GOG Df2.exe 0x450c60 (disassembled; not in the Ghidra export): slot 0 =
+// the object's matrix (0x4308d0); if +0xF8 (the gunner) is set and his
+// +0x8c is this gun, the matrix 0x430ad0 of (-hardpoint 1, yaw = gunner
+// +0x30 - gun +0x30, pitch = gunner +0x34, roll 0), a turn about hardpoint
+// 1, is put after slot 0 for slots 1 and 2 (0x42fcf0); else (and +0xF8
+// cleared when the link is stale) every slot is slot 0.
+std::vector<Mat4> World::ewpnPose(const WorldObject& g, size_t meshes) const {
+    std::vector<Mat4> pose(meshes, Mat4{});
+    if (!g.model || g.model->points.size() < 2 || g.gunner == -1) return pose;
+    const int self = int(&g - objects.data());
+    float yaw = 0, pitch = 0;
+    if (g.gunner == -3) {
+        if (playerMount != self) return pose;
+        yaw = playerYaw;
+        pitch = playerPitch;
+    } else {
+        if (g.gunner < 0 || size_t(g.gunner) >= objects.size() || objects[size_t(g.gunner)].mount != self) return pose;
+        yaw = objects[size_t(g.gunner)].heading;
+        pitch = objects[size_t(g.gunner)].aimPitch;
+    }
+    // DF yaw is anticlockwise, OpenDF headings clockwise; pitch up positive
+    // about the model's sideways axis (as the vehicles' body pitch).
+    Mat4 gp;
+    const float c = std::cos(pitch), s = std::sin(pitch);
+    gp.at(0, 0) = c; gp.at(0, 1) = -s;
+    gp.at(1, 0) = s; gp.at(1, 1) = c;
+    const auto& p = g.model->points[1];
+    const Mat4 turn = translate({p[0], p[1], p[2]}) * rotateY(-(yaw - g.heading)) * gp * translate({-p[0], -p[1], -p[2]});
+    for (size_t i = 1; i < meshes && i < 3; ++i) pose[i] = turn;
+    return pose;
+}
+
+// GOG Df2.exe 0x416e90 (READ): the gun's pose routine (+0x4C), its slot 1
+// (+0x40) applied to hardpoint 2 (+0xA4 +0x18..+0x20); the view (0x416a30)
+// takes the person's own heading and pitch.
+Vec3 World::mountEye(int gun, Vec3 ref) const {
+    const WorldObject& g = objects[size_t(gun)];
+    const Vec3 at = nearest(g.pos, ref);
+    if (!g.model || g.model->points.size() < 3) return at;
+    const auto& p = g.model->points[2];
+    Mat4 slot1 = g.matrix(at);
+    if (g.model->lodCodes[0] == "ewpn") {
+        const auto pose = ewpnPose(g, std::max<size_t>(g.model->hitMeshes.size(), 2));
+        slot1 = slot1 * pose[1];
+    }
+    return applyPoint(slot1, {p[0], p[1], p[2]});
 }
 
 // DF2.EXE 0x43fb80(p, mover, step), READ: best = terrain(p); +0xF8 = 0; per
@@ -1192,7 +1293,23 @@ void World::personTickDf2(WorldObject& o) {
         if (c.onObject) { onObject = true; o.platform = c.platform; }
         if (c.ladder) { o.airborne = false; o.ladder = true; }
         if (c.armory) o.armory = true;
+        // GOG Df2.exe 0x4467d0: flags 8 -> 0x4145a0(person, gun); a new
+        // link places the origin at the gun (0x418300). The control
+        // direction (+0x74 & 7) is the walk / run move's.
+        const int self = int(&o - objects.data());
+        int dir = 0;
+        for (const auto& [lo, n] : {std::pair{20, 8}, {28, 8}, {40, 8}, {48, 8}, {60, 8}, {68, 8}, {80, 8}, {88, 8}})
+            if (o.moveNumber >= lo && o.moveNumber < lo + n) dir = o.moveNumber - lo;
+        for (int g : c.mounts)
+            if (df2Mount(self, g, dir, o.dead)) {
+                const Vec3 m = mountOrigin(g, o.heading, o.pos);
+                o.pos.x = m.x;
+                o.pos.z = m.z;
+                o.base = m.y - o.hip;
+            }
     }
+    // 0x4467d0's end: the gun destroyed (+0x64 & 4) clears both links.
+    if (o.mount >= 0 && !objects[size_t(o.mount)].alive()) clearMount(int(&o - objects.data()));
     // Ground (0x440af6): d = 0 on an object, else feet - terrain (d <= 0
     // clears +0xF8).
     float d = 0;
