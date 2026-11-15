@@ -7537,8 +7537,37 @@ void Game::drawOldMessages(const Screen& s) {
     // into a 40-deep ring), so the oldest of the 16 is at the top and the
     // newest always at y 610 (0x484e01..0x484e35), each in its message
     // colour (the ring's +0x78, 0x484e0d).
+    if (df2Hud_.on && arsenal_.df2Gog()) {
+        // GOG Df2.exe 0x448e40: the 3D view (rows DHT_h .. H - DHB_h, kept
+        // in 768 space by 0x466510 as [0x67d3bc] / [0x67d3c0]) halved over
+        // x 0..1024 without a border (0x465ae0's last argument 0; OpenDF:
+        // the window's width, as the strips), STROVER43 centred at (512,
+        // top + 20); then the 16 latest wrapped lines of both histories,
+        // entry 15 at the top: chat at (chat_message.x + 2, ...) and system
+        // at (sys_message.x + 2, ...), y = DHT_h ([0x67d3b0]) + the box's y
+        // + W*120/1024 + k * (W*12/640), in mode pixels, own colours.
+        const int n = s.modeW, modeH = n * 3 / 4;
+        const int top768 = df2Hud_.top.height * 768 / modeH;
+        const int bot768 = (modeH - df2Hud_.bottom.height) * 768 / modeH;
+        const float y0 = s.vy(float(top768)), y1 = s.vy(float(bot768));
+        hud_.multiply(0, y0, s.w, y1 - y0, {0.5f, 0.5f, 0.5f, 1});
+        const std::string t = df2Text("Overlays", "STROVER43", "Messages");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(float(top768 + 20)), t, kDf2Amber, s.text());
+        const int base = df2Hud_.top.height + n * 120 / 1024, step = n * 12 / 640;
+        auto column = [&](const std::deque<Df2Line>& h, const char* key) {
+            const float x = df2X(s, df2Hud_.def.value(n, key, 0) + 2, false);
+            for (int k = 0; k < 16; ++k) {
+                const size_t e = size_t(15 - k);
+                if (e < h.size() && !h[e].text.empty())
+                    hud_.text(x, df2Y(s, base + df2Hud_.def.value(n, key, 1) + k * step, false), h[e].text, h[e].colour, s.text());
+            }
+        };
+        column(df2Chat_, "chat_message");
+        column(df2Sys_, "sys_message");
+        return;
+    }
     if (df2Hud_.on) {
-        // DF2.EXE 0x442850: the panel box, STROVER43 centred at (512, 120) in
+        // DF2.EXE 0x442850 (the CD build): the panel box, STROVER43 centred at (512, 120) in
         // orange, the system history's entries 15..0 (0x41cf50 pushes the
         // newest into entry 0) at x 130, y 160 + 30k, each in its own colour:
         // bottom-anchored, the newest at y 610.
