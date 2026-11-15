@@ -233,6 +233,10 @@ private:
     // player's own view replaces the FO inset (GOG Df.exe 0x404640 ->
     // 0x466b70).
     bool pinp_ = false;
+    // GOG Df.exe's audio-macro box ([0x67db90], AudioMacros, A): drawn by
+    // 0x429810; while it is up 0x4790a0 takes the keys 1..9, 0.
+    bool audioMacros_ = false;
+    void drawAudioMacros(const Screen& s);
     void foNext();
     void drawFoInset(const Screen& s);
     const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
@@ -3635,6 +3639,16 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             return;
         }
         if (c == keyOf("STRMISC10", 'N')) { closeQuitBox(); return; }
+    } else if (audioMacros_ && !world_.df2Rules) {
+        // GOG Df.exe 0x4790a0: with the audio-macro box up, 1..9 and 0 send
+        // macro 1..10 (0x4717e0: network packet 0x43, a voice played by the
+        // receivers, 0x471760) and shut the box; nothing else is taken here.
+        // OpenDF has no network, so nothing is sent.
+        const SDL_Keycode sym = k.keysym.sym;
+        if (sym >= SDLK_0 && sym <= SDLK_9) {
+            audioMacros_ = false;
+            return;
+        }
     } else if (missionResult_ >= 0 && !(briefingShown_ && !world_.df2Rules)) {
         // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
         // Delta Force's chain (GOG 0x4790a0, CD 0x42e8f4) looks at the
@@ -3678,8 +3692,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         else df2HelpPage_ = df2HelpPage_ < 1 ? n - 1 : df2HelpPage_ - 1;
         return;
     }
-    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
-    if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
+    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time (not
+    // reached with GOG's audio-macro box up, 0x4790a0).
+    if (briefingShown_ && !audioMacros_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
             if (briefStart_ != briefLast_) {
                 briefPage_ = std::max(briefPage_, briefLast_ - briefStart_);
@@ -3748,6 +3763,7 @@ void Game::runAction(Action act, bool reverse) {
         // pause, old messages, the box, [0x7655fc], the command map); with
         // none open it opens "End Mission? (Y/N)" (0x42e548 / 0x41b5d1).
         if (paused_) { paused_ = false; break; }
+        if (audioMacros_) { audioMacros_ = false; break; }   // GOG Df.exe: before the Messages box
         if (oldMessages_) { oldMessages_ = false; break; }
         if (quitBox_) { closeQuitBox(); break; }
         // DF2 0x41b59d: with [0x7655fc] set (F9 / F10), Escape only clears it.
@@ -3887,6 +3903,7 @@ void Game::runAction(Action act, bool reverse) {
     case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
     case Action::PicInPic: if (!world_.df2Rules) pinp_ = !pinp_; break;   // GOG Df.exe 0x477d40 id 0x1d
+    case Action::AudioMacros: if (!world_.df2Rules) audioMacros_ = !audioMacros_; break;   // GOG Df.exe 0x477d40 id 0x2b
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
     case Action::CenterView: player_.pitch = 0; break;
     // DF1 outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193 -> 0x42ac10).
@@ -5483,6 +5500,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // frame 0x48f9b0 runs this pass too), before the overlays.
     if (!df2Hud_.on && gpsShown_) drawGpsInset(s);
     if (oldMessages_) drawOldMessages(s);
+    if (audioMacros_ && !df2Hud_.on) drawAudioMacros(s);   // GOG 0x426c30: after the Messages box
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
@@ -7685,6 +7703,22 @@ void Game::drawQuitBox(const Screen& s) {
     df1Panel(s, 310, 330, 714, 438);   // GOG 0x4270a0 -> 0x401ec0, outlined
     const char* t = "End Mission? (Y/N)";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+void Game::drawAudioMacros(const Screen& s) {
+    // GOG Df.exe 0x429810: the panel (0x80, 200)-(0x380, 0x230) (0x401ec0);
+    // DFGAME.BIN "Male Audio Macros" STRMAM_%02i, or for a female soldier
+    // ([0x67f434]: profile +0x640 > 7) "Female Audio Macros" STRFAM_%02i,
+    // 1..10 as "%i - %s" ("0 - %s" for the tenth) left-aligned at x 200 from
+    // y 240, 30 apart, in bright green ([0x67db5c]).
+    df1Panel(s, 0x80, 200, 0x380, 0x230);
+    const char* section = o_.female ? "Female Audio Macros" : "Male Audio Macros";
+    for (int i = 0; i < 10; ++i) {
+        char key[16];
+        std::snprintf(key, sizeof key, "STR%cAM_%02d", o_.female ? 'F' : 'M', i + 1);
+        const std::string t = std::to_string((i + 1) % 10) + " - " + df2Text(section, key, "");
+        hud_.text(s.vx(200), s.vy(240 + 30 * float(i)), t, kHudBright, s.text());
+    }
 }
 
 void Game::drawOldMessages(const Screen& s) {

@@ -45,6 +45,9 @@ enum class Action {
     // Delta Force: picture-in-picture (pinp, F8, id 0x1d: GOG Df.exe
     // 0x477d40 toggles [0x67f510], CD [0x66fa50]).
     PicInPic,
+    // GOG Df.exe: the audio-macro box (AudioMacros, A, id 0x2b; 0x477d40
+    // toggles [0x67db90]). Not in the CD build.
+    AudioMacros,
     Count
 };
 
