@@ -76,8 +76,9 @@ public:
     // One visit of every event with flag `bit`, in order: 2 = mission start
     // (GOG Df.exe 0x42eb60, from the mission start 0x404e30 after the start
     // removals and before the team totals 0x44a110; GOG Df2.exe 0x41aeb0),
-    // 4 = mission end (GOG Df.exe 0x42eba0 from 0x401e70, network games
-    // only; GOG Df2.exe 0x41aef0 from 0x464140, single player too).
+    // 4 = mission end (GOG Df.exe 0x42eba0 from 0x401e70 while [0x67f528],
+    // which the single-player launch sets, 0x4157eb; GOG Df2.exe 0x41aef0
+    // from 0x464140).
     void visitFlagged(uint32_t bit, ScriptHost& host);
 
     bool goalDone(int n) const { return n >= 0 && n < 32 && (goals_ >> n & 1); }

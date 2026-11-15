@@ -3544,12 +3544,12 @@ void Game::endMission(int winnerSide) {
 // Leaving a mission (GOG Df.exe 0x401e70, from the mission loop's end 0x40420a
 // and the Space replay 0x404ed2; GOG Df2.exe 0x464140): in single player the
 // live campaign flags become the saved ones when side 1 has won ([0x67f718]
-// == 1). Delta Force's flag-4 event pass (0x42eba0) is gated on [0x67f528],
-// network state that single player keeps at 0 (0x41e2e0), so it is not done;
-// Delta Force 2's (0x41aef0) is gated on [0x67cd34], which single player
-// sets, and runs before the flags are saved.
+// == 1). The flag-4 event pass runs first in both games: Delta Force's
+// (0x42eba0) is gated on [0x67f528], which the single-player launch sets to
+// 1 (0x4157eb / 0x422df6; 0x41e2e0 only resets it), Delta Force 2's
+// (0x41aef0) on [0x67cd34], which single player sets too.
 void Game::leaveMissionFlags() {
-    if (world_.df2Rules) script_.visitFlagged(4, *this);
+    script_.visitFlagged(4, *this);
     if (missionResult_ == kPlayerSide) savedCampaignFlags() = campaignFlags();
 }
 
