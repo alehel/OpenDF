@@ -1079,6 +1079,16 @@ bool Game::loadMission(int index) {
     player_.moves = &playerMoves_;
     foOn_ = false;     // 0x4829f0 clears [0xc23820..+0x648)
     foTarget_ = -1;    // and sets [0xc23a38] to the player
+    if (!world_.df2Rules) {
+        // GOG Df.exe: the same clear drops the dead-cam [0xc23a1c] and the
+        // jump press, then the load calls 0x42ac10(player, 0): first person
+        // with the offsets reset.
+        deadCam_ = false;
+        jumpPressed_ = false;
+        camKeyClock_ = 0;
+        camMode_ = -1;
+        setCamMode(0);
+    }
     std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
     player_.floatOrigin = floatOrigin_;
     player_.swimOrigin = swimOrigin_;
@@ -4225,10 +4235,8 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             else models_.drawTranslucent(*tm, lod, mm, false, false, frame);
         }
     // The dead player's body, seen from the orbit camera: the soldier's
-    // model posed by the death animation DF.EXE chose (0x46c920). GOG
-    // Df2.exe draws the player like anyone else in its outside views
-    // (0x44f4d0 skips him only in mode 0): the body in its current move.
-    if (outsideView() != 0 && !playerBody_.angles().empty())
+    // model posed by the death animation DF.EXE chose (0x46c920).
+    if (playerDead() && !playerBody_.angles().empty())
         if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
@@ -4238,10 +4246,12 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
                 models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()),
                                   arsenal_.df2() ? 0 : o_.faceVariant);   // +0x98 (0x4829f0 -> 0x481356)
             }
-    // DF1's outside views (0x404640 passes "first person" only for mode 0):
-    // the living player's body, posed by its move, with the held weapon
-    // (0x44cc34) as any soldier's.
-    if (!playerDead() && outsideView() != 0 && !foPlayer_ && !playerBody_.angles().empty())
+    // The outside views (GOG Df.exe 0x404640 passes "first person" only for
+    // mode 0; GOG Df2.exe 0x44f4d0 skips the player only in mode 0): the
+    // living player's body, posed by its move, with the held weapon
+    // (0x44cc34) as any soldier's. Also in a team-mate's FO inset (0x466d90
+    // renders with [0x6ba3f0] = the observer, mode 0), not in his own.
+    if (!playerDead() && (outsideView() != 0 || hideObject_ != nullptr) && !foPlayer_ && !playerBody_.angles().empty())
         if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
@@ -4675,7 +4685,7 @@ void Game::drawFoInset(const Screen& s) {
         name = o_.soldierName;
     } else {
         target = &world_.objects[size_t(foTarget_)];
-        eye = target->pos + Vec3{0, eyeUp, 0};
+        eye = target->pos + Vec3{0, target->hip + eyeUp, 0};   // its body origin (+0x24..), not its feet
         yaw = target->heading;
         pitch = target->aimPitch;
         if (target->missionIndex >= 0)
@@ -4762,7 +4772,7 @@ void Game::drawDf2FoInset(const Screen& s) {
     const float w = x1 - x0, h = y1 - y0;
     if (w < 1 || h < 1) return;
     const float eyeUp = player_.eye().y - player_.origin().y;
-    const Vec3 eye = t ? t->pos + Vec3{0, eyeUp, 0} : player_.eye();
+    const Vec3 eye = t ? t->pos + Vec3{0, t->hip + eyeUp, 0} : player_.eye();   // the target's origin, not its feet
     const float yaw = t ? t->heading : player_.yaw, pitch = t ? t->aimPitch : player_.pitch;
     const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
     const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
@@ -5241,7 +5251,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(cx + a, cy, b, t, kDf2Amber);
         hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
         hud_.rect(cx, cy + a, t, b, kDf2Amber);
-    } else if (!df2Hud_.on && !playerDead()) {
+    } else if (!df2Hud_.on && !playerDead() && outsideView() == 0) {
         // GOG Df.exe 0x402300 (nothing in an outside view, [0x6ba3ec]): with
         // the laser designator (mode 0x1b) the Crosshairs option
         // ([0x67f504]) is not looked at: the arms while its scope is up
@@ -5268,7 +5278,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (!showMap_ && df2Hud_.on && outsideView() == 0) drawDf2TargetId(s, cx, cy, 0);
     // GOG Df.exe 0x402300: the same-side mark, with the crosshairs on or
     // off; nothing outside the first-person view ([0x6ba3ec] != 0).
-    if (!showMap_ && !df2Hud_.on && !playerDead()) drawDf1TargetId(s, cx, cy, 0);
+    if (!showMap_ && !df2Hud_.on && !playerDead() && outsideView() == 0) drawDf1TargetId(s, cx, cy, 0);   // 0x402300 returns in an outside view
 
     // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
     // bright green border, ticks from r/4 to r/2 in the four directions, the
@@ -5391,7 +5401,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     }
 
     if (friendlyTags_ && !df2Hud_.on) drawFriendlyTags(s, viewProj);
-    if (binoculars_ && !playerDead()) drawBinoculars(s);
+    if (binoculars_ && !playerDead() && (df2Hud_.on || outsideView() == 0)) drawBinoculars(s);   // DF1 0x402300: first person only
     // Delta Force 2's breath bar (0x441540) while the air count is not 0, in
     // the virtual 1024x768 space: half-width w = 100 - air*100/2880 about
     // x 512, 10 high, 20 below the 3D view's top; cyan, red over 2240;

@@ -138,7 +138,7 @@ First differences from DF1:
     terrain hits make an AI noise by class (5/2/2/10/5/10 m for 1..6; GOG 0x415a60 all of 1..11: sound 3C/40/3A/3D/3A/3C/3C/37/3C/3A/3C, effect slot 5/7/9/13/8/6/5/11/5/9/5, noise 5/2/2/10/5/10/10/10/5/5/2 m);
   - **rotor loops** (GOG 0x42c2da): 502 for the gazelle, Havoc, Hind and
     Ka-29, 503 for the Black Hawk only; **whiz-by** 0x41 (0x4547a2): never for
-    hand or delay grenades, the step's start or end within 40 m on each axis;
+    hand or delay grenades in the GOG build (the CD's 0x44d146 has no such test), the step's start or end within 40 m on each axis;
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
     body pre-test and nearest-along-the-ray rule are DF1's;
