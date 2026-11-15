@@ -998,7 +998,7 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
                 // DF2.EXE 0x401f60 (GOG 0x4021de..0x4022a8): five big blasts 1 m
                 // up at the boat and 5 m to each side, the boat's yaw with each.
                 const Vec3 c = o.pos + Vec3{0, 1, 0};
-                for (const Vec3 d : {Vec3{0, 0, 0}, Vec3{5, 0, 0}, Vec3{-5, 0, 0}, Vec3{0, 0, -5}, Vec3{0, 0, 5}}) bigBlast(c + d, o.heading);
+                for (const Vec3 d : {Vec3{0, 0, 0}, Vec3{5, 0, 0}, Vec3{-5, 0, 0}, Vec3{0, 0, -5}, Vec3{0, 0, 5}}) bigBlast(c + d, o.heading, o.killer);   // owner: +0xF8
                 o.tickVel = {0, 0, 0};   // then +0x3C..+0x50 are zeroed (6 dwords)
             } else if (detonate) {
                 const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};

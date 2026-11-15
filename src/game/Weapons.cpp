@@ -1310,6 +1310,18 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     im.shooter = b.shooter;
                     im.timer = !onObject && hit.object != -1;
                     impacts_.push_back(im);
+                    // GOG Df2.exe 0x453dd2 (ground) / 0x453fae (object): after
+                    // that blast ttl = 0 and the jump to 0x454687 finds the
+                    // 0x10000000 bit still set, so 0x4546a8 queues the fuse's
+                    // burst as well (kind 1, effect 0x14, sound 0x32).
+                    if (!im.timer) {
+                        Impact burst{b.pos, -1, -1};
+                        burst.explosive = true;
+                        burst.flags = b.flags;
+                        burst.shooter = b.shooter;
+                        burst.timer = true;
+                        impacts_.push_back(burst);
+                    }
                     b.age = b.lifetime;
                 }
                 continue;

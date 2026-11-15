@@ -1047,7 +1047,7 @@ bool Game::loadMission(int index) {
     }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
-    vehicles_.bigBlast = [this](Vec3 at, float heading) { bigBlast(at, heading); };
+    vehicles_.bigBlast = [this](Vec3 at, float heading, int owner) { bigBlast(at, heading, owner); };
     vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
     wildlife_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
     wildlife_.spawnEffect = [this](int slot, Vec3 at) { spawnEffect(slot, at); };
@@ -1185,6 +1185,7 @@ bool Game::loadMission(int index) {
             arsenal_.clearMagnification();   // GOG Df2.exe 0x44e7f0
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
+            world_.df2Gog = arsenal_.df2Gog();
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
             setDf2Wind();

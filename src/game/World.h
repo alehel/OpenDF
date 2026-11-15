@@ -266,6 +266,7 @@ public:
     // Delta Force 2's rules (DF2.EXE): explosion damage (0x44d4a0), bullet
     // damage to objects (0x44bff0). Set by the game for DF2 missions.
     bool df2Rules = false;
+    bool df2Gog = false;   // Delta Force 2 rules of the GOG Df2.exe build (set with the weapon tables)
     // Delta Force 2: the terrain's fog_level (0 off); nothing is seen past
     // 2^fog_level m (0x40621d..0x406240).
     int fogLevel = 0;

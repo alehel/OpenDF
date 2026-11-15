@@ -454,7 +454,11 @@ First differences from DF1:
     mesh breaking once (obj +0x78) with GLASS_SMASH 800 and a ±20 m (±40 m
     for explosives) noise, no impact effect; the panes stay drawn (+0x78 has
     no draw reader). Not yet: the glass shards (0x414a90: min(100, area·20)
-    of 107047..107049, ai `gdeb`) and the blast's flag-2 mesh pass. The bld2
+    of 107047..107049, ai `gdeb`), the blast's flag-2 mesh pass, and the
+    staged palm trees (0x42ed40 / 0x429e40 / 0x42eae0: palmsection /
+    palmdebris pieces, sounds 0x12E / 300); the owner of a vehicle's or
+    charge's own detonate / fragment chain (0x414960) is not passed on
+    either (the boat's five big blasts take its +0xF8). The bld2
     crush (0x45cd80) takes 100 hp from people, every item-list object and
     every non-building decoration in its box. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20

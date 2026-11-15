@@ -1132,6 +1132,10 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
     WorldObject& o = objects[index];
     if (o.removed || o.dead) return {};
     if (o.item && power < o.item->damageClass) return {};
+    // Delta Force 2: an object's +0xF8 holds who damaged it last (rounds
+    // 0x453510, blasts 0x454b60), which the boat's death blasts pass on as
+    // their owner (GOG Df2.exe 0x402206..0x4022a3).
+    if (df2Rules && !o.person && killer != -1) o.killer = killer;
     if (o.person) {
         // People have ITEMS.DEF's hit points (2-4) and die at 0 (head hits'
         // multipliers are applied by the callers from the .CHR / .KSA spheres).
@@ -1274,7 +1278,8 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int own
         // husk yet) is still in the blast and fires at once (0x4533f0).
         if ((o.hp <= 0 && o.gnrcTimer <= 0 && o.detonate <= 0) || !o.model) continue;
         // DF2 0x454f52..0x454f56: an object of the owner's side is spared.
-        if (df2Rules && owner != -1 && o.side == ownerSide) continue;
+        // (The CD's 0x44d4a0 has no such test.)
+        if (df2Rules && df2Gog && owner != -1 && o.side == ownerSide) continue;
         const std::string& type = o.item ? o.item->type : std::string();
         const float h = o.model->flatRadius, v = o.model->height;
         float d;
