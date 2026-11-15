@@ -78,7 +78,12 @@ struct CollisionBox {
     // Volume type (+0x00): 1 box, 3 upright cylinder (centre +0x08..+0x10,
     // radius +0x18); others are ignored by DF.EXE's mover test (0x437a28).
     int type = 1;
-    float cx = 0, cz = 0, r = 0;   // cylinder centre (OpenDF x, z) and radius
+    float cx = 0, cz = 0, r = 0;   // centre +0x08 / +0x0C (OpenDF x, z) and the cylinder's radius
+    float cy = 0;                  // centre +0x10 (height, OpenDF y)
+    // v5: the mesh that owns the volume (each mesh the next +0x1C volumes,
+    // by running total); -1 none (DF.EXE's mover test 0x4889c0 then never
+    // reaches it).
+    int mesh = -1;
 };
 
 // Delta Force 2 (v8) collision volume as DF2.EXE's push-out 0x440f80 reads
@@ -100,6 +105,9 @@ struct ModelLod {
     bool animated = false;
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
+    // v5: per mesh its box (+0x40..+0x54), OpenDF axes: min x, y, z, max x,
+    // y, z; GOG Df.exe's mover test 0x4889c0 tests it before the volumes.
+    std::vector<std::array<float, 6>> meshBoxes;
     std::vector<MeshVolumes> meshVolumes;  // v8 LOD 0: per mesh, the plane volumes (DF2.EXE 0x440f80)
     std::vector<std::vector<HitFace>> hitMeshes;   // LOD 0 only: every face per mesh (hidden ones too)
     // Hardpoints (LOD header +0xA0, 12 bytes: i32 x, y, z in 16.16 m),

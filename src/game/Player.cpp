@@ -19,8 +19,6 @@ int moveDirection(float forward, float strafe) {
 }
 
 // DF.EXE values (player controller 0x436fd0, physics 0x436158):
-constexpr float kRadius = 0.75f;          // collision box half-width (0x437a28)
-constexpr float kHeight = 1.75f;          // box from -0.75 to +1.0 m around the origin
 constexpr float kStep = 0.5f;             // highest floor stepped onto (0x435dc0, 0x8000)
 constexpr float kGravity = 0xb2 * 3600.f / 65536.f;   // 0xb2 per tick², 9.78 m/s²
 constexpr float kJumpSpeed = 0x1111 * 60.f / 65536.f; // 4.0 m/s
@@ -231,7 +229,7 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
     }
 
     feet = feet + delta;
-    feet = world.resolve(feet, kRadius, kHeight, kStep);
+    feet = world.resolve(feet, landOrigin());
 
     // Jump (CD 0x4375de / 0x437730, GOG 0x488200): 4 m/s up ([0xc2382c]
     // 0x1111) and 1/16 m at once; taken above.
@@ -311,9 +309,10 @@ void Player::updateInWater(float dt, const PlayerInput& in, const World& world, 
         if (vert > 0 && originY_ + kSwimDepth > water) vert = 0;
     }
     Vec3 f{feet.x + horiz.x * dt, originY_ - poseOrigin, feet.z + horiz.z * dt};
-    f = world.resolve(f, kRadius, kHeight, kStep);
+    f = world.resolve(f, poseOrigin);
     feet.x = f.x;
     feet.z = f.z;
+    originY_ = f.y + poseOrigin;   // 0x4889c0 also pushes the origin up or down
     originY_ += vert * dt;
     const float ground = world.groundHeight({feet.x, originY_ - poseOrigin, feet.z}, kStep, &platform_);
     if (originY_ - poseOrigin < ground) {

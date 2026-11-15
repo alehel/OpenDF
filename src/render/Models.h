@@ -45,6 +45,7 @@ struct GpuModel {
     std::vector<bool> textureNoGrade;  // see Model3diTexture::noGrade
     std::vector<Lod> lods;
     std::vector<CollisionBox> collision;   // LOD 0 collision volumes (may be empty)
+    std::vector<std::array<float, 6>> meshBoxes;   // v5 LOD 0 per mesh box (min xyz, max xyz; GOG Df.exe 0x4889c0)
     std::vector<MeshVolumes> meshVolumes;  // v8 LOD 0 plane volumes per mesh (DF2.EXE 0x440f80)
     bool hasVolumes = false;               // any v8 LOD 0 volume (0x441094: LOD +0xB8 != 0)
     std::vector<std::vector<HitFace>> hitMeshes;   // LOD 0 faces per mesh, for rounds (0x44e918)

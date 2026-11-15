@@ -864,9 +864,10 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 // the same +-0.75 m mover box), on odd ticks only (0x436cbe);
                 // DF2 pushes people out of the volumes in World::personTick.
                 Vec3 feet{next.x, o.base, next.z};
-                if (ticks_ & 1) feet = world.resolve(feet, 0.75f, 1.75f, 0.5f);
+                if (ticks_ & 1) feet = world.resolve(feet, o.hip);
                 o.pos.x = feet.x;
                 o.pos.z = feet.z;
+                o.base = feet.y;   // the push can move the origin up or down (0x4889c0)
                 const float ext = world.extent();
                 o.pos.x -= std::floor(o.pos.x / ext) * ext;
                 o.pos.z -= std::floor(o.pos.z / ext) * ext;

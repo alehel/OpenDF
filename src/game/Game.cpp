@@ -1519,7 +1519,7 @@ void Game::touchPickups() {
             const Vec3 l{c * dd.x - sn * dd.z, dd.y, sn * dd.x + c * dd.z};
             bool touch = false;
             for (const auto& b : o.model->collision) {
-                if (b.type != 1 && b.type != 3) continue;
+                if ((b.type != 1 && b.type != 3) || b.mesh < 0) continue;   // 0x4889c0: only the meshes' volumes (+0x1C)
                 if (!(l.x + 0.75f >= b.min[0] && l.x - 0.75f <= b.max[0] && l.z + 0.75f >= b.min[2] && l.z - 0.75f <= b.max[2] &&
                       l.y + 1.0f >= b.min[1] && l.y - 0.75f <= b.max[1]))
                     continue;
