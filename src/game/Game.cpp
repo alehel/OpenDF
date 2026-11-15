@@ -3708,16 +3708,22 @@ void Game::drawTopBar(const Screen& s) {
         hud_.rect(X1, Y0, t, Y1 - Y0 + t, kHudGreen);
     }
 
-    // Weapon name (0x483444) at (75, 10); red while reloading or with no
-    // ammunition left at all (0x44b0a0 / 0x44b164).
+    // Weapon name (0x483444) at (75, 10), its colour from GOG Df.exe 0x4843b0
+    // (jump table 0x484380 on the fire type): guns red while reloading
+    // ([0xc23834]) or with no spares, magazine or chambered round; types
+    // 2 / 6 / 7 / 9 / 11 red while the refire time runs ([0xc23830]) or with
+    // no spares and nothing chambered (the magazine is not looked at); 8
+    // never; 10 with no fire missions left ([0xc23b78]); other types no name.
     const ModeDef& md = arsenal_.mode();
-    // Red (0x44b074): types 7 / 9 also while the cooldown runs; 8 never; 10
-    // with no fire missions left.
-    const bool outOfAmmo = md.type == 8 ? false
-                         : md.type == 10 ? fireMissions_ <= 0
-                         : (arsenal_.spares() <= 0 && arsenal_.rounds() <= 0 && !arsenal_.chambered()) ||
-                               ((md.type == 7 || md.type == 9) && arsenal_.firing());
-    hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), arsenal_.reloading() || outOfAmmo ? kHudRed : kHudGreen, ts);
+    bool nameRed = false, nameShown = true;
+    switch (md.type) {
+    case 1: nameRed = arsenal_.reloading() || (arsenal_.spares() == 0 && arsenal_.rounds() == 0 && !arsenal_.chambered()); break;
+    case 2: case 6: case 7: case 9: case 11: nameRed = arsenal_.firing() || (arsenal_.spares() == 0 && !arsenal_.chambered()); break;
+    case 8: break;
+    case 10: nameRed = fireMissions_ == 0; break;
+    default: nameShown = false; break;
+    }
+    if (nameShown) hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), nameRed ? kHudRed : kHudGreen, ts);
 
     // Ammunition (0x483447, by fire type, jump table 0x483418), y 28.75-47.5:
     // guns: spare magazines with the magazine glyph (font character 1) at
@@ -4016,13 +4022,26 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(cx + a, cy, b, t, kDf2Amber);
         hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
         hud_.rect(cx, cy + a, t, b, kDf2Amber);
-    } else if (crosshair_) {
-        // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to the
-        // left/top and 5..11 to the right/bottom of the centre.
-        hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
-        hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
-        hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
-        hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
+    } else if (!df2Hud_.on && !playerDead()) {
+        // GOG Df.exe 0x402300 (nothing in an outside view, [0x6ba3ec]): with
+        // the laser designator (mode 0x1b) the Crosshairs option
+        // ([0x67f504]) is not looked at: the arms while its scope is up
+        // (0x484740), else STRMISC15 "No Target" blinking (tick bit 0x10,
+        // [0x6e471c]) centred at (512, 370) in [0x67db5c] (0x4026b4).
+        const bool designator = arsenal_.modeIndex() == 0x1b;
+        if (designator && !scopeShown()) {
+            if (ticks_ & 0x10) {
+                const std::string nt = df2Text("Misc", "STRMISC15", "No Target");
+                hud_.text(cx - hud_.textWidth(nt, s.text()) / 2, cy - s.vy(14), nt, kHudBright, s.text());
+            }
+        } else if (designator || crosshair_) {
+            // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to
+            // the left/top and 5..11 to the right/bottom of the centre.
+            hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
+            hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
+            hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
+            hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
+        }
     }
     // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
     // crosshairs on or off; none in an outside view (returns after the pick

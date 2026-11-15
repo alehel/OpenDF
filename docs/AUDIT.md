@@ -13,7 +13,7 @@ approximation), **todo** = not checked yet.
 | T1 | Bars, borders, dividers | fixed | DF.EXE 0x404650/0x485300: bars H/8 = 60 each (was 59/60), borders at y 0/59/420/479 and both side edges, dividers x 350 / 431, all one pixel in HUD green |
 | T2 | HUD colours | fixed | were eyeballed; now DF.EXE's RGB table (0x4027b1): text/outline (1,129,1), bright (1,230,1), dark (9,51,9), blue (17,60,253), red, white |
 | T3 | Stance icon | fixed | POS%i of the display mode, 1:1, centred x 50, top 3.75 (0x484c74, 0x4846f8) |
-| T4 | Weapon name | fixed | (75, 10); red while reloading or out of ammunition (0x44b0a0) |
+| T4 | Weapon name | fixed | (75, 10); colour by fire type (GOG Df.exe 0x4843b0, jump table 0x484380): guns red while reloading ([0xc23834]) or with no spares, magazine or chambered round; launchers, knife, claymore, satchel, grenade (2/6/7/9/11) red while the refire time runs ([0xc23830]) or with no spares and nothing chambered; detonator never; designator with no fire missions left; other types no name (was: reload red for all, cooldown only for 7/9, the magazine tested for every type) |
 | T5 | Magazine / rounds boxes, magazine icon | fixed | boxes 75-135 / 140-200; the icon is font character 1 (was a guessed line); boxes have no fill, 2-pixel dark scanlines, HUD-green outline (0x401de4) |
 | T6 | "Round chambered" bar | fixed | x 205-210, solid when chambered, empty box otherwise (0x483558); chambered = rounds > 0 and not reloading (inferred) |
 | T7 | Weapon silhouette | fixed | WEAP%i of the display mode, 1:1, right edge x 325, top 16.25 (0x484ae8) |
@@ -33,7 +33,7 @@ approximation), **todo** = not checked yet.
 
 | # | Item | Status | Notes |
 |---|---|---|---|
-| V1 | Crosshair | fixed | bright green one-pixel arms 4..10 / 5..11 from the centre (0x401f94) |
+| V1 | Crosshair | fixed | bright green one-pixel arms 4..10 / 5..11 from the centre (0x401f94); none in an outside view (GOG Df.exe 0x402300, [0x6ba3ec]). With the laser designator (mode 0x1b) the Crosshairs option is ignored: the arms while its scope is up (0x484740), else STRMISC15 "No Target" blinking (tick bit 0x10) centred at (512, 370) in bright green (0x4026b4) |
 | V1b | Break X (team-mate identification) | fixed | GOG Df.exe 0x402300 (main view) and 0x466090 (scope, 0x46662c): the pick 0x45f740 from the player's origin 0.75 m up along yaw and pitch finds the first person of the player's side (not the player, not +0x6c & 2) between 1/256 m and the centre depth + 2 m and within 2 m of the ray (0x477670's approximate length); unless attributes 0x2000 (Break X off), four red diagonals from 15 to 5 (virtual 1024x768) off the centre and the AI's name centred at y 339; in the scope inset diagonals r/2 to r/4 and the name at the inset centre. With the crosshairs on or off; none outside the first-person view ([0x6ba3ec]). Was not drawn |
 | V2 | Bullet impacts (puffs) | fixed | invented puffs replaced by DF.EXE effect objects: see X6 |
 | V3 | Gun bob, reload lowering, recoil push, muzzle flash time | fixed | see V2b |
