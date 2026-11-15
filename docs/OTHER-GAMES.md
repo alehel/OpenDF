@@ -589,7 +589,13 @@ First differences from DF1:
     columns from view top + item y0 + W·120/1024, 12W/640 apart),
     the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
     header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
-    as spelt; each header only when its list has an entry, 0x448b10), binocular texts in orange at the view's centre − 15; the
+    as spelt; each header only when its list has an entry, 0x448b10),
+    the audio macros list (A, AudioMacros; GOG 0x4478f0 / CD 0x441410):
+    the panel (128, 200)-(896, 560), "%i - %s" lines of "Male / Female
+    Audio Macros" STRMAM_/STRFAM_%02i at (200, 240 + 30k); while it is up
+    the digits 1..9, 0 send macro 1..10 (a network message only, 0x407160)
+    and close it instead of selecting a weapon (0x421940), Escape closes it
+    first (0x41f150 case 0x11), binocular texts in orange at the view's centre − 15; the
     help (F1; GOG Df2.exe 0x41e5d0 at the mission start, drawn by
     0x41e620): the action table's 0x200 rows with the soldier's bindings,
     rows without a key or mouse button and category 11 left out, sorted by

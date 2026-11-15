@@ -42,6 +42,9 @@ enum class Action {
     // 0x1e) / tab (Tab, id 0x1f) (GOG Df.exe 0x477d40); GOG Df2.exe's
     // Forward Observer fo (F11) / tab (Tab).
     FoCamera, FoNext,
+    // Delta Force 2's audio macros list (AudioMacros, A; GOG Df2.exe
+    // 0x41f150 case 0x20, CD 0x41b1e0 case 0x2b).
+    AudioMacros,
     Count
 };
 

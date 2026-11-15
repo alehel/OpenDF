@@ -883,6 +883,12 @@ private:
     int wheelDelta_ = 0;                  // DF1 WM_MOUSEWHEEL remainder, 120 per notch (GOG [0xd09364])
     bool jumpPressed_ = false;            // DF1: a move_jump press since the last player update (GOG Df.exe [0xc23a00] & 0x400)
     bool oldMessages_ = false;            // [0x66f974]
+    // Delta Force 2's audio macros list ([0x67d3ac]; CD [0x65364c]): drawn
+    // by 0x4478f0 (CD 0x441410); while it is up the keys 1..9, 0 send
+    // macro 1..10 (0x407160: network message 0x43, nothing heard by the
+    // sender) and close it (0x421940 / CD 0x41d000).
+    bool audioMacros_ = false;
+    void drawDf2AudioMacros(const Screen& s);
     // "End Mission? (Y/N)": DF.EXE [0x66f95c], DF2.EXE [0x65362c]. Opened by
     // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
     // Escape or Pause; Y leaves the mission. The game keeps running.
@@ -3624,6 +3630,16 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             return;
         }
         if (c == keyOf("STRMISC10", 'N')) { closeQuitBox(); return; }
+    } else if (df2Hud_.on && audioMacros_) {
+        // GOG Df2.exe 0x421940 (CD 0x41d000), after the End Mission box:
+        // the main-row digits '1'..'9', '0' send macro 1..10 (0x407160, a
+        // network message only) and close the list; other keys are not
+        // taken here and go on to the commands (the end panel's Enter /
+        // Space are not reached meanwhile).
+        if (k.keysym.sym >= SDLK_0 && k.keysym.sym <= SDLK_9) {
+            audioMacros_ = false;
+            return;
+        }
     } else if (missionResult_ >= 0) {
         // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
         if (k.keysym.sym == SDLK_RETURN || k.keysym.sym == SDLK_KP_ENTER) {
@@ -3734,6 +3750,9 @@ void Game::runAction(Action act, bool reverse) {
         // pause, old messages, the box, [0x7655fc], the command map); with
         // none open it opens "End Mission? (Y/N)" (0x42e548 / 0x41b5d1).
         if (paused_) { paused_ = false; break; }
+        // GOG Df2.exe 0x41f150 case 0x11 (CD 0x41b1e0): the audio macros
+        // list closes before the old messages.
+        if (df2Hud_.on && audioMacros_) { audioMacros_ = false; break; }
         if (oldMessages_) { oldMessages_ = false; break; }
         if (quitBox_) { closeQuitBox(); break; }
         // DF2 0x41b59d: with [0x7655fc] set (F9 / F10), Escape only clears it.
@@ -3812,6 +3831,7 @@ void Game::runAction(Action act, bool reverse) {
     case Action::Briefing: briefingShown_ = !briefingShown_; break;
     case Action::Help: helpShown_ = !helpShown_; break;
     case Action::OldMessages: oldMessages_ = !oldMessages_; break;
+    case Action::AudioMacros: if (df2Hud_.on) audioMacros_ = !audioMacros_; break;   // GOG Df2.exe 0x41f150 case 0x20
     case Action::ShowFriendly:
         if (df2Hud_.on) {
             // GOG Df2.exe 0x41f150 command 0x28 (case 0x1d): 0 -> 1 -> 2 -> 0,
@@ -5495,6 +5515,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // frame 0x48f9b0 runs this pass too), before the overlays.
     if (!df2Hud_.on && gpsShown_) drawGpsInset(s);
     if (oldMessages_) drawOldMessages(s);
+    if (df2Hud_.on && audioMacros_) drawDf2AudioMacros(s);   // GOG Df2.exe 0x448fd0: after 0x448e40
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
@@ -7599,6 +7620,25 @@ void Game::drawQuitBox(const Screen& s) {
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     const char* t = "End Mission? (Y/N)";
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+// GOG Df2.exe 0x4478f0 (CD 0x441410): the panel (128, 200)-(896, 560),
+// darkened and outlined; ten lines "%i - %s" (the tenth "0 - %s") of
+// DF2GAME.BIN "Male Audio Macros" STRMAM_%02i or, for a female soldier
+// ([0x67cc14]: profile face +0x278 > 9), "Female Audio Macros"
+// STRFAM_%02i (0x4cb6d4 with its fourth character replaced), at (200,
+// 240 + 30k) in [0x67d37c].
+void Game::drawDf2AudioMacros(const Screen& s) {
+    df2Panel(s, 128, 200, 896, 560);
+    const char* section = o_.female ? "Female Audio Macros" : "Male Audio Macros";
+    for (int k = 0; k < 10; ++k) {
+        char key[16], line[160];
+        std::snprintf(key, sizeof key, "STR%cAM_%02d", o_.female ? 'F' : 'M', k + 1);
+        const std::string t = df2Text(section, key, key);
+        if (k == 9) std::snprintf(line, sizeof line, "0 - %s", t.c_str());
+        else std::snprintf(line, sizeof line, "%d - %s", k + 1, t.c_str());
+        hud_.text(s.vx(200), s.vy(float(240 + 30 * k)), line, kDf2Amber, s.text());
+    }
 }
 
 void Game::drawOldMessages(const Screen& s) {
