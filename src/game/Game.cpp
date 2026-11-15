@@ -2475,8 +2475,7 @@ void Game::hurtPlayer(int amount, int deathType, Vec3 from, int part) {
 }
 
 Vec3 Game::deadBodyOrigin() const {
-    const ChrFrame* f = playerBody_.currentFrame(playerChr_);
-    return player_.feet + deadShift_ + Vec3{0, f ? Chr::originHeight(*f) : 0.f, 0};
+    return player_.feet + deadShift_ + Vec3{0, playerBody_.originHeight(playerChr_), 0};
 }
 
 // Dead (0x404104 -> 0x481224): third-person orbit around the body, yaw
@@ -4307,8 +4306,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
                 body.model = bm;
-                const ChrFrame* f = playerBody_.currentFrame(playerChr_);
-                body.pos = player_.inWater() ? player_.origin() : player_.feet + Vec3{0, f ? Chr::originHeight(*f) : 0.f, 0};
+                body.pos = player_.inWater() ? player_.origin() : player_.feet + Vec3{0, playerBody_.originHeight(playerChr_), 0};
                 body.heading = player_.yaw;
                 const Mat4 m = body.matrix(world_.nearest(body.pos, eye));
                 const auto pose = personPose(*bm, 0, playerChr_, playerBody_.angles(), player_.pitch);
