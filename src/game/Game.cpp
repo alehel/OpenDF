@@ -426,7 +426,19 @@ private:
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
     void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
-    void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
+    // GOG Df.exe 0x4601a0 / Df2.exe 0x4184c0: decorations (searchlights),
+    // organics and items of the team, each with an AI block (0x45ff20 / 0x4185b0).
+    void aiProperty(int team, int subtype, int value) override {
+        ai_.property(world_, team, subtype, value);
+        vehicles_.property(world_, team, subtype, value);
+        if (team == 0) return;
+        for (auto& l : lights_) {
+            if (world_.objects[size_t(l.object)].team != team) continue;
+            if (subtype == 5) l.alert = 2;
+            else if (subtype == 6) l.alert = 0;
+            else if (subtype == 9) l.perception = float((value << 16) / 100) / 65536.f;
+        }
+    }
     void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
     void setTeamSide(int team, int side) override {
         if (team == 0) return;   // 0x4133c5: team 0 is left alone
@@ -6623,6 +6635,18 @@ int Game::run() {
                         int team = 0, kmh = 0, n = 0;
                         if (std::sscanf(p, "%d:%d%n", &team, &kmh, &n) != 2) break;
                         ai_.teamSpeed(team, kmh);
+                        p += n;
+                        if (*p == ',') ++p;
+                    }
+                }
+                // Testing: OPENDF_AIPROP="TEAM:SUB:VALUE[,...]" applies the
+                // script's AI-attribute action (action 3) at tick 1.
+                if (static bool once = false; !once && std::getenv("OPENDF_AIPROP")) {
+                    once = true;
+                    for (const char* p = std::getenv("OPENDF_AIPROP"); p && *p;) {
+                        int team = 0, sub = 0, val = 0, n = 0;
+                        if (std::sscanf(p, "%d:%d:%d%n", &team, &sub, &val, &n) != 3) break;
+                        aiProperty(team, sub, val);
                         p += n;
                         if (*p == ',') ++p;
                     }

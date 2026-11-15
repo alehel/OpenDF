@@ -89,6 +89,8 @@ public:
     void markSpotted(int a, int b) {
         if (a >= 0 && a < 64 && b >= 0 && b < 64) spotted_[size_t(a)] |= 1ull << b;
     }
+    // GOG Df.exe 0x44a3e0: the team's alert word = 2 (vehicles seeing a dead friend).
+    void alertTeamOf(int team) { alertTeam(team); }
     // Called when someone is hurt (0x44f218): an AI victim becomes alert.
     void hurt(World& world, int object);
 
@@ -169,7 +171,15 @@ private:
     int walkMove(const World& world, const Person& p) const;
     float headingTo(Vec3 from, Vec3 to) const;
     Person* byObject(int object);
-    uint32_t rnd() { return uint32_t(rng_() & 0x7fff) * 2; }   // 0x435db4: 0..0xfffe
+    // GOG Df.exe 0x477860 (called by the soldier code, e.g. 0x45c3a0,
+    // 0x45dab0; Df2.exe 0x41ac40 is the same): x = rol(x,11) + x, x =
+    // rol(x,4) ^ 1, 16 uniform bits (the CD build's 0x435db4 gave
+    // (rand & 0x7fff) * 2). The EXEs share one state; here the AI has its own.
+    uint32_t rnd() {
+        rng_ = ((rng_ << 11) | (rng_ >> 21)) + rng_;
+        rng_ = ((rng_ << 4) | (rng_ >> 28)) ^ 1;
+        return rng_ & 0xFFFF;
+    }
 
     const Mission* mission_ = nullptr;
     std::vector<Person> people_;
@@ -181,7 +191,7 @@ private:
     std::array<int, 64> teamSpeed_{};
     int ticks_ = 0;
     bool playerFired_ = false;
-    std::mt19937 rng_{1998};
+    uint32_t rng_ = 0x5FC;
 };
 
 } // namespace df

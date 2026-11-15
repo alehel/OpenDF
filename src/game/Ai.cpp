@@ -79,7 +79,9 @@ void AiSystem::init(World& world, const Mission& mission) {
         p.think = 1 + stagger % 60;
         stagger += 11;
         p.lastHp = o.hp;
-        if (p.alert == 2 && o.team >= 0 && o.team < 64) teamAlert_[size_t(o.team)] = 2;
+        // An alert byte of 2 from the record does not alert the team: the
+        // team word is written only by GOG Df.exe 0x44a3e0 (Df2.exe 0x4045c0),
+        // never at load (0x449710 / 0x403790).
         o.weaponMode = p.weapon;
         people_.push_back(p);
         world.requestMove(o, idleMove(world, p));
@@ -387,6 +389,13 @@ void AiSystem::patrol(World& world, Person& p) {
                 p.think = 16;
                 return;
             }
+        }
+        // GOG Df.exe 0x45b400: the next point is looked up again (0x45c6a0)
+        // and the heading set toward it before the 8-tick think. (Delta Force
+        // 2's person walker is not located in Df2.exe yet: left as it was.)
+        if (const MissionObject* nx = df2 ? nullptr : mission_->inGroup(2, path.points[size_t(p.waypoint)])) {
+            const Vec3 nat{std::fmod(std::fmod(nx->x, ext) + ext, ext), 0, std::fmod(std::fmod(-nx->y, ext) + ext, ext)};
+            o.heading = headingTo(o.pos, world.nearest(nat, o.pos));
         }
         world.requestMove(o, walkMove(world, p));
         p.think = 8;
@@ -929,7 +938,10 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         case 2: if (!value) p.flags &= ~2u; else p.flags |= 2; break;
         case 3: if (!value) p.flags &= ~0x10u; else p.flags |= 0x10; break;
         case 4: if (!value) p.flags &= ~0x20u; else p.flags |= 0x20; break;
-        case 5: p.alert = 2; alertTeam(team); break;
+        // 5/6 set the live alert byte (GOG Df.exe 0x45ff20 ai+0x9c, Df2.exe
+        // 0x4185b0 ai+0xb4) to 2 / 0; the team's alert word is not touched
+        // here (DF2 sets it after the loop, below).
+        case 5: p.alert = 2; break;
         case 6: p.alert = 0; break;
         case 7: p.fov = float(value); break;
         case 8: if (value > 0) p.accuracy = float(value); break;
@@ -949,6 +961,15 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
             break;
         default: break;
         }
+    }
+    // Delta Force 2's action (GOG Df2.exe 0x4184c0): after the members,
+    // sub 5 sets the team's alert word (0x4045c0) and 6 clears it (0x4045a0),
+    // the word the "team alerted" condition reads (0x41af30). Delta Force's
+    // 0x4601a0 does neither: there only a member that really reacts (0x44a3e0
+    // from 0x45e280 / 0x45fd90 / 0x464c50) alerts the team.
+    if (df2 && team >= 0 && team < 64) {
+        if (subtype == 5) teamAlert_[size_t(team)] = 2;
+        else if (subtype == 6) teamAlert_[size_t(team)] = 0;
     }
 }
 

@@ -43,6 +43,10 @@ public:
     }
     // Script "follow path" for vehicles (0x46bbe8).
     void followPath(World& world, int team, int path);
+    // Script "AI attribute" (action 3) for the team's vehicles: GOG Df.exe
+    // 0x4601a0 / Df2.exe 0x4184c0 call 0x45ff20 / 0x4185b0 for every object
+    // of the team with an AI block, vehicles and helicopters included.
+    void property(const World& world, int team, int subtype, int value);
 
 private:
     // Delta Force 2's movers (ITEMS.DEF move_function): herc flies level at its
@@ -68,9 +72,7 @@ private:
         float vz = 0;             // m per tick
         float rotor = 0;          // rotor speed, binary angle per tick
         int mode = 1;             // 2 path, 1 hover, 0 land
-        bool alerted = false;
-        Vec3 home{0, 0, 0};
-        bool hasHome = false;
+        Vec3 home{0, 0, 0};       // ai+0x54..0x5c: the load position, then each one-way path end
         float bank = 0, yawRate = 0;
         float floorHeight = 0;
         int gunTarget = -1;       // ai+0x44: world object, -3 the player
@@ -79,7 +81,9 @@ private:
         bool seen = false, deadSeen = false;   // ai+0x24 0x80 / 0x40
         int losTimer = 0, giveUp = 0;          // ai+0x40, ai+0x38 (thinks)
         float perception = 1, fovHalf = 0;     // ai+0x74, ai+0x98 (radians)
-        int alert = 0;                         // ai+0x9C
+        int alert = 0;                         // ai+0x9C, live: 2 alerted (script 5, a dead friend seen), 0 relaxed (script 6)
+        bool silent = false;                   // ai+0x25 bit 0 (script 14)
+        int accuracy = 0;                      // script 8 (DF2: ai+0x80, aimScale)
         // Door gun relative to the body in DF.EXE's sense (radians; yaw
         // anticlockwise from the nose, pitch up +): current +0xC4/+0xC8 and
         // target +0xCC/+0xD0.
@@ -109,11 +113,20 @@ private:
     bool targetAlive(const World& world, int t) const;
     AiSystem::PlayerView player_;
     bool pathStep(World& world, AiSystem& ai, Vehicle& v);
-    uint32_t rnd() { return uint32_t(rng_() & 0x7fff) * 2; }
+    float homeDist(const World& world, const Vehicle& v) const;
+    // GOG Df.exe 0x477860 (Df2.exe 0x41ac40 is the same): x = rol(x,11) + x,
+    // x = rol(x,4) ^ 1, 16 uniform bits. The EXEs share one state with every
+    // other caller (reseeded to 0x5FC by blasts, 0x477850); here the vehicles
+    // keep their own, seeded the same.
+    uint32_t rnd() {
+        rng_ = ((rng_ << 11) | (rng_ >> 21)) + rng_;
+        rng_ = ((rng_ << 4) | (rng_ >> 28)) ^ 1;
+        return rng_ & 0xFFFF;
+    }
 
     const Mission* mission_ = nullptr;
     std::vector<Vehicle> vehicles_;
-    std::mt19937 rng_{1998};
+    uint32_t rng_ = 0x5FC;
 };
 
 } // namespace df

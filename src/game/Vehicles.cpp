@@ -45,7 +45,8 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         v.waypoint = rec[0x4A];
         v.targetHeading = o.heading;
         v.lastHp = o.hp;
-        v.alerted = rec[0x42] == 2;
+        // GOG Df.exe 0x449710 (0x449b24..0x449b36): home = the load position.
+        v.home = o.pos;
         // The AI block soldiers use too (0x440109): perception +0x24 (%),
         // field of view +0x38 (degrees; half angle in 1/256 turns), alert +0x42.
         v.perception = (mo.raw[0x24 / 4] > 0 ? float(mo.raw[0x24 / 4]) : 100.f) / 100.f;
@@ -131,7 +132,7 @@ bool VehicleSystem::pathStep(World& world, AiSystem& ai, Vehicle& v) {
     const MissionObject* wp = mission_->inGroup(2, path.points[size_t(v.waypoint)]);
     if (!wp) return false;
     const float ext = world.extent();
-    const Vec3 at = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos);
+    Vec3 at = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos);
     float radius = float(wp->raw[7]);
     if (radius <= 0) radius = wp->type == kWaypointB ? 1.f : 0.5f;
     const float dx = std::abs(at.x - o.pos.x), dz = std::abs(at.z - o.pos.z);
@@ -144,10 +145,15 @@ bool VehicleSystem::pathStep(World& world, AiSystem& ai, Vehicle& v) {
                 v.pathMode = 0;
                 v.path = 0;
                 v.stopped = true;
-                if (!v.hasHome) { v.home = o.pos; v.hasHome = true; }   // 0x47c717
+                v.home = o.pos;   // GOG Df.exe 0x450c26..0x450c2c: every one-way path end
                 return false;
             }
         }
+        // The next point is looked up again (GOG Df.exe 0x450ae0, 0x453f30;
+        // Df2.exe 0x42db20, 0x42f030 call 0x45c6a0 / 0x4033d0 once more) and
+        // the heading is set toward it, not the point just reached.
+        if (const MissionObject* nx = mission_->inGroup(2, path.points[size_t(v.waypoint)]))
+            at = world.nearest({std::fmod(std::fmod(nx->x, ext) + ext, ext), 0, std::fmod(std::fmod(-nx->y, ext) + ext, ext)}, o.pos);
     }
     v.targetHeading = std::atan2(at.x - o.pos.x, -(at.z - o.pos.z));
     return true;
@@ -263,7 +269,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
         if (!v.dead) heloTargeting(world, ai, v);
         else v.gunTarget = -1;   // the dead think clears the target (the gun fires until then)
         // Tail rotor (0x47cb4b): above 2 hits a smoke puff at hardpoint 2
-        // every think, and one more hit with chance 1/4 up to 17.
+        // every think, and one more hit with chance 1/8 up to 17 (GOG 0x45109c).
         if (!v.dead && o.tailHits > 2) {
             if (smoke && o.model && o.model->points.size() > 2) {
                 const auto& p = o.model->points[2];
@@ -296,19 +302,20 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h -= 3 * kPi / 8; }
             else { v.targetSpeed = 5; v.mode = 1; }
             v.targetHeading = h;
-        } else if (!v.dead && (v.flags & 2) && v.hasHome) {
-            // Back to the point where the path ended (0x47c4f0).
+        } else if (!v.dead && (v.flags & 2) && homeDist(world, v) > 4.f) {
+            // Back home (GOG Df.exe 0x4509f0): the load position or the latest
+            // one-way path end; within 4 m (0x40000) it returns 0 and the
+            // idle branch below decides.
             const Vec3 d = world.nearest(v.home, o.pos) - o.pos;
-            const float dist = std::sqrt(d.x * d.x + d.z * d.z);
+            const float dist = homeDist(world, v);
             v.targetHeading = std::atan2(d.x, -d.z);
             if (dist > 80) v.targetSpeed = 15, v.mode = 2;
             else if (dist > 30) v.targetSpeed = 5, v.mode = 2;
-            else if (dist > 4) v.targetSpeed = 2.5f, v.mode = 1;
-            else v.targetSpeed = 0, v.mode = 0;
+            else v.targetSpeed = 2.5f, v.mode = 1;
         } else {
             v.targetSpeed = 0;
-            v.mode = (v.alerted || std::abs(v.speed) >= 0x400 / 65536.f * kTicks) ? 1 : 0;
-            if (v.mode == 1 && v.stopped && !v.alerted) v.mode = 0;
+            v.mode = (v.alert == 2 || std::abs(v.speed) >= 0x400 / 65536.f * kTicks) ? 1 : 0;
+            if (v.mode == 1 && v.stopped && v.alert != 2) v.mode = 0;
         }
         // The floor: the ground around and ahead (1, 2, 4 s at this speed).
         const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
@@ -329,7 +336,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             // reproduced here yet).
             const bool liftNow = v.rotor >= float(0x14000000);
             const bool idle = std::abs(v.speed) < 0x400 / 65536.f * kTicks;
-            const bool busy = world.df2Rules || v.mode != 0 || v.gunTarget != -1 || v.alerted ||
+            const bool busy = world.df2Rules || v.mode != 0 || v.gunTarget != -1 || v.alert == 2 ||
                               (idle && o.pos.y - fl > 8.f) || (liftNow && o.pos.y > ground + rest);
             if (busy) v.rotor = std::min(v.rotor + float(0x800000), float(0x1b000000));
             else if (v.rotor > float(0x700000)) v.rotor -= float(0x400000);
@@ -401,6 +408,13 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     o.pitch = -v.speed * 256.f * 65536.f / 4294967296.f * turn;
 }
 
+// 2D distance to home (0x4509f0: 0x477670 of |dx|, |dy|).
+float VehicleSystem::homeDist(const World& world, const Vehicle& v) const {
+    const WorldObject& o = world.objects[size_t(v.object)];
+    const Vec3 d = world.nearest(v.home, o.pos) - o.pos;
+    return std::sqrt(d.x * d.x + d.z * d.z);
+}
+
 Vec3 VehicleSystem::targetPosition(const World& world, int t) const {
     return t == -3 ? player_.origin : world.objects[size_t(t)].pos;
 }
@@ -430,8 +444,9 @@ Vec3 VehicleSystem::gunPoint(const World& world, const Vehicle& v) const {
 // with record flag 1 none. A target seen dead is dropped during a pause;
 // with flag 2 one more than 100 m (2D) from where the helicopter took it is
 // given up for 60 thinks. Without a target the soldiers' scan (0x46a804,
-// from 1 m above the hub) is drawn against rand: score x perception x2
-// (hard, side 2), / 4 when relaxed, x perception again. With a target the
+// GOG Df.exe 0x45e280, from 1 m above the hub) is drawn against rand
+// (0x450c40): score x perception x2 (hard, side 2), / 4 when relaxed; taking
+// a target marks the team spotted (0x42edd0). With a target the
 // sight line is re-checked about every 192 ticks; only while it holds is the
 // last known position refreshed (and a dead target noticed). The gun's aim
 // is that position from the gun point, relative to the body, clamped to the
@@ -451,15 +466,31 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
     }
     if (v.gunTarget == -1) {
         if (v.giveUp > 0) { --v.giveUp; return; }
+        // The scan 0x45e280 first: while not alerted, a dead person of its own
+        // side within 50 m (2D) and in sight (1..2) sets ai+0x9c = 2 and the
+        // team's alert word (0x44a3e0).
+        if (v.alert != 2)
+            for (size_t qi = 0; qi < world.objects.size(); ++qi) {
+                const WorldObject& q = world.objects[qi];
+                if (!q.person || !q.dead || q.side != o.side) continue;
+                const int los = ai.sightLine(world, o.pos, q.pos, v.object, int(qi));
+                if (los < 1 || los > 2 || dist2D(o.pos, q.pos) >= 50.f) continue;
+                v.alert = 2;
+                ai.alertTeamOf(o.team);
+            }
         int id = -1;
         Vec3 at{0, 0, 0};
         const Vec3 eye = o.pos + Vec3{0, 1.f, 0};
         float score = ai.bestTarget(world, v.object, eye, o.heading, o.side, v.fovHalf, player_, id, at);
         if (id == -1) return;
+        // Perception once, x2 on hard for side 2, / 4 while ai+0x9c is 0
+        // (0x45e280); 0x450c40 takes the target when rand < score.
         score *= v.perception * ((ai.hard && o.side == 2) ? 2.f : 1.f);
         if (v.alert == 0) score *= 0.25f;
-        if (float(rnd()) >= score * v.perception * 65536.f) return;
+        if (float(rnd()) >= score * 65536.f) return;
         if ((v.flags & 2) && dist2D(o.pos, at) > 100.f) return;
+        // 0x450ca8: the "team spotted team" bit (0x42edd0).
+        ai.markSpotted(o.team, id == -3 ? player_.team : world.objects[size_t(id)].team);
         v.gunTarget = id;
         v.lastKnown = at;
         v.seen = true;
@@ -477,6 +508,8 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         if (v.losTimer > 0xBA) {
             v.losTimer = 0;
             v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
+            // GOG Df.exe 0x45051a: each sight re-check that holds marks the team spotted.
+            if (v.seen) ai.markSpotted(o.team, v.gunTarget == -3 ? player_.team : world.objects[size_t(v.gunTarget)].team);
         }
         if (v.seen) {
             if (!targetAlive(world, v.gunTarget)) v.deadSeen = true;
@@ -707,8 +740,8 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
     for (auto& v : vehicles_) {
         WorldObject& o = world.objects[size_t(v.object)];
         if (o.removed) continue;
-        // Shot: helicopters become alerted (0x44f221).
-        if (o.hp < v.lastHp) v.alerted = true;
+        // A hit does not alert a vehicle: GOG Df.exe 0x464c50 (CD 0x44f184)
+        // writes ai+0x9c only for organics (item kind 3).
         v.lastHp = o.hp;
         if (!v.dead && (o.wrecked || (o.hp <= 0 && o.item && o.item->hp > 0))) {
             // Destroyed (0x480357 / 0x47c83c): the blast (shrapnel 60, or for a
@@ -771,6 +804,39 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
             // Engine loop 506, pitch 1 + v / team speed (0x48026d).
             const float ts = ai.teamSpeedMs(o.team);
             sound.setLoop(100000 + v.object, 506, o.pos, ts > 0 ? 1.f + v.speed / ts : 1.f);
+        }
+    }
+}
+
+void VehicleSystem::property(const World& world, int team, int subtype, int value) {
+    // GOG Df.exe 0x45ff20 (Df2.exe 0x4185b0) on a vehicle's AI block. The
+    // helicopter reads flags bit 1 (no targeting) and 2 (100 m leash, home),
+    // the alert byte, field of view and perception; the BRDM (DF2) also the
+    // accuracy (ai+0x80). The rest is kept for completeness. Team 0 is
+    // skipped (0x4601a0).
+    if (team == 0) return;
+    for (auto& v : vehicles_) {
+        if (world.objects[size_t(v.object)].team != team) continue;
+        switch (subtype) {
+        case 2: if (value) v.flags |= 2; else v.flags &= ~2u; break;
+        case 5: v.alert = 2; break;
+        case 6: v.alert = 0; break;
+        case 7: {
+            // (value << 16) / 360, then the scan's half angle (>> 9 | 1) in 1/256 turns.
+            const int fov = (value << 16) / 0x168;
+            v.fovHalf = float((fov >> 9) | 1) / 256.f * 2 * kPi;
+            break;
+        }
+        case 8:
+            if (value != 0) {
+                v.accuracy = value;
+                v.aimScale = float(int(65536.0 * (1.0 / (double(value) * 0.01))) >> 1) / 65536.f;
+            }
+            break;
+        case 9: v.perception = float((value << 16) / 100) / 65536.f; break;
+        case 14: v.silent = value != 0; break;
+        case 15: if (value) v.flags |= 1; else v.flags &= ~1u; break;
+        default: break;
         }
     }
 }
