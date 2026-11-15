@@ -54,6 +54,16 @@ void VehicleSystem::init(World& world, const Mission& mission) {
             v.fovHalf = float((int((fov ? float(fov) : 180.f) * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;
         }
         v.alert = std::clamp(int(rec[0x42]), 0, 2);
+        // DF2's BRDM (item graphic number 0x7e7, GOG Df2.exe 0x423a25): the
+        // AI block (0x403790) also gives ai+0x34 0x200 from record bit 0x800
+        // and ai+0x80 = 65536 x 100 / accuracy (record +0x20, 0 -> 0x10000).
+        v.brdm = world.df2Rules && v.kind == Kind::Veh0 && o.item->id == 102023;
+        v.everyone = fl & 0x800;
+        {
+            const int acc = mo.raw[0x20 / 4];
+            const int a80 = acc ? int(65536.0 * (1.0 / (double(acc) * 0.01))) : 0x10000;
+            v.aimScale = float(a80 >> 1) / 65536.f;
+        }
         // A helicopter starts on the ground unless placed in the air.
         v.floorHeight = world.terrain->heightAt(o.pos.x, o.pos.z);
         v.think = 1 + int(i % 8);
@@ -151,7 +161,20 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     if (--v.think <= 0) {
         const bool onPath = pathStep(world, ai, v);
         v.targetSpeed = (onPath && !v.dead) ? teamSpeed : 0.f;
-        v.think = std::abs(v.speed) > 0 ? 0x40 : 0x10;
+        if (world.df2Rules && v.kind == Kind::Veh0) {
+            // DF2's veh0 think (GOG Df2.exe 0x4237c0): the next one in 0x20
+            // ticks on a path, 0x40 off it (0x4239f9 / 0x423a11), 0x10 once
+            // destroyed; the BRDM's turret thinks here (0x423a1e) and the
+            // tracking timer ai+0x50 grows by the interval (0x423a98).
+            if (v.dead) v.think = 0x10;
+            else {
+                v.think = onPath ? 0x20 : 0x40;
+                if (v.brdm) brdmThink(world, ai, v);
+                v.losTimer += v.think;
+            }
+        } else {
+            v.think = std::abs(v.speed) > 0 ? 0x40 : 0x10;
+        }
     }
     // veh0 move (0x480689): steer = heading error / 8; turn (π/4)/L·v·sin
     // steer; forward v·cos steer; a lateral term (L/2)·SIN[turn per tick
@@ -515,6 +538,147 @@ void VehicleSystem::doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSyste
     if (g.sounds[0] > 0) sound.play(g.sounds[0], muzzle);
 }
 
+// The BRDM's gun point (GOG Df2.exe 0x4243a0): Obj * T(hp0) * Rz(turret
+// yaw) * Ry(turret pitch) * T(-hp0) * hp5, in the model's own axes.
+Vec3 VehicleSystem::brdmGunPoint(const World& world, const Vehicle& v) const {
+    const WorldObject& o = world.objects[size_t(v.object)];
+    if (!o.model || o.model->points.size() <= 5) return o.pos + Vec3{0, 2.f, 0};
+    const auto& p0 = o.model->points[0];
+    const auto& p5 = o.model->points[5];
+    Mat4 gp;
+    const float c = std::cos(v.gunPitch), sn = std::sin(v.gunPitch);
+    gp.at(0, 0) = c; gp.at(0, 1) = -sn; gp.at(1, 0) = sn; gp.at(1, 1) = c;
+    const Mat4 m = o.matrix(o.pos) * translate({p0[0], p0[1], p0[2]}) * rotateY(v.gunYaw) * gp * translate({-p0[0], -p0[1], -p0[2]});
+    return {m.at(0, 0) * p5[0] + m.at(0, 1) * p5[1] + m.at(0, 2) * p5[2] + m.at(0, 3),
+            m.at(1, 0) * p5[0] + m.at(1, 1) * p5[1] + m.at(1, 2) * p5[2] + m.at(1, 3),
+            m.at(2, 0) * p5[0] + m.at(2, 1) * p5[1] + m.at(2, 2) * p5[2] + m.at(2, 3)};
+}
+
+// The BRDM's turret, every veh0 think (GOG Df2.exe 0x423a1e..0x423a64),
+// unless ai flag 1. A target seen dead (ai+0x34 0x40) is dropped during a
+// pause; without one the soldiers' scan (0x417830, as AiSystem::scan: score
+// x perception, x2 on hard for side 2, / 4 when relaxed) is drawn against
+// rand (0x424680), which also sets the last known point, a pause of
+// 32..95 and a yaw bias of +-(0x1000000 + ((rand & 0xffff) - 0x8000) << 8)
+// x (ai+0x80 >> 1) >> 16. Tracking (0x424780): once ai+0x50 passes 0xC0 a
+// sight line from 1 m up sets or clears ai+0x34 0x80; while it is set the
+// last known point follows the target (and 0x40 notes it dead). Aim
+// (0x424470): that point from the gun point, relative to the hull, yaw
+// within +-0x60000000 and pitch within -0x4000000..0x20000000.
+void VehicleSystem::brdmThink(World& world, AiSystem& ai, Vehicle& v) {
+    WorldObject& o = world.objects[size_t(v.object)];
+    if (v.flags & 1) return;
+    const float turn = 2 * kPi / 4294967296.f;
+    auto teamOf = [&](int t) { return t == -3 ? player_.team : world.objects[size_t(t)].team; };
+    if (v.gunTarget != -1) {
+        if (v.deadSeen && v.pause > 0) v.gunTarget = -1;
+    } else if (o.side != 0 || v.everyone) {
+        int id = -1;
+        Vec3 at{0, 0, 0};
+        const Vec3 eye = o.pos + Vec3{0, 1.f, 0};
+        float score = ai.bestTarget(world, v.object, eye, o.heading, o.side, v.fovHalf, player_, id, at, v.everyone);
+        // 0x403790: at night a perception above 0x4ccc loses 0x2666.
+        const float perception = (ai.night && v.perception > 0.3f) ? v.perception - 0.15f : v.perception;
+        score *= perception * ((ai.hard && o.side == 2) ? 2.f : 1.f);
+        if (v.alert == 0) score *= 0.25f;
+        if (id != -1 && float(rnd()) < score * 65536.f) {
+            v.gunTarget = id;
+            v.lastKnown = at;
+            ai.markSpotted(o.team, teamOf(id));
+            v.deadSeen = false;   // 0x80 (in sight) is left as it was
+            v.pause = int(rnd() & 0x3F) + 0x20;
+            const int r = (int(rnd() & 0xFFFF) - 0x8000) * 0x100;
+            const int64_t b = int64_t(r < 0 ? r - 0x1000000 : r + 0x1000000) * int64_t(v.aimScale * 65536.f);
+            v.bias = float(int32_t(b >> 16));
+        }
+    }
+    if (v.gunTarget == -1) return;
+    // Tracking (0x424780).
+    if (v.losTimer > 0xC0) {
+        v.losTimer = 0;
+        v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
+        if (v.seen) ai.markSpotted(o.team, teamOf(v.gunTarget));
+    }
+    if (v.seen) {
+        if (!targetAlive(world, v.gunTarget)) v.deadSeen = true;
+        v.lastKnown = targetPosition(world, v.gunTarget);
+    }
+    // Aim (0x424470), the horizontal distance in whole metres.
+    const Vec3 d = world.nearest(v.lastKnown, o.pos) - brdmGunPoint(world, v);
+    const float flat = std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(d.z) * std::floor(d.z)));
+    const float yaw = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
+    const float pitch = std::atan2(d.y, flat) - o.pitch;
+    v.gunTgtYaw = std::clamp(yaw, -float(0x60000000) * turn, float(0x60000000) * turn);
+    v.gunTgtPitch = std::clamp(pitch, -float(0x4000000) * turn, float(0x20000000) * turn);
+}
+
+// The BRDM's turret every tick (end of the veh0 mover, GOG Df2.exe
+// 0x423ac0): yaw and pitch turn 0x200000 toward their targets when more
+// than 0x400000 off; the post-shot timer counts down; with a target and the
+// yaw within 0x10000000 of its aim: the pause counts down, then the burst,
+// a round whenever the decremented burst is a multiple of 16; when both are
+// out a new pause 64..127, a burst 16..47 and the bias x 3/4. A round
+// (0x424550): from the gun point at the last known point, refused unless
+// within +-0x60000000 yaw and -0x4000000..0x20000000 pitch of the hull;
+// +-0x200000 error on each and the bias on yaw; mode 0x35 (0x416a30: the
+// gun's spread (accuracy - 1) x (0x8000 - rand) x 30 per axis, then the
+// round with its sound and noise, 0x451ae0); the timer 10.
+void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& shots, SoundSystem& sound) {
+    WorldObject& o = world.objects[size_t(v.object)];
+    const float turn = 2 * kPi / 4294967296.f;
+    const float step = float(0x200000) * turn, deadBand = float(0x400000) * turn;
+    if (std::abs(v.gunTgtYaw - v.gunYaw) > deadBand) v.gunYaw += v.gunTgtYaw > v.gunYaw ? step : -step;
+    if (std::abs(v.gunTgtPitch - v.gunPitch) > deadBand) v.gunPitch += v.gunTgtPitch > v.gunPitch ? step : -step;
+    o.gunYaw = v.gunYaw;
+    o.gunPitch = v.gunPitch;
+    if (o.shotFlash != 0) --o.shotFlash;   // obj+0xC8, the post-shot timer
+    if (v.gunTarget == -1 || std::abs(v.gunTgtYaw - v.gunYaw) >= float(0x10000000) * turn) return;
+    if (v.pause > 0) { --v.pause; return; }
+    if (v.burst <= 0) {
+        v.pause = int(rnd() & 0x3F) + 0x40;
+        v.burst = int(rnd() & 0x1F) + 0x10;
+        v.bias -= float(int(v.bias) >> 2);
+        return;
+    }
+    if (--v.burst & 0xF) return;
+    const Vec3 muzzle = brdmGunPoint(world, v);
+    const Vec3 d = world.nearest(v.lastKnown, muzzle) - muzzle;
+    const float flat = std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(d.z) * std::floor(d.z)));
+    float yaw = std::atan2(d.x, -d.z), pitch = std::atan2(d.y, flat);
+    {
+        const float ry = -wrapAngle(yaw - o.heading), rp = pitch - o.pitch;
+        if (std::abs(ry) > float(0x60000000) * turn || rp < -float(0x4000000) * turn || rp > float(0x20000000) * turn) return;
+    }
+    auto err = [&]() { return float((int(rnd() & 0xFFFF) - 0x8000) * 0x40) * turn; };
+    // OpenDF heading is clockwise: DF yaw offsets turn the other way.
+    yaw -= err();
+    pitch += err();
+    yaw -= v.bias * turn;
+    const ModeDef& md = shots.modeAt(53);
+    const GunDef& g = shots.gunAt(md.gun);
+    if (g.accuracy != 1) {
+        yaw -= float((g.accuracy - 1) * (0x8000 - int(rnd())) * 0x1e) * turn;
+        pitch += float((g.accuracy - 1) * (0x8000 - int(rnd())) * 0x1e) * turn;
+    }
+    Projectile p;
+    p.pos = muzzle;
+    p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * (float(g.velocity) * 60.f / 62.f);
+    p.lifetime = g.lifetime;
+    p.power = g.power;
+    p.falloff = std::max(1, g.falloff);
+    p.flags = g.flags;
+    p.from = o.pos;
+    p.shooter = v.object;
+    p.gun = md.gun;
+    shots.addProjectile(p);
+    // 0x451ae0: the gun's sound at the muzzle and a noise of half its range.
+    if (g.sounds[0] > 0) {
+        sound.play(g.sounds[0], muzzle);
+        ai.shotFired(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, v.object);
+    }
+    o.shotFlash = 10;
+}
+
 void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem& sound, const AiSystem::PlayerView& player) {
     player_ = player;
     for (auto& v : vehicles_) {
@@ -560,6 +724,7 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
             driveTrain(world, ai, v, teamSpeed);
         } else {
             drive(world, ai, v, teamSpeed);
+            if (v.brdm && !v.dead) brdmTurret(world, ai, v, shots, sound);
         }
     }
 }

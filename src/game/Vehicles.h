@@ -88,12 +88,22 @@ private:
         bool gunInit = false;
         int burst = 0, pause = 0;  // ai+0x6C, ai+0x90
         int lastHp = 0;
+        // Delta Force 2's BRDM turret (GOG Df2.exe 0x4237c0 / 0x423ac0): the
+        // target, last known point, pause (ai+0xA0), burst (ai+0x7C), bias
+        // (+0xC4) and turret angles (+0xB4/+0xB8, targets +0xBC/+0xC0) use
+        // the fields above; losTimer is ai+0x50.
+        bool brdm = false;
+        bool everyone = false;     // ai+0x34 0x200 (record bit 0x800): any side is a target
+        float aimScale = 0.5f;     // (ai+0x80 >> 1) / 65536: ai+0x80 = 65536 x 100 / accuracy
     };
     void drive(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void driveTrain(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed);
     void doorGun(World& world, Vehicle& v, Arsenal& shots, SoundSystem& sound);
     void heloTargeting(World& world, AiSystem& ai, Vehicle& v);
+    void brdmThink(World& world, AiSystem& ai, Vehicle& v);
+    void brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& shots, SoundSystem& sound);
+    Vec3 brdmGunPoint(const World& world, const Vehicle& v) const;
     Vec3 gunPoint(const World& world, const Vehicle& v) const;
     Vec3 targetPosition(const World& world, int t) const;
     bool targetAlive(const World& world, int t) const;

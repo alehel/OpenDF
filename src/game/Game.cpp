@@ -2902,6 +2902,41 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
         }
+        if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 5) {
+            // DF2's BRDM (GOG Df2.exe 0x4295f0): mesh 0 and 3 as is; mesh 1
+            // (turret) about hardpoint 0 by the turret yaw; mesh 2 (gun) that
+            // and then pitched about hardpoint 4 minus hardpoint 0 (as the EXE
+            // builds it); front wheels mesh 4 about hardpoint 2 and mesh 5
+            // about hardpoint 3 by the steering angle; mesh 6 (muzzle flash)
+            // with the gun while obj+0xC8 is set, which drawing clears.
+            const GpuModel& m = *v.o->model;
+            const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
+            Mat4 hide;
+            for (float& x : hide.m) x = 0;
+            auto aboutAt = [&](float x, float y, float z, const Mat4& r) { return translate({x, y, z}) * r * translate({-x, -y, -z}); };
+            auto about = [&](int hp, const Mat4& r) {
+                const auto& p = m.points[size_t(hp)];
+                return aboutAt(p[0], p[1], p[2], r);
+            };
+            Mat4 gp;
+            const float c = std::cos(v.o->gunPitch), sn = std::sin(v.o->gunPitch);
+            gp.at(0, 0) = c; gp.at(0, 1) = -sn; gp.at(1, 0) = sn; gp.at(1, 1) = c;
+            const auto& h0 = m.points[0];
+            const auto& h4 = m.points[4];
+            const Mat4 turret = about(0, rotateY(v.o->gunYaw));
+            const Mat4 gun = turret * aboutAt(h4[0] - h0[0], h4[1] - h0[1], h4[2] - h0[2], gp);
+            const Mat4 steer = rotateY(-v.o->steer);   // DF yaw is anticlockwise
+            std::vector<Mat4> pose(meshes, Mat4{});
+            if (meshes > 1) pose[1] = turret;
+            if (meshes > 2) pose[2] = gun;
+            if (meshes > 4) pose[4] = about(2, steer);
+            if (meshes > 5) pose[5] = about(3, steer);
+            if (meshes > 6) pose[6] = v.o->shotFlash ? gun : hide;
+            for (size_t k = 7; k < meshes; ++k) pose[k] = hide;
+            models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
+            v.o->shotFlash = 0;
+            continue;
+        }
         if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "tire" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
             // 0x4808fc: mesh 0 as is, mesh 1 (shadow) not drawn, front wheels
             // mesh 2 about hardpoint 2 and mesh 3 about hardpoint 1, turned
@@ -2951,7 +2986,8 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         models_.draw(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     }
     for (auto& v : visible)
-        if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes))
+        if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes) &&
+            !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm"))   // the BRDM's are posed above
             models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920).

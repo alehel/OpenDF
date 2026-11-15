@@ -75,7 +75,8 @@ struct WorldObject {
     float steer = 0;
     // Palms (lodCode "palm"): obj+0xE0, 0 intact (no palm breaks yet).
     int palmState = 0;
-    float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5
+    float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5; DF2 BRDM turret (+0xB4/+0xB8)
+    mutable int shotFlash = 0;         // DF2 BRDM obj+0xC8: 10 after a round, -1 a tick; flash mesh 6 while set, drawing clears it (GOG Df2.exe 0x424550/0x423ac0/0x42983d)
     int collapse = -1;
     float vz = 0;                      // people: vertical speed, metres a tick (+0x44)
     bool airborne = false;             // people: falling (DF1 +0x6D & 0x20, DF2 +0x64 & 0x2000)
