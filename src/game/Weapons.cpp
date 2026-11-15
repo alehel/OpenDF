@@ -802,9 +802,15 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 sound(3);
                 if (md.type == 1) cooldown_ = md.cooldown;
             }
-        } else if (md.type == 6 || md.type == 7 || md.type == 9) {
-            // Knife, claymore, satchel: nothing without a chambered one, no
-            // click (0x44ad8b / 0x44aecb; DF2 0x44691b / 0x446a5a).
+        } else if (md.type == 6) {
+            // Knife: DF1's strike has no chamber test, only the cooldown
+            // (GOG Df.exe 0x483b10 case 6; CD 0x44a7c8), so a switch during
+            // the cooldown (select clears it) cannot leave it dead. DF2 keeps
+            // the chamber test (0x44691b) until DF2.EXE's knife is checked.
+            if (!df2_ || chambered()) fire(player);
+        } else if (md.type == 7 || md.type == 9) {
+            // Claymore, satchel: nothing without a chambered one, no click
+            // (0x44aecb; DF2 0x446a5a).
             if (chambered()) fire(player);
         }
         shot = true;
