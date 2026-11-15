@@ -451,9 +451,16 @@ First differences from DF1:
     titles under the dots, CABRIEF; GOG 0x434800: only this campaign's
     regions with a done or unlocked mission and only the done or unlocked
     dots of the current region are shown, the rest hidden and unclickable), Quick Missions (D06*, TITLE, QMBRIEF,
-    pictures), Mission Briefing (MBBRIEF, the terrain JPG ×4; the BMS
+    pictures), Mission Briefing (MBBRIEF; the map, GOG 0x43ce90: the
+    version-15 header's terrain name with .JPG for .TRN (DFS1.JPG, 256²)
+    tiled 4 × 4 into 1024² (0x46c760), drawn 1:1 at (x+1, y+1) inside the
+    mm_Rect border, nothing at all without the picture; the scroll is the
+    map sliders' value, range picture − view, eased by ≤ 10 a tick toward a
+    target (page tick 0x43ca20) that the sliders, the arrows (±10 at once,
+    0x43d610..0x43d6d0), MAP CENTER (0x43d930) and a press on the map
+    (0x43d250 event 3: centres on the point under the mouse) set; the BMS
     markers of GOG 0x4045e0, object byte +0x4C set and flags & 0x50 clear, up
-    to 50: route markers 1-3 joined by 0xFFFFE000 lines with a yellow icon
+    to 50, at 4 m a pixel: route markers 1-3 joined by 0xFFFFE000 lines with a yellow icon
     and their number at (x+4, y-5), the others as 8-frame team icons
     grn/blu/red/yel_icon.pcx, GOG 0x43d250; scroll centred by (view-1)>>1,
     0x43cdf0), Change Gear (categories 3/4/2/4+5, grenades 26/37, the
@@ -467,7 +474,16 @@ First differences from DF1:
     ticks from the soldier's music volume +0x5bc toward 70 and stays there
     until the page is left, 0x437a70; each voice at direction 0, volume 255,
     pitch 1.0 (0x437933), gains 62 / 63, the dialogue volume unused) and
-    slider dragging. Settings has four
+    slider dragging. The mouse (GOG 0x433f20): the hit test 0x4337a0 takes
+    the first button from the top z-order whose box (0x432690: image push
+    button w × h/4, slider image with the track p3 as length, any other
+    image type 0 × 0; text box or (p1, p2) without one, 1.6 times as tall
+    and left of x when right-justified unless G) holds the mouse, skipping
+    only J (0x200), so hidden, C and callback-less buttons are hit too and
+    cover what is below; then by type (0x433ec0) push buttons (btn_roll on
+    entering, btn_slct on pressing, unless M) or sliders (a press near the
+    knob holds it, elsewhere steps the value by user1 or 5 toward the
+    mouse), other types nothing, drawstate 0 and 4 ignored. Settings has four
     pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 59 rows in the
     GOG build (labels 0x4c8144, defaults 0x4c7190 copied into new soldiers by
     0x4368f0; the CD's 48 plus PRINT_SCREEN, the voice-over-net keys,
