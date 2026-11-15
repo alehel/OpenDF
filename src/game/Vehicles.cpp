@@ -839,13 +839,18 @@ void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& sho
             return;
     }
     auto err = [&]() { return float(int((rnd() & 0xFFFF) << 6) - 0x200000) * turn; };
-    // DF2 vehicle guns fire mode 53 (.50, ammo 34; 0x41fac0); DF1 mode 12.
-    const int gunMode = shots.df2() ? 53 : 12;
+    // The door gun fires mode 12 (the SAW) in Delta Force and in GOG Df2.exe,
+    // whose door-gun routine 0x42bc10 sets +0xA8 = 0xC (0x42bc24) before the
+    // aim 0x42ba10 and the round 0x416a30 (0x42bd40). (Mode 0x35, the .50, is
+    // the BRDM's: 0x424550.) The CD DF2.EXE's door gun is not traced and
+    // keeps mode 53.
+    const int gunMode = shots.df2() && !shots.df2Gog() ? 53 : 12;
     const ModeDef& md0 = shots.modeAt(gunMode);
     const GunDef& g0 = shots.gunAt(md0.gun);
     // GOG Df2.exe 0x42bd40 -> 0x416a30: after the two error draws, a gun
-    // point under the water fires nothing (mode 0x35) and plays the ammo's
-    // fourth sound at the helicopter.
+    // point under the water fires nothing (mode 0xC is not one of the
+    // under-water modes) and plays the ammo's fourth sound at the
+    // helicopter.
     if (shots.df2() && world.terrain && world.terrain->waterLevel() != 0 && muzzle.y < world.terrain->waterLevel()) {
         err();
         err();

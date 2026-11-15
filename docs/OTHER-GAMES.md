@@ -1338,7 +1338,9 @@ First differences from DF1:
     scan on their first think too, keep the target when the draw fails and
     aim once more at a target first seen dead (0x42ccf0). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
-    vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
+    vehicle guns mode 53 (the BRDM's 0x35, 0x424550), the GOG door gun
+    mode 12 (0x42bc10 sets +0xA8 = 0xC at 0x42bc24; the CD's door gun is
+    not traced and keeps 53). Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed
     hand; no shot without it), the aim 0x415de0 (= 0x46b838: from the body
     origin at the target's origin while it is seen, else the last known
