@@ -2429,6 +2429,7 @@ int FrontendDf2::run() {
                 g.df2Gear = soldier().get(0x2c4);
                 g.df2Grenade = soldier().get(0x2c8);
                 g.df2Attributes = uint32_t(cfg_.get("attributes"));
+                g.df2SpWind = std::clamp(cfg_.get("sp_wind"), 0, 2);
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;

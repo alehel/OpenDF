@@ -244,6 +244,12 @@ private:
         return df2Rng_ & 0xFFFF;
     }
     void shrapSeed() { df2Rng_ = 0x5FC; }
+    // The active wind (DF2 [0x512e60] degrees / [0x512e68] kph): the
+    // mission's, or by df2.cfg sp_wind none or random (GOG Df2.exe 0x466ba0);
+    // windFlip_: 0x4762e0's vector turned 180 degrees (0x4763e0 has no turn).
+    int windKph_ = 0, windDeg_ = 0;
+    bool windFlip_ = true;
+    void applyWind() { arsenal_.setWind(float(windKph_), float(windFlip_ ? windDeg_ : windDeg_ + 180)); }
     // Delta Force 2's radar and command-map shapes (0x421510): objects whose
     // obj+0x6E (signed byte record +0x4C) is non-zero, soldiers aside, at
     // their live positions (removed ones skipped); records with no world
@@ -937,7 +943,20 @@ bool Game::loadMission(int index) {
             df2Loadout_ = d2;
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
-            arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+            // GOG Df2.exe 0x466ba0, df2.cfg sp_wind ([0x67cf4c]): 0 the
+            // mission's wind (0x4762e0(dir, speed)), 1 none (0x4762e0(0, 0)),
+            // 2 random (0x4763e0: dir = (r * 360) >> 16, speed = r' >> 11 kph
+            // from the shared generator 0x41ea20, and no 180-degree turn).
+            windKph_ = mission_.windKph;
+            windDeg_ = mission_.windDeg;
+            windFlip_ = true;
+            if (o_.df2SpWind == 1) windKph_ = windDeg_ = 0;
+            else if (o_.df2SpWind == 2) {
+                windDeg_ = int((shrapRand() * 360u) >> 16);
+                windKph_ = int(shrapRand() >> 11);
+                windFlip_ = false;
+            }
+            applyWind();
         }
         weather_.start(mission_.version >= 0x0F ? mission_.weather : 0);
         if (!df2Weapons) arsenal_.init(gameText_, &exe_, &items_, lo);
@@ -4434,8 +4453,8 @@ void Game::drawDf2Bottom(const Screen& s) {
     {
         static const char* kDir[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
         char wind[48];
-        if (mission_.windKph == 0) std::snprintf(wind, sizeof wind, "Wind: None");
-        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((mission_.windDeg + 22) % 360 + 360) % 360 / 45], mission_.windKph);
+        if (windKph_ == 0) std::snprintf(wind, sizeof wind, "Wind: None");
+        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((windDeg_ + 22) % 360 + 360) % 360 / 45], windKph_);
         hud_.text(X("extra2"), Y("extra2"), wind, kDf2Amber, ts);
     }
 
@@ -4793,7 +4812,7 @@ void Game::df2RequestWeapons() {
         const std::string* t = gameTable_.find("HudGuns", key);
         hudGuns.push_back(t ? *t : std::string());
     }
-    if (arsenal_.initDf2(hudGuns, df2Exe_, &items_, df2Loadout_)) arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+    if (arsenal_.initDf2(hudGuns, df2Exe_, &items_, df2Loadout_)) applyWind();
     pushMessage(df2Text("Client", "STRCLI10", "Weapons Updated"));
     sound_.play2D(0x164);
     const int cur[5] = {df2Loadout_.primary, df2Loadout_.secondary, df2Loadout_.gear, df2Loadout_.sidearm, df2Loadout_.grenade};
