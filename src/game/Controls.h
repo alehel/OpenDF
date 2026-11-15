@@ -29,6 +29,12 @@ enum class Action {
     VCam,
     // GOG Df2.exe: scope magnification (scopemag, E, command 0xc2).
     ScopeMag,
+    // GOG Df2.exe: the views (1stPerson F2, 3rdPersonp F5, 3rdPersonw F6,
+    // 3rdPersonl F7; commands 0x190..0x193) and the held camera keys
+    // (CameraLeft / Right / Up / Down keypad 4 / 6 / 8 / 2, CameraZoomIn /
+    // Out keypad 7 / 9; 0x19a..0x19f).
+    FirstPerson, ThirdPersonP, ThirdPersonW, ThirdPersonL,
+    CameraLeft, CameraRight, CameraUp, CameraDown, CameraZoomIn, CameraZoomOut,
     Count
 };
 

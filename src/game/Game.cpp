@@ -487,6 +487,17 @@ private:
     // yaw follow it smoothed (0x481184: 1/16 and 1/32 per tick).
     Vec3 deadShift_{0, 0, 0}, camPivot_{0, 0, 0}, camLag_{0, 0, 0};
     float deadYaw_ = 0, camYaw_ = 0;      // OpenDF heading / DF yaw (anticlockwise), radians
+    // GOG Df2.exe's views (0x414240 / 0x413dd0): [0xbf2b40] 0 first person,
+    // 1 chase (yaw [0xbf2b78] + the eased body yaw), 2 world-fixed (yaw
+    // [0xbf2b78] alone), 3 fly-by (the fixed point [0xbf2b60..68]); pitch
+    // [0xbf2b7c], distance [0xbf2b80]. Dead, the camera is forced to 1 with
+    // the yaw tick << 21 ([0x79a68c], 0x465f90), DF1's orbit too.
+    int camMode_ = 0;
+    bool camForced_ = false;
+    float camYawOff_ = 0, camPitch_ = float(0x4000000) / 4294967296.f * 6.28318531f, camDist_ = 3.f;
+    Vec3 camFixed_{0, 0, 0};
+    void setCamMode(int mode);
+    int camModeNow() const { return playerDead() ? 1 : camMode_; }
     Vec3 deadBodyOrigin() const;
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
     // Delta Force 2: air used under water (player slot +0xcc, DF2.EXE 0x4587f0).
@@ -2022,26 +2033,55 @@ Vec3 Game::deadBodyOrigin() const {
 // smoothed body yaw + tick << 21 and pitch 0x4000000 (3.03 m behind, 0.20 m
 // up), at least 1 m above the ground (less while the pivot still lags by
 // under 0.5 m); it looks at the pivot raised 0.5 m (0x4810ec).
+// GOG Df2.exe 0x413dd0 is the same for its chase view (mode 1, the yaw
+// [0xbf2b78] + the eased body yaw, pitch [0xbf2b7c], (-[0xbf2b80], 0, 0.5)),
+// the world-fixed view (2: the yaw [0xbf2b78] alone, at least 1 m above the
+// ground) and the fly-by (3: the fixed point); each looks at the pivot
+// raised 0.5 m (lowered with the slow-pivot rule only in mode 1).
 Vec3 Game::viewDir() const {
     if (dirOverride_) return *dirOverride_;
-    if (!playerDead()) return player_.forward();
+    const int mode = camModeNow();
+    if (mode == 0) return player_.forward();
     const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
-    const Vec3 target = camPivot_ + Vec3{0, 0.5f + (s < 0.5f ? (s - 0.5f) * 0.5f : 0.f), 0};
+    const Vec3 target = camPivot_ + Vec3{0, 0.5f + (mode == 1 && s < 0.5f ? (s - 0.5f) * 0.5f : 0.f), 0};
     return normalize(target - viewEye());
 }
 
 Vec3 Game::viewEye() const {
     if (eyeOverride_) return *eyeOverride_;
-    if (!playerDead()) return player_.eye();
-    const float th = camYaw_ + float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi;
-    const float p = float(0x4000000) / 4294967296.f * 2 * kPi;
-    const float back = -3.f * std::cos(p) - 0.5f * std::sin(p), up = -3.f * std::sin(p) + 0.5f * std::cos(p);
+    const int mode = camModeNow();
+    if (mode == 0) return player_.eye();
+    if (mode == 3) return camFixed_;
+    const float off = playerDead() ? float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi : camYawOff_;
+    const float th = (mode == 1 ? camYaw_ : 0.f) + off;
+    const float p = camPitch_;
+    const float back = -camDist_ * std::cos(p) - 0.5f * std::sin(p), up = -camDist_ * std::sin(p) + 0.5f * std::cos(p);
     Vec3 e = camPivot_ + Vec3{std::cos(th) * back, up, -std::sin(th) * back};
     const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
     float floor = terrain_.heightAt(e.x, e.z) + 1.f;
-    if (s < 0.5f) floor += s - 0.5f;
+    if (mode == 1 && s < 0.5f) floor += s - 0.5f;
     e.y = std::max(e.y, floor);
     return e;
+}
+
+// GOG Df2.exe 0x414240 (the player is the only target here): a new mode
+// resets the yaw offset to 0, the pitch to 0x4000000 and the distance to
+// 3 m; the fly-by (3) instead puts its point 4 m from the pivot at the
+// body's yaw + 0x30000000 plus 8 x the pivot's lag, 1.5 m above the
+// ground, each time it is chosen.
+void Game::setCamMode(int mode) {
+    if (mode == 3) {
+        const float a = kPi * 0.5f - player_.yaw + float(0x30000000) / 4294967296.f * 2 * kPi;
+        camFixed_ = camPivot_ + Vec3{4.f * std::cos(a), 0, -4.f * std::sin(a)} + Vec3{camLag_.x, 0, camLag_.z} * 8.f;
+        camFixed_.y = terrain_.heightAt(camFixed_.x, camFixed_.z) + 1.5f;
+        camMode_ = 3;
+        return;
+    }
+    if (camMode_ == mode) return;
+    camMode_ = mode;
+    camYawOff_ = 0;
+    camPitch_ = float(0x4000000) / 4294967296.f * 2 * kPi;
+    camDist_ = 3.f;
 }
 
 // New puff (0x480aac): item 107016, no speed yet, random roll, scale
@@ -3021,6 +3061,12 @@ void Game::runAction(Action act, bool reverse) {
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     case Action::ScopeMag: arsenal_.scopeMag(reverse ? -1 : 1); break;   // GOG Df2.exe case 0x61 -> 0x44c7e0 (E)
+    // GOG Df2.exe 0x41f150 cases 0x6f..0x72 -> 0x414240(player, 0..3);
+    // flag 1: refused while dead (0x41f16d).
+    case Action::FirstPerson: if (!playerDead()) setCamMode(0); break;
+    case Action::ThirdPersonP: if (!playerDead()) setCamMode(1); break;
+    case Action::ThirdPersonW: if (!playerDead()) setCamMode(2); break;
+    case Action::ThirdPersonL: if (!playerDead()) setCamMode(3); break;
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
@@ -3380,14 +3426,16 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm"))   // the BRDM's are posed above
             models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     // The dead player's body, seen from the orbit camera: the soldier's
-    // model posed by the death animation DF.EXE chose (0x46c920).
-    if (playerDead() && !playerBody_.angles().empty())
+    // model posed by the death animation DF.EXE chose (0x46c920). GOG
+    // Df2.exe draws the player like anyone else in its outside views
+    // (0x44f4d0 skips him only in mode 0): the body in its current move.
+    if (camModeNow() != 0 && !playerBody_.angles().empty())
         if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
                 body.model = bm;
-                body.pos = deadBodyOrigin();
-                body.heading = deadYaw_;
+                body.pos = playerDead() ? deadBodyOrigin() : player_.origin();
+                body.heading = playerDead() ? deadYaw_ : player_.yaw;
                 models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()));
             }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.
@@ -3555,6 +3603,7 @@ void Game::drawViewModel(const Screen& s) {
     // The original hides the weapon while the zoom inset is up.
     // Nor is it drawn once the player is dead (0x4042df).
     if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_) return;   // 0x4042ff
+    if (camModeNow() != 0) return;   // GOG Df2.exe 0x465fde: the gun only in mode 0
     if (!arsenal_.viewModelShown()) return;   // DF2 mode flag 0x100 (GOG Df2.exe 0x44ea10)
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
@@ -4056,7 +4105,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         return;
     }
     if (showMap_) drawCommandMap(s);
-    else if (crosshair_ && df2Hud_.on) {
+    else if (crosshair_ && df2Hud_.on && camModeNow() == 0) {   // GOG Df2.exe 0x465fde: [0x79a7fc] and mode 0
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
         // W*640/65536 mode pixels from the centre of the 3D rows.
         const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
@@ -4064,7 +4113,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(cx + a, cy, b, t, kDf2Amber);
         hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
         hud_.rect(cx, cy + a, t, b, kDf2Amber);
-    } else if (crosshair_) {
+    } else if (crosshair_ && !df2Hud_.on) {
         // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to the
         // left/top and 5..11 to the right/bottom of the centre.
         hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
@@ -4074,9 +4123,8 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     }
     // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
     // crosshairs on or off; none in an outside view (returns after the pick
-    // while [0xbf2b40] is set), which OpenDF's camera is once the player is
-    // dead.
-    if (!showMap_ && df2Hud_.on && !playerDead()) drawDf2TargetId(s, cx, cy, 0);
+    // while [0xbf2b40] is set).
+    if (!showMap_ && df2Hud_.on && camModeNow() == 0) drawDf2TargetId(s, cx, cy, 0);
     // GOG Df.exe 0x402300: the same-side mark, with the crosshairs on or
     // off; nothing outside the first-person view ([0x6ba3ec] != 0).
     if (!showMap_ && !df2Hud_.on && !playerDead()) drawDf1TargetId(s, cx, cy, 0);
@@ -6525,7 +6573,8 @@ int Game::run() {
             const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
             arsenal_.setMoveKeys(moveKeys);
             // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004.
-            arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder());
+            arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder() ||
+                                     camModeNow() != 0);   // [0xbf2b40] with picture-in-picture [0x67cd10] off
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
@@ -6873,6 +6922,30 @@ int Game::run() {
                     dy -= std::floor(dy / (2 * kPi) + 0.5f) * 2 * kPi;
                     camYaw_ += dy / 32.f;
                 }
+                // GOG Df2.exe's held camera commands (0x41f150 cases 0x73..0x77,
+                // polled each tick, 0x420670): yaw -/+ 0x2000000, pitch
+                // -/+ 0x2000000 within 0xd0000000..0x40000000, distance
+                // -/+ 0x2000 within 1..500 m.
+                if (arsenal_.df2() && !(df2Hud_.on && showMap_)) {
+                    Uint8 kb[SDL_NUM_SCANCODES];
+                    std::memcpy(kb, SDL_GetKeyboardState(nullptr), sizeof kb);
+                    for (SDL_Scancode sc : inputHeld_) kb[sc] = 1;
+                    const Uint32 mb = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+                    auto held = [&](Action a) { return controls_.down(a, kb, mb); };
+                    const float step = float(0x2000000) / 4294967296.f * 2 * kPi;
+                    if (held(Action::CameraLeft)) camYawOff_ -= step;
+                    if (held(Action::CameraRight)) camYawOff_ += step;
+                    if (held(Action::CameraUp)) camPitch_ = std::max(camPitch_ - step, -0.75f * kPi * 0.5f);
+                    if (held(Action::CameraDown)) camPitch_ = std::min(camPitch_ + step, kPi * 0.5f);
+                    if (held(Action::CameraZoomIn)) camDist_ = std::max(camDist_ - 0x2000 / 65536.f, 1.f);
+                    if (held(Action::CameraZoomOut)) camDist_ = std::min(camDist_ + 0x2000 / 65536.f, 500.f);
+                }
+                // 0x413dd0: the fly-by point moves on once the pivot is more
+                // than 0x1e0000 (30 m, |dx| + |dy| + |dz|) from it.
+                if (camMode_ == 3 && !playerDead()) {
+                    const Vec3 d = world_.nearest(camPivot_, camFixed_) - camFixed_;
+                    if (std::abs(d.x) + std::abs(d.y) + std::abs(d.z) > 30.f) setCamMode(3);
+                }
                 // plyr (0x45a27c): every 64 ticks the route's points count as
                 // reached for the player's side.
                 if ((ticks_ & 63) == 0 && !playerDead())
@@ -6963,9 +7036,10 @@ int Game::run() {
                 if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;
-            // The listener (0x4735b8): the player, or the external camera once dead.
+            // The listener (0x4735b8): the player, or the external camera once
+            // dead (GOG Df2.exe 0x418c80: the camera in any outside view).
             {
-                const Vec3 at = playerDead() ? viewEye() : player_.origin();
+                const Vec3 at = camModeNow() != 0 ? viewEye() : player_.origin();
                 const Vec3 f = viewDir();
                 sound_.setListener(at, std::atan2(f.x, -f.z), &terrain_);
                 arsenal_.setListener(at);
@@ -7029,7 +7103,11 @@ int Game::run() {
             Player cam = player_;
             if (binoculars_) { cam.yaw += binoYaw_; cam.pitch += binoPitch_; }
             if (binoculars_) scopeFocal_ = 320.f / tanHalfX;
-            Mat4 view = playerDead() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
+            // GOG Df2.exe 0x465f90: dead, the orbit (mode 1) is forced
+            // ([0x79a68c]); alive again, first person.
+            if (playerDead()) { if (camMode_ != 1) setCamMode(1); camForced_ = true; }
+            else if (camForced_) { setCamMode(0); camForced_ = false; }
+            Mat4 view = camModeNow() != 0 ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
                 glClearColor(1, 0, 1, 1);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

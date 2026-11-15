@@ -568,7 +568,21 @@ First differences from DF1:
     record with exactly that mouse mask (scope on the right, Prone on the
     middle); the wheel (0x4799e0, per 120) steps the zeroing (forward up,
     back down) while the scope shows, else cycles (back next, forward
-    previous; 0x44d3c0 with -1: current - 1..0, then 9..current). Page 4 "Voice-over-net": drawn from the
+    previous; 0x44d3c0 with -1: current - 1..0, then 9..current).
+    Views (GOG 0x414240 / 0x413dd0, eased by 0x4141b0 each tick: the
+    pivot 1/16 toward the body, the yaw 1/32): 1stPerson F2, 3rdPersonp F5
+    (chase: the body's eased yaw + [0xbf2b78]), 3rdPersonw F6 (world-fixed
+    yaw [0xbf2b78]), 3rdPersonl F7 (fly-by: a point 4 m out at the body yaw
+    + 67.5 degrees, 1.5 m above the ground, moved on past 30 m); refused
+    while dead. A new mode resets yaw 0, pitch 0x4000000, distance 3 m;
+    the held keypad keys turn ([0xbf2b78] -/+ 0x2000000 a tick), tilt
+    (pitch -67.5..90 degrees) and zoom (1/8 m a tick, 1..500 m). Dead, the
+    chase view is forced with the yaw tick << 21 (0x465f90). Outside
+    views draw the player's body and hide the gun, crosshair and target
+    ID; the scope does not show (0x455790) and the listener is the camera
+    (0x418c80). Not done: the body's held weapon, rounds from the gun's
+    muzzle (0x44dd50 -> 0x416f60) and picture-in-picture (pinp, F8,
+    [0x67cd10]). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
     (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`

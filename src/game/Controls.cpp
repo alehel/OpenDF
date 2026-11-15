@@ -26,6 +26,10 @@ const ActionName kNames[] = {
     {Action::ScopeInc, "scopeinc"}, {Action::ScopeDec, "scopedec"}, {Action::NightVision, "NVG"},
     {Action::MapTerrain, "mapterrain"}, {Action::MapElevation, "mapelevation"},
     {Action::Escape, "escape"}, {Action::VCam, "VCam"}, {Action::ScopeMag, "scopemag"},
+    {Action::FirstPerson, "1stPerson"}, {Action::ThirdPersonP, "3rdPersonp"}, {Action::ThirdPersonW, "3rdPersonw"},
+    {Action::ThirdPersonL, "3rdPersonl"}, {Action::CameraLeft, "CameraLeft"}, {Action::CameraRight, "CameraRight"},
+    {Action::CameraUp, "CameraUp"}, {Action::CameraDown, "CameraDown"}, {Action::CameraZoomIn, "CameraZoomIn"},
+    {Action::CameraZoomOut, "CameraZoomOut"},
 };
 
 // Built-in copy of DF.EXE's defaults (virtual-key code | mouse << 16).
