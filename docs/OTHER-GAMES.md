@@ -274,7 +274,9 @@ First differences from DF1:
     pushed out along the least-negative plane: sideways less 0.1 m
     (nothing within 0.1 m), vertically less 0.02 m (a side push sinks the
     mover 0.02 m, which the terrain then lifts back); a downward push stands
-    him on the object (ground distance 0, +0xF8 = it). Touch items
+    him on the object (ground distance 0, +0xF8 = it). An object whose
+    ladder volume the cubes also touch pushes in full instead, no 0.1 m
+    and no 0.02 m, whoever climbs (GOG Df2.exe 0x446ebc). Touch items
     (movecb) do not push. Type 4 volumes are ladders: contact clears airborne
     and, unless prone (+0x74 & 0x20), zeroes vel_z (GOG Df2.exe 0x446e0a..
     0x446e1c), and there is no gravity on one unless prone (0x4470a5: a
@@ -301,7 +303,8 @@ First differences from DF1:
     .ANMs climb in place with no horizontal step (INFERRED: DF2's table
     entry for a missing move). A side push sinks 0.02 m a tick, so a
     walker (0x800 per odd tick) pressed against a wall cannot climb, a
-    runner (0x1000) can (READ: 0x440a8b). `OPENDF_TESTLADDER=1|ITEM` sends
+    runner (0x1000) can (READ: 0x440a8b); in GOG Df2.exe the ladder's
+    own object pushes in full (0x446ebc), so only other objects sink him. `OPENDF_TESTLADDER=1|ITEM` sends
     the first such soldier into the nearest ladder (testing; D06M11's
     powcamp guard tower: under the CD rules climbed 27.5 to 32.9 m and
     stepped onto it; under GOG's the guard aims level and stays at the foot). Type 6 volumes set +0x64 & 0x1000000: the
@@ -560,7 +563,12 @@ First differences from DF1:
     half-blended navy inner segments, "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
-    0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
+    0x44e0a0) and above it the magnification "%2ix" (below), the laser
+    square. The scope shows (GOG 0x455790) only while
+    the scope flag is on for a flag-1 mode, no move key is down, and the
+    player is not dead, airborne, swimming or on a ladder (+0x64 &
+    0x422004); it also gates the scoped mouse and the X/Z/E keys; the
+    scope view's FOV 28.125 / mag degrees
     in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), mag for slots 3-5
     the kept magnification [0x79a698] (E / Shift+E step it 2..scope with
     wraparound while scoped, 0x44c7e0; cleared at mission start, 0x44e7f0,
@@ -645,7 +653,33 @@ First differences from DF1:
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
     attack_1 and attack_2 (GOG 0x441140; PrintScreen and the Von*
-    commands have no game-side action in OpenDF yet). Page 4 "Voice-over-net": drawn from the
+    commands have no game-side action in OpenDF yet). In a mission (GOG
+    0x421be0) a key runs the table's first one-shot record (flags +0x2a
+    without 4) for it whose modifier test passes: flag 0x40 needs Shift,
+    0x100 Ctrl; otherwise with Shift or Ctrl down (not the key itself) it
+    needs 0x200 (resolution, tab, NextWaypoint, NextFlag, cycle,
+    scopemag), so weapon keys do nothing while walking with Shift or
+    firing with Ctrl; Shift sets bit 31, which reverses cycle,
+    NextWaypoint, NextFlag and scopemag (0x41f150). A mouse button
+    (0x420e10: left 1, right 2, middle 0x10) runs the first one-shot
+    record with exactly that mouse mask (scope on the right, Prone on the
+    middle); the wheel (0x4799e0, per 120) steps the zeroing (forward up,
+    back down) while the scope shows, else cycles (back next, forward
+    previous; 0x44d3c0 with -1: current - 1..0, then 9..current).
+    Views (GOG 0x414240 / 0x413dd0, eased by 0x4141b0 each tick: the
+    pivot 1/16 toward the body, the yaw 1/32): 1stPerson F2, 3rdPersonp F5
+    (chase: the body's eased yaw + [0xbf2b78]), 3rdPersonw F6 (world-fixed
+    yaw [0xbf2b78]), 3rdPersonl F7 (fly-by: a point 4 m out at the body yaw
+    + 67.5 degrees, 1.5 m above the ground, moved on past 30 m); refused
+    while dead. A new mode resets yaw 0, pitch 0x4000000, distance 3 m;
+    the held keypad keys turn ([0xbf2b78] -/+ 0x2000000 a tick), tilt
+    (pitch -67.5..90 degrees) and zoom (1/8 m a tick, 1..500 m). Dead, the
+    chase view is forced with the yaw tick << 21 (0x465f90). Outside
+    views draw the player's body and hide the gun, crosshair and target
+    ID; the scope does not show (0x455790) and the listener is the camera
+    (0x418c80). Not done: the body's held weapon, rounds from the gun's
+    muzzle (0x44dd50 -> 0x416f60) and picture-in-picture (pinp, F8,
+    [0x67cd10]). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
     (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`

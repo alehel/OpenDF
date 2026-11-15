@@ -199,6 +199,15 @@ private:
     bool df1PauseGated(Action a) const {
         return (a == Action::Scope || a == Action::Briefing) && (paused_ || playerDead());
     }
+    // The game commands (DF.EXE 0x42d9c0, GOG Df2.exe 0x41f150); `reverse`
+    // is GOG's bit 31 (Shift held, the wheel forward).
+    void runAction(Action act, bool reverse);
+    // GOG Df2.exe 0x420e10: a mouse button (1 left, 2 right, 0x10 middle)
+    // runs the first one-shot command bound to it; the wheel accumulates
+    // WM_MOUSEWHEEL deltas (0x4799e0, [0xe0ff24]), each 120 a step.
+    void df2MouseButton(int mask);
+    void df2MouseWheel(int delta);
+    int wheelAccum_ = 0;
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
     void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
     void drawViewModel(const Screen& s);
@@ -580,11 +589,15 @@ private:
     Vec3 deadShift_{0, 0, 0}, camPivot_{0, 0, 0}, camLag_{0, 0, 0};
     float deadYaw_ = 0, camYaw_ = 0;      // OpenDF heading / DF yaw (anticlockwise), radians
     Vec3 deadBodyOrigin() const;
-    // Delta Force's outside views (GOG Df.exe 0x42ac10 / 0x42a6e0): the mode
-    // [0x6ba3ec] (0 first person, 1 orbit behind the smoothed body yaw, 2
-    // orbit at a world yaw, 3 the lookout [0x6ba40c]), its yaw offset
+    // The outside views. Delta Force (GOG Df.exe 0x42ac10 / 0x42a6e0): the
+    // mode [0x6ba3ec] (0 first person, 1 orbit behind the smoothed body yaw,
+    // 2 orbit at a world yaw, 3 the lookout [0x6ba40c]), its yaw offset
     // [0x6ba424] (DF sense, radians), pitch [0x6ba428] and distance
-    // [0x6ba42c]; [0xc23a1c]: the mode was forced by death.
+    // [0x6ba42c]; [0xc23a1c]: the mode was forced by death. GOG Df2.exe
+    // (0x414240 / 0x413dd0) the same: [0xbf2b40] 0 first person, 1 chase
+    // (yaw [0xbf2b78] + the eased body yaw), 2 world-fixed, 3 fly-by (the
+    // fixed point [0xbf2b60..68]); pitch [0xbf2b7c], distance [0xbf2b80];
+    // dead, forced to 1 with the yaw tick << 21 ([0x79a68c], 0x465f90).
     int camMode_ = 0;
     float camYawOff_ = 0, camPitch_ = float(0x4000000) / 4294967296.f * 6.2831853f, camDist_ = 3.f;
     Vec3 lookout_{0, 0, 0};
@@ -593,7 +606,7 @@ private:
     void setCamMode(int mode);
     void placeLookout();
     // The view drawn: 0 first person, else the outside view (dead: 1).
-    int outsideView() const { return playerDead() ? 1 : world_.df2Rules ? 0 : camMode_; }
+    int outsideView() const { return playerDead() ? 1 : camMode_; }
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
     // Delta Force 2: air used under water (player slot +0xcc, DF2.EXE 0x4587f0).
     int air_ = 0;
@@ -794,7 +807,7 @@ private:
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
     void df2SetWaypoint(Df2Sel s);
-    void df2NextWaypoint();
+    void df2NextWaypoint(int dir = 1);
     void df1StepWaypoint(int dir);
     struct Df2WpView { bool ok = false; double x = 0, y = 0; float elev = 0; std::string name; int listIndex = -1; };
     Df2WpView df2CurrentWaypoint() const;
@@ -1532,6 +1545,10 @@ void Game::runInputScript(float dt) {
             if (held(SDL_SCANCODE_LSHIFT)) k.keysym.mod = KMOD_LSHIFT;
             if (held(SDL_SCANCODE_LCTRL)) k.keysym.mod = SDL_Keymod(k.keysym.mod | KMOD_LCTRL);
             handleKey(k);
+        } else if (c.op == "click" && arsenal_.df2() && controls_.df2Table()) {
+            df2MouseButton(c.arg == "Left" ? 1 : c.arg == "Right" ? 2 : 0x10);
+        } else if (c.op == "wheel" && arsenal_.df2() && controls_.df2Table()) {
+            df2MouseWheel(int(c.value) * 120);
         } else if (c.op == "hold") {
             const SDL_Scancode h = c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc;
             // A held key is pressed first (its key-down event), as on a keyboard.
@@ -2432,6 +2449,11 @@ Vec3 Game::deadBodyOrigin() const {
 // mode 2 the same at the world yaw [0x6ba424] alone, at least 1 m above the
 // ground, looking at the pivot + 0.5 m (no lag terms); mode 3 from the
 // lookout at the pivot + 0.5 m.
+// GOG Df2.exe 0x413dd0 is the same for its chase view (mode 1, the yaw
+// [0xbf2b78] + the eased body yaw, pitch [0xbf2b7c], (-[0xbf2b80], 0, 0.5)),
+// the world-fixed view (2: the yaw [0xbf2b78] alone, at least 1 m above the
+// ground) and the fly-by (3: the fixed point); each looks at the pivot
+// raised 0.5 m (lowered with the slow-pivot rule only in mode 1).
 Vec3 Game::viewDir() const {
     if (dirOverride_) return *dirOverride_;
     const int mode = outsideView();
@@ -3609,7 +3631,11 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    Action act = controls_.actionFor(k.keysym.scancode);
+    // GOG Df2.exe 0x421be0: the table's first one-shot record for the key
+    // that passes the Shift / Ctrl test, with bit 31 when Shift is down.
+    const bool df2Keys = arsenal_.df2() && controls_.df2Table();
+    Action act = df2Keys ? controls_.df2KeyAction(k.keysym.scancode, shift, (k.keysym.mod & KMOD_CTRL) != 0)
+                         : controls_.actionFor(k.keysym.scancode);
     // GOG Df.exe 0x479380 (CD 0x42ea10): with Shift or Ctrl down (the key
     // event's 0x1000000 / 0x4000000 bits, [0xd093c0] / [0xd093c1] in
     // 0x498a70) a press entry fires only if it asks for that modifier (+0x2a
@@ -3621,8 +3647,37 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         const SDL_Scancode sc = k.keysym.scancode;
         if (sc != SDL_SCANCODE_LSHIFT && sc != SDL_SCANCODE_RSHIFT && sc != SDL_SCANCODE_LCTRL && sc != SDL_SCANCODE_RCTRL) act = Action::Count;
     }
+    runAction(act, df2Keys && shift);
+}
+
+void Game::df2MouseButton(int mask) {
+    const Action act = controls_.df2MouseAction(mask);
+    // attack_1 (mouse 1) is the trigger, polled every tick (0x41eb50's
+    // tail, 0x420db0): its one-shot command adds nothing here.
+    if (act != Action::Fire) runAction(act, false);
+}
+
+void Game::df2MouseWheel(int delta) {
+    // 0x420e10 with [0x67cd00] = 0 (never written): back (0x200) the
+    // zeroing down (scopedec 0xc1) while 0x455790 holds, else cycle
+    // (0xbf); forward (0x100) scopeinc (0xc0), else cycle reversed
+    // (0x800000bf -> 0x44d3c0(-1)).
+    wheelAccum_ += delta;
+    while (wheelAccum_ >= 120) {
+        wheelAccum_ -= 120;
+        if (df2ScopeActive()) runAction(Action::ScopeInc, false);
+        else runAction(Action::Cycle, true);
+    }
+    while (wheelAccum_ <= -120) {
+        wheelAccum_ += 120;
+        if (df2ScopeActive()) runAction(Action::ScopeDec, false);
+        else runAction(Action::Cycle, false);
+    }
+}
+
+void Game::runAction(Action act, bool reverse) {
     if (df2Hud_.on) {
-        // DF2: while paused only Pause and Escape are taken.
+        // DF2: while paused only Pause and Escape are taken (0x42d9e3's flag 0x10000).
         if (paused_ && act != Action::Pause && act != Action::Escape) return;
     } else if (df1PauseGated(act)) {
         return;
@@ -3648,11 +3703,12 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         // (OpenDF) the box frees the mouse; N / Escape take it back.
         if (captured_) { captured_ = false; quitFreedMouse_ = true; SDL_SetRelativeMouseMode(SDL_FALSE); }
         break;
-    // DF1: latched toggles taken in the player's ground branch (GOG Df.exe
-    // 0x477d40 -> 0x488200); DF2 sets the stance outright.
-    case Action::Stand: if (world_.df2Rules) player_.stance = Stance::Stand; else player_.requestStance(Stance::Stand); break;
-    case Action::Crouch: if (world_.df2Rules) player_.stance = Stance::Crouch; else player_.requestStance(Stance::Crouch); break;
-    case Action::Prone: if (world_.df2Rules) player_.stance = Stance::Prone; else player_.requestStance(Stance::Prone); break;
+    // Latched toggles: DF1 takes them in the player's ground branch (GOG
+    // Df.exe 0x477d40 -> 0x488200), DF2 on the next odd tick (GOG Df2.exe
+    // 0x41f150 -> 0x447120).
+    case Action::Stand: player_.requestStance(Stance::Stand); break;
+    case Action::Crouch: player_.requestStance(Stance::Crouch); break;
+    case Action::Prone: player_.requestStance(Stance::Prone); break;
     // Weapon keys select the original's slots (DF.EXE 0x42de85 -> 0x44aa74):
     // 0 laser designator, 1 knife (neither done yet), 2 sidearm, 3-5 the
     // primary's modes, 6-8 the kit's, 9 frag grenade.
@@ -3666,13 +3722,13 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Weapon7: arsenal_.select(7); break;
     case Action::Weapon8: arsenal_.select(8); break;
     case Action::Weapon9: arsenal_.select(9); break;
-    case Action::Cycle: arsenal_.cycle(); break;
+    case Action::Cycle: arsenal_.cycle(reverse ? -1 : 1); break;   // GOG Df2.exe 0x41f150 case 0x5e
     case Action::VCam: arsenal_.toggleCameraView(); break;   // GOG Df2.exe 0x41f150 case 0x28
     // GOG Df.exe 0x477d40: 0x1e flips [0xc23a34]; 0x1f cycles (0x484a50) only while it is on.
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
-        if (df2Hud_.on) df2NextWaypoint();
+        if (df2Hud_.on) df2NextWaypoint(reverse ? -1 : 1);   // GOG Df2.exe case 0x16: 0x44d280(+-1)
         else df1StepWaypoint(1);
         break;
     case Action::PrevWaypoint:   // GOG Df.exe only (E, command 0x2f -> 0x484d00); DF2: not traced, nothing
@@ -3747,7 +3803,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // magnification up, Shift+E down.
     // GOG Df2.exe 0x41f150 case 0x61: 0x44c7e0(Shift ? -1 : +1) when
     // 0x455790 holds (the binding has flag 0x200, so Shift does not block it).
-    case Action::ScopeMag: if (arsenal_.df2() && df2ScopeActive()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
+    case Action::ScopeMag: if (arsenal_.df2() && df2ScopeActive()) arsenal_.scopeMagStep(reverse ? -1 : 1); break;
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
         // follows the raised move, set each tick (Game::run, 0x45c7e2).
@@ -3773,10 +3829,12 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
     case Action::CenterView: player_.pitch = 0; break;
     // DF1 outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193 -> 0x42ac10).
-    case Action::FirstPerson: if (!world_.df2Rules) setCamMode(0); break;
-    case Action::ThirdPersonP: if (!world_.df2Rules) setCamMode(1); break;
-    case Action::ThirdPersonW: if (!world_.df2Rules) setCamMode(2); break;
-    case Action::ThirdPersonL: if (!world_.df2Rules) setCamMode(3); break;
+    // GOG Df2.exe 0x41f150 cases 0x6f..0x72 -> 0x414240(player, 0..3): flag 1,
+    // refused while dead (0x41f16d).
+    case Action::FirstPerson: if (!(world_.df2Rules && playerDead())) setCamMode(0); break;
+    case Action::ThirdPersonP: if (!(world_.df2Rules && playerDead())) setCamMode(1); break;
+    case Action::ThirdPersonW: if (!(world_.df2Rules && playerDead())) setCamMode(2); break;
+    case Action::ThirdPersonL: if (!(world_.df2Rules && playerDead())) setCamMode(3); break;
     // GOG Df.exe 0x477d40: cmd 0x1e (fo) toggles [0xc23a34]; cmd 0x1f (tab)
     // picks the next observer while it is on (0x484a50).
     // DF1: move_jump is a press command (GOG Df.exe 0x477d40 cmd 0x90:
@@ -4121,8 +4179,10 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm"))   // the BRDM's are posed above
             models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     // The dead player's body, seen from the orbit camera: the soldier's
-    // model posed by the death animation DF.EXE chose (0x46c920).
-    if (playerDead() && !playerBody_.angles().empty())
+    // model posed by the death animation DF.EXE chose (0x46c920). GOG
+    // Df2.exe draws the player like anyone else in its outside views
+    // (0x44f4d0 skips him only in mode 0): the body in its current move.
+    if (outsideView() != 0 && !playerBody_.angles().empty())
         if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
             if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
                 WorldObject body;
@@ -5110,7 +5170,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (!showMap_ && friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
     if (!showMap_ && df2Hud_.on) drawDf2Waypoints3d(s, viewProj);   // 0x450070
     if (showMap_) drawCommandMap(s);
-    else if (crosshair_ && df2Hud_.on) {
+    else if (crosshair_ && df2Hud_.on && outsideView() == 0) {   // GOG Df2.exe 0x465fde: [0x79a7fc] and mode 0
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
         // W*640/65536 mode pixels from the centre of the 3D rows.
         const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
@@ -5141,9 +5201,8 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     }
     // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
     // crosshairs on or off; none in an outside view (returns after the pick
-    // while [0xbf2b40] is set), which OpenDF's camera is once the player is
-    // dead.
-    if (!showMap_ && df2Hud_.on && !playerDead()) drawDf2TargetId(s, cx, cy, 0);
+    // while [0xbf2b40] is set).
+    if (!showMap_ && df2Hud_.on && outsideView() == 0) drawDf2TargetId(s, cx, cy, 0);
     // GOG Df.exe 0x402300: the same-side mark, with the crosshairs on or
     // off; nothing outside the first-person view ([0x6ba3ec] != 0).
     if (!showMap_ && !df2Hud_.on && !playerDead()) drawDf1TargetId(s, cx, cy, 0);
@@ -5892,14 +5951,15 @@ void Game::df2SetWaypoint(Df2Sel s) {
 
 // NextWaypoint (action 32, 0x446700(+1)): only the mission list; the current
 // waypoint not in it -> from index 0, so the next is entry 1.
-void Game::df2NextWaypoint() {
+void Game::df2NextWaypoint(int dir) {
     if (route_.empty()) return;
     if (df2HudWp_.kind != 0) {
         df2HudWp_ = Df2Sel{};
         routeIndex_ = 1 % int(route_.size());
         return;
     }
-    routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+    const int n = int(route_.size());
+    routeIndex_ = (routeIndex_ + (dir < 0 ? n - 1 : 1)) % n;
 }
 
 // GOG Df.exe NextWaypoint 0x484c80 / PrevWaypoint 0x484d00: nothing with
@@ -8013,6 +8073,17 @@ int Game::run() {
                         df2MapClick(ms, nx, ny, e.type == SDL_MOUSEBUTTONDOWN, e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 3 : 2);
                 }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
+                else if (e.type == SDL_MOUSEBUTTONDOWN && arsenal_.df2() && controls_.df2Table()) {
+                    // GOG Df2.exe 0x4799e0 -> 0x420e10: the bound one-shot command
+                    // (scope on the right button, Prone on the middle by default).
+                    const int mask = e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 2
+                                   : e.button.button == SDL_BUTTON_MIDDLE ? 0x10 : 0;
+                    if (mask) df2MouseButton(mask);
+                }
+                else if (e.type == SDL_MOUSEWHEEL && captured_ && arsenal_.df2() && controls_.df2Table()) {
+                    const int y = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+                    df2MouseWheel(y * 120);
+                }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_ && arsenal_.df2()) {
                     df2MouseX += e.motion.xrel;
@@ -8151,6 +8222,9 @@ int Game::run() {
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
             const bool moveKeys = in.forward != 0 || in.strafe != 0 || (arsenal_.df2() ? in.jump : in.jumpPress);   // DF1 0x400: the press
             arsenal_.setMoveKeys(moveKeys);
+            // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004.
+            arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder() ||
+                                     outsideView() != 0);   // [0xbf2b40] with picture-in-picture [0x67cd10] off
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
@@ -8521,19 +8595,36 @@ int Game::run() {
                     dy -= std::floor(dy / (2 * kPi) + 0.5f) * 2 * kPi;
                     camYaw_ += dy / 32.f;
                 }
-                // GOG Df.exe 0x404640: dead, the view is mode 1 ([0xc23a1c] set);
-                // alive again it goes back to first person; with attributes
-                // 0x400 (no outside views) it stays first person. 0x42a6e0:
-                // the lookout moves on once the pivot is over 30 m from it
-                // (|dx| + |dy| + |dz| > 0x1e0000).
-                if (!world_.df2Rules) {
-                    if (playerDead()) { setCamMode(1); deadCam_ = true; }
-                    else if (deadCam_) { setCamMode(0); deadCam_ = false; }
-                    else if ((o_.attributes & 0x400) && camMode_ != 0) setCamMode(0);
-                    if (camMode_ == 3) {
-                        const Vec3 d = world_.nearest(lookout_, camPivot_) - camPivot_;
-                        if (std::abs(d.x) + std::abs(d.y) + std::abs(d.z) > 30.f) placeLookout();
-                    }
+                // GOG Df.exe 0x404640 / Df2.exe 0x465f90: dead, the view is
+                // mode 1 ([0xc23a1c] / [0x79a68c] set); alive again it goes back
+                // to first person. Delta Force with attributes 0x400 (no
+                // outside views) stays first person. 0x42a6e0 / 0x413dd0: the
+                // lookout (fly-by point) moves on once the pivot is over 30 m
+                // from it (|dx| + |dy| + |dz| > 0x1e0000).
+                if (playerDead()) { setCamMode(1); deadCam_ = true; }
+                else if (deadCam_) { setCamMode(0); deadCam_ = false; }
+                else if (!world_.df2Rules && (o_.attributes & 0x400) && camMode_ != 0) setCamMode(0);
+                if (camMode_ == 3 && !playerDead()) {
+                    const Vec3 d = world_.nearest(lookout_, camPivot_) - camPivot_;
+                    if (std::abs(d.x) + std::abs(d.y) + std::abs(d.z) > 30.f) placeLookout();
+                }
+                // GOG Df2.exe's held camera commands (0x41f150 cases 0x73..0x77,
+                // polled each tick, 0x420670): yaw -/+ 0x2000000, pitch
+                // -/+ 0x2000000 within 0xd0000000..0x40000000, distance
+                // -/+ 0x2000 within 1..500 m.
+                if (arsenal_.df2() && !(df2Hud_.on && showMap_)) {
+                    Uint8 kb[SDL_NUM_SCANCODES];
+                    std::memcpy(kb, SDL_GetKeyboardState(nullptr), sizeof kb);
+                    for (SDL_Scancode sc : inputHeld_) kb[sc] = 1;
+                    const Uint32 mb = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+                    auto held = [&](Action a) { return controls_.down(a, kb, mb); };
+                    const float step = float(0x2000000) / 4294967296.f * 2 * kPi;
+                    if (held(Action::CameraLeft)) camYawOff_ -= step;
+                    if (held(Action::CameraRight)) camYawOff_ += step;
+                    if (held(Action::CameraUp)) camPitch_ = std::max(camPitch_ - step, -0.75f * kPi * 0.5f);
+                    if (held(Action::CameraDown)) camPitch_ = std::min(camPitch_ + step, kPi * 0.5f);
+                    if (held(Action::CameraZoomIn)) camDist_ = std::max(camDist_ - 0x2000 / 65536.f, 1.f);
+                    if (held(Action::CameraZoomOut)) camDist_ = std::min(camDist_ + 0x2000 / 65536.f, 500.f);
                 }
                 // plyr (0x45a27c): every 64 ticks the route's points count as
                 // reached for the player's side.
@@ -8634,9 +8725,10 @@ int Game::run() {
                 } else if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;
-            // The listener (0x4735b8): the player, or the external camera once dead.
+            // The listener (0x4735b8): the player, or the external camera once
+            // dead (GOG Df2.exe 0x418c80: the camera in any outside view).
             {
-                const Vec3 at = playerDead() ? viewEye() : player_.origin();
+                const Vec3 at = outsideView() != 0 ? viewEye() : player_.origin();
                 const Vec3 f = viewDir();
                 sound_.setListener(at, std::atan2(f.x, -f.z), &terrain_);
                 arsenal_.setListener(at);

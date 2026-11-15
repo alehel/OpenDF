@@ -60,7 +60,9 @@ public:
     // (0x416e90 instead of the normal view, 0x44dd50).
     // Delta Force: the Crouch / Prone / Stand commands are latched (GOG
     // Df.exe 0x477d40: 0xa1 [0xc23a04], 0xa2 [0xc23a08], 0xa4 [0xc23a0c])
-    // and taken in update's on-ground branch (0x488200).
+    // and taken in update's on-ground branch (0x488200). Delta Force 2:
+    // [0x79a678] / [0x79a67c] / [0x79a680] (GOG Df2.exe 0x41f150), taken on
+    // the next odd tick (0x447120).
     void requestStance(Stance s) { (s == Stance::Crouch ? reqCrouch_ : s == Stance::Prone ? reqProne_ : reqStand_) = true; }
     bool mounted() const { return mounted_; }
     float landOrigin() const;
@@ -112,6 +114,7 @@ private:
     float vz_ = 0;                   // DF2: vertical speed, metres a tick (+0x44)
     Vec3 step_{0, 0, 0};             // DF2: the stored horizontal step of the move (0x9e2260)
     float stepDz_ = 0;               // and its vertical part (swimming)
+    Vec3 tickStep_{0, 0, 0};         // DF2: this odd tick's step (the slide replaces the move's, 0x446b35)
     float poseOrigin_ = 0;           // DF2: the chosen move's origin height above the feet
     bool ladder_ = false, armory_ = false;
     std::vector<int> neighbours_;    // DF2 +0xFC: the objects that can push (0x43f2b0)

@@ -702,7 +702,8 @@ std::vector<int> World::df2Neighbours(Vec3 at, float margin, int self) const {
 // push.z < 0 -> standing on it (+0xF8 = it); x and y move by the push less
 // 0x1999 (0.1 m) toward zero, not at all within 0.1 m; z: a push under
 // 0x51E (0.02 m) gets 0x51E added, z -= push.z (so 0.02 m of overlap stays,
-// and a side push lowers z by 0.02 m). The points are not moved between
+// and a side push lowers z by 0.02 m); with a ladder volume touched (flags
+// 1) the whole push instead (GOG 0x446ebc). The points are not moved between
 // neighbours. Flags 1 (type 4) with the player or AI +0x34 & 0x400: ladder
 // 0x400000 and not airborne; flags 4 (type 6): +0x64 |= 0x1000000.
 World::Df2Contact World::df2PushOut(Vec3& origin, float feetOffset, const std::vector<int>& neighbours, bool mayClimb) const {
@@ -720,11 +721,20 @@ World::Df2Contact World::df2PushOut(Vec3& origin, float feetOffset, const std::v
                 c.touched.push_back(i);
             } else {
                 if (push.y < 0) { c.onObject = true; c.platform = i; }
-                if (std::abs(push.x) > kSide) origin.x -= push.x > 0 ? push.x - kSide : push.x + kSide;
-                if (std::abs(push.z) > kSide) origin.z -= push.z > 0 ? push.z - kSide : push.z + kSide;
-                float pz = push.y;
-                if (pz < kOverlap) pz += kOverlap;
-                origin.y -= pz;
+                if (flags & 1) {
+                    // GOG Df2.exe 0x446ebc: an object whose ladder volume
+                    // (type 4) the points touch pushes in full
+                    // (0x446f33..0x446f4b), whoever climbs.
+                    origin.x -= push.x;
+                    origin.z -= push.z;
+                    origin.y -= push.y;
+                } else {
+                    if (std::abs(push.x) > kSide) origin.x -= push.x > 0 ? push.x - kSide : push.x + kSide;
+                    if (std::abs(push.z) > kSide) origin.z -= push.z > 0 ? push.z - kSide : push.z + kSide;
+                    float pz = push.y;
+                    if (pz < kOverlap) pz += kOverlap;
+                    origin.y -= pz;
+                }
             }
         }
         if ((flags & 1) && mayClimb) c.ladder = true;

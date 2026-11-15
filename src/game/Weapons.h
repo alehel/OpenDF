@@ -209,7 +209,9 @@ public:
     // DF2 scope zeroing (keys X / Z, 0x445ff0): the setting of the primary
     // slots 3-5, 0..10 (0..15 for the Barrett); the scope view is lowered by
     // the type's elevation for it (0x44e143).
+    // GOG Df2.exe 0x44c770: only while the scope shows (0x455790).
     void zeroStep(int d) {
+        if (df2_ && !scopeShown()) return;
         if (current_ < 3 || current_ > 5) return;
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
@@ -231,7 +233,9 @@ public:
     // every slot 0-9 holding mode 0x21, 0x22 or 0x31 gets n - 1 spare clips,
     // a full magazine and a round chambered; nothing else changes.
     void refillDf2Grenades();
-    void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
+    // 0x44b81c: next slot with a mode, wrapping. GOG Df2.exe 0x44d3c0:
+    // none from 11/12; dir < 1 goes back (Shift, the wheel forward).
+    void cycle(int dir = 1);
     void cycleBack();             // DF1 'cycleb' (GOG Df.exe 0x484b70(-1)): previous slot with a mode, wrapping from 9
     void reload();                // 0x44a004
     void toggleZoom();
@@ -335,8 +339,14 @@ public:
     // (+0x74 & 0x18) zero, i.e. not while moving; the shot's origin
     // (0x447102) and the designator (0x45aad6) take 0x447b40 alone.
     // INFERRED: the speed bits are non-zero exactly while a move key is down.
-    bool scopeShown() const { return zoomed() && (!df2_ || !moveKeys_); }
+    // GOG Df2.exe 0x455790 also returns 0 while the player is dead,
+    // airborne, swimming or on a ladder (+0x64 & 0x422004), and in the
+    // third-person views ([0x67cd10] == 0 with [0xbf2b40]), which OpenDF
+    // does not have; it gates the scope view (0x465f90), the scoped mouse
+    // (0x41eb50) and the zeroing and magnification keys.
+    bool scopeShown() const { return zoomed() && (!df2_ || (!moveKeys_ && !scopeBlocked_)); }
     void setMoveKeys(bool down) { moveKeys_ = down; }
+    void setScopeBlocked(bool b) { scopeBlocked_ = b; }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
@@ -437,6 +447,7 @@ private:
     float kick_[3] = {0, 0, 0};
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
+    bool scopeBlocked_ = false;   // DF2: the player's +0x64 & 0x422004 (0x455790)
     std::vector<Projectile> bullets_;
     Tracers tracers_;
     uint32_t df1TracerColour(const Projectile& b, const World& world) const;

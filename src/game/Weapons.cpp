@@ -650,8 +650,26 @@ void Arsenal::select(int slot) {
     }
 }
 
-void Arsenal::cycle() {
+void Arsenal::cycle(int dir) {
     if (current_ >= kMountSlot) return;   // GOG Df2.exe 0x44d3c0: nothing from slots 11 / 12
+    if (df2_) {
+        // 0x44d3c0: forward current + 1..9, then 0..current (with 10,
+        // DF2's binoculars, 0..10); back current - 1..0, then 9..current
+        // (none from 10).
+        if (dir >= 1) {
+            for (int s = current_ + 1; s < kSlots; ++s)
+                if (slots_[size_t(s)]) { select(s); return; }
+            for (int s = 0; s < current_ + 1; ++s)
+                if (slots_[size_t(s)]) { select(s); return; }
+        } else {
+            for (int s = current_ - 1; s >= 0; --s)
+                if (slots_[size_t(s)]) { select(s); return; }
+            if (current_ - 1 > 8) return;
+            for (int s = 9; s > current_ - 1; --s)
+                if (slots_[size_t(s)]) { select(s); return; }
+        }
+        return;
+    }
     for (int k = 1; k <= kSlots; ++k) {
         const int s = (current_ + k) % kSlots;
         if (slots_[size_t(s)]) { select(s); return; }

@@ -62,6 +62,19 @@ public:
     // Overwrites one game-table entry by DF.EXE name (key = VK | mouse mask
     // << 16; 0 unbinds), as 0x41cbfc does with the profile's bindings.
     void set(const std::string& name, uint32_t key);
+    // Delta Force 2's one-shot dispatch, in its table's order (records with
+    // flag 4, the held commands, are polled instead). A key press (GOG
+    // Df2.exe 0x421be0): the first record with that key whose flags pass
+    // the modifier test (0x40 needs Shift, 0x100 Ctrl; otherwise with
+    // Shift or Ctrl down, unless the key is one of them, it needs 0x200);
+    // Action::Count when none does or it is not an OpenDF action. Then,
+    // as before, a held record bound to the key (OpenDF takes some of
+    // them on the press). df2Table() is false when GOG's table was not read.
+    bool df2Table() const { return !df2Recs_.empty(); }
+    Action df2KeyAction(SDL_Scancode key, bool shift, bool ctrl) const;
+    // A mouse button (0x420e10: 1 left, 2 right, 0x10 middle): the first
+    // one-shot record whose mouse mask is exactly that.
+    Action df2MouseAction(int mask) const;
     // Windows virtual-key codes <-> SDL scancodes (the keys DF.EXE knows).
     static SDL_Scancode fromVirtualKey(uint32_t vk);
     static uint32_t toVirtualKey(SDL_Scancode sc);
@@ -69,6 +82,8 @@ public:
 private:
     struct Binding { SDL_Scancode key = SDL_SCANCODE_UNKNOWN; int mouse = 0; };
     Binding bind_[int(Action::Count)];
+    struct Df2Rec { std::string name; Action action; Binding bind; uint16_t flags; };
+    std::vector<Df2Rec> df2Recs_;   // GOG Df2.exe 0x4b1710 order, flags +0x2a
     bool fromExe_ = false;
 };
 

@@ -164,15 +164,19 @@ bool Controls::initDf2(const ExeImage& exe) {
     // GOG 0x41e370), read here from record 1.
     const uint32_t kTable = t->keys, kEntry = t->keyRecord;
     std::vector<std::pair<std::string, uint32_t>> found;
+    std::vector<uint16_t> flags;
     for (uint32_t i = 0; i < 0x1FF; ++i) {
         const std::string name = exe.str(kTable + i * kEntry + 4, 32);
-        uint32_t key = 0;
+        uint32_t key = 0, f = 0;
         if (!exe.u32(kTable + i * kEntry + 36, key)) break;
         if (name.empty()) {
             if (i > 0 && found.empty()) break;
             continue;
         }
         found.push_back({name, key});
+        // GOG: the flags word +0x2a (0x421be0, 0x420e10, 0x41f150).
+        exe.u32(kTable + i * kEntry + 40, f);
+        flags.push_back(uint16_t(f >> 16));
     }
     bool sane = false;
     for (const auto& [n, k] : found)
@@ -183,8 +187,38 @@ bool Controls::initDf2(const ExeImage& exe) {
     for (const auto& [n, k] : found)
         for (const auto& nm : kNames)
             if (n == nm.name) bind_[int(nm.action)] = {fromVirtualKey(k & 0xFFFF), int(k >> 16)};
+    df2Recs_.clear();
+    if (kEntry == 0x70)   // the GOG build's dispatch (the CD's 44-byte records are not checked)
+        for (size_t i = 0; i < found.size(); ++i) {
+            Action a = Action::Count;
+            for (const auto& nm : kNames)
+                if (found[i].first == nm.name) a = nm.action;
+            df2Recs_.push_back({found[i].first, a, {fromVirtualKey(found[i].second & 0xFFFF), int(found[i].second >> 16)}, flags[i]});
+        }
     fromExe_ = true;
     return true;
+}
+
+Action Controls::df2KeyAction(SDL_Scancode key, bool shift, bool ctrl) const {
+    auto is = [&](const Binding& b) { return b.key != SDL_SCANCODE_UNKNOWN && (b.key == key || partner(b.key) == key); };
+    const bool modKey = key == SDL_SCANCODE_LSHIFT || key == SDL_SCANCODE_RSHIFT || key == SDL_SCANCODE_LCTRL || key == SDL_SCANCODE_RCTRL;
+    for (const Df2Rec& r : df2Recs_) {
+        if (!is(r.bind) || (r.flags & 4)) continue;
+        bool ok = true;
+        if (r.flags & 0x40) ok = shift;
+        else if (r.flags & 0x100) ok = ctrl;
+        else if ((shift || ctrl) && !modKey) ok = (r.flags & 0x200) != 0;
+        if (ok) return r.action;
+    }
+    for (const Df2Rec& r : df2Recs_)
+        if (is(r.bind) && (r.flags & 4)) return r.action;
+    return Action::Count;
+}
+
+Action Controls::df2MouseAction(int mask) const {
+    for (const Df2Rec& r : df2Recs_)
+        if (r.bind.mouse == mask && !(r.flags & 4)) return r.action;
+    return Action::Count;
 }
 
 Action Controls::actionFor(SDL_Scancode key) const {
@@ -212,6 +246,8 @@ std::string Controls::describe(Action a) const {
 void Controls::set(const std::string& name, uint32_t key) {
     for (const auto& n : kNames)
         if (name == n.name) bind_[int(n.action)] = {fromVirtualKey(key & 0xFFFF), int(key >> 16)};
+    for (Df2Rec& r : df2Recs_)
+        if (r.name == name) r.bind = {fromVirtualKey(key & 0xFFFF), int(key >> 16)};
 }
 
 } // namespace df
