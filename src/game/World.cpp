@@ -840,13 +840,13 @@ bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool hav
 // 0x868C material bit (translucent, keyed, ...) counted as see-through
 // while any other blocks; people never block; +1 when either end is at or
 // below a water level. Result: <= 0 blocked, else 1 + see-through count.
-int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
+int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
     b = nearest(b, a);
     const Vec3 d = b - a;
     const float len = std::sqrt(dot(d, d));
     if (len >= 800.f) return 0;
     // Delta Force 2 (0x406180): with fog on, not past the fog distance.
-    if (df2Rules && fogLevel > 0 && len > float(1 << fogLevel)) return 0;
+    if (df2Rules && fog && fogLevel > 0 && len > float(1 << fogLevel)) return 0;
     if (len < 1e-4f) return 1;
     RayHit h;
     if (!df2Rules) {
@@ -1139,7 +1139,7 @@ void World::applyHusk(int index) {
 // (0x44ff27): 128 - 16 d (heavy) or 32 - 4 d; when neither sight line from
 // the origin or 0.5 m above it reaches 0.5 m above the blast: nothing for
 // type 1, half otherwise.
-std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
+std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int owner, int ownerSide) {
     std::vector<std::string> out;
     auto len3 = [](float a, float b, float c) {
         a = std::abs(a), b = std::abs(b), c = std::abs(c);
@@ -1161,8 +1161,13 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             // Line of sight (0x45be04): from the body to the blast point
             // raised 0.5 m, then from 0.5 m higher; both blocked: no damage
             // for type 1, double distance otherwise.
+            // Delta Force 2 (GOG Df2.exe 0x454bde / 0x454c01 -> 0x406610):
+            // the line of fire, the terrain and the decorations and items
+            // in the way (walls, buildings, vehicles), no fog cutoff.
             RayHit h;
-            if (raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)) {
+            const bool blocked = df2Rules ? sight(p, target, int(i), -1, false) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1, false) <= 0
+                                          : raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
+            if (blocked) {
                 if (!heavy) continue;
                 d *= 2;
             }
@@ -1172,13 +1177,16 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             const int amount = df2Rules ? (d < 4 ? base : d < 8 ? base / 2 : base / 4) : d < 4 ? 4 : d < 8 ? 2 : 1;
             // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8).
             const int type = (d >= 4 && d < 8 && (std::rand() & 3) == 0) ? 3 : 2;
-            std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at));
+            // DF2 0x454cd7: the owner goes into the victim's +0xF8.
+            std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at), df2Rules ? owner : -1);
             if (!m.empty()) out.push_back(m);
             continue;
         }
         // A destroyed Delta Force gnrc object waiting to go off (flag 4, no
         // husk yet) is still in the blast and fires at once (0x4533f0).
         if ((o.hp <= 0 && o.gnrcTimer <= 0) || !o.model) continue;
+        // DF2 0x454f52..0x454f56: an object of the owner's side is spared.
+        if (df2Rules && owner != -1 && o.side == ownerSide) continue;
         const std::string& type = o.item ? o.item->type : std::string();
         const float h = o.model->flatRadius, v = o.model->height;
         float d;
@@ -1205,12 +1213,12 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             if (d <= 0.f) ++cls;
             if (o.item && cls < o.item->hp3) continue;
         }
-        if (sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0) {
+        if (sight(p, target, int(i), -1, !df2Rules) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1, !df2Rules) <= 0) {
             if (!heavy) continue;
             amount >>= 1;
         }
         if (amount <= 0) continue;
-        std::string m = damage(int(i), amount);
+        std::string m = damage(int(i), amount, 99, -1, df2Rules ? owner : -1);
         if (!m.empty()) out.push_back(m);
     }
     return out;

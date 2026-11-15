@@ -112,11 +112,15 @@ First differences from DF1:
     column 0 of the TGA sky palette, not interpolated, screen row k above the
     horizon row taking entry (k·s) >> 16 with s = 10·fov·horizon/width per
     row (0x467700); **surfaces** only from the `char_data` .CAL (DT/GS/SW/
-    RK/CT/SD → dirt/grass/snow/rock/sand; the TRN `type` lines are ignored,
+    RK/CT/SD → dirt/grass/snow/rock/sand, RD/MD/IE/QS → classes 8-11, GOG
+    0x470190; the TRN `type` lines are ignored,
     0x465e5b), read through DF2.EXE's renumbering bug, class(o) =
     cal[remap[remap[o]]] (0x4643a0, 0x466668), copied as the player hears it;
     no .CAL or unmatched names: class 0, silent footsteps (0x4139ae; ±5 m AI
-    noise per step, ±2 m on sand, ±10 m in water);
+    noise per step, ±2 m on sand, ±10 m in water; road, mud and QS 0x82/0x83,
+    ice 0x86/0x87, GOG 0x415780). Bullet impacts on the ground by class
+    (GOG 0x415a60): sound 3C/40/3A/3D/3A/3C/3C/37/3C/3A/3C, effect slot
+    5/7/9/13/8/6/5/11/5/9/5, AI noise 5/2/2/10/5/10/10/10/5/5/2 m for 1..11;
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
     body pre-test and nearest-along-the-ray rule are DF1's;
@@ -384,7 +388,24 @@ First differences from DF1:
     shells/impact grenades (16), others max(1, E/25); explosions (0x44d4a0):
     people base 8 (32 for the 12 m charge) full/half/quarter by 4 m/8 m,
     objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
-    that must reach the item's third hp value. Rounds penetrate objects (0x44bdd0: the face's
+    that must reach the item's third hp value; the blast's line of fire for
+    people, the player and objects is GOG 0x406610 (terrain, decorations and
+    items in the way, no fog cutoff); the blast carries its owner (the
+    round's shooter, the charge's placer, the strike's requester): objects of
+    the owner's side are spared and victims and fragments credit the owner
+    (0x454b60, 0x452120). Round explosions (GOG 0x453860): gex5 (0x13) on the
+    ground with a smoke generator (none for impact rounds whose ammo has
+    0x20000000), boomd (0x14) on objects, people and for the delay grenade's
+    fuse, effect 4 / sound 0x35 in the water, each with a ±200 m AI noise;
+    water splashes ±10 m, a dud M203 on a person effect 0x10, sound 0x39,
+    ±5 m. Glass (an intact object's 0x10000000 face): rounds and explosives
+    (LAW, impact and delay grenades) go through it without exploding, the
+    mesh breaking once (obj +0x78) with GLASS_SMASH 800 and a ±20 m (±40 m
+    for explosives) noise, no impact effect; the panes stay drawn (+0x78 has
+    no draw reader). Not yet: the glass shards (0x414a90: min(100, area·20)
+    of 107047..107049, ai `gdeb`) and the blast's flag-2 mesh pass. The bld2
+    crush (0x45cd80) takes 100 hp from people, every item-list object and
+    every non-building decoration in its box. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
     hits a tick; a face with no impact material, such as the wire fences, or
     glass on a husk costs nothing and the round goes on at full speed, GOG
@@ -404,8 +425,15 @@ First differences from DF1:
     and shrapnel; under the water every round, in white. Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
     and speeds, but fragments are ammo 31 and DF2's random generator 0x41ac40
     is reseeded to 0x5FC by every burst (DF1's seed call is empty), so each
-    burst has the same pattern about its heading; big blasts 0.2 m up, the
-    fire-mission shell kept above the water. Death moves (0x415130): DF1's
+    burst has the same pattern about its heading; the big blast (GOG
+    0x45f910 -> 0x4174d0: satchel, fire mission, boat, ibom) at the given
+    point (the +0x3333 goes only into the network packet), gex5 with the
+    generator's first two numbers as its yaw and scale, kind 5, a ±200 m
+    noise, no smoke, 200 fragments fanned from the object's yaw (the strike
+    0); the fire-mission shell kept above the water. Rounds drawn in flight:
+    M203 first, then the hand and delay grenades' 4033, then the LAW's
+    rocket (0x451ae0); the delay grenade's fuse is its lifetime less
+    (yaw >> 16) & 0x7f. Death moves (0x415130): DF1's
     names, plus kind 4 (falls: Death_B_P11DF) and 5 (drowning: Death_Water),
     no part clamp; soldiers landing hard take (1 << n) − 1 (0x43f600).
     Weapon handling is DF1's, routine for routine (READ): select 0x4480b0

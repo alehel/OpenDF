@@ -231,7 +231,7 @@ private:
     void weaponEvent(const WeaponEvent& e);
     void tickCharges();
     void blowCharge(Charge& c);
-    void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
+    void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor, int owner = -1);
     // Shrapnel's random numbers: DF.EXE rand()*2 (0x435db4; its seed call
     // 0x435dbc is a bare ret); DF2.EXE 0x41ac40 (x = rol(x,11) + x, x =
     // rol(x,4) ^ 1, 16 bits), reseeded to 0x5FC by every burst (0x41ac30).
@@ -292,9 +292,10 @@ private:
     bool df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const;
     void mineContact(int index);
     bool df2ItemDestroyed(int index);
-    // DF2.EXE 0x415490: the big blast (kind 5, 12 m) and 200 fragments, as a
-    // satchel (vehicle deaths, ibom).
-    void bigBlast(Vec3 at);
+    // DF2.EXE 0x415490 (GOG Df2.exe 0x4174d0): the big blast (kind 5, 12 m)
+    // and 200 fragments fanned from `heading` (OpenDF sense), owned by
+    // `owner` (satchels, fire missions, boats, ibom).
+    void bigBlast(Vec3 at, float heading = kPi / 2, int owner = -1);
     // DF2's bld2 collapse (0x4028d0): crush, then 64 steps one per 8 ticks.
     struct Collapse { int object, step, wait, rubble, dust, smoke; float box[4]; };   // box: the 2 m-inset footprint, file axes
     std::vector<Collapse> collapses_;
@@ -497,7 +498,12 @@ private:
                                         float aimPitch = 0);
     Vec3 viewDir() const;
     bool playerDead() const { return playerHp_ <= 0; }
-    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f, bool sound = true);
+    // effect: the effect slot (0: 3, or 4 in the water); smoke: a smoke
+    // generator on terrain (surface 0); owner: the blast's owner (round
+    // shooter, -3 the player, -1 none), credited with kills and sparing its
+    // side's objects in Delta Force 2.
+    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f, bool sound = true, int owner = -1, int effect = 0,
+                 bool smoke = true);
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
     void gnrcExplode(int index);   // Delta Force: a destroyed gnrc object goes off (0x453270)
     float effectScale_ = 0;        // > 0: the next spawnEffect's scale (effect +0x7c set by its caller)
@@ -836,7 +842,7 @@ bool Game::loadMission(int index) {
     }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
-    vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
+    vehicles_.bigBlast = [this](Vec3 at, float heading) { bigBlast(at, heading); };
     vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
     // AI rounds leave from the weapon (0x46ad9c; DF2.EXE 0x414f20 the same):
     // the body (no pitch) x the posed right hand (mesh 7) x the held-weapon
@@ -1352,20 +1358,35 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 // water), blast type 1 with radius 10 m, and on terrain a smoke generator.
 // Sound 0x32 (0x35 in the water). The LAW out of the water is blast
 // type 3 (`heavy`: objects lose 128 - 16 d).
-void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound) {
-    spawnEffect(surface == 2 ? 4 : 3, at);
+void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, int owner, int effect, bool smoke) {
+    spawnEffect(effect > 0 ? effect : surface == 2 ? 4 : 3, at);
     // Delta Force 2 sends these through its speed-of-sound queue (0x45E910).
     if (sound) sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
-    for (auto& m : world_.blast(at, radius, heavy)) pushMessage(m);
+    const int ownerSide = owner == -3 ? kPlayerSide : owner >= 0 && size_t(owner) < world_.objects.size() ? world_.objects[size_t(owner)].side : 0;
+    for (auto& m : world_.blast(at, radius, heavy, owner, ownerSide)) pushMessage(m);
     // The player is a character like the others (0x785b60): body origin
     // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
     if (!playerDead()) {
         const Vec3 p = world_.nearest(player_.origin(), at);
         const Vec3 v = p - at;
-        const float d = std::sqrt(dot(v, v));
         RayHit h;
         const Vec3 target = at + Vec3{0, 0.5f, 0};
-        const bool blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
+        // Delta Force 2: the player is an organics record like the others
+        // (GOG Df2.exe 0x455200 -> 0x454b60): distance by 0x41e880 (largest
+        // + 11/32 middle + 1/4 smallest), the line of fire 0x406610 (terrain,
+        // decorations and items, no fog cutoff) from the origin and 0.5 m up.
+        float d = std::sqrt(dot(v, v));
+        bool blocked;
+        if (world_.df2Rules) {
+            float a = std::abs(v.x), b = std::abs(v.y), c = std::abs(v.z);
+            if (a < b) std::swap(a, b);
+            if (a < c) std::swap(a, c);
+            if (b < c) std::swap(b, c);
+            d = a + b * 11.f / 32.f + c * 0.25f;
+            blocked = world_.sight(p, target, -1, -1, false) <= 0 && world_.sight(p + Vec3{0, 0.5f, 0}, target, -1, -1, false) <= 0;
+        } else {
+            blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
+        }
         // Blast deaths (0x44fda8): type 2 under 4 m; 4-8 m type 3 one time in
         // four, else 2; farther type 2.
         const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
@@ -1379,7 +1400,7 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound) {
                 hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
         } else if (d <= radius + 1.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
     }
-    if (surface == 0) smokeGens_.push_back({at, 0, 0});
+    if (surface == 0 && smoke) smokeGens_.push_back({at, 0, 0});
 }
 
 // A person's pose (0x44ca34): per 3DI mesh (= .CHR part), the part's
@@ -1455,14 +1476,16 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
     }
     const int surface = terrain_.surfaceAt(origin.x, origin.z);
     if (mission_.version >= 0x0F) {
-        // DF2.EXE 0x4139ae..0x413b35: the detail tile's CAL class through the
-        // jump tables 0x413b38 / 0x413b50: 1 dirt 0x82/0x83, 2 grass
-        // 0x8b/0x8c, 3 snow 0x86/0x87, 4 rock and 6 0x82/0x83, each with a
-        // +-5 m noise; 5 sand 0x82/0x83 with +-2 m (0x413a3e); class 0 or 7+
-        // (no .CAL, unmatched names): no sound and no noise. The noise goes
-        // to 0x412840 with the walker's team and flags 0.
-        if (surface < 1 || surface > 6) return;
-        static const int a[7] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82}, b[7] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83};
+        // DF2.EXE 0x4139ae..0x413b35 (GOG 0x415780, jump tables after
+        // 0x415858): the detail tile's CAL class: 1 dirt, 4 rock/concrete,
+        // 6, 8 road, 9 mud, 11 QS 0x82/0x83, 2 grass 0x8b/0x8c, 3 snow and
+        // 10 ice 0x86/0x87, 7 0x88/0x89, each with a +-5 m noise; 5 sand
+        // 0x82/0x83 with +-2 m (0x413a3e); class 0 or 12+ (no .CAL,
+        // unmatched names): no sound and no noise. The noise goes to
+        // 0x412840 (GOG 0x414660) with the walker's team and flags 0.
+        if (surface < 1 || surface > 11) return;
+        static const int a[12] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82, 0x88, 0x82, 0x82, 0x86, 0x82},
+                         b[12] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83, 0x89, 0x83, 0x83, 0x87, 0x83};
         playSound((set1 ? a : b)[surface], origin);
         ai_.noise(origin, surface == 5 ? 2.f : 5.f, team, 0);
         return;
@@ -1557,12 +1580,15 @@ void Game::touchPickups() {
 
 // One shrapnel round (0x44d730): speed ((rand*2) | 0x100) * factor >> 6 in
 // 16.16 m per tick; flags 0x20, 400 ticks, power 1, falloff 64.
-void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor) {
+// Delta Force 2 (GOG Df2.exe 0x452120): the shooter is the blast's owner;
+// fragments (ammo flag 0x200000, CD 0x20) never skip it (0x453860), so
+// it credits kills and team hits (0x453510) and can be hit by its own.
+void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor, int owner) {
     const float speed = float(int((shrapRand() | 0x100) * uint32_t(speedFactor)) >> 6) / 65536.f * 60.f;
     Projectile p;
     p.pos = at;
     p.from = at;
-    p.shooter = -1;
+    p.shooter = world_.df2Rules ? owner : -1;
     p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
     p.lifetime = 0x190;
     p.power = 1;
@@ -1639,9 +1665,30 @@ void Game::weaponEvent(const WeaponEvent& e) {
 // A placed charge goes off (0x447d28 -> 0x46cdfc satchel: blast type 5,
 // radius 12, 200 shrapnel all round and upward; 0x447cac -> 0x46cc90
 // claymore: blast type 1 and a fan of 160 pieces).
-// Delta Force 2 (0x4572d0 -> 0x415490): 0.2 m higher, seeded.
-void Game::bigBlast(Vec3 at) {
-    if (world_.df2Rules) { at.y += 0x3333 / 65536.f; shrapSeed(); }
+// Delta Force 2 (GOG Df2.exe 0x45f910 -> 0x4174d0; the +0x3333 there goes
+// only into the network packet, 0x40ad36 runs it at the sent height):
+// seeded 0x5FC; effect 0x13 (gex5) whose yaw and scale (rand + 0x8000)
+// take the generator's first two numbers (0x4156b0); blast kind 5 of 12 m
+// with the owner; sound 0x32; a +-200 m noise; no smoke generator; 200
+// fragments at yaw = the object's yaw (pos +0x0C) + rand << 16, pitch
+// rand << 14, speed (rand | 0x100) * 0x1E (0x452120), owned by the owner.
+void Game::bigBlast(Vec3 at, float heading, int owner) {
+    if (world_.df2Rules) {
+        shrapSeed();
+        shrapRand();   // the effect's yaw (effects are not turned in OpenDF)
+        effectScale_ = float(shrapRand() + 0x8000) / 65536.f;
+        explode(at, 1, true, 12.f, true, owner, 0x13, false);
+        effectScale_ = 0;
+        ai_.noise(at, 200.f, 0, 0);
+        // DF2's binary yaw runs anticlockwise from east: OpenDF heading = pi/2 - yaw.
+        const uint32_t base = uint32_t(int64_t(std::llround(double(kPi / 2 - heading) / (2 * kPi) * 4294967296.0)));
+        for (int k = 0; k < 200; ++k) {
+            const uint32_t yawBits = base + (shrapRand() << 16);
+            const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
+            shrapnel(at, kPi / 2 - float(yawBits) / 4294967296.f * 2 * kPi, pitch, 0x1E, owner);
+        }
+        return;
+    }
     explode(at, 0, true, 12.f);
     for (int k = 0; k < 200; ++k) {
         const float yaw = float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
@@ -1658,13 +1705,20 @@ void Game::startCollapse(int index) {
     // flat radius (the header is read verbatim into the entry, 0x43e591);
     // +0x68 is then overwritten with the LOD 0 header +0x24, the height
     // (0x43e6aa..0x43e6ad): GpuModel::height.
+    // GOG Df2.exe 0x45cd80 (from bld2 0x402ab0): the three lists, the box
+    // inclusive: people, every item-list object (group 0, any type) and
+    // every decoration (group 1) whose item kind is not 5 (building) lose
+    // 100 hp, no killer; crates and barrels then go the hp <= 0 way.
     const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
     for (size_t j = 0; j < world_.objects.size(); ++j) {
         WorldObject& t = world_.objects[j];
-        if (int(j) == index || !t.alive() || !(t.person || (t.item && t.item->type == "vehicle"))) continue;
+        if (int(j) == index || !t.alive() || t.missionGroup == 2) continue;
+        if (!t.person && t.missionGroup == 1 && t.item && t.item->type == "building") continue;
         const Vec3 p = world_.nearest(t.pos, o.pos);
-        if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh)
-            if (auto m = world_.damage(int(j), 100, 0x7fff, world_.deathMove(int(j), 2, 0, o.pos)); !m.empty()) pushMessage(m);
+        if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh) {
+            const int move = t.person ? world_.deathMove(int(j), 2, 0, o.pos) : -1;
+            if (auto m = world_.damage(int(j), 100, 0x7fff, move); !m.empty()) pushMessage(m);
+        }
     }
     {
         const Vec3 p = world_.nearest(player_.origin(), o.pos);
@@ -1853,7 +1907,9 @@ void Game::blowCharge(Charge& c) {
     o.boxes.clear();
     const Vec3 at = o.pos + Vec3{0, 0.2f, 0};
     if (c.item == 4020) {
-        if (world_.df2Rules) shrapSeed();
+        // Delta Force 2's satchel (GOG Df2.exe 0x402660 -> 0x45f910): the
+        // big blast at the charge itself, its yaw, owned by the placer.
+        if (world_.df2Rules) { bigBlast(o.pos, o.heading, -3); return; }
         explode(at, 0, true, 12.f);
         for (int k = 0; k < 200; ++k) {
             const float yaw = o.heading + float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
@@ -1919,11 +1975,12 @@ void Game::tickCharges() {
             if (len > 1.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
         }
         if (--st.timer == 0) {
-            // DF2 0x458a56: ground + 0x1999; below the water, water + 0x4000;
-            // then the big blast (+0.2 m, 0x4572d0).
+            // DF2 0x458a56 (GOG 0x461850): ground + 0x1999; below the water,
+            // water + 0x4000; then the big blast (0x45f910) with yaw 0, owned
+            // by the requester.
             Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0x1999 / 65536.f, st.target.z};
             if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
-            bigBlast(at);
+            bigBlast(at, kPi / 2, -3);
         }
     }
     strikes_.erase(std::remove_if(strikes_.begin(), strikes_.end(), [](const Strike& s) { return s.timer <= 0; }), strikes_.end());
@@ -2571,18 +2628,62 @@ void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
 }
 
 void Game::spawnImpact(const Impact& hit) {
-    if (hit.noise > 0) ai_.noise(hit.pos, hit.noise, 0, 0);   // DF2 rounds on object faces (GOG Df2.exe 0x453860)
+    if (hit.noise > 0) ai_.noise(hit.pos, hit.noise, 0, 0);   // DF2 rounds on object faces and people (GOG Df2.exe 0x453860)
+    const bool df2 = world_.df2Rules;
+    if (hit.glass && hit.object >= 0) {
+        // GOG Df2.exe 0x414a90: a mesh (not mesh 0) not yet shattered (obj
+        // +0x78) breaks once with GLASS_SMASH (800); no impact effect.
+        // (Its min(100, area * 20) shards 107047..107049 thrown along the
+        // round, ai `gdeb`, are not made yet.)
+        WorldObject& o = world_.objects[size_t(hit.object)];
+        if (hit.mesh > 0 && hit.mesh < 32 && !(o.brokenMeshes & (1u << hit.mesh))) playSound(800, hit.pos);
+        if (hit.mesh >= 0 && hit.mesh < 32) o.brokenMeshes |= 1u << hit.mesh;
+        return;
+    }
     if (hit.explosive && hit.armed) {
         const int surface = hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1;
+        if (df2) {
+            // GOG Df2.exe 0x453860: on the ground effect 0x13 (gex5) and a
+            // smoke generator (0x453c84 / 0x453d1f / 0x453d9f), none for an
+            // impact round with the ammo's 0x20000000 bit (0x453d36: CD bit
+            // 0x2000); on objects and people 0x14 (boomd, 0x453e8b /
+            // 0x453f4a / 0x453f88 / 0x4543bf / 0x454468) and the delay
+            // grenade's fuse 0x14 (0x4546b2), no smoke; in the water 4 and
+            // sound 0x35 (0x45459a). Then a +-200 m noise (0x453cae ...).
+            const bool impactRound = !(hit.flags & 0x840) && (hit.flags & 0x11);
+            const int fx = surface == 2 ? 4 : surface == 0 && !hit.timer ? 0x13 : 0x14;
+            explode(hit.pos, hit.timer ? 1 : surface, hit.law && surface != 2, 10.f, true, hit.shooter, fx,
+                    !(impactRound && (hit.flags & 0x2000)));
+            ai_.noise(hit.pos, 200.f, 0, 0);
+            return;
+        }
         explode(hit.pos, surface, hit.law && surface != 2);
         return;
     }
     // An M203 round before it is armed (0x44f3e0): like a bullet on the
     // ground or water; effect 5 on an object or person.
     if (hit.explosive && (hit.object >= 0 || hit.object == -3)) {
+        // DF2: on a person (0x45442c) effect 0x10, sound 0x39 and a +-5 m
+        // noise; on an object (0x453f15) effect 5.
+        const bool person = hit.object == -3 || world_.objects[size_t(hit.object)].person;
+        if (df2 && person) {
+            spawnEffect(16, hit.pos);
+            playSound(SoundSystem::BulletFlesh, hit.pos);
+            ai_.noise(hit.pos, 5.f, 0, 0);
+            return;
+        }
         spawnEffect(5, hit.pos);
         return;
     }
+    // Delta Force 2 on the ground (GOG Df2.exe 0x415a60, by the CAL class
+    // 0..11): sound, effect and a +-noise; in the water (0x45454a /
+    // 0x4545d2) effect 2, sound 0x3B and a +-10 m noise.
+    static const int kDf2Sound[12] = {0, 0x3C, 0x40, 0x3A, 0x3D, 0x3A, 0x3C, 0x3C, 0x37, 0x3C, 0x3A, 0x3C};
+    static const int kDf2Slot[12] = {0, 5, 7, 9, 13, 8, 6, 5, 11, 5, 9, 5};
+    static const float kDf2Noise[12] = {0, 5, 2, 2, 10, 5, 10, 10, 10, 5, 5, 2};
+    const int df2Class = df2 && hit.object == -1 ? std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 11) : 0;
+    if (df2 && hit.object == -1 && kDf2Noise[df2Class] > 0) ai_.noise(hit.pos, kDf2Noise[df2Class], 0, 0);
+    if (df2 && hit.object == -2) ai_.noise(hit.pos, 10.f, 0, 0);
     // Terrain (0x46a054): surface 1..6 -> dirt, grass, snow, stone, sand,
     // heavy dirt. People (0x44f9e3): flesh. Objects: by the hit material's
     // +0x12 bits (metal, wood, stone, foliage; armour, cloth), else dirt.
@@ -2596,7 +2697,7 @@ void Game::spawnImpact(const Impact& hit) {
         else if (hit.object < 0) {
             static const int bySurface[7] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
                                              SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt};
-            id = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+            id = df2 ? kDf2Sound[df2Class] : bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
         } else {
             const auto& o = world_.objects[size_t(hit.object)];
             if (o.person) id = SoundSystem::BulletFlesh;
@@ -2621,7 +2722,7 @@ void Game::spawnImpact(const Impact& hit) {
     else if (hit.object == -3) slot = 16;   // the player: flesh
     else if (hit.object < 0) {
         static const int bySurface[7] = {0, 5, 7, 9, 13, 8, 6};
-        slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+        slot = df2 ? kDf2Slot[df2Class] : bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
     } else {
         const auto& o = world_.objects[size_t(hit.object)];
         if (o.person || (o.item && (o.item->attrib & 0x40))) slot = 16;
@@ -3414,8 +3515,13 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
     // at the launch yaw and pitch for the whole flight (gnrc draw:
     // T * Rz(yaw) * Ry(pitch), the record's angles never change).
+    // Delta Force 2 (GOG Df2.exe 0x451ae0, models from 0x452560): first
+    // 0x01 (CD bits) m406, then 0x10 and the delay grenade's 0x1000 the
+    // grenade 4033, then 0x40 the LAW's rocket.
+    const bool df2Rounds = world_.df2Rules;
     for (const auto& p : arsenal_.projectiles()) {
-        const int id = (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
+        const int id = df2Rounds ? ((p.flags & 0x01) ? 104001 : (p.flags & 0x1010) ? 104033 : (p.flags & 0x40) ? 104042 : 0)
+                                 : (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
         const ItemDef* gi = id ? items_.byId(id) : nullptr;
         const GpuModel* gm = gi && !gi->graphic.empty() ? models_.get(vfs_, gi->graphic) : nullptr;
         if (!gm) continue;
@@ -6535,7 +6641,7 @@ int Game::run() {
                     const std::string f = d.item ? d.item->aiFunction : std::string();
                     if (f.rfind("gnrl", 0) == 0) continue;   // 0x4012b0: silent, no barrel, no sound
                     if (f.rfind("smok", 0) == 0) { spawnSmk2(d.pos, false, 0, 0, 0xc0); continue; }   // 0x402550: one dark cloud (0x413e80, t 0xc0)
-                    if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos); continue; }    // 0x401240 -> 0x4572d0
+                    if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos, d.heading, -1); continue; }    // GOG 0x401240 -> 0x45f910(0, +0x24): owner 0
                     if (f.rfind("bld2", 0) == 0) { startCollapse(i); continue; }   // 0x4028d0
                     if (df2ItemDestroyed(i)) continue;                              // slgt, mine, vtrg
                 }
