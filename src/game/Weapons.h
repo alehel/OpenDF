@@ -71,6 +71,21 @@ struct GunDef {
     int64_t mass = 0;
 };
 
+// Where a DF2.EXE keeps its weapon tables. The CD build (init 0x46b230):
+// ammo 0x4C4310, 38 rows of 96 bytes, types 0x4C5150, modes 0x4C7238, drag
+// curve 0x4C86B8. The GOG build 1.06.15 (init GOG Df2.exe 0x4758f0): ammo
+// 0x4D95B8, 39 rows of 100 bytes (a new dword at +0x0C moves every later
+// field 4 bytes on, and the flags at +0x34 are stored << 16), types 0x4DA4F8,
+// modes 0x4DC5E0, curve 0x4DDA60; the type (216 bytes), mode (92) and curve
+// (12) rows are laid out as on the CD. Told apart by the M4's ammo row 7
+// (30 rounds at 915 m/s) at either place; `ok` false for neither.
+struct Df2Tables {
+    bool ok = false, gog = false;
+    uint32_t ammo = 0, types = 0, modes = 0, curve = 0;
+    int ammoN = 0, ammoStride = 0;
+    static Df2Tables of(const ExeImage& exe);
+};
+
 // Things the weapons ask the game to do: place a charge (satchel 4020,
 // claymore 4014 motion / 4040 radio; 1 m ahead, the player's heading), set
 // off the player's satchels and radio claymores, ask for a fire mission
@@ -119,6 +134,7 @@ struct Impact {
     bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
     int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
     uint32_t material = 0;    // objects: the hit face's material flags (0x44f90a picks effect and sound)
+    float noise = 0;          // DF2: a +-noise m AI noise at the hit (GOG Df2.exe 0x414660, flags 0), 0 none
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table
@@ -156,8 +172,9 @@ public:
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
     void init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, Loadout loadout);
     // Delta Force 2 (DF2.EXE tables 0x4C7238 modes, 0x4C5150 types, 0x4C4310
-    // ammo, 0x4C86B8 drag curve; init 0x46b230). `hudGuns`: the HudGuns
-    // names by mode. False (and DF1 left in place) if DF2.EXE is unusable.
+    // ammo, 0x4C86B8 drag curve; init 0x46b230; GOG Df2.exe: see Df2Tables).
+    // `hudGuns`: the HudGuns names by mode. False (and DF1 left in place) if
+    // DF2.EXE is unusable.
     bool initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout loadout);
     bool df2() const { return df2_; }
     // The tables in use (DF2's when loaded, else DF.EXE's), for AI and

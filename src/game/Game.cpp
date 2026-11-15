@@ -2188,6 +2188,7 @@ void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
 }
 
 void Game::spawnImpact(const Impact& hit) {
+    if (hit.noise > 0) ai_.noise(hit.pos, hit.noise, 0, 0);   // DF2 rounds on object faces (GOG Df2.exe 0x453860)
     if (hit.explosive && hit.armed) {
         const int surface = hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1;
         explode(hit.pos, surface, hit.law && surface != 2);
@@ -3836,9 +3837,10 @@ void Game::df2Picture(HudImage& img, int w, int h, double px, double py, double 
 }
 
 int Game::df2TypeCategory(int type) const {
-    // The weapon-type table [0x4f05a4] = 0x4C5150, 216 bytes each, +0x94 menu category.
+    // The weapon-type table [0x4f05a4] = 0x4C5150 (GOG Df2.exe 0x4DA4F8), 216 bytes each, +0x94 menu category.
     int32_t v = 0;
-    if (type <= 0 || type >= 39 || !df2Exe_.i32(0x4C5150 + uint32_t(type) * 216 + 0x94, v)) return 0;
+    const Df2Tables tab = Df2Tables::of(df2Exe_);
+    if (!tab.ok || type <= 0 || type >= 39 || !df2Exe_.i32(tab.types + uint32_t(type) * 216 + 0x94, v)) return 0;
     return v;
 }
 

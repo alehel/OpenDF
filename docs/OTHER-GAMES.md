@@ -284,7 +284,12 @@ First differences from DF1:
     first-person item, offsets, muzzle vertex, cooldown, zoom, flags 0x1
     scope / 0x40 full auto / 0x4 one-handed), 39 weapon types (0x4C5150,
     loadout categories, modes), 38 ammo records (0x4C4310: DF1's gun layout
-    plus drag bands and bullet mass), the drag curve (0x4C86B8); slots per
+    plus drag bands and bullet mass), the drag curve (0x4C86B8); the GOG
+    Df2.exe 1.06.15 (init 0x4758f0) keeps them elsewhere (ammo 0x4D95B8, 39
+    rows of 100 bytes with a new dword at +0x0C and the flags << 16; types
+    0x4DA4F8, modes 0x4DC5E0, curve 0x4DDA60) with its own values (e.g. ammo
+    4-6 accuracy 3 and 180 grains, M203 12 rounds, grenade and M203 flight
+    1000 ticks), told apart by the M4's ammo row; slots per
     0x447e20 (laser, knife, sidearm, primary ×3, secondary, gear, detonator,
     grenade), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
     projectiles (0x44c2f0): gravity 0xa7 a tick², drag toward the mission's
@@ -309,7 +314,9 @@ First differences from DF1:
     objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
     that must reach the item's third hp value. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
-    hits a tick). Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
+    hits a tick; a face with no impact material, such as the wire fences, or
+    glass on a husk costs nothing and the round goes on at full speed, GOG
+    0x453860; every face a 5 m AI noise, intact glass 20 m). Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
     and speeds, but fragments are ammo 31 and DF2's random generator 0x41ac40
     is reseeded to 0x5FC by every burst (DF1's seed call is empty), so each
     burst has the same pattern about its heading; big blasts 0.2 m up, the

@@ -314,10 +314,26 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     impacts_.clear();
 }
 
+Df2Tables Df2Tables::of(const ExeImage& exe) {
+    Df2Tables t;
+    if (!exe.loaded()) return t;
+    auto m4 = [&](uint32_t ammo, uint32_t stride, uint32_t velocity) {
+        int32_t mag = 0, v = 0;
+        return exe.i32(ammo + 7 * stride + 0x08, mag) && exe.i32(ammo + 7 * stride + velocity, v) && mag == 30 && v == 915;
+    };
+    if (m4(0x4C4310, 96, 0x0C)) t = {true, false, 0x4C4310, 0x4C5150, 0x4C7238, 0x4C86B8, 38, 96};
+    else if (m4(0x4D95B8, 100, 0x10)) t = {true, true, 0x4D95B8, 0x4DA4F8, 0x4DC5E0, 0x4DDA60, 39, 100};
+    return t;
+}
+
 bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout lo) {
-    constexpr uint32_t kModes = 0x4C7238, kTypes = 0x4C5150, kAmmo = 0x4C4310, kCurve = 0x4C86B8;
-    constexpr int kModeN = 57, kTypeN = 39, kAmmoN = 38, kCurveN = 44;
-    if (!exe.loaded()) return false;
+    const Df2Tables tab = Df2Tables::of(exe);
+    if (!tab.ok) return false;
+    const uint32_t kModes = tab.modes, kTypes = tab.types, kAmmo = tab.ammo, kCurve = tab.curve;
+    constexpr int kModeN = 57, kTypeN = 39, kCurveN = 44;
+    const int kAmmoN = tab.ammoN;
+    // GOG ammo rows: every field after +0x08 sits 4 bytes later.
+    const uint32_t sh = tab.gog ? 4 : 0;
     bool ok = true;
     auto rd = [&](uint32_t va) { int32_t v = 0; ok = ok && exe.i32(va, v); return v; };
     std::vector<ModeDef> modes(kModeN);
@@ -357,26 +373,28 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
             }
     }
     for (int a = 0; a < kAmmoN; ++a) {
-        const uint32_t b = kAmmo + uint32_t(a) * 96;
+        const uint32_t b = kAmmo + uint32_t(a) * uint32_t(tab.ammoStride);
         GunDef& g = guns[size_t(a)];
         g.n = rd(b + 0x04);
         g.magazine = rd(b + 0x08);
-        g.velocity = rd(b + 0x0C);
-        g.power = rd(b + 0x10);
-        g.falloff = std::max(1, rd(b + 0x14));
-        g.lifetime = rd(b + 0x18);
-        g.accuracy = rd(b + 0x1C);
-        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
-        g.flags = rd(b + 0x30);
-        // 0x46b230: thresholds / 62 (C truncation), coefficients 2^32 / c.
+        g.velocity = rd(b + sh + 0x0C);
+        g.power = rd(b + sh + 0x10);
+        g.falloff = std::max(1, rd(b + sh + 0x14));
+        g.lifetime = rd(b + sh + 0x18);
+        g.accuracy = rd(b + sh + 0x1C);
+        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + sh + 0x20 + 4 * uint32_t(k));
+        // GOG keeps the flags << 16 (CD 0x1 = GOG 0x10000, 0x1000 =
+        // 0x10000000); OpenDF uses the CD bits.
+        g.flags = tab.gog ? int(uint32_t(rd(b + sh + 0x30)) >> 16) : rd(b + 0x30);
+        // 0x46b230 (GOG 0x4758f0): thresholds / 62 (C truncation), coefficients 2^32 / c.
         for (int k = 0; k < 5; ++k) {
-            g.dragThr[k] = int64_t(rd(b + 0x34 + 8 * uint32_t(k))) / 62;
-            const int64_t c = rd(b + 0x38 + 8 * uint32_t(k));
+            g.dragThr[k] = int64_t(rd(b + sh + 0x34 + 8 * uint32_t(k))) / 62;
+            const int64_t c = rd(b + sh + 0x38 + 8 * uint32_t(k));
             g.dragCoef[k] = c ? (int64_t(1) << 32) / c : 0;
         }
         // +0x58 is both the fifth band's coefficient and the one under water.
         g.waterCoef = g.dragCoef[4];
-        const int64_t grains = int64_t(rd(b + 0x5C)) << 16;
+        const int64_t grains = int64_t(rd(b + sh + 0x5C)) << 16;
         const int64_t kg = (grains << 16) / 0x3c480000;
         g.mass = (kg << 16) / 0xa7;
     }
@@ -979,9 +997,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // Objects (0x44bff0): an item whose second hp value is below
                     // 0 stops the round unharmed; buildings take nothing;
                     // vehicles only rockets (flag 0x40: 64) and shells and
-                    // impact grenades (0x11: 16); the rest max(1, E/25). (The
-                    // rounds' penetration by surface material is not in OpenDF:
-                    // a round stops at the first object.)
+                    // impact grenades (0x11: 16); the rest max(1, E/25).
                     const WorldObject& target = world.objects[size_t(hit.object)];
                     const ItemDef* it = target.item;
                     int dmg = 0;
@@ -990,15 +1006,25 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else dmg = df2Damage(b);
                     }
                     if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
-                    // Penetration (0x44c2f0 -> 0x44bdd0): the face's material
-                    // costs 100 (Flesh item, checked first), metal 200, wood 90,
-                    // stone 500, bush 10, armour 2000, canvas 5, 0x10000000 10;
-                    // none: the round stops. T = cost · (hp2 + 1); with E =
-                    // |v|²·M above T the round goes on, its speed × sqrt((E−T)/E),
-                    // from 0.25 m before the hit + 0.375 m; up to 20 hits a tick.
-                    if (it && !b.explosive() && passes < 20) {
+                    // Penetration (0x44c2f0 -> 0x44bdd0; GOG Df2.exe 0x453860
+                    // case 1/2 -> 0x4532f0): a regular round (not flags 0x1851:
+                    // GOG 0x8400000 / 0x110000 / 0x10000000) on an object with
+                    // an item; the face's material costs 100 (Flesh item,
+                    // checked first), metal 200, wood 90, stone 500, bush 10,
+                    // armour 2000, canvas 5, 0x10000000 10 while the object is
+                    // intact. T = cost · (hp2 + 1); with E = |v|²·M above T the
+                    // round goes on, its speed × sqrt((E−T)/E); otherwise it
+                    // stops. A face with none of these (wire fences: WIREFENC /
+                    // WIREGATE 'Afencing', FENCEHI 'Abrbwr', 0x8003), or 0x10000000
+                    // on a husk, costs nothing (GOG 0x4542ee: effect 5 only) and
+                    // the round goes on at full speed. Every face makes a 5 m
+                    // noise (0x414660 0x50000; 20 m, 0x140000, for an intact
+                    // 0x10000000 face). The round goes on from 0.25 m before
+                    // the hit + 0.375 m; up to 20 hits a tick.
+                    if (it && (b.flags & 0x1851) == 0) {
                         int cost = 0;
                         const uint32_t m = hit.material;
+                        bool glass = false;
                         if (it->attrib & 0x40) cost = 100;
                         else if (m & 0x10000) cost = 200;
                         else if (m & 0x20000) cost = 90;
@@ -1006,7 +1032,9 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else if (m & 0x80000) cost = 10;
                         else if (m & 0x04000000) cost = 2000;
                         else if (m & 0x08000000) cost = 5;
-                        else if (m & 0x10000000) cost = 10;
+                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, glass = true;
+                        impacts_.back().noise = glass ? 20.f : 5.f;
+                        bool goesOn = cost == 0;
                         if (cost > 0) {
                             const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
                                           vz = int64_t(b.vel.z * kTick * 65536.f);
@@ -1014,11 +1042,14 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                             const int64_t t = int64_t(cost) * 65536 * (it->damageClass + 1);
                             if (e > t && e > 0) {
                                 b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
-                                b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
-                                ++passes;
-                                b.tickClock += kTick;   // the same tick goes on from here
-                                continue;
+                                goesOn = true;
                             }
+                        }
+                        if (goesOn && passes < 20) {
+                            b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
+                            ++passes;
+                            b.tickClock += kTick;   // the same tick goes on from here
+                            continue;
                         }
                     }
                 } else
