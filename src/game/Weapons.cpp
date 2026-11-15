@@ -435,6 +435,9 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
     kit_ = lo.secondary == 1 ? 1 : 0;
     refill();
+    // GOG Df2.exe 0x44dfc0's caller: the magnification starts at the
+    // primary's first mode's.
+    if (scopeMag_ == 0 && slots_[3] > 0 && slots_[3] < int(modes_.size())) scopeMag_ = modes_[size_t(slots_[3])].scope;
     current_ = 3;
     if (!slots_[3]) cycle();
     zoomLevel_ = 0;
@@ -634,12 +637,48 @@ void Arsenal::select(int slot) {
     }
 }
 
-void Arsenal::cycle() {
+void Arsenal::cycle(int dir) {
     if (current_ >= kMountSlot) return;   // GOG Df2.exe 0x44d3c0: nothing from slots 11 / 12
+    if (df2_) {
+        // 0x44d3c0: forward current + 1..9, then 0..current (with 10,
+        // DF2's binoculars, 0..10); back current - 1..0, then 9..current
+        // (none from 10).
+        if (dir >= 1) {
+            for (int s = current_ + 1; s < kSlots; ++s)
+                if (slots_[size_t(s)]) { select(s); return; }
+            for (int s = 0; s < current_ + 1; ++s)
+                if (slots_[size_t(s)]) { select(s); return; }
+        } else {
+            for (int s = current_ - 1; s >= 0; --s)
+                if (slots_[size_t(s)]) { select(s); return; }
+            if (current_ - 1 > 8) return;
+            for (int s = 9; s > current_ - 1; --s)
+                if (slots_[size_t(s)]) { select(s); return; }
+        }
+        return;
+    }
     for (int k = 1; k <= kSlots; ++k) {
         const int s = (current_ + k) % kSlots;
         if (slots_[size_t(s)]) { select(s); return; }
     }
+}
+
+void Arsenal::scopeMag(int d) {
+    if (!df2_ || !scopeShown()) return;
+    const int top = mode().scope;
+    if (top == 0) return;
+    const int m = scopeMag_ + d;
+    if (m > top) scopeMag_ = 2;
+    else scopeMag_ = m < 2 ? top : m;
+}
+
+int Arsenal::magnification() const {
+    const int top = mode().scope;
+    if (current_ < 3 || current_ > 5) return top;
+    if (top != 0 && scopeMag_ < 2) scopeMag_ = 2;
+    else if (scopeMag_ < 0) scopeMag_ = 0;
+    if (scopeMag_ > top) scopeMag_ = top;
+    return scopeMag_;
 }
 
 void Arsenal::reload() {

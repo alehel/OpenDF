@@ -201,7 +201,9 @@ public:
     // DF2 scope zeroing (keys X / Z, 0x445ff0): the setting of the primary
     // slots 3-5, 0..10 (0..15 for the Barrett); the scope view is lowered by
     // the type's elevation for it (0x44e143).
+    // GOG Df2.exe 0x44c770: only while the scope shows (0x455790).
     void zeroStep(int d) {
+        if (df2_ && !scopeShown()) return;
         if (current_ < 3 || current_ > 5) return;
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
@@ -219,7 +221,17 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
-    void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
+    // 0x44b81c: next slot with a mode, wrapping. GOG Df2.exe 0x44d3c0:
+    // none from 11/12; dir < 1 goes back (Shift, the wheel forward).
+    void cycle(int dir = 1);
+    // GOG Df2.exe scopemag (E, 0x44c7e0): the scope magnification [0x79a698]
+    // steps by d while the scope shows, past the mode's +0x38 to 2, under 2
+    // to the mode's; kept across weapons and missions.
+    void scopeMag(int d);
+    // GOG Df2.exe 0x44e6a0: the magnification of slots 3-5, at least 2 and
+    // cut (for good) to the mode's; other slots the mode's own.
+    int magnification() const;
+    int scopeMagSetting() const { return scopeMag_; }   // [0x79a698] as the scope HUD prints it
     void reload();                // 0x44a004
     void toggleZoom();
     // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10
@@ -278,7 +290,7 @@ public:
     int rounds() const { return mag_[size_t(mode().gun)]; }
     int spares() const { return spares_[size_t(mode().gun)]; }
 
-    float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
+    float zoom() const { return zoomed() ? float(df2_ ? magnification() : mode().scope) : 1.f; }
     // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40:
     // the held mode's +0x3C & 1 and [0x7655f4]; the binoculars, mode 47,
     // have no such bit, so holding them hides the scope and it comes back
@@ -293,8 +305,14 @@ public:
     // (+0x74 & 0x18) zero, i.e. not while moving; the shot's origin
     // (0x447102) and the designator (0x45aad6) take 0x447b40 alone.
     // INFERRED: the speed bits are non-zero exactly while a move key is down.
-    bool scopeShown() const { return zoomed() && (!df2_ || !moveKeys_); }
+    // GOG Df2.exe 0x455790 also returns 0 while the player is dead,
+    // airborne, swimming or on a ladder (+0x64 & 0x422004), and in the
+    // third-person views ([0x67cd10] == 0 with [0xbf2b40]), which OpenDF
+    // does not have; it gates the scope view (0x465f90), the scoped mouse
+    // (0x41eb50) and the zeroing and magnification keys.
+    bool scopeShown() const { return zoomed() && (!df2_ || (!moveKeys_ && !scopeBlocked_)); }
     void setMoveKeys(bool down) { moveKeys_ = down; }
+    void setScopeBlocked(bool b) { scopeBlocked_ = b; }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
@@ -391,6 +409,8 @@ private:
     float kick_[3] = {0, 0, 0};
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
+    bool scopeBlocked_ = false;   // DF2: the player's +0x64 & 0x422004 (0x455790)
+    mutable int scopeMag_ = 0;    // GOG Df2.exe [0x79a698]
     std::vector<Projectile> bullets_;
     Tracers tracers_;
     uint32_t df1TracerColour(const Projectile& b, const World& world) const;

@@ -24,6 +24,7 @@ One command per line, `<seconds> <command> [argument]`, `#` starts a comment:
 | `turn DEG/S` | keep turning (negative = left); `turn 0` stops |
 | `look DEG/S` | keep looking up (positive) or down |
 | `face DEG` | turn smoothly to a compass heading (0 north, 90 east) |
+| `click Left\|Right\|Middle` / `wheel N` | (Delta Force 2, GOG table) a mouse button press / N wheel steps (positive forward) through the game's mouse dispatch |
 | `end` | finish (the run also finishes after the last command) |
 
 Other test options: `--camera x,y,h,yaw,pitch`, `--weapon SLOT` (0-9, as the keys), `--loadout PRIMARY,KIT,SIDEARM`, `--stance N`,

@@ -476,7 +476,15 @@ First differences from DF1:
     half-blended navy inner segments, "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
-    0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
+    0x44e0a0) and above it the magnification "%2ix" (GOG [0x79a698]: E
+    steps it, Shift+E back, past the mode's +0x38 to 2 and under 2 to the
+    mode's, 0x44c7e0; slots 3-5 show at least 2 and at most the mode's,
+    cut for good, 0x44e6a0; set from the primary's first mode at the
+    loadout), the laser square. The scope shows (GOG 0x455790) only while
+    the scope flag is on for a flag-1 mode, no move key is down, and the
+    player is not dead, airborne, swimming or on a ladder (+0x64 &
+    0x422004); it also gates the scoped mouse and the X/Z/E keys; the
+    scope view's FOV 28.125 / mag degrees
     in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
     DF1's 28 / mag whole degrees;
@@ -547,8 +555,20 @@ First differences from DF1:
     1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
-    attack_1 and attack_2 (GOG 0x441140; PrintScreen, scopemag and the Von*
-    commands have no game-side action in OpenDF yet). Page 4 "Voice-over-net": drawn from the
+    attack_1 and attack_2 (GOG 0x441140; PrintScreen and the Von*
+    commands have no game-side action in OpenDF yet). In a mission (GOG
+    0x421be0) a key runs the table's first one-shot record (flags +0x2a
+    without 4) for it whose modifier test passes: flag 0x40 needs Shift,
+    0x100 Ctrl; otherwise with Shift or Ctrl down (not the key itself) it
+    needs 0x200 (resolution, tab, NextWaypoint, NextFlag, cycle,
+    scopemag), so weapon keys do nothing while walking with Shift or
+    firing with Ctrl; Shift sets bit 31, which reverses cycle,
+    NextWaypoint, NextFlag and scopemag (0x41f150). A mouse button
+    (0x420e10: left 1, right 2, middle 0x10) runs the first one-shot
+    record with exactly that mouse mask (scope on the right, Prone on the
+    middle); the wheel (0x4799e0, per 120) steps the zeroing (forward up,
+    back down) while the scope shows, else cycles (back next, forward
+    previous; 0x44d3c0 with -1: current - 1..0, then 9..current). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
     (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`

@@ -182,6 +182,15 @@ private:
 
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
+    // The game commands (DF.EXE 0x42d9c0, GOG Df2.exe 0x41f150); `reverse`
+    // is GOG's bit 31 (Shift held, the wheel forward).
+    void runAction(Action act, bool reverse);
+    // GOG Df2.exe 0x420e10: a mouse button (1 left, 2 right, 0x10 middle)
+    // runs the first one-shot command bound to it; the wheel accumulates
+    // WM_MOUSEWHEEL deltas (0x4799e0, [0xe0ff24]), each 120 a step.
+    void df2MouseButton(int mask);
+    void df2MouseWheel(int delta);
+    int wheelAccum_ = 0;
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
     void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
     void drawViewModel(const Screen& s);
@@ -632,7 +641,7 @@ private:
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
     void df2SetWaypoint(Df2Sel s);
-    void df2NextWaypoint();
+    void df2NextWaypoint(int dir = 1);
     struct Df2WpView { bool ok = false; double x = 0, y = 0; float elev = 0; std::string name; int listIndex = -1; };
     Df2WpView df2CurrentWaypoint() const;
     bool df2HudWpIs(Df2Sel s) const;
@@ -1244,7 +1253,7 @@ bool Game::loadInputScript(const std::string& path) {
         if (!(ls >> c.t >> c.op)) continue;
         std::string rest, word;
         while (ls >> word) rest += (rest.empty() ? "" : " ") + word;
-        if (c.op == "turn" || c.op == "look" || c.op == "face") c.value = float(std::atof(rest.c_str()));
+        if (c.op == "turn" || c.op == "look" || c.op == "face" || c.op == "wheel") c.value = float(std::atof(rest.c_str()));
         else c.arg = rest;
         inputCmds_.push_back(c);
     }
@@ -1267,7 +1276,12 @@ void Game::runInputScript(float dt) {
             k.keysym.scancode = sc;
             k.keysym.sym = SDL_GetKeyFromScancode(sc);
             if (held(SDL_SCANCODE_LSHIFT)) k.keysym.mod = KMOD_LSHIFT;
+            if (held(SDL_SCANCODE_LCTRL)) k.keysym.mod = Uint16(k.keysym.mod | KMOD_LCTRL);
             handleKey(k);
+        } else if (c.op == "click" && arsenal_.df2() && controls_.df2Table()) {
+            df2MouseButton(c.arg == "Left" ? 1 : c.arg == "Right" ? 2 : 0x10);
+        } else if (c.op == "wheel" && arsenal_.df2() && controls_.df2Table()) {
+            df2MouseWheel(int(c.value) * 120);
         } else if (c.op == "hold") {
             inputHeld_.push_back(c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc);
         } else if (c.op == "release") {
@@ -2879,7 +2893,6 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // Debug keys (not in the original): N free flight (Ctrl+N in DF2, where N
     // is the night vision).
     if (k.keysym.sym == SDLK_n && (!df2Hud_.on || (k.keysym.mod & KMOD_CTRL))) { player_.fly = !player_.fly; return; }
-    (void)shift;
     // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
     if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
@@ -2892,7 +2905,40 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    const Action act = controls_.actionFor(k.keysym.scancode);
+    // GOG Df2.exe 0x421be0: the table's first one-shot record for the key
+    // that passes the Shift / Ctrl test, with bit 31 when Shift is down.
+    const bool df2Keys = arsenal_.df2() && controls_.df2Table();
+    const Action act = df2Keys ? controls_.df2KeyAction(k.keysym.scancode, shift, (k.keysym.mod & KMOD_CTRL) != 0)
+                               : controls_.actionFor(k.keysym.scancode);
+    runAction(act, df2Keys && shift);
+}
+
+void Game::df2MouseButton(int mask) {
+    const Action act = controls_.df2MouseAction(mask);
+    // attack_1 (mouse 1) is the trigger, polled every tick (0x41eb50's
+    // tail, 0x420db0): its one-shot command adds nothing here.
+    if (act != Action::Fire) runAction(act, false);
+}
+
+void Game::df2MouseWheel(int delta) {
+    // 0x420e10 with [0x67cd00] = 0 (never written): back (0x200) the
+    // zeroing down (scopedec 0xc1) while 0x455790 holds, else cycle
+    // (0xbf); forward (0x100) scopeinc (0xc0), else cycle reversed
+    // (0x800000bf -> 0x44d3c0(-1)).
+    wheelAccum_ += delta;
+    while (wheelAccum_ >= 120) {
+        wheelAccum_ -= 120;
+        if (arsenal_.scopeShown()) runAction(Action::ScopeInc, false);
+        else runAction(Action::Cycle, true);
+    }
+    while (wheelAccum_ <= -120) {
+        wheelAccum_ += 120;
+        if (arsenal_.scopeShown()) runAction(Action::ScopeDec, false);
+        else runAction(Action::Cycle, false);
+    }
+}
+
+void Game::runAction(Action act, bool reverse) {
     // While paused, the game's commands (flag 0x10000) are ignored (0x42d9e3).
     if (paused_ && act != Action::Pause && act != Action::Escape) return;
     switch (act) {
@@ -2932,12 +2978,12 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Weapon7: arsenal_.select(7); break;
     case Action::Weapon8: arsenal_.select(8); break;
     case Action::Weapon9: arsenal_.select(9); break;
-    case Action::Cycle: arsenal_.cycle(); break;
+    case Action::Cycle: arsenal_.cycle(reverse ? -1 : 1); break;   // GOG Df2.exe 0x41f150 case 0x5e
     case Action::VCam: arsenal_.toggleCameraView(); break;   // GOG Df2.exe 0x41f150 case 0x28
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
-        if (df2Hud_.on) df2NextWaypoint();
+        if (df2Hud_.on) df2NextWaypoint(reverse ? -1 : 1);   // case 0x16: 0x44d280(+-1)
         else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
         break;
     // DF2 0x41bdf4 (mapterrain, F9): elevation on -> off and the flag set,
@@ -2974,6 +3020,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
+    case Action::ScopeMag: arsenal_.scopeMag(reverse ? -1 : 1); break;   // GOG Df2.exe case 0x61 -> 0x44c7e0 (E)
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
@@ -4079,6 +4126,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the magnification [0x79a698] "%2ix"
+                // at (700, 480) in the same colour.
+                std::snprintf(buf, sizeof buf, "%2ix", arsenal_.scopeMagSetting());
+                hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
             }
         }
         drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
@@ -4651,14 +4702,15 @@ void Game::df2SetWaypoint(Df2Sel s) {
 
 // NextWaypoint (action 32, 0x446700(+1)): only the mission list; the current
 // waypoint not in it -> from index 0, so the next is entry 1.
-void Game::df2NextWaypoint() {
+void Game::df2NextWaypoint(int dir) {
     if (route_.empty()) return;
     if (df2HudWp_.kind != 0) {
         df2HudWp_ = Df2Sel{};
         routeIndex_ = 1 % int(route_.size());
         return;
     }
-    routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+    const int n = int(route_.size());
+    routeIndex_ = (routeIndex_ + (dir < 0 ? n - 1 : 1)) % n;
 }
 
 bool Game::df2HudWpIs(Df2Sel s) const {
@@ -6391,6 +6443,17 @@ int Game::run() {
                         df2MapClick(ms, nx, ny, e.type == SDL_MOUSEBUTTONDOWN, e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 3 : 2);
                 }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
+                else if (e.type == SDL_MOUSEBUTTONDOWN && arsenal_.df2() && controls_.df2Table()) {
+                    // GOG Df2.exe 0x4799e0 -> 0x420e10: the bound one-shot command
+                    // (scope on the right button, Prone on the middle by default).
+                    const int mask = e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 2
+                                   : e.button.button == SDL_BUTTON_MIDDLE ? 0x10 : 0;
+                    if (mask) df2MouseButton(mask);
+                }
+                else if (e.type == SDL_MOUSEWHEEL && captured_ && arsenal_.df2() && controls_.df2Table()) {
+                    const int y = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+                    df2MouseWheel(y * 120);
+                }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
                 else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
                     // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
@@ -6461,6 +6524,8 @@ int Game::run() {
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
             const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
             arsenal_.setMoveKeys(moveKeys);
+            // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004.
+            arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder());
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
