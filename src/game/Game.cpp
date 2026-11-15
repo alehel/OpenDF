@@ -179,7 +179,8 @@ private:
 
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
-    void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView);
+    void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
+    void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -645,6 +646,10 @@ private:
     // since the voxel terrain has no far clip; the depth precision near the
     // camera depends on the near plane only.
     static constexpr float kFarPlane = 262144.f;
+    // (OpenDF) Where drawWorld splits the depth buffer between its two
+    // passes, in metres of view depth (balances the precision at the split
+    // against that at 4 km).
+    static constexpr float kDepthSplit = 128.f;
     float scopeFocal_ = 320;
     float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
@@ -2898,20 +2903,61 @@ float Game::rangeToAim() const {
     return hit.t * maxRange;
 }
 
-void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
+void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset) {
     const Vec3 eye = viewEye();
     // Terrain rings scale with the original's focal length: F = 320 per 640
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
-    // Ring divisors: main view 2.2 / 2.2 (GOG Df.exe 0x402105), the scope
-    // 2.5 under magnification 5, else 5.0, and 2.5 (0x466090).
-    terrain_.ringP1 = zoomView ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : 2.2f;
-    terrain_.ringP2 = zoomView ? 2.5f : 2.2f;
-    terrain_.draw(view, proj, eye, viewDistance_);
+    // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
+    // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
+    // inset 2.5 under magnification 5, else 5.0, and 2.5 (0x466090). Delta
+    // Force 2's rings do not use them.
+    terrain_.ringP1 = scopeInset ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : zoomView ? 3.2f : 2.2f;
+    terrain_.ringP2 = scopeInset ? 2.5f : zoomView ? 3.2f : 2.2f;
+    // (OpenDF) The depth buffer in two passes, so nothing z-fights: Delta
+    // Force 2 keeps objects out to 4080 m and the terrain runs to 12.8 km,
+    // and with the 0.1 m near plane a 24-bit buffer resolves only ~9.5 m at
+    // 4 km. The far pass (view depth kDepthSplit .. far plane) goes to depth
+    // range 0.5..1, then the near pass (near plane .. kDepthSplit) to
+    // 0..0.5, each with its own projection; the same scene is drawn by both
+    // and clipped at the split, so what is drawn does not change and every
+    // near fragment stays in front of every far one. About 2 cm at the split
+    // and at 4 km. The near pass reaches a hair past the split (no cracks).
+    const float zn = proj.m[14] / (proj.m[10] - 1.f), zf = proj.m[14] / (proj.m[10] + 1.f);
+    auto withRange = [&](float n, float f) {
+        Mat4 p = proj;
+        p.m[10] = (f + n) / (n - f);
+        p.m[14] = 2 * f * n / (n - f);
+        return p;
+    };
+    const Mat4 projFar = withRange(kDepthSplit, zf), projNear = withRange(zn, kDepthSplit * 1.001f);
     // Delta Force 2: the water before the objects while the camera is above
     // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
     const bool waterFirst = terrain_.df2Water() && eye.y > terrain_.waterLevel();
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool last = pass == 1;
+        glDepthRange(last ? 0.0 : 0.5, last ? 0.5 : 1.0);
+        terrain_.pass = last ? Terrain::Pass::Near : Terrain::Pass::Far;
+        terrain_.passSplit = kDepthSplit;
+        drawWorldPass(view, last ? projNear : projFar, eye, waterFirst, last);
+    }
+    terrain_.pass = Terrain::Pass::All;
+    glDepthRange(0.0, 1.0);
+    // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
+    // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
+    terrain_.drawFog(projNear, &projFar);
+    for (int pass = 0; pass < 2; ++pass) {
+        glDepthRange(pass ? 0.0 : 0.5, pass ? 0.5 : 1.0);
+        drawWeather(view, pass ? projNear : projFar, eye);
+    }
+    glDepthRange(0.0, 1.0);
+}
+
+// One depth pass of drawWorld: the terrain, the objects, the effects and
+// the water, with that pass's projection; `last` for the second (near) pass.
+void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last) {
+    terrain_.draw(view, proj, eye, viewDistance_);
     if (waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
     // beyond 1020 m in Delta Force (either horizontal axis, or view depth +
@@ -3068,7 +3114,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             if (meshes > 6) pose[6] = v.o->shotFlash ? gun : hide;
             for (size_t k = 7; k < meshes; ++k) pose[k] = hide;
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
-            v.o->shotFlash = 0;
+            if (last) v.o->shotFlash = 0;
             continue;
         }
         if (v.lod < 4 && (v.o->model->lodCodes[v.lod] == "hind" || v.o->model->lodCodes[v.lod] == "ka29") &&
@@ -3271,10 +3317,6 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
     if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
-    // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
-    // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
-    terrain_.drawFog(proj);
-    drawWeather(view, proj, eye);
 }
 
 // DF2.EXE 0x46b780, drawn only by the software frame (0x448930, after the
@@ -3428,7 +3470,7 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true);
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.

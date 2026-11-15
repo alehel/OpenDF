@@ -77,8 +77,8 @@ public:
     // its display mode (F = width / 2 at 90°).
     float ringScale = 1.f;
     // Delta Force: the ring table's divisors (GOG Df.exe 0x489440 p1, p2):
-    // 2.2 / 2.2 for the main view (0x402105), the scope 2.5 (magnification
-    // under 5) or 5.0 / 2.5 (0x466090). Near rings end at F / (2·p1) m, far
+    // 2.2 / 2.2 for the main view, 3.2 / 3.2 with the binoculars (0x404640),
+    // the scope 2.5 (magnification under 5) or 5.0 / 2.5 (0x466090). Near rings end at F / (2·p1) m, far
     // ring k (0..5, 0x48dc70 draws rings 0..10) ends at 2^k·F / p2 m.
     float ringP1 = 2.2f, ringP2 = 2.2f;
     // Delta Force: df.cfg "gamma" (DISPLAY, default 128), the display table's
@@ -99,7 +99,17 @@ public:
     // The per-pixel fog pass of DF2.EXE's software frame (0x4485b0): every
     // pixel of the current viewport blended toward fog_color by its depth.
     // Call after the terrain, water, objects and effects, before rain/snow.
-    void drawFog(const Mat4& proj);
+    // With `farProj` the frame was drawn in two depth passes (Pass): depth
+    // below 0.5 is read with `proj` (range 0..0.5), the rest with farProj.
+    void drawFog(const Mat4& proj, const Mat4* farProj = nullptr);
+    // (OpenDF) Which of the caller's two depth passes draw() and drawWater()
+    // are in: the far pass (view depth >= passSplit, depth range 0.5..1)
+    // draws the sky and skips the chunks wholly nearer than the split; the
+    // near pass skips the sky and the chunks wholly beyond it, and draws the
+    // full-view under-water tints. All: one pass.
+    enum class Pass { All, Far, Near };
+    Pass pass = Pass::All;
+    float passSplit = 0;
     // Delta Force 2's horizontal field of view in degrees (view+0x4c: 90, the
     // binoculars 22), for the sky gradient's step per row (0x4677bd).
     float df2FovDeg = 90.f;

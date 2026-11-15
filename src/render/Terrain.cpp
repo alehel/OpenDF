@@ -198,14 +198,18 @@ const char* kFogFS = R"(#version 330 core
 uniform sampler2D uDepth;
 uniform vec4 uViewport;
 uniform vec3 uFogColor;
-uniform float uM10, uM14;
-uniform int uLevel;
+uniform float uM10, uM14, uFarM10, uFarM14;
+uniform int uLevel, uSplit;
 out vec4 oColor;
 void main() {
     float d = texelFetch(uDepth, ivec2(gl_FragCoord.xy - uViewport.xy), 0).r;
     float f = 255.0;
     if (d < 1.0) {
-        float depth = uM14 / ((2.0 * d - 1.0) + uM10);   // view depth, metres
+        // NDC z from the window depth: one range 0..1, or (two passes) the
+        // near pass's 0..0.5 and the far pass's 0.5..1.
+        float ndc = uSplit == 0 ? 2.0 * d - 1.0 : d < 0.5 ? 4.0 * d - 1.0 : 4.0 * d - 3.0;
+        bool far = uSplit != 0 && d >= 0.5;
+        float depth = (far ? uFarM14 : uM14) / (ndc + (far ? uFarM10 : uM10));   // view depth, metres
         f = min(255.0, floor(depth * 65536.0 / exp2(float(uLevel + 8))));
     }
     oColor = vec4(uFogColor, f / 256.0);
@@ -896,7 +900,7 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_CULL_FACE);
         glDrawArrays(GL_TRIANGLES, 0, 6);
-        if (eye.y <= level) {
+        if (eye.y <= level && pass != Pass::Far) {
             glUniform1i(glGetUniformLocation(progWater_, "uTint"), 1);
             glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
             glDisable(GL_DEPTH_TEST);
@@ -909,6 +913,8 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         glBindVertexArray(0);
         return;
     }
+    // Under water the tint covers the whole view: once, in the near pass.
+    if (eye.y < level && pass == Pass::Far) return;
     glUseProgram(progWater_);
     glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
     // What is already drawn: copied so the water can read its luminance.
@@ -983,7 +989,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     // Sky (behind everything). Delta Force 2 with fog on draws no gradient
     // and no clouds (0x46766e..0x4676a9): it only marks the rows as far
     // away, and the fog pass turns them into the fog colour.
-    if (!fogLevel()) {
+    if (!fogLevel() && pass != Pass::Near) {
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glUseProgram(progSky_);
@@ -1106,6 +1112,12 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
         const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
         if (horiz > terrainDistance + radius) return -1.f;
         if (d.x * fwd.x + d.z * fwd.z < -radius) return -1.f;
+        // Two depth passes: a chunk wholly on the other side of the split
+        // (its view depth within +-radius of the centre's) is clipped anyway.
+        if (pass != Pass::All) {
+            const float depth = d.x * fwd.x + (midY - eye.y) * fwd.y + d.z * fwd.z;
+            if (pass == Pass::Far ? depth + radius < passSplit : depth - radius > passSplit * 1.01f) return -1.f;
+        }
         for (const auto& pl : planes)
             if (pl[0] * cx + pl[1] * midY + pl[2] * cz + pl[3] < -radius) return -1.f;
         return horiz;
@@ -1160,7 +1172,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     glActiveTexture(GL_TEXTURE0);
 }
 
-void Terrain::drawFog(const Mat4& proj) {
+void Terrain::drawFog(const Mat4& proj, const Mat4* farProj) {
     if (!fogLevel() || !progFog_) return;
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
@@ -1185,6 +1197,9 @@ void Terrain::drawFog(const Mat4& proj) {
     setV3(progFog_, "uFogColor", {desc_.fogColor[0] / 255.f, desc_.fogColor[1] / 255.f, desc_.fogColor[2] / 255.f});
     setF(progFog_, "uM10", proj.m[10]);
     setF(progFog_, "uM14", proj.m[14]);
+    setF(progFog_, "uFarM10", farProj ? farProj->m[10] : proj.m[10]);
+    setF(progFog_, "uFarM14", farProj ? farProj->m[14] : proj.m[14]);
+    glUniform1i(glGetUniformLocation(progFog_, "uSplit"), farProj ? 1 : 0);
     setInt(progFog_, "uLevel", fogLevel());
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
