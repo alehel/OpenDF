@@ -135,7 +135,9 @@ void main() {
             if (dc.a > 0.5) col = post(dc.rgb);
         } else {
             if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
-            else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
+            // toward raw sky entry 16 ([0xbd67cc], built from the sky file's
+            // bytes by 0x47b590): no saturation or display table on it.
+            else col += (uCloudCol - col) * (2.0 * (sh - 128.0) / 256.0);
             if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
         }
         oColor = vec4(col, 1.0);
