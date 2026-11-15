@@ -204,4 +204,10 @@ private:
     uint32_t rng_ = 0x5FC;
 };
 
+// The point of `path` a member taking it starts from (GOG Df.exe 0x45c5e0,
+// Df2.exe 0x4032f0): per axis the whole-metre difference (16.16 >> 16)
+// between the object and the marker (ground + record height, 0x404e30),
+// squared and summed in 3-D, the last of equals winning; 0 for no points.
+int nearestPathPoint(const World& world, const Mission& mission, const MissionPath& path, Vec3 pos);
+
 } // namespace df
