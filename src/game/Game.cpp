@@ -187,6 +187,14 @@ private:
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
+    // Delta Force's FO camera (GOG Df.exe 0x466d90 / 0x484a50): [0xc23a34]
+    // on/off, the target [0xc23a38]: -1 the player (as at mission start,
+    // 0x4829f0), -2 none, else a world object.
+    bool foOn_ = false;
+    int foTarget_ = -1;
+    void foNext();
+    void drawFoInset(const Screen& s);
+    const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -903,6 +911,8 @@ bool Game::loadMission(int index) {
 
     player_ = Player{};
     player_.moves = &playerMoves_;
+    foOn_ = false;     // 0x4829f0 clears [0xc23820..+0x648)
+    foTarget_ = -1;    // and sets [0xc23a38] to the player
     std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
     player_.floatOrigin = floatOrigin_;
     player_.swimOrigin = swimOrigin_;
@@ -3251,6 +3261,10 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
+    // GOG Df.exe 0x477d40: fo toggles [0xc23a34]; tab, while it is on, picks
+    // the next team-mate (0x484a50). Delta Force only.
+    case Action::FoCamera: if (!df2Hud_.on) foOn_ = !foOn_; break;
+    case Action::FoNext: if (!df2Hud_.on && foOn_) foNext(); break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
@@ -3388,7 +3402,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         return depth >= -sr && depth + sr <= 4080.f;
     };
     for (const auto& o : world_.objects) {
-        if (o.removed) continue;
+        if (o.removed || &o == hideObject_) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
         const float depth = dot(d, fwd);
@@ -3945,6 +3959,96 @@ void Game::drawCameraInset(const Screen& s) {
     glViewport(0, 0, int(s.w), int(s.h));
 }
 
+void Game::foNext() {
+    // GOG Df.exe 0x484a50: the next people slot after the target's with an
+    // item, on the player's side, item attrib FO (def +0x24 & 8), not hidden
+    // (+0x6c & 2); else from the first slot through the target's; else
+    // none. INFERRED: the player's own slot (chosen by its BMS id, 0x4829f0)
+    // is taken to come before every other person.
+    auto eligible = [&](int i) {
+        if (i < 0) {
+            const ItemDef* it = items_.byId(playerItem_);
+            return it && (it->attrib & 8);
+        }
+        const WorldObject& o = world_.objects[size_t(i)];
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int cur = foTarget_ >= -1 ? foTarget_ : -1;
+    for (int i = cur + 1; i < n; ++i)
+        if (eligible(i)) { foTarget_ = i; return; }
+    for (int i = -1; i <= cur; ++i)
+        if (eligible(i)) { foTarget_ = i; return; }
+    foTarget_ = -2;
+}
+
+void Game::drawFoInset(const Screen& s) {
+    // GOG Df.exe 0x466d90, from 0x404640 when the scope inset is not up: no
+    // target clears [0xc23a34]; nothing while the player is dead (+0x6c &
+    // 4). The world from the target's position raised by the player's eye
+    // height ([0xc23a18]) and its yaw / pitch / roll (+0x30..+0x38) at FOV
+    // 90 (0x5a) in (0x2c0, top + 0x40)-(0x3c0, top + 0x100) virtual, x
+    // rounded down to 4 pixels, with the target not drawn ([0x6ba3f0]);
+    // a one-pixel border in [0x67db5c] (0x472610) and the target's name at
+    // (0x2d4, top + 0x114), left-aligned, in [0x67db5c]. Not modelled: the
+    // player's own body, which OpenDF does not draw while alive.
+    if (!foOn_ || df2Hud_.on || scopeShown() || showMap_) return;
+    if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
+        foOn_ = false;
+        return;
+    }
+    if (playerDead()) return;
+    const float x0 = float(int(s.vx(0x2c0)) & ~3), x1 = float(int(s.vx(0x3c0)) & ~3);
+    const float y0 = std::floor(s.playY + s.vy(0x40)), y1 = std::floor(s.playY + s.vy(0x100));
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeUp = player_.eye().y - player_.origin().y;
+    Vec3 eye;
+    float yaw, pitch;
+    std::string name;
+    const WorldObject* target = nullptr;
+    if (foTarget_ < 0) {
+        eye = player_.origin() + Vec3{0, eyeUp, 0};
+        yaw = player_.yaw;
+        pitch = player_.pitch;
+        name = o_.soldierName;
+    } else {
+        target = &world_.objects[size_t(foTarget_)];
+        eye = target->pos + Vec3{0, eyeUp, 0};
+        yaw = target->heading;
+        pitch = target->aimPitch;
+        if (target->missionIndex >= 0)
+            if (const int id = int(mission_.objects[size_t(target->missionIndex)].raw[1]); id != 0) {
+                char key[24];
+                std::snprintf(key, sizeof key, "NAMEID%03d", id);
+                if (const std::string* t = campText_.find("People Names", key)) name = *t;
+            }
+    }
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hideObject_ = target;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    hideObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float t = s.px();
+    hud_.rect(x0, y0, w, t, kHudBright);
+    hud_.rect(x0, y1, w + t, t, kHudBright);
+    hud_.rect(x0, y0, t, h, kHudBright);
+    hud_.rect(x1, y0, t, h, kHudBright);
+    if (!name.empty()) hud_.text(s.vx(0x2d4), s.playY + s.vy(0x114), name, kHudBright, s.text());
+    hud_.end();
+}
+
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
     // DF.EXE 0x401de4: no fill; dark green scanlines every 2 pixels from
     // y1 + 2, then a one-pixel outline in the HUD green.
@@ -3999,16 +4103,22 @@ void Game::drawTopBar(const Screen& s) {
         hud_.rect(X1, Y0, t, Y1 - Y0 + t, kHudGreen);
     }
 
-    // Weapon name (0x483444) at (75, 10); red while reloading or with no
-    // ammunition left at all (0x44b0a0 / 0x44b164).
+    // Weapon name (0x483444) at (75, 10), its colour from GOG Df.exe 0x4843b0
+    // (jump table 0x484380 on the fire type): guns red while reloading
+    // ([0xc23834]) or with no spares, magazine or chambered round; types
+    // 2 / 6 / 7 / 9 / 11 red while the refire time runs ([0xc23830]) or with
+    // no spares and nothing chambered (the magazine is not looked at); 8
+    // never; 10 with no fire missions left ([0xc23b78]); other types no name.
     const ModeDef& md = arsenal_.mode();
-    // Red (0x44b074): types 7 / 9 also while the cooldown runs; 8 never; 10
-    // with no fire missions left.
-    const bool outOfAmmo = md.type == 8 ? false
-                         : md.type == 10 ? fireMissions_ <= 0
-                         : (arsenal_.spares() <= 0 && arsenal_.rounds() <= 0 && !arsenal_.chambered()) ||
-                               ((md.type == 7 || md.type == 9) && arsenal_.firing());
-    hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), arsenal_.reloading() || outOfAmmo ? kHudRed : kHudGreen, ts);
+    bool nameRed = false, nameShown = true;
+    switch (md.type) {
+    case 1: nameRed = arsenal_.reloading() || (arsenal_.spares() == 0 && arsenal_.rounds() == 0 && !arsenal_.chambered()); break;
+    case 2: case 6: case 7: case 9: case 11: nameRed = arsenal_.firing() || (arsenal_.spares() == 0 && !arsenal_.chambered()); break;
+    case 8: break;
+    case 10: nameRed = fireMissions_ == 0; break;
+    default: nameShown = false; break;
+    }
+    if (nameShown) hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), nameRed ? kHudRed : kHudGreen, ts);
 
     // Ammunition (0x483447, by fire type, jump table 0x483418), y 28.75-47.5:
     // guns: spare magazines with the magazine glyph (font character 1) at
@@ -4307,13 +4417,26 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(cx + a, cy, b, t, kDf2Amber);
         hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
         hud_.rect(cx, cy + a, t, b, kDf2Amber);
-    } else if (crosshair_) {
-        // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to the
-        // left/top and 5..11 to the right/bottom of the centre.
-        hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
-        hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
-        hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
-        hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
+    } else if (!df2Hud_.on && !playerDead()) {
+        // GOG Df.exe 0x402300 (nothing in an outside view, [0x6ba3ec]): with
+        // the laser designator (mode 0x1b) the Crosshairs option
+        // ([0x67f504]) is not looked at: the arms while its scope is up
+        // (0x484740), else STRMISC15 "No Target" blinking (tick bit 0x10,
+        // [0x6e471c]) centred at (512, 370) in [0x67db5c] (0x4026b4).
+        const bool designator = arsenal_.modeIndex() == 0x1b;
+        if (designator && !scopeShown()) {
+            if (ticks_ & 0x10) {
+                const std::string nt = df2Text("Misc", "STRMISC15", "No Target");
+                hud_.text(cx - hud_.textWidth(nt, s.text()) / 2, cy - s.vy(14), nt, kHudBright, s.text());
+            }
+        } else if (designator || crosshair_) {
+            // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to
+            // the left/top and 5..11 to the right/bottom of the centre.
+            hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
+            hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
+            hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
+            hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
+        }
     }
     // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
     // crosshairs on or off; none in an outside view (returns after the pick
@@ -4423,8 +4546,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         const std::string dead = df2Text("Misc", "STRMISC11", "You are dead.");
         hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
     } else if (playerDead() && missionResult_ < 0) {
+        // GOG Df.exe 0x426c30: at the view's top ([0x67dba0]) + 20.
         const char* dead = "You Are Dead";
-        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudMessage, s.text());
     }
 
     if (friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
@@ -4452,8 +4576,22 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         drawDf2Top(s);
         drawDf2Bottom(s);
     } else {
+        // Letterbox 2 (GOG Df.exe 0x404ba0 / 0x429580 / 0x426c30): the bars
+        // move in with the view, the top bar to H/8..H/4 and the bottom bar
+        // to 3H/4..7H/8 with their contents and the message lines (placed
+        // from [0x67dbac] / [0x67dbb0] / [0x67dba8], 96 virtual further in);
+        // the outer bands stay black. Drawn here by moving the viewport.
+        const int off = (letterbox_ - 1) * (int(s.h) >> 3);
+        auto shift = [&](int dy) {
+            hud_.end();
+            glViewport(0, dy, int(s.w), int(s.h));
+            hud_.begin(int(s.w), int(s.h));
+        };
+        if (off) shift(-off);
         drawTopBar(s);
+        if (off) shift(off);
         drawBottomBar(s);
+        if (off) shift(0);
     }
     // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
     // multiplied by (255, 255 - v, 255 - v) / 256, a red tint of strength v.
@@ -6173,22 +6311,66 @@ void Game::drawOldMessages(const Screen& s) {
 }
 
 void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
-    // 0x44c72c / 0x44c574: soldiers on the player's side (no alive check)
-    // named in the campaign's "People Names" as NAMEID<record +4> (no name,
-    // no tag); at the origin raised by 1 m on screen, then 25 up; centred,
-    // clipped to x 60..964 and the view (top + 5 .. bottom - 30); colour by
-    // side: 1 blue, 2 red, else green.
-    const Vec3 eye = viewEye();
-    for (const auto& o : world_.objects) {
-        if (!o.person || o.side != kPlayerSide || o.missionIndex < 0) continue;
-        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
-        if (nameId == 0) continue;
-        char key[24];
-        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
-        const std::string* name = campText_.find("People Names", key);
-        if (!name || name->empty()) continue;
-        const Vec3 at = world_.nearest(o.pos, eye);
-        if (std::getenv("OPENDF_DEBUGTAG")) std::fprintf(stderr, "tag %s at (%.1f %.1f %.1f) eye (%.1f %.1f %.1f)\n", name->c_str(), at.x, at.y, at.z, eye.x, eye.y, eye.z);
+    // GOG Df.exe 0x485a90 -> 0x4858d0: nothing with Player Tags off
+    // (attributes 0x8000, [0x67f549] & 0x80); else every entry of the people
+    // draw list (0xc3b570, built by 0x485040 and thinned by 0x4854d0) on the
+    // player's side, the player's own body only in an outside view
+    // ([0x6ba3ec], OpenDF: once dead). The list: people not hidden
+    // (+0x6c & 2), |dx|, |dy| < 0x3fd m from the camera in whole metres,
+    // |view depth| < 0x3fc m, a 1 m sphere not outside the view frustum
+    // (0x44acf0: near plane, depth + 1 m <= 1020 m, the four side planes),
+    // then dropped when the terrain hides it (0x484fb0: no column of the
+    // sphere's top row, x - r .. x + r, in front of the terrain there).
+    // The name ((ai +0xc) +4; OpenDF the campaign's "People Names" as
+    // NAMEID<record +4>, as 0x44c72c), the projected 1 m over half a pixel,
+    // at the origin raised by 1 m on screen, then 25 up; centred, clipped
+    // to x 60..964 and the view (top + 5 .. bottom - 30); colour by side:
+    // 1 blue, 2 red, else green.
+    if (o_.attributes & 0x8000) return;
+    const Vec3 eye = viewEye(), fwd = viewDir();
+    const Terrain* trn = world_.terrain;
+    // INFERRED equivalent of 0x484fb0 for OpenDF's GL view: the sphere's
+    // top row is visible when a terrain march (every 1/4 m) from the eye to
+    // a point 1 m above the origin, at its centre or 1 m to either side
+    // across the view, finds no ground above the line.
+    const Vec3 cr = cross(fwd, Vec3{0, 1, 0});
+    const Vec3 side = dot(cr, cr) > 1e-6f ? normalize(cr) : Vec3{1, 0, 0};
+    auto terrainShows = [&](Vec3 at) {
+        if (!trn) return true;
+        for (float k : {0.f, -1.f, 1.f}) {
+            const Vec3 b = at + Vec3{0, 1.f, 0} + side * k, d = b - eye;
+            const float len = std::sqrt(dot(d, d));
+            const int n = int(len * 4.f);
+            bool clear = true;
+            for (int i = 1; i < n && clear; ++i) {
+                const Vec3 p = eye + d * (float(i) / float(n));
+                if (trn->heightAt(p.x, p.z) > p.y) clear = false;
+            }
+            if (clear) return true;
+        }
+        return false;
+    };
+    auto inList = [&](Vec3 at) {
+        if (std::abs(std::floor(at.x) - std::floor(eye.x)) >= 1021.f || std::abs(std::floor(at.z) - std::floor(eye.z)) >= 1021.f)
+            return false;
+        const Vec3 d = at - eye;
+        const float depth = dot(d, fwd);
+        if (std::abs(depth) >= 1020.f || depth + 1.f > 1020.f) return false;
+        // Side and near planes from the clip rows (view is rigid, so the
+        // plane distances are in metres).
+        auto plane = [&](int r, float sg) {
+            const float px = viewProj.at(3, 0) + sg * viewProj.at(r, 0), py = viewProj.at(3, 1) + sg * viewProj.at(r, 1),
+                        pz = viewProj.at(3, 2) + sg * viewProj.at(r, 2), pw = viewProj.at(3, 3) + sg * viewProj.at(r, 3);
+            const float len = std::sqrt(px * px + py * py + pz * pz);
+            return len > 0 ? (px * at.x + py * at.y + pz * at.z + pw) / len : 0.f;
+        };
+        for (int r = 0; r < 2; ++r)
+            for (float sg : {-1.f, 1.f})
+                if (plane(r, sg) < -1.f) return false;
+        if (depth < -1.f) return false;
+        return terrainShows(at);
+    };
+    auto tag = [&](Vec3 at, const std::string& name, int sideOf) {
         auto project = [&](Vec3 p, float& px, float& py) {
             const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
             const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
@@ -6199,12 +6381,29 @@ void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
             return true;
         };
         float px, py, ux, uy;
-        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) continue;
-        if (py - uy <= 0.5f) continue;   // 1 m must be more than half a pixel
+        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) return;
+        if (py - uy <= 0.5f) return;   // 1 m must be more than half a pixel
         py = uy - s.vy(25);
-        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) continue;
-        const Color c = o.side == 1 ? kHudBlue : o.side == 2 ? kHudRed : kHudPureGreen;
-        hud_.text(px - hud_.textWidth(*name, s.text()) / 2, py, *name, c, s.text());
+        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) return;
+        const Color c = sideOf == 1 ? kHudBlue : sideOf == 2 ? kHudRed : kHudPureGreen;
+        hud_.text(px - hud_.textWidth(name, s.text()) / 2, py, name, c, s.text());
+    };
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide || o.missionIndex < 0) continue;
+        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
+        if (nameId == 0) continue;
+        char key[24];
+        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
+        const std::string* name = campText_.find("People Names", key);
+        if (!name || name->empty()) continue;
+        const Vec3 at = world_.nearest(o.pos, eye);
+        if (!inList(at)) continue;
+        tag(at, *name, o.side);
+    }
+    // The player's own body, in the outside (dead) view.
+    if (playerDead() && !o_.soldierName.empty()) {
+        const Vec3 at = world_.nearest(deadBodyOrigin(), eye);
+        if (inList(at)) tag(at, o_.soldierName, kPlayerSide);
     }
 }
 
@@ -6423,7 +6622,10 @@ void Game::drawMissionEnd(const Screen& s) {
             hud_.text(s.vx(512) - hud_.textWidth(lines[i], s.text()) / 2, s.vy(top + tops[i]), lines[i], kHudPureGreen, s.text());
         return;
     }
-    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72.5f), y1 = s.y(153.75f), t = s.px();
+    // GOG Df.exe 0x426f20 places it from the view's top [0x67dba0] (96 or,
+    // with letterbox 2, 192 virtual): the panel at +20..+150, the lines at
+    // +40, +80, +110.
+    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.playY + s.vy(20), y1 = s.playY + s.vy(150), t = s.px();
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     hud_.rect(x0, y0, x1 - x0, t, kHudBright);
     hud_.rect(x0, y1 - t, x1 - x0, t, kHudBright);
@@ -6431,9 +6633,9 @@ void Game::drawMissionEnd(const Screen& s) {
     hud_.rect(x1 - t, y0, t, y1 - y0, kHudBright);
     const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
                            "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
-    const float tops[] = {85, 110, 128.75f};
+    const float tops[] = {40, 80, 110};
     for (int i = 0; i < 3; ++i)
-        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.y(tops[i]), lines[i], kHudPureGreen, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.playY + s.vy(tops[i]), lines[i], kHudPureGreen, s.text());
 }
 
 void Game::drawGoals(const Screen& s) {
@@ -6474,7 +6676,7 @@ void Game::drawGoals(const Screen& s) {
         return;
     }
     const float ts = s.text(), sh = s.px();
-    float y = 72.5f;
+    float y = s.playY / s.u + 12.5f;   // GOG Df.exe 0x429160: the view's top [0x67dba0] + 20 virtual
     auto line = [&](const std::string& text, Color c) {
         const float x = s.rx(625) - hud_.textWidth(text, ts);
         hud_.text(x + sh, s.y(y) + sh, text, kHudDark, ts);
@@ -7312,6 +7514,7 @@ int Game::run() {
                 } else {
                     drawViewModel(s);
                     drawZoomInset(s, view, fovY);
+                    drawFoInset(s);
                 }
                 glViewport(0, 0, dw, dh);
                 if (!o_.noHud) drawHud(s, proj * view);

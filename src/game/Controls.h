@@ -29,6 +29,9 @@ enum class Action {
     VCam,
     // GOG Df.exe: the HUD waypoint one back (PrevWaypoint, E; 0x484d00).
     PrevWaypoint,
+    // Delta Force: the FO camera inset (fo, F9, id 0x1e) and its next
+    // team-mate (tab, Tab, id 0x1f) (GOG Df.exe 0x477d40).
+    FoCamera, FoNext,
     Count
 };
 
