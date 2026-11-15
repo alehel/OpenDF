@@ -140,7 +140,7 @@ First differences from DF1:
     the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
     (0x45a9e0); target identification (GOG 0x4642b0, scope 0x455be0,
     pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
-    first object of the player's side or side 0 along the aim within the
+    first person (organics table) of the player's side or side 0 along the aim within the
     centre's range + 2 m and 2 m of the ray gets, if on the player's side,
     four red diagonal ticks at the crosshair corners (scope: ±r/2 to ±r/4),
     and, if it is a named person (DF2WPN.BIN `PeopleNames` STRNAME%03i of

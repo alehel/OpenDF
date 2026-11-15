@@ -5931,15 +5931,16 @@ std::string Game::df2PersonName(const WorldObject& o) const {
 const WorldObject* Game::df2AimPick(float range) const {
     // GOG Df2.exe 0x4189b0: from the player's origin 0.75 m up along its yaw
     // and pitch (the player's pitch lowered by the zeroing, weapon table
-    // +0x98), the first object in the table (slot in use, not +0x64 & 2, not
-    // the player, side the player's or 0) whose distance along the ray is
+    // +0x98), the first entry of the organics table (people only, to
+    // [0xc310a4]: slot in use, not +0x64 & 2, not the player, side the
+    // player's or 0; no alive test) whose distance along the ray is
     // in (1/256 m, range] and whose miss (0x41e880's approximate length)
     // is at most 2 m.
     const Vec3 from = player_.origin() + Vec3{0, 0.75f, 0};
     const float pitch = player_.pitch - arsenal_.zeroElevation();
     const Vec3 dir{std::cos(pitch) * std::sin(player_.yaw), std::sin(pitch), -std::cos(pitch) * std::cos(player_.yaw)};
     for (const auto& o : world_.objects) {
-        if (o.removed || (o.side != kPlayerSide && o.side != 0)) continue;
+        if (!o.person || o.removed || (o.side != kPlayerSide && o.side != 0)) continue;
         const Vec3 d = world_.nearest(o.pos, from) - from;
         const float along = dot(d, dir);
         if (along <= 1.f / 256.f || along > range) continue;
