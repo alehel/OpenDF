@@ -155,7 +155,13 @@ First differences from DF1:
     green, 1 0x1040ff, 2 red, 3 yellow, 4 0xff027f), the
     next-waypoint dot on the `map_radius` ring (0x421510, 0x4226c0,
     0x443850); the top strip: the last three of two 40-line histories
-    (system and chat), each line in its own colour, no timeout (0x442170);
+    (system and chat), each line in its own colour, no timeout (0x442170;
+    GOG 0x448770). GOG Df2.exe keeps each message raw (0x77 characters) and
+    word-wraps it into the 40-line history the strip, the command map and
+    the message log draw (0x4212a0 chat, 0x421440 sys, wrap 0x41be90): the
+    HUD.DEF box width x2 − (x1 − 4) in the HUD font, a break at the last
+    space, continuation lines indented "  " and measured with two space
+    glyphs of indent; a mode change re-wraps the raw rings (0x4215e0);
     the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
     (0x45a9e0); target identification (GOG 0x4642b0, scope 0x455be0,
     pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
@@ -190,7 +196,13 @@ First differences from DF1:
     at D, every pixel blended c + (C − c)·min(255, depth·256/D)/256 after the
     objects (the software frame's pass 0x4485b0; INFERRED: depth = view
     depth), the water plane out to min(D, 2047 m), soldiers see no farther
-    than D (0x406180). DF2 has no ring fog on its far terrain;
+    than D (0x406180). DF2 has no ring fog on its far terrain; GOG Df2.exe
+    tints its colour-only (far) rings by each cell's detail tile, out =
+    sat(c · S[t]/256 + C[t]) with C the tile's mean alpha-premultiplied
+    RGB and S 255 − its mean alpha (loader 0x46f680, 2×2 reductions
+    0x46d970), at mip 0 while drawing (0x470900 -> 0x472380, 0x490a79)
+    and baked into mips 1..9 (0x46e0f0); OpenDF builds that tinted map
+    once with its mips for the far rings;
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
     born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
@@ -489,7 +501,7 @@ First differences from DF1:
     scope · (2u/s)² binary angle per count, scope = the soldier's SCOPE
     SENSITIVITY (+0x5d8, Settings 0..0x180) + 0x80 clamped to 0x80..0x1ff;
     the mouse sensitivity (+0x5b0, 0..0x200) is used as 0x80 when <= 0 and
-    0x1ff above. Both are written back after the mission. DF1's [0x93353c]
+    0x1ff above. Both are written back after the mission; the rate applies while 0x455790 holds (scope up, player alive); its 'scopescale' command (0x3b) has no key in the table or the Keyboard screen. DF1's [0x93353c]
     is the same (AUDIT G5), hidden while moving or with the binoculars up
     ([0x93367c], a flag that moving clears, 0x4373ab). Kevlar is checked on every person
     (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that
@@ -530,6 +542,16 @@ First differences from DF1:
     the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
     header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
     as spelt), binocular texts in orange at the view's centre − 15; the
+    help (F1; GOG Df2.exe 0x41e5d0 at the mission start, drawn by
+    0x41e620): the action table's 0x200 rows with the soldier's bindings,
+    rows without a key or mouse button and category 11 left out, sorted by
+    category then name, named by DF2GAME.BIN HelpScreenActions, a page per
+    category or 14 rows titled "Help - <HelpScreenText category>", "Page %i
+    of %i", key texts from HelpScreenKeys (Ctrl-/Alt-/Shift- by flags
+    0x100/0x80/0x40, " or " a mouse button, " *" for flag 0x200), drawn at
+    x + 20, y + 100 of 1024x768 in the view's darkened, outlined box;
+    PgUp / PgDn turn the pages with wrap (0x41e240). The CD build's table
+    has no categories, so with CD DF2.EXE OpenDF keeps its old layout; the
     scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
     half-blended navy inner segments, "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
@@ -541,7 +563,8 @@ First differences from DF1:
     then the slot-3 scope, 0x44eeb0; clamped by 0x44e6a0; shown as "%2ix" at (700, 480) in
     yellow), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
-    DF1's 28 / mag whole degrees;
+    DF1's 28 / mag whole degrees (Scope Mag: command 0xc2 'scopemag', only
+    while 0x455790 holds);
     night vision (key N, on at the start of night missions: 0x44781e) as an
     ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450), not
     while the scope shows (GOG 0x465fde); the scope image green ×4 while the

@@ -1243,7 +1243,6 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int own
             // Df2.exe 0x454bde / 0x454c01 -> 0x406610): the line of fire, the
             // terrain and the decorations and items in the way (walls,
             // buildings, vehicles), no fog cutoff.
-            RayHit h;
             const bool blocked = df2Rules ? sight(p, target, int(i), -1, false) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1, false) <= 0
                                           : sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0;
             if (blocked) {

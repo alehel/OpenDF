@@ -237,6 +237,11 @@ private:
     // DF1 0x404640: the scope inset only in the first-person view of the
     // living player (pinp, which would keep it in the outside views, is not done).
     bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || (outsideView() == 0 && !playerDead())); }
+    // GOG Df2.exe 0x455790: the player not dead (+0x64 & 0x422004), the scope
+    // flag with a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40]
+    // 0; OpenDF's view leaves the player only once he is dead) and not
+    // moving (+0x74 & 0x18): the scope inset is up.
+    bool df2ScopeActive() const { return arsenal_.scopeShown() && !playerDead(); }
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -384,6 +389,17 @@ private:
     }
     void drawBriefing(const Screen& s);
     void drawHelp(const Screen& s);
+    // GOG Df2.exe's help (F1): the action table (0x4b1710, 0x200 rows of
+    // 0x70) with the mission's bindings, sorted and paged (0x41e5d0 at the
+    // mission start: 0x41e370, 0x41e3c0, 0x41e0f0), drawn by 0x41e620,
+    // PgUp / PgDn step the pages (0x41e240). Empty without GOG's table.
+    struct Df2HelpPage { std::string title; int first = 0, last = 0; };
+    struct Df2HelpRow { std::string name, keys; int category = 0; };
+    std::vector<Df2HelpRow> df2HelpRows_;
+    std::vector<Df2HelpPage> df2HelpPages_;
+    int df2HelpPage_ = 0;   // [0xab2e64]
+    void buildDf2Help();
+    void drawDf2Help(const Screen& s);
     // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
     // 0x4838ac shows it): points of the first path flagged 2.
     struct RoutePoint { double x, y; float radius; std::string name; const MissionObject* object; };
@@ -844,15 +860,27 @@ private:
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
     std::deque<std::pair<std::string, Color>> history_;   // the 16 latest messages and their colours (ring 0x68a280, +0x78)
     void drawOldMessages(const Screen& s);
-    // Delta Force 2's top strip (DF2.EXE 0x442170): two histories of 40
-    // {text, colour}, newest first; sys at sys_message, chat at chat_message.
+    // Delta Force 2's message histories (GOG Df2.exe 0x4212a0 chat, 0x421440
+    // sys): each message is kept raw (40 x 0x7c ring 0xaab4c0 / 0xaac824, at
+    // most 0x77 characters) and word-wrapped to its HUD.DEF box into a second
+    // 40-line ring (0xaadb88 / 0xaaeeec), newest line first; the top strip
+    // (0x448770), the command map and the message overlay draw the wrapped
+    // lines. A change of display mode re-wraps the raw rings (0x4215e0).
     struct Df2Line { std::string text; Color colour; };
-    std::deque<Df2Line> df2Sys_, df2Chat_;
+    std::deque<Df2Line> df2Sys_, df2Chat_;         // wrapped lines
+    std::deque<Df2Line> df2SysRaw_, df2ChatRaw_;   // raw messages
+    std::vector<std::string> df2Wrap(const std::string& text, bool chat) const;
+    void df2Rewrap();
     // df1Colour: DF.EXE's colour argument to 0x42f400 (see kHudMessage).
     void pushMessage(const std::string& text, Color df2Colour = {1, 1, 1, 1}, bool df2Chat = false, Color df1Colour = kHudMessage) {
         if (df2Hud_.on) {
+            auto& raw = df2Chat ? df2ChatRaw_ : df2SysRaw_;
+            raw.push_front({text.substr(0, 0x77), df2Colour});
+            while (raw.size() > 40) raw.pop_back();
+            // The full text is wrapped (not the 0x77 copy); the first line
+            // ends up deepest, the last line at entry 0.
             auto& h = df2Chat ? df2Chat_ : df2Sys_;
-            h.push_front({text.substr(0, 119), df2Colour});
+            for (auto& line : df2Wrap(text, df2Chat)) h.push_front({line, df2Colour});
             while (h.size() > 40) h.pop_back();
         }
         messages_.push_back({text, 0, df1Colour});
@@ -1158,6 +1186,7 @@ bool Game::loadMission(int index) {
             if (o.item && (o.item->attrib & 0x20)) o.removed = true;
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
+    buildDf2Help();   // GOG Df2.exe only (its action table)
     charges_.clear();
     // Delta Force: satchels the mission places share the satchel's handler
     // (`schg`, GOG Df.exe 0x45c110): at hp <= 0 they blow up as the player's do.
@@ -1546,6 +1575,7 @@ void Game::useHudMode(int modeW) {
     // 0x41ba90(font, name, 2, 0), e.g. F_SML640 (277x240) on the command map.
     const bool ok = df2Hud_.on ? hud_.loadSheetHudFont(vfs_, name, &err) : hud_.loadFont(vfs_, name, &err);
     if (!ok) std::fprintf(stderr, "%s\n", err.c_str());
+    if (df2Hud_.on) df2Rewrap();   // GOG Df2.exe 0x4215e0 after a mode change (0x41f150 case 7)
 }
 
 void Game::loadingLine(const char* key) {
@@ -1647,7 +1677,6 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, i
             }
         }
     } else if (!playerDead()) {
-        // Delta Force 2: Euclidean distance, terrain line of sight.
         const Vec3 p = world_.nearest(player_.origin(), at);
         const Vec3 v = p - at;
         RayHit h;
@@ -3515,6 +3544,16 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // Debug keys (not in the original): N free flight (Ctrl+N in DF2, where N
     // is the night vision).
     if (k.keysym.sym == SDLK_n && (!df2Hud_.on || (k.keysym.mod & KMOD_CTRL))) { player_.fly = !player_.fly; return; }
+    (void)shift;
+    // GOG Df2.exe 0x421b9e: with the help up, PgUp / PgDn turn its pages
+    // (0x41e240: back / on, wrapping) and are taken.
+    if (df2Hud_.on && helpShown_ && !df2HelpPages_.empty() &&
+        (k.keysym.sym == SDLK_PAGEUP || k.keysym.sym == SDLK_PAGEDOWN)) {
+        const int n = int(df2HelpPages_.size());
+        if (k.keysym.sym == SDLK_PAGEDOWN) df2HelpPage_ = df2HelpPage_ + 1 >= n ? 0 : df2HelpPage_ + 1;
+        else df2HelpPage_ = df2HelpPage_ < 1 ? n - 1 : df2HelpPage_ - 1;
+        return;
+    }
     // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
     if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
@@ -3642,8 +3681,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
-    // GOG Df.exe 0x477d40: fo toggles [0xc23a34]; tab, while it is on, picks
-    // the next team-mate (0x484a50). Delta Force only.
+
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     // DF2 action 51, [0x765740]; GOG Df2.exe 0x41f150 case 0x27 also turns
@@ -3664,7 +3702,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         break;
     // GOG Df2.exe 0x41f150 case 0x61 -> 0x44c7e0: E steps the scope
     // magnification up, Shift+E down.
-    case Action::ScopeMag: if (arsenal_.df2()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
+    // GOG Df2.exe 0x41f150 case 0x61: 0x44c7e0(Shift ? -1 : +1) when
+    // 0x455790 holds (the binding has flag 0x200, so Shift does not block it).
+    case Action::ScopeMag: if (arsenal_.df2() && df2ScopeActive()) arsenal_.scopeMagStep(shift ? -1 : 1); break;
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
         // follows the raised move, set each tick (Game::run, 0x45c7e2).
@@ -4339,7 +4379,8 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     // 640-wide original (r = 100), across the inset's width.
     (void)fovY;
     const float size = 2 * r;
-    const int mag = std::max(1, int(arsenal_.zoom()));
+    // GOG Df2.exe 0x4557e0 takes the scope power through 0x44e6a0.
+    const int mag = std::max(1, arsenal_.df2() ? arsenal_.df2Zoom() : int(arsenal_.zoom()));
     float focal;
     if (df2Hud_.on) {
         // GOG Df2.exe 0x4557e0 (at 0x455830): the FOV is 0x46500000 /
@@ -5511,6 +5552,60 @@ void Game::drawDf2Bottom(const Screen& s) {
         if (f >= 0) frameOf(df2Hud_.itm, 7, f, X("carrying_icon"), Y("carrying_icon"));
     }
     hud_.setBlend(0);
+}
+
+// GOG Df2.exe 0x41be90 (HUD font 0xa6e068, box width x2 - (x1 - 4) of
+// chat_message / sys_message): a line that measures under the width (plus
+// the indent) stays whole; otherwise it breaks at the last space reached
+// before the advance (indent + glyph width + 1 per character) passes the
+// width, and the rest is wrapped again with the indent of two space glyphs.
+// No space before the overflow keeps the rest as one line. Continuation
+// lines get the "  " prefix (0x4bf834); each line is at most 0x77
+// characters (the ring entry).
+std::vector<std::string> Game::df2Wrap(const std::string& text, bool chat) const {
+    const char* key = chat ? "chat_message" : "sys_message";
+    const int n = hudMode_;
+    const float width = float(df2Hud_.def.value(n, key, 2) - (df2Hud_.def.value(n, key, 0) - 4));
+    const float glyph = std::max(0.f, hud_.textWidth(" ") - 1);
+    std::vector<std::string> lines;
+    std::string rest = text;
+    float indent = 0;
+    for (int guard = 0; guard < 256; ++guard) {
+        if (hud_.textWidth(rest) < width + indent) { lines.push_back(rest); break; }
+        size_t space = std::string::npos;
+        float adv = indent;
+        bool unbreakable = false;
+        for (size_t i = 0; i < rest.size(); ++i) {
+            if (std::isspace(static_cast<unsigned char>(rest[i]))) space = i;
+            adv += hud_.textWidth(std::string(1, rest[i]));
+            if (adv > width) {
+                if (space == std::string::npos) { unbreakable = true; break; }
+                lines.push_back(rest.substr(0, space));
+                rest = rest.substr(space + 1);
+                break;
+            }
+        }
+        if (unbreakable) { lines.push_back(rest); break; }
+        // (Reaching the end without overflowing measures the same rest again with the indent.)
+        indent = 2 * glyph;
+    }
+    for (size_t i = 0; i < lines.size(); ++i) lines[i] = (i ? "  " : "") + lines[i].substr(0, 0x77);
+    return lines;
+}
+
+// GOG Df2.exe 0x4215e0: both wrapped rings rebuilt from the raw ones,
+// newest message first, until 40 lines are filled.
+void Game::df2Rewrap() {
+    auto rewrap = [&](const std::deque<Df2Line>& raw, std::deque<Df2Line>& out, bool chat) {
+        out.clear();
+        for (const auto& m : raw) {
+            if (out.size() >= 40) break;
+            const auto lines = df2Wrap(m.text, chat);
+            for (auto it = lines.rbegin(); it != lines.rend() && out.size() < 40; ++it) out.push_back({*it, m.colour});
+        }
+    };
+    rewrap(df2ChatRaw_, df2Chat_, true);
+    rewrap(df2SysRaw_, df2Sys_, false);
 }
 
 void Game::drawDf2Top(const Screen& s) {
@@ -6936,7 +7031,179 @@ void Game::drawBriefing(const Screen& s) {
     briefLast_ = line;
 }
 
+namespace {
+// GOG Df2.exe 0x41c690: Windows virtual keys -> DF2GAME.BIN HelpScreenKeys
+// keys (the EXE's own default when the table lacks one: the same name).
+struct Df2VkName { int vk; const char* key; };
+const Df2VkName kDf2VkNames[] = {
+    {0x01, "LBUTTON"}, {0x02, "RBUTTON"}, {0x03, "CANCEL"}, {0x04, "MBUTTON"}, {0x08, "BACK"}, {0x09, "TAB"},
+    {0x0c, "CLEAR"}, {0x0d, "RETURN"}, {0x10, "SHIFT"}, {0x11, "CONTROL"}, {0x12, "MENU"}, {0x13, "PAUSE"},
+    {0x14, "CAPITAL"}, {0x15, "HANGUL"}, {0x17, "JUNJA"}, {0x18, "FINAL"}, {0x19, "HANJA"}, {0x1b, "ESCAPE"},
+    {0x1c, "CONVERT"}, {0x1d, "NONCONVERT"}, {0x1e, "ACCEPT"}, {0x1f, "MODECHANGE"}, {0x20, "SPACE"},
+    {0x21, "PRIOR"}, {0x22, "NEXT"}, {0x23, "END"}, {0x24, "HOME"}, {0x25, "LEFT"}, {0x26, "UP"},
+    {0x27, "RIGHT"}, {0x28, "DOWN"}, {0x29, "SELECT"}, {0x2a, "PRINT"}, {0x2b, "EXECUTE"}, {0x2c, "SNAPSHOT"},
+    {0x2d, "INSERT"}, {0x2e, "DELETE"}, {0x2f, "HELP"}, {0x5b, "LWIN"}, {0x5c, "RWIN"}, {0x5d, "APPS"},
+    {0x60, "NUMPAD0"}, {0x61, "NUMPAD1"}, {0x62, "NUMPAD2"}, {0x63, "NUMPAD3"}, {0x64, "NUMPAD4"},
+    {0x65, "NUMPAD5"}, {0x66, "NUMPAD6"}, {0x67, "NUMPAD7"}, {0x68, "NUMPAD8"}, {0x69, "NUMPAD9"},
+    {0x6a, "MULTIPLY"}, {0x6b, "ADD"}, {0x6c, "SEPARATOR"}, {0x6d, "SUBTRACT"}, {0x6e, "DECIMAL"},
+    {0x6f, "DIVIDE"}, {0x70, "F1"}, {0x71, "F2"}, {0x72, "F3"}, {0x73, "F4"}, {0x74, "F5"}, {0x75, "F6"},
+    {0x76, "F7"}, {0x77, "F8"}, {0x78, "F9"}, {0x79, "F10"}, {0x7a, "F11"}, {0x7b, "F12"}, {0x7c, "F13"},
+    {0x7d, "F14"}, {0x7e, "F15"}, {0x7f, "F16"}, {0x80, "F17"}, {0x81, "F18"}, {0x82, "F19"}, {0x83, "F20"},
+    {0x84, "F21"}, {0x85, "F22"}, {0x86, "F23"}, {0x87, "F24"}, {0x90, "NUMLOCK"}, {0x91, "SCROLL"},
+    {0xa0, "LSHIFT"}, {0xa1, "RSHIFT"}, {0xa2, "LCONTROL"}, {0xa3, "RCONTROL"}, {0xa4, "LMENU"},
+    {0xa5, "RMENU"}, {0xba, ";"}, {0xbb, "="}, {0xbd, "-"}, {0xbe, "."}, {0xbf, "/"}, {0xc0, "`"},
+    {0xdc, "\\"}, {0xde, "'"}, {0xf6, "ATTN"}, {0xf7, "CRSEL"}, {0xf8, "EXSEL"}, {0xf9, "EREOF"},
+    {0xfa, "PLAY"}, {0xfb, "ZOOM"}, {0xfc, "NONAME"}, {0xfd, "PA1"}, {0xfe, "OEM_CLEAR"}};
+} // namespace
+
+// GOG Df2.exe 0x41e5d0 at the mission start (0x441950, after the soldier's
+// key rows went into the table, 0x441140 -> 0x4410d0):
+// - 0x41e370 copies the 0x200 action rows (+4 command name, +0x24 key,
+//   +0x26 mouse 1 / 2 / 0x10, +0x2a flags, +0x2c category, +0x30 name);
+//   0x41e2d0 puts rows with neither a key nor a mouse button and category
+//   11 (Debug) in category 0; they are sorted by category, then by name
+//   (_strcmpi, 0x41e290); 0x41e310 names each row of a category through
+//   HelpScreenActions <command> (the table's name as default);
+// - 0x41e3c0 pages them: a new page at each category change or after 14
+//   rows, titled HelpScreenText <category key>;
+// - the key text (0x41c690): "Ctrl-" (flag 0x100), "Alt-" (0x80), "Shift-"
+//   (0x40) and the key's HelpScreenKeys name ("%c" for a printable key,
+//   "Key %d" otherwise); with a mouse button " or " (if a key) and its name;
+//   " *" for flag 0x200 (Shift reverses it).
+void Game::buildDf2Help() {
+    df2HelpRows_.clear();
+    df2HelpPages_.clear();
+    df2HelpPage_ = 0;
+    const Df2ExeTables* t = df2Exe_.df2();
+    if (!t || t->keyRecord != 0x70) return;   // GOG's table only
+    auto txt = [&](const char* section, const std::string& key, const std::string& def) {
+        const std::string* v = gameTable_.find(section, key);
+        return v ? *v : def;
+    };
+    struct Row { std::string command, rawName; int key = 0, mouse = 0, flags = 0, category = 0; int order = 0; };
+    std::vector<Row> rows;
+    const uint32_t base = t->keys - 0x70;   // record 0 (0x4b1710)
+    for (int i = 0; i < 0x200; ++i) {
+        const uint32_t a = base + uint32_t(i) * 0x70;
+        uint32_t km = 0, fl = 0;
+        int32_t cat = 0;
+        Row r;
+        r.order = i;
+        if (!df2Exe_.u32(a + 0x24, km) || !df2Exe_.u32(a + 0x28, fl) || !df2Exe_.i32(a + 0x2c, cat)) { rows.push_back(r); continue; }
+        r.command = df2Exe_.str(a + 4, 32);
+        r.rawName = df2Exe_.str(a + 0x30, 0x40);
+        r.key = int(int16_t(km & 0xFFFF));
+        r.mouse = int(int16_t(km >> 16));
+        r.flags = int(fl >> 16);
+        r.category = cat;
+        rows.push_back(r);
+    }
+    auto lower = [](std::string s) { for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c))); return s; };
+    // The soldier's bindings (0x441090: the first row of that name,
+    // _strcmpi; 0x4410d0: the key, and mouse 1 / 2 / 0x10).
+    for (const auto& [n, key] : o_.bindings)
+        for (Row& r : rows)
+            if (!r.command.empty() && lower(r.command) == lower(n)) {
+                r.key = int(key & 0xFFFF);
+                const uint32_t m = key >> 16;
+                r.mouse = m == 1 ? 1 : m == 2 ? 2 : m == 0x10 ? 0x10 : 0;
+                break;
+            }
+    for (Row& r : rows) {
+        if (r.key == 0 && r.mouse == 0) r.category = 0;
+        if (r.category == 11) r.category = 0;
+    }
+    std::stable_sort(rows.begin(), rows.end(), [&](const Row& a, const Row& b) {
+        if (a.category != b.category) return a.category < b.category;
+        return lower(a.rawName) < lower(b.rawName);
+    });
+    static const char* const kCat[12] = {"NULL", "SYSTEM", "WEAPONS", "CAMERA", "MAP", "COMMUNICATIONS", "SERVER",
+                                         "NOVALOGIC", "VON", "CHEAT", "MOVEMENT", "DEBUG"};
+    static const char* const kCatDef[12] = {"!Null", "!System", "!Weapons", "!Camera", "!Map", "!Communications", "!Server",
+                                            "!NovaLogic", "!Voice Over Net", "!Cheat", "!Movement", "!Debug"};
+    auto keyName = [&](int vk) {
+        for (const auto& v : kDf2VkNames)
+            if (v.vk == vk) return txt("HelpScreenKeys", v.key, v.key);
+        char b[32];
+        // MSVC's C-locale classes 0x157 (letters, digits, punctuation, space).
+        if (vk > 0 && vk < 0x80 && (std::isalnum(vk) || std::ispunct(vk) || vk == ' ')) std::snprintf(b, sizeof b, "%c", vk);
+        else std::snprintf(b, sizeof b, "%s %d", txt("HelpScreenKeys", "KEY", "KEY").c_str(), vk);
+        return txt("HelpScreenKeys", b, b);
+    };
+    int inPage = 0, prev = 0;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const Row& r = rows[i];
+        Df2HelpRow h;
+        h.category = r.category;
+        if (r.category != 0) {
+            h.name = txt("HelpScreenActions", r.command, r.rawName);
+            std::string k;
+            if (r.key != 0) {
+                if (r.flags & 0x100) k += txt("HelpScreenKeys", "Ctrl-", "!Ctrl - ");
+                if (r.flags & 0x80) k += txt("HelpScreenKeys", "Alt-", "!Alt - ");
+                if (r.flags & 0x40) k += txt("HelpScreenKeys", "Shift-", "!Shift - ");
+                k += keyName(r.key);
+            }
+            if (r.mouse != 0) {
+                if (r.key != 0) k += txt("HelpScreenKeys", "OR", " !or ");
+                if (r.mouse == 1) k += txt("HelpScreenKeys", "LBUTTON", "!mouse 1");
+                else if (r.mouse == 2) k += txt("HelpScreenKeys", "RBUTTON", "!mouse 2");
+                else if (r.mouse == 0x10) k += txt("HelpScreenKeys", "MBUTTON", "!mouse 3");
+            }
+            if (r.flags & 0x200) k += " *";
+            h.keys = k;
+            if (++inPage > 14 || r.category != prev) {
+                if (!df2HelpPages_.empty()) df2HelpPages_.back().last = int(i) - 1;
+                Df2HelpPage p;
+                p.first = int(i);
+                const int c = r.category >= 0 && r.category < 12 ? r.category : -1;
+                p.title = c >= 0 ? txt("HelpScreenText", kCat[c], kCatDef[c]) : txt("HelpScreenText", "UNKNOWN", "!Unknown Type");
+                df2HelpPages_.push_back(p);
+                inPage = 1;
+            }
+        }
+        prev = r.category;
+        df2HelpRows_.push_back(h);
+    }
+    if (!df2HelpPages_.empty()) df2HelpPages_.back().last = 0x1ff;
+}
+
+// GOG Df2.exe 0x41e620 (texts by 0x41e0f0; 0x41e5e0 draws at x + 20,
+// y + 100 of 1024x768, in [0x67d37c]): the 3D view's box darkened and
+// outlined (0x465ae0 from x 1 to 1024); "Help - <page>" and "Page %i of %i"
+// centred at x 512 + 20, y 115 / 140; 14 rows from y 190, 25 apart, the
+// action at x 40 and its keys at x 500; then CYCLE_STRING and CHANGE_SCREEN
+// at x 40, 50 and 75 below the last row.
+void Game::drawDf2Help(const Screen& s) {
+    const float vt = s.playY / (s.u * 0.625f), vb = (s.playY + s.playH) / (s.u * 0.625f);
+    df2Panel(s, 1, vt, 1024, vb);
+    const float ts = s.text();
+    auto at = [&](float x, float y, const std::string& t, bool centre) {
+        const float px = s.vx(x + 20), py = s.vy(y + 100);
+        hud_.text(centre ? px - hud_.textWidth(t, ts) / 2 : px, py, t, kDf2Amber, ts);
+    };
+    const int n = int(df2HelpPages_.size());
+    const int p = std::clamp(df2HelpPage_, 0, n - 1);
+    const Df2HelpPage& page = df2HelpPages_[size_t(p)];
+    char buf[160];
+    std::snprintf(buf, sizeof buf, df2Text("HelpScreenText", "HELPTITLE", "!Help - %s").c_str(), page.title.c_str());
+    at(512, 15, buf, true);
+    std::snprintf(buf, sizeof buf, df2Text("HelpScreenText", "PAGE", "!Page %i of %i").c_str(), p + 1, n);
+    at(512, 40, buf, true);
+    int y = 90;
+    for (int k = 0; k < 14; ++k, y += 25) {
+        const int i = page.first + k;
+        if (i > page.last || i >= int(df2HelpRows_.size())) continue;
+        at(20, float(y), df2HelpRows_[size_t(i)].name, false);
+        at(480, float(y), df2HelpRows_[size_t(i)].keys, false);
+    }
+    y -= 25;
+    at(20, float(y + 50), df2Text("HelpScreenText", "CYCLE_STRING", "!* Shift modifies this key to cycle in reverse order"), false);
+    at(20, float(y + 75), df2Text("HelpScreenText", "CHANGE_SCREEN", "!PgUp and PgDn to change pages"), false);
+}
+
 void Game::drawHelp(const Screen& s) {
+    if (df2Hud_.on && !df2HelpPages_.empty()) { drawDf2Help(s); return; }
     // 0x48232c: darkened box (7, 98)-(1023, 666); labels (DFMENU.BIN HELP*)
     // and keys in two columns, rows 25 apart from y 115, bright green: left
     // labels at x 40 / keys at 200, right at 540 / 770 (0x4822f4 draws at
@@ -7711,9 +7978,8 @@ int Game::run() {
                     // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
                     // (0x200000, 0.1758°, at the default 128), a quarter while
                     // zoomed; flipmouse flips the vertical axis (0x42ebd6).
-                    // DF2.EXE 0x41adec..0x41ae13: an eighth while the scope
-                    // shows (0x447b40, not moving: +0x74 & 0x18 clear).
-                    const float zoomScale = arsenal_.df2() ? (arsenal_.scopeShown() ? 0.125f : 1.f) : (arsenal_.zoomed() ? 0.25f : 1.f);
+                    // (Delta Force 2: once a frame, below.)
+                    const float zoomScale = arsenal_.zoomed() ? 0.25f : 1.f;
                     const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * zoomScale;
                     const float dy = o_.flipMouse ? -float(e.motion.yrel) : float(e.motion.yrel);
                     // GOG Df2.exe 0x41eb50: the video camera's view takes the
@@ -7763,7 +8029,7 @@ int Game::run() {
                 const int scope = std::clamp(o_.df2ScopeSens, 0x80, 0x1ff);
                 const int dy = o_.flipMouse ? -df2MouseY : df2MouseY;
                 int64_t rate = int64_t(mouse) << 14;
-                if (arsenal_.scopeShown()) {
+                if (df2ScopeActive()) {   // 0x455790
                     const int modeW = hudMode_ ? hudMode_ : 640;
                     const bool across = std::abs(dy) < std::abs(df2MouseX);
                     const int u = across ? df2MouseX : dy, size = across ? modeW : modeW * 3 / 4;
