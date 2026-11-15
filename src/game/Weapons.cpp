@@ -907,16 +907,44 @@ void Arsenal::moveProjectiles(float dt, World& world) {
     // The death move's direction: DF.EXE from the shooter; DF2.EXE 0x44c063
     // from the round's reversed velocity.
     auto hitFrom = [&](const Projectile& p, const RayHit& h) { return df2_ ? h.point - p.vel : p.from; };
+    // DF2 (GOG Df2.exe 0x4532f0): the round spends cost·(hp2 + 1) of its
+    // energy E = |v|²·M (16.16, v per tick); with E above that it goes on at
+    // speed × sqrt((E−T)/E), otherwise it stops (velocity 0).
+    auto spend = [&](Projectile& b, int64_t cost, int hp2) {
+        const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
+                      vz = int64_t(b.vel.z * kTick * 65536.f);
+        const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
+        const int64_t t = (cost * (int64_t(hp2 + 1) * 65536)) >> 16;
+        if (e > t && e > 0) {
+            b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
+            return true;
+        }
+        b.vel = {0, 0, 0};
+        return false;
+    };
     for (auto& b : bullets_) {
-        int passes = 0;   // DF2: up to 20 hits in a tick (penetration)
+        // DF2 penetration (GOG Df2.exe 0x453860): a tick is up to 20 passes
+        // along the segment traced at its start; a pass that goes on resumes
+        // 0x2000 past the hit toward the same end point, the person it went
+        // through skipped (local_50) in place of the shooter. After 20 passes
+        // the round is left where the tick began, its lifetime unchanged.
+        int passes = 0;
+        bool resume = false;
+        Vec3 resumeEnd{}, tickStart{};
+        int ignore = b.shooter;
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
-            const Vec3 next = b.pos + b.vel * kTick;
+            if (!resume) passes = 0, ignore = b.shooter, tickStart = b.pos;
+            const Vec3 next = resume ? resumeEnd : b.pos + b.vel * kTick;
+            const bool firstPass = !resume;
+            resume = false;
             RayHit hit;
-            bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter, true, true);
+            bool hitSomething = world.raycast(b.pos, next, hit, true, ignore, true, true);
             // DF2 0x44c391: a round under the water slower than 0x4000 a tick
-            // (grenades excepted) is spent after this tick's trace.
+            // (grenades excepted) is spent after this tick's trace. GOG Df2.exe
+            // 0x453922: tested once a tick, before the passes; a spent round
+            // goes through nothing.
             bool spent = false;
-            if (const float w = world.terrain->waterLevel(); df2_ && w != 0 && b.pos.y < w && !(b.flags & 0x1000))
+            if (const float w = world.terrain->waterLevel(); df2_ && firstPass && w != 0 && b.pos.y < w && !(b.flags & 0x1000))
                 spent = std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f;
             Vec3 stopAt{};
             bool stopped = false;   // DF2: the tick ends at the water
@@ -985,6 +1013,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     b.vel = {0, 0, 0};
                 }
                 ++b.age;
+                // GOG Df2.exe 0x453510: an item with hp2 < 0 stops the grenade
+                // (lifetime 0), so it goes off there (0x453860 case 1/2, ttl < 11).
+                const ItemDef* it = hit.object >= 0 ? world.objects[size_t(hit.object)].item : nullptr;
+                if (it && !world.objects[size_t(hit.object)].person && it->damageClass < 0) b.vel = {0, 0, 0}, b.age = b.lifetime;
                 if (b.lifetime - b.age <= 10) {
                     Impact im{b.pos, -1, -1};
                     im.explosive = true;
@@ -1018,30 +1050,41 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                                          o.spheres[k][2], o.spheres[k][3]);
                     }
                 }
-                // Delta Force 2 (0x44bff0): people take the round's energy,
-                // max(1, E / 25), x8 on the head (part 2).
+                bool goesOn = false;   // DF2: the round passes through
                 if (df2_ && (hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person))) {
-                    int dmg = df2Damage(b);
-                    // Kevlar (0x44cd1f..0x44cd54 -> 0x44bdd0): on any person
-                    // whose AI block +0xB8 is 31 (Armor), parts 0 and 1, the
-                    // round first spends 75·(n + 1) of its energy (n: the
-                    // person's second hp value, item +0x98); nothing left, no
-                    // damage. Only player slots ever set +0xB8 (the loadout
-                    // copy 0x45429d, network players 0x408ee2 / 0x40a089 /
-                    // 0x40a623); a placed soldier's block is zeroed by
-                    // 0x404080 and the BMS loader 0x403590 never writes it, so
-                    // in single player only the player can wear Kevlar.
-                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1) {
-                        const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
-                                      vz = int64_t(b.vel.z * kTick * 65536.f);
-                        const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
-                        const int64_t left = e - int64_t(0x4b0000) * (playerArmourClass + 1);
-                        dmg = left <= 0 ? 0 : left <= 0x190000 ? 1 : int(left / 0x190000);
+                    // People (GOG Df2.exe 0x453860 case 3). The person's second
+                    // hp value: item +0x98 (the player's soldier item for the
+                    // player).
+                    const ItemDef* pit = hit.object >= 0 ? world.objects[size_t(hit.object)].item : nullptr;
+                    const int hp2 = hit.object == -3 ? playerArmourClass : pit ? pit->damageClass : 0;
+                    // Kevlar (0x4532f0(0x4b0000)): on any person whose AI block
+                    // +0xB8 is 31 (Armor), parts 0 and 1, the round first spends
+                    // 75·(hp2 + 1) of its energy; nothing left, no damage. Only
+                    // player slots ever set +0xB8 (the loadout copy 0x45429d,
+                    // network players 0x408ee2 / 0x40a089 / 0x40a623); a placed
+                    // soldier's block is zeroed by 0x404080 and the BMS loader
+                    // 0x403590 never writes it, so in single player only the
+                    // player can wear Kevlar.
+                    bool alive = true;
+                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1) alive = spend(b, 0x4b0000, hp2);
+                    // Damage (0x453510, while the round has energy left): for
+                    // hp2 < 0 none and the round stops; else the energy left,
+                    // max(1, E / 25), x8 on the head (part 2).
+                    if (alive && hp2 < 0) b.vel = {0, 0, 0}, alive = false;
+                    if (alive) {
+                        const int dmg = df2Damage(b) * (hit.part == 2 ? 8 : 1);
+                        if (hit.object == -3) playerHits_.push_back({dmg, hit.part, b.from});
+                        else
+                            world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
                     }
-                    dmg *= hit.part == 2 ? 8 : 1;
-                    if (hit.object == -3) { if (dmg > 0) playerHits_.push_back({dmg, hit.part, b.from}); }
-                    else
-                        world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
+                    // Over-penetration (0x4544b9): a regular round (not 0x1851:
+                    // GOG 0x8400000 / 0x110000 / 0x10000000) spends 100·(hp2 + 1)
+                    // on the flesh, makes a 5 m AI noise (0x4544d6) and, with
+                    // energy left, goes on past that person.
+                    if ((b.flags & 0x1851) == 0) {
+                        impacts_.back().noise = 5.f;
+                        if (alive && spend(b, 0x640000, hp2)) goesOn = true;
+                    }
                 } else if (df2_ && hit.object >= 0) {
                     // Objects (0x44bff0): an item whose second hp value is below
                     // 0 stops the round unharmed; buildings take nothing;
@@ -1055,6 +1098,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else dmg = df2Damage(b);
                     }
                     if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
+                    // GOG Df2.exe 0x453510 (before the flag tests): an item
+                    // whose second hp value is below 0 ('hp n -1': dish, radar,
+                    // SA2, boxcars, trucks, ...) stops every round dead.
+                    if (it && it->damageClass < 0) b.vel = {0, 0, 0};
                     // Penetration (0x44c2f0 -> 0x44bdd0; GOG Df2.exe 0x453860
                     // case 1/2 -> 0x4532f0): a regular round (not flags 0x1851:
                     // GOG 0x8400000 / 0x110000 / 0x10000000) on an object with
@@ -1086,23 +1133,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else if (m & 0x08000000) cost = 5, noise = 3.f;
                         else if ((m & 0x10000000) && !target.wrecked) cost = 10, noise = 20.f;
                         impacts_.back().noise = noise;
-                        bool goesOn = cost == 0;
-                        if (cost > 0) {
-                            const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
-                                          vz = int64_t(b.vel.z * kTick * 65536.f);
-                            const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
-                            const int64_t t = int64_t(cost) * 65536 * (it->damageClass + 1);
-                            if (e > t && e > 0) {
-                                b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
-                                goesOn = true;
-                            }
-                        }
-                        if (goesOn && passes < 20) {
-                            b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
-                            ++passes;
-                            b.tickClock += kTick;   // the same tick goes on from here
-                            continue;
-                        }
+                        // hp2 < 0: stopped above, whatever the face.
+                        goesOn = it->damageClass >= 0 && (cost == 0 || spend(b, int64_t(cost) * 65536, it->damageClass));
                     }
                 } else
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
@@ -1127,8 +1159,31 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         if (hit.mesh != 6) ++target.tailHits;   // +0xD4 (mesh 6: +0xD8, never read)
                     }
                 }
-                b.age = b.lifetime;
-                break;
+                if (goesOn && !spent) {
+                    // GOG 0x454823..0x454894: the next pass starts 0x2000 past the hit
+                    // (0x4000 back + 0x6000); when that is at or past the end
+                    // of the tick's segment, the tick ends at the hit point
+                    // 0x4000 back.
+                    const Vec3 u = normalize(next - b.pos);
+                    const Vec3 from = hit.point + u * (0x2000 / 65536.f);
+                    if (dot(next - from, u) > 0) {
+                        if (++passes >= 20) {
+                            b.pos = tickStart;   // the pass loop runs out (0x45488b)
+                            continue;
+                        }
+                        if (hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person)) ignore = hit.object;
+                        b.pos = from;
+                        resume = true;
+                        resumeEnd = next;
+                        b.tickClock += kTick;   // the same tick goes on from here
+                        continue;
+                    }
+                    stopAt = hit.point - u * (0x4000 / 65536.f);
+                    stopped = true;
+                } else {
+                    b.age = b.lifetime;
+                    break;
+                }
             }
             // Whiz-by (0x44f330): the point of this step nearest the listener,
             // if it lies inside the step and the round is within 40 m of the
