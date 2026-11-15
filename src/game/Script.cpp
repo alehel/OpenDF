@@ -97,7 +97,7 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
         case 10: return conditionAreas_[self].valid && host.teamInArea(p1, conditionAreas_[self]);
         case 12: return alive(p1) >= p2;                     // at least p2 alive
         case 1: return host.teamSpotted(p1, p2);              // team spotted team (0xa957e0)
-        case 2: return host.teamEngaging(p1);                 // team engaging (0xa8d5e0)
+        case 2: return host.teamEngaging(p1, p2);             // team engaging (0xa8d5e0; DF2 team p2, GOG Df2.exe 0x41b180)
         case 3: return host.teamAlerted(p1);                  // team alerted (team record +4 == 2)
         case 7: return host.reachedWaypoint(p1, p2, c[5]);    // team reached point p3 of path p2
         case 11: return host.teamCarrying(p1, p2);            // team carries an item of team p2
@@ -172,6 +172,12 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
 
 void MissionScript::visit(size_t i, ScriptHost& host) {
     Event& e = events_[i];
+    // Delta Force 2 (GOG Df2.exe 0x41ad40): an event with a delay or repeat
+    // countdown running on entry only counts down this visit; the fire test
+    // is reached only when both were 0 on entry, so a repeating event fires
+    // again one visit after its countdown ran out. (GOG Df.exe 0x42e9e0 is
+    // built the same way; the DF1 path keeps DF.EXE's order here.)
+    const bool counting = e.delayLeft != 0 || e.repeatLeft != 0;
     if (e.delayLeft > 0) {
         e.delayLeft -= kVisit;
         if (e.delayLeft <= 0) {
@@ -184,6 +190,7 @@ void MissionScript::visit(size_t i, ScriptHost& host) {
         e.repeatLeft -= kVisit;
         if (e.repeatLeft <= 0) { e.repeatLeft = 0; e.fired = false; }
     }
+    if (counting && df2()) return;
     if (e.delayLeft == 0 && e.repeatLeft == 0 && !e.fired && conditions(e, host)) {
         e.fired = true;
         if (e.delay) e.delayLeft = e.delay;
@@ -195,8 +202,36 @@ void MissionScript::visit(size_t i, ScriptHost& host) {
     }
 }
 
+void MissionScript::start(ScriptHost& host) {
+    // Delta Force 2 (GOG Df2.exe 0x466ba0 -> 0x41aeb0): once at load, before
+    // the team totals (0x404310) and the player spawn (0x45c150), every
+    // event with flag 2 gets one visit (0x41ad40), delay and repeat included;
+    // the periodic pass never visits them again.
+    if (!mission_ || !df2()) return;
+    for (size_t i = 0; i < events_.size(); ++i)
+        if (events_[i].flags & 2) visit(i, host);
+}
+
+void MissionScript::leave(ScriptHost& host) {
+    // Delta Force 2 (GOG Df2.exe 0x464140 -> 0x41aef0): leaving the mission,
+    // before the result is copied and the profile is updated, every event
+    // with flag 4 gets one visit.
+    if (!mission_ || !df2()) return;
+    for (size_t i = 0; i < events_.size(); ++i)
+        if (events_[i].flags & 4) visit(i, host);
+}
+
 void MissionScript::tick(ScriptHost& host) {
     if (!mission_) return;
+    if (df2()) {
+        // GOG Df2.exe 0x41ae50: every 16 ticks one eighth of the events,
+        // those with neither flag 2 (load) nor flag 4 (exit).
+        if (ticks_++ % 16) return;
+        const int k = visitCount_++ % 8;
+        for (size_t i = size_t(k); i < events_.size(); i += 8)
+            if (!(events_[i].flags & 6)) visit(i, host);
+        return;
+    }
     if (ticks_ == 0)   // mission-start events (flag bit 2; none in the shipped missions)
         for (auto& e : events_)
             if ((e.flags & 4) && conditions(e, host)) { e.fired = true; actions(e, host); }

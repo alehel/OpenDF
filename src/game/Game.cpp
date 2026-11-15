@@ -422,7 +422,7 @@ private:
         return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (teamHits_[size_t(team)] >> targetTeam & 1);
     }
     void recordHit(const Impact& hit);
-    bool teamEngaging(int team) const override { return ai_.engaging(team); }
+    bool teamEngaging(int team, int targetTeam) const override { return ai_.engaging(team, targetTeam); }
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
     void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
@@ -1147,6 +1147,7 @@ bool Game::loadMission(int index) {
     df2Map_.sel = df2Map_.drag = Df2Sel{};
     df2Map_.prompt = false;
     df2Map_.entered = false;
+    script_.start(*this);   // DF2: the flag-2 events, once (GOG Df2.exe 0x466ba0 -> 0x41aeb0)
     if (exe_.loaded() && !arsenal_.fromExe())
         std::fprintf(stderr, "DF.EXE is not the expected version; using built-in weapon values\n");
     else if (arsenal_.fromExe()) std::printf("weapon tables read from %s\n", (arsenal_.df2() ? df2Exe_ : exe_).buildName());
@@ -2830,7 +2831,10 @@ void Game::endMission(int winnerSide) {
 // live campaign flags become the saved ones when side 1 has won ([0x67f718]
 // == 1). Its flag-4 event pass (0x42eba0) is gated on [0x67f528], network
 // state that single player keeps at 0 (0x41e2e0), so it is not done here.
+// DF2's (0x464140 -> 0x41aef0) is gated on [0x67cd34], which single player
+// sets to 1 (0x434ed0), so it runs, before the result is taken.
 void Game::leaveMissionFlags() {
+    script_.leave(*this);   // DF2: the flag-4 events first (GOG Df2.exe 0x464140 -> 0x41aef0)
     if (missionResult_ == kPlayerSide) savedCampaignFlags() = campaignFlags();
 }
 

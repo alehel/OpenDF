@@ -45,7 +45,7 @@ public:
     virtual bool squadMembers() const { return true; }
     // AI (0x45c0e4 conditions, 0x46bbe8 / 0x46c444 / 0x46cafc actions).
     virtual bool teamSpotted(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
-    virtual bool teamEngaging(int team) const { (void)team; return false; }
+    virtual bool teamEngaging(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
     virtual bool teamAlerted(int team) const { (void)team; return false; }
     virtual bool reachedWaypoint(int team, int path, int point) const { (void)team; (void)path; (void)point; return false; }
     virtual void followPath(int team, int path) { (void)team; (void)path; }
@@ -69,6 +69,10 @@ public:
 class MissionScript {
 public:
     void load(const Mission& mission);
+    // Delta Force 2: the load pass (flag-2 events), right after load() and
+    // the AI set-up; the exit pass (flag-4 events) when the mission is left.
+    void start(ScriptHost& host);
+    void leave(ScriptHost& host);
     // Call once per 60 Hz tick.
     void tick(ScriptHost& host);
 
@@ -89,6 +93,7 @@ private:
     bool conditions(const Event& e, ScriptHost& host) const;
     void actions(const Event& e, ScriptHost& host);
     void visit(size_t i, ScriptHost& host);
+    bool df2() const { return mission_ && mission_->version >= 0x0F; }
 
     const Mission* mission_ = nullptr;
     std::vector<Event> events_;

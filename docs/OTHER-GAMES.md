@@ -776,6 +776,15 @@ First differences from DF1:
     heights when either record z is non-zero; pungi sticks (0x446050 case
     0x42a): hp -= 2 a tick in contact when airborne or running uncrouched,
     the player and AI alike (INFERRED for the AI: running = a Running move);
+    events (0x41ad40): flag-2 events get one visit at load before the team
+    totals and the player spawn (0x466ba0 -> 0x41aeb0), flag-4 events one
+    when the mission is left (0x464140 -> 0x41aef0), the 1-in-8 pass skips
+    both (0x41ae50, flag 16 is not skipped); a visit that finds a delay or
+    repeat countdown running only counts it down, so a repeating event
+    refires one visit after its countdown ends; condition 1/2 tests bit
+    (team p2) of row p1 (0x41b180; set from the AI 0x4018fc / 0x401f3b ->
+    0x41ac60); AI property 5/6 also sets / clears the team's alert state
+    that condition 1/3 tests (0x4184c0 -> 0x4045c0 / 0x4045a0), members or not;
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key

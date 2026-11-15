@@ -94,7 +94,7 @@ public:
 
     // Script conditions (0x45c0e4) and actions.
     bool spotted(int team, int targetTeam) const;
-    bool engaging(int team) const;
+    bool engaging(int team, int targetTeam) const;
     bool alerted(int team) const;
     bool reached(int team, int path, int point) const;
     void followPath(World& world, int team, int path);       // action 1 (0x46bbe8)
@@ -176,7 +176,7 @@ private:
     std::vector<Noise> noise_;
     std::array<int, 64> teamAlert_{};
     std::array<uint64_t, 64> spotted_{};          // team -> target-team bits
-    std::array<bool, 64> engaging_{};
+    std::array<uint64_t, 64> engaging_{};         // team -> target-team bits (DF1 reads row != 0)
     std::map<int, uint32_t> reached_;             // team * 128 + path -> point bits
     std::array<int, 64> teamSpeed_{};
     int ticks_ = 0;
