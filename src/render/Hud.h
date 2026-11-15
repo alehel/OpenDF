@@ -36,6 +36,11 @@ public:
     bool init(Vfs& vfs, std::string* error);
     // Switches the HUD font (F_SML640.PCX, F_SML800.PCX, ...).
     bool loadFont(Vfs& vfs, const std::string& name, std::string* error);
+    // Delta Force 2: switches text() to a font sheet in DF2's band layout
+    // (GOG Df2.exe 0x465a20 loads f_sml%i with 0x41ba90 flag 2, parsed by
+    // 0x41b9a0 / 0x41b8a0); each sheet is loaded once. False (and text()
+    // unchanged) if it cannot be loaded.
+    bool useBandFont(Vfs& vfs, const std::string& name);
     // Loads a game PCX as a texture; pure black becomes transparent.
     // `index0Transparent`: palette index 0 is the colour key (menu icon sheets).
     HudImage loadImage(Vfs& vfs, const std::string& name, bool blackTransparent = true, bool index0Transparent = false);
@@ -110,6 +115,8 @@ private:
     std::vector<GLuint> images_;
     float glyphX_[256] = {}, glyphW_[256] = {};   // source column and width per character
     bool textShadow_ = true;
+    int band_ = -1;   // text()'s font when >= 0: bandFonts_[band_] (DF2)
+    std::vector<std::pair<std::string, SheetFont>> bandFonts_;
 };
 
 } // namespace df

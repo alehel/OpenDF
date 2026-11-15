@@ -1319,6 +1319,9 @@ void Game::useHudMode(int modeW) {
     std::snprintf(name, sizeof name, "WEAP%d.PCX", modeW);
     weaponIcons_ = hud_.loadImage(vfs_, name);
     std::snprintf(name, sizeof name, "F_SML%d.PCX", std::min(modeW, 800));
+    // GOG Df2.exe 0x465a20: f_sml%i in DF2's band layout (0x41ba90 flag 2),
+    // e.g. F_SML640 is 277x240 with 15-row bands.
+    if (df2Hud_.on && hud_.useBandFont(vfs_, name)) return;
     std::string err;
     if (!hud_.loadFont(vfs_, name, &err)) std::fprintf(stderr, "%s\n", err.c_str());
 }

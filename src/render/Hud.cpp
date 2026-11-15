@@ -114,6 +114,7 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
         if (error) *error = "cannot load HUD font " + name;
         return false;
     }
+    band_ = -1;
     std::vector<uint8_t> rgba(size_t(img.width) * img.height * 4, 255);
     for (size_t i = 0; i < img.pixels.size(); ++i) rgba[i * 4 + 3] = img.pixels[i] == 9 ? 255 : 0;
     for (int line = 0; line < 16; ++line) {
@@ -181,6 +182,10 @@ SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
         }
         y0 = y1 + 2;
     }
+    // GOG Df2.exe 0x41bb90: a character with no glyph (entry byte +5 clear)
+    // is drawn as glyph 0.
+    for (int c = 1; c < 256; ++c)
+        if (f.glyphs[c].w == 0) f.glyphs[c] = f.glyphs[0];
     f.tex = makeImage(W, H, rgba);
     f.ok = f.height > 0;
     return f;
@@ -421,7 +426,18 @@ void Hud::quad(float x0, float y0, float x1, float y1, float u0, float v0, float
     verts_.insert(verts_.end(), {a, b, d, d, b, e});
 }
 
+bool Hud::useBandFont(Vfs& vfs, const std::string& name) {
+    for (size_t i = 0; i < bandFonts_.size(); ++i)
+        if (bandFonts_[i].first == name) { band_ = int(i); return true; }
+    SheetFont f = loadSheetFont(vfs, name);
+    if (!f.ok) return false;
+    bandFonts_.emplace_back(name, f);
+    band_ = int(bandFonts_.size()) - 1;
+    return true;
+}
+
 float Hud::textWidth(const std::string& s, float scale) const {
+    if (band_ >= 0) return sheetWidth(bandFonts_[size_t(band_)].second, s, scale);
     float w = 0;
     for (unsigned char ch : s) w += (glyphW_[ch] + 1) * scale;
     return w;
@@ -430,6 +446,26 @@ float Hud::textWidth(const std::string& s, float scale) const {
 float Hud::text(float x, float y, const std::string& s, Color c, float scale) {
     setMode(1, font_);
     const float start = x;
+    if (band_ >= 0) {
+        // Delta Force 2's band sheet: the glyph's band height, advance
+        // width + 1 (0x41bb90).
+        const SheetFont& f = bandFonts_[size_t(band_)].second;
+        for (int pass = textShadow_ ? 0 : 1; pass < 2; ++pass) {
+            float px = start + (pass == 0 ? scale : 0);
+            const float py = y + (pass == 0 ? scale : 0);
+            const Color col = pass == 0 ? Color{0, 0, 0, c.a * 0.8f} : c;
+            for (unsigned char ch : s) {
+                const SheetFont::Glyph& g = f.glyphs[ch];
+                if (g.w > 0 && ch != ' ')
+                    imageUV(f.tex.texture, px, py, float(g.w) * scale, float(g.h) * scale, float(g.x) / float(f.tex.width),
+                            float(g.y) / float(f.tex.height), float(g.x + g.w) / float(f.tex.width),
+                            float(g.y + g.h) / float(f.tex.height), col);
+                px += float(g.w + 1) * scale;
+            }
+            x = px;
+        }
+        return x - start;
+    }
     for (int pass = textShadow_ ? 0 : 1; pass < 2; ++pass) {
         // Pass 0 draws a 1-pixel dark shadow so text reads on any background.
         float px = start + (pass == 0 ? scale : 0), py = y + (pass == 0 ? scale : 0);

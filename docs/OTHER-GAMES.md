@@ -123,7 +123,7 @@ First differences from DF1:
   - **DF2's own HUD** (DF2.EXE 0x442940; full notes in the tracing specs):
     the 3D view is only the rows between two opaque bitmap strips
     (`DHT%iG`/`DHB%iG`, 0x45cb40; drawn before every overlay box, GOG 0x448fd0); every position per display mode from
-    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000, all DF2 text without a shadow (GOG 0x41bb90); the weapon,
+    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000, all DF2 text without a shadow (GOG 0x41bb90); the HUD font f_sml%i (i = min(width, 800)) is a band sheet (GOG 0x465a20 -> 0x41ba90 flag 2, 0x41b9a0 / 0x41b8a0: F_SML640 277x240, 15-row bands), undefined characters drawn as glyph 0; the weapon,
     stance, carried-item and radar-frame images through a fixed amber ramp
     (index i → (i·255>>8, i>>1, 0)) added onto the strip (0x450c10, saturating);
     weapon icon by mode from a 22-frame sheet (0x443370); weapon name from
