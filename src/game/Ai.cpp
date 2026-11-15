@@ -162,11 +162,33 @@ void AiSystem::bark(World& world, const Person& p, SoundSystem& sound, int slot)
 // the target's move visibility, x6 if it fired lately; the best score x
 // perception (>> 2 when relaxed) against a random draw.
 float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float heading, int side, float half, const PlayerView& player,
-                           int& bestId, Vec3& bestPos, bool everyone, float* nearPlayer, Vec3 bodyAt) const {
+                           int& bestId, Vec3& bestPos, bool everyone, float* nearPlayer, Vec3 bodyAt, bool coverMe,
+                           int* deadFriendAlert) const {
     float best = 0;
     bestId = -1;
     struct { float heading; int side; } self{heading, side};
-    auto consider = [&](int id, Vec3 at, int side, int move, bool fired) {
+    // DF2's dead-friend check, inside the scan (GOG Df2.exe 0x417830): for
+    // every dead person of the scanner's own side (not with ai flag 0x200,
+    // whose same-side people are targets) while the alert read at the scan's
+    // start is not 2: the sight line between the body origins 1..2 and
+    // max + 11/32 min of |dx|, |dy| (0x41e880(|dx|, |dy|, 0), no wrap)
+    // under 50 m alert the scanner (the caller adds the team alert and bark
+    // 1, which the EXE queues once per body). No break: every body is
+    // checked against the start-of-scan alert.
+    if (df2 && deadFriendAlert && !everyone && *deadFriendAlert != 2 && selfId >= 0) {
+        const WorldObject& me = world.objects[size_t(selfId)];
+        auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+        for (size_t qi = 0; qi < world.objects.size(); ++qi) {
+            const WorldObject& q = world.objects[qi];
+            if (int(qi) == selfId || !q.person || !q.dead || q.removed || q.side != side) continue;
+            int32_t a = std::abs(fx(q.pos.x - me.pos.x)), b = std::abs(fx(q.pos.z - me.pos.z));
+            if (a < b) std::swap(a, b);
+            if (a + int32_t(uint32_t(b) * 11u >> 5) >= 0x320000) continue;
+            if (const int r = sightLine(world, me.pos, q.pos, selfId, int(qi)); r < 1 || r > 2) continue;
+            *deadFriendAlert = 2;
+        }
+    }
+    auto consider = [&](int id, Vec3 at, int side, int move, bool fired, bool targetsPlayer) {
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "scan %d side %d cand %d side %d\n", selfId, self.side, id, side);
         // DF2 ai flag 0x200: everyone is a target, own side and side 0 too.
         if (!everyone && (side == 0 || side == self.side)) return;
@@ -207,16 +229,20 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
             vis *= 0.5f;
         }
         float score = (half - std::abs(diff)) / half * (100.f / d) * vis * (fired ? 6.f : 1.f);
+        // DF2 "cover me" (GOG Df2.exe 0x417830, after the x6 term): with the
+        // scanner's order (+0xbb) 2, a candidate whose AI target is the
+        // player scores twice.
+        if (coverMe && targetsPlayer) score *= 2.f;
         if (score > best) best = score, bestId = id, bestPos = tp;
     };
-    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_);
+    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, false);
     for (size_t i = 0; i < world.objects.size(); ++i) {
         const WorldObject& o = world.objects[i];
         if (!o.person || !o.alive() || int(i) == selfId) continue;
         const Person* q = nullptr;
         for (const auto& x : people_)
             if (x.object == int(i)) q = &x;
-        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired);
+        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired, q && q->target == -3);
     }
     return best;
 }
@@ -315,7 +341,8 @@ float AiSystem::lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw
     return float(best) / 65536.f;
 }
 
-float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer) const {
+float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer,
+                          bool* deadFriend) const {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
@@ -324,20 +351,84 @@ float AiSystem::scanScore(const World& world, const Person& p, const PlayerView&
     // DF2 (GOG Df2.exe 0x417830): nothing with ai flag 1, nor for a side-0
     // soldier without flag 0x200.
     if (df2 && ((p.flags & 1) || (self.side == 0 && !(p.flags & 0x200)))) return 0;
-    const float best =
-        bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200), nearPlayer, self.pos);
+    int alert = p.alert;
+    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200),
+                                  nearPlayer, self.pos, df2 && p.order == 2, df2 ? &alert : nullptr);
+    if (deadFriend) *deadFriend = alert != p.alert;
     float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
-    if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
+    // Only when relaxed (0x46a896); DF2 reads the alert after the loop, so
+    // a body found in this scan already lifts the quarter (GOG Df2.exe 0x417830).
+    if (alert == 0) score *= 0.25f;
     return score;
 }
 
-bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
+// DF2: the scan found a body of the soldier's own side (GOG Df2.exe
+// 0x417830): alert, the team alerted, bark 1.
+void AiSystem::deadFriendAlert(World& world, Person& p, SoundSystem& sound) {
+    p.alert = 2;
+    alertTeam(world.objects[size_t(p.object)].team);
+    bark(world, p, sound, 1);
+}
+
+// Delta Force 2's team share (GOG Df2.exe 0x414350), from org1's radio
+// (0x401a69 with a target, 0x401d6b alert without one). Only with alert 2
+// and a target (a dead one kept with 0x40 too). Mates: AI people of the same
+// side, alive, not deaf (0x1000), |dx|, |dy| <= 50 m and dx^2 + dy^2 <= 2500
+// (16.16, no wrap). On the same target: without 0x40 a sender who saw it
+// more recently gives his unseen time and last known position (3 when he
+// was 0x1f0 ticks fresher); with 0x40 the mate learns it is dead (|= 0x40,
+// 2). A mate without a target takes it with alert 2 and the team alerted:
+// without 0x40 if the sender's unseen time is under the mate's give-up (1),
+// with 0x40 always, the 0x40 too (2). The mate's state is not touched. The
+// result is the last mate's.
+int AiSystem::teamShare(World& world, Person& p) {
+    if (p.alert != 2 || p.target == -1) return 0;
+    const WorldObject& o = world.objects[size_t(p.object)];
+    auto fx = [](float m) { return int64_t(std::llround(double(m) * 65536.0)); };
+    int result = 0;
+    for (auto& q : people_) {
+        if (&q == &p || (q.flags & 0x1000)) continue;
+        const WorldObject& qo = world.objects[size_t(q.object)];
+        if (!qo.alive() || qo.side != o.side) continue;
+        const int64_t dx = std::abs(fx(qo.pos.x - o.pos.x)), dz = std::abs(fx(qo.pos.z - o.pos.z));
+        if (dx > 0x320000 || dz > 0x320000 || (dx * dx >> 16) + (dz * dz >> 16) > 0x9c40000) continue;
+        if (q.target == p.target) {
+            if (!(p.flags & 0x40)) {
+                if (p.unseen < q.unseen) {
+                    if (q.unseen - p.unseen > 0x1f0) result = 3;
+                    q.unseen = p.unseen;
+                    q.lastKnown = p.lastKnown;
+                }
+            } else if (!(q.flags & 0x40)) {
+                result = 2;
+                q.flags |= 0x40;
+            }
+        } else if (q.target == -1) {
+            if (!(p.flags & 0x40)) {
+                if (p.unseen >= q.giveUpTicks) continue;
+                result = 1;
+            } else {
+                result = 2;
+                q.flags |= 0x40;
+            }
+            q.alert = 2;
+            alertTeam(qo.team);
+            q.target = p.target;
+            q.lastKnown = p.lastKnown;
+        }
+    }
+    return result;
+}
+
+bool AiSystem::scan(World& world, Person& p, const PlayerView& player, SoundSystem& sound) {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     int bestId = -1;
     Vec3 bestPos{0, 0, 0};
     float nearPlayer = 1024.f;   // GOG Df2.exe 0x417830: local_10 = 0x400
-    const float score = scanScore(world, p, player, bestId, bestPos, &nearPlayer);
+    bool deadFriend = false;
+    const float score = scanScore(world, p, player, bestId, bestPos, &nearPlayer, &deadFriend);
+    if (deadFriend) deadFriendAlert(world, p, sound);
     // DF2 +0xAC: stored whenever the scan returns a candidate, before the
     // random draw (GOG Df2.exe 0x401de5 alert / 0x401efe relaxed); read for
     // the scan interval at 0x401d92 / 0x401ea5.
@@ -503,7 +594,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     }
     const Vec3 eye = o.pos + Vec3{0, 1.f, 0};
 
-    if (p.target == -1) {
+    // DF2 (GOG Df2.exe 0x4018df..0x4018ec): a target kept with 0x40 (seen
+    // dead) goes through the no-target logic too.
+    if (p.target == -1 || (df2 && (p.flags & 0x40))) {
         if (p.alert != 2) {
             // Hearing (0x46c2c4; DF2 0x413620): inside any noise box -> alert,
             // face it (DF2: not with ai flag 0x1000, deaf; no bark).
@@ -515,12 +608,22 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                     p.alert = 2;
                     alertTeam(o.team);
                     o.heading = headingTo(o.pos, c);
-                    if (!df2) bark(world, p, sound, 2);   // DF2's 0x413620 does not bark
+                    if (df2) {
+                        // GOG Df2.exe 0x401e76..0x401e95: once the noise
+                        // (0x415480) has made him alert, bark 2 unless
+                        // silent (+0x34 & 0x100) and think again in 16; no
+                        // scan or path this think, the move unchanged.
+                        if (!p.silent) bark(world, p, sound, 2);
+                        p.think = 16;
+                        return;
+                    }
+                    bark(world, p, sound, 2);
                     break;
                 }
             }
             // A dead friend within 50 m in sight alerts (bark 1, ATTACK).
-            if (p.alert != 2)
+            // DF2 checks bodies inside the scan instead (bestTarget).
+            if (p.alert != 2 && !df2)
                 for (size_t qi = 0; qi < world.objects.size(); ++qi)
                     if (const auto& q = world.objects[qi]; q.person && q.dead && q.side == o.side && octagonal(q.pos, o.pos) < 50.f &&
                         sightLine(world, o.pos, q.pos, p.object, int(qi)) >= 1 && sightLine(world, o.pos, q.pos, p.object, int(qi)) <= 2) {
@@ -536,7 +639,7 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             const int interval = df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 372) : (p.alert == 0 ? 0x174 : 0xf8);
             if (p.scanTimer >= interval) {
                 p.scanTimer = 0;
-                if (scan(world, p, player)) {
+                if (scan(world, p, player, sound)) {
                     bark(world, p, sound, 3);
                     spotted_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
                     engaging_[size_t(o.team & 63)] = true;
@@ -548,13 +651,23 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                     return;
                 }
             }
-        } else if (p.scanTimer >= (df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 248) : 0xf8)) {
-            p.scanTimer = 0;
-            if (scan(world, p, player)) {
-                p.state = 2;
-                p.stateTimer = 0;
-                p.think = 8;
-                return;
+        } else {
+            // DF2's team share, alert without a live target (GOG Df2.exe
+            // 0x401d4f..0x401d8c): passes a dead target's news (0x40) on.
+            if (df2 && p.radioTimer > 0x1f0 && !p.silent) {
+                p.radioTimer = (-int(rnd())) & 0x3f;
+                const int r = teamShare(world, p);
+                if (r == 1 || r == 3) bark(world, p, sound, 4);
+                else if (r == 2) bark(world, p, sound, 5);
+            }
+            if (p.scanTimer >= (df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 248) : 0xf8)) {
+                p.scanTimer = 0;
+                if (scan(world, p, player, sound)) {
+                    p.state = 2;
+                    p.stateTimer = 0;
+                    p.think = 8;
+                    return;
+                }
             }
         }
         if (p.pathMode) {
@@ -582,7 +695,7 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
 
     // Has a target.
     engaging_[size_t(o.team & 63)] = true;   // 0x45c918
-    if (!targetAlive(world, p, player)) {
+    if (!df2 && !targetAlive(world, p, player)) {
         // 0x40: the target is dead; GOTONE if this soldier killed it.
         p.flags |= 0x40;
         if (p.target >= 0 && world.objects[size_t(p.target)].killer == p.object) bark(world, p, sound, 5);
@@ -613,7 +726,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         // 0x10, and its position is the last known (0x45b72b).
         int id = -1;
         Vec3 at{0, 0, 0};
-        const float score = scanScore(world, p, player, id, at);
+        bool deadFriend = false;
+        const float score = scanScore(world, p, player, id, at, nullptr, &deadFriend);
+        if (deadFriend) deadFriendAlert(world, p, sound);
         if (id != -1 && id != p.target && score * 65536.f > float(0x4000)) {
             p.target = id;
             p.flags |= 0x80;
@@ -625,6 +740,17 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             if (std::getenv("OPENDF_DEBUGAI")) std::fprintf(stderr, "ai %d switches to %d, score %.3f\n", p.object, id, score);
         }
     }
+    if (df2 && (p.flags & 0x80)) {
+        // GOG Df2.exe 0x4019d5..0x401a08, while seen: a dead target gets
+        // 0x40 (bark 5 if this soldier killed it) and is kept, so the next
+        // think runs the no-target logic (0x4018ea) and the team share
+        // passes the news on; the last known position is the target's.
+        if (!targetAlive(world, p, player)) {
+            p.flags |= 0x40;
+            if (p.target >= 0 && world.objects[size_t(p.target)].killer == p.object) bark(world, p, sound, 5);
+        }
+        p.lastKnown = world.nearest(targetPos(world, p, player), o.pos);
+    }
     if (p.flags & 0x80) p.seen += elapsed;
     else { p.unseen += elapsed; p.seen = 0; }
     if (p.unseen > p.giveUpTicks) {
@@ -632,13 +758,23 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         p.state = 0;
         return;
     }
-    // Radio (0x46b600) every 0x1f0 ticks: same-side people within 50 m
-    // without a target take this one (bark 4, WARN).
-    if (p.radioTimer > 0x1f0 && !(df2 && p.silent)) {   // DF2: silent soldiers never radio
+    if (df2) {
+        // GOG Df2.exe 0x401a46..0x401acc: the team share (0x414350) every
+        // 0x1f0 ticks unless silent, the timer back to (-rand) & 0x3f;
+        // bark 4 for 1 / 3, 5 for 2.
+        if (p.radioTimer > 0x1f0 && !p.silent) {
+            p.radioTimer = (-int(rnd())) & 0x3f;
+            const int r = teamShare(world, p);
+            if (r == 1 || r == 3) bark(world, p, sound, 4);
+            else if (r == 2) bark(world, p, sound, 5);
+        }
+    } else if (p.radioTimer > 0x1f0) {
+        // Radio (0x46b600) every 0x1f0 ticks: same-side people within 50 m
+        // without a target take this one (bark 4, WARN).
         p.radioTimer = 0;
         bool told = false;
         for (auto& q : people_) {
-            if (&q == &p || q.target != -1 || (df2 && (q.flags & 0x1000))) continue;   // DF2: deaf ones hear no radio
+            if (&q == &p || q.target != -1) continue;
             const WorldObject& qo = world.objects[size_t(q.object)];
             if (!qo.alive() || qo.side != o.side || octagonal(qo.pos, o.pos) > 50.f || p.unseen >= q.giveUpTicks) continue;
             q.target = p.target;

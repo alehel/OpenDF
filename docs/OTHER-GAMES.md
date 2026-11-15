@@ -846,8 +846,27 @@ First differences from DF1:
     / (movement) / avoid water over 0.25 m / deaf; flag 1 blocks
     acquisition; script properties 16-19 set or clear them and 2/3/4/14/15
     can clear; night lowers perception 0.15; alert soldiers no longer turn
-    while idle; silent soldiers never radio; DF1's water probe only with the
-    avoid-water bit; any order holds position. Enemies fire through DF2's
+    while idle; DF1's water probe only with the
+    avoid-water bit; any order holds position. The radio is a team share
+    (GOG Df2.exe 0x414350, from 0x401a69 with a target and 0x401d6b alert
+    without one; every 0x1f0 ticks unless silent, timer (−rand) & 0x3f):
+    mates of the side, not deaf, |dx|, |dy| ≤ 50 m and dx²+dy² ≤ 2500, on
+    the same target get a fresher unseen time and last known point (bark 4
+    when 0x1f0 ticks fresher) or learn it died (0x40, bark 5); mates with
+    none take it (bark 4; with 0x40 too, bark 5); their state is not
+    touched. A target seen dead keeps its slot with 0x40 (bark 5 if this
+    soldier killed it, 0x4019d5) and the soldier runs the no-target logic
+    (0x4018ea); the last known point follows the target while it is seen
+    (0x4019f9). A relaxed soldier who hears a noise (0x415480) barks 2
+    unless silent and thinks again in 16 (0x401e76..0x401e95). The dead-
+    friend check is inside the scan (0x417830): own-side bodies, not with
+    flag 0x200, while the alert at the scan's start is not 2, sight 1..2
+    between the body origins and max + 11/32 min < 50 m: alert, team alert,
+    bark 1; the relaxed quarter then no longer applies. A soldier ordered
+    to cover the player (order 2) scores candidates targeting the player
+    twice. Helicopters (0x42bff0) draw against the scan's score with
+    perception once and mark their team as having spotted the target's;
+    searchlights mark (light team, target team) (0x42ce2f). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
     vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed

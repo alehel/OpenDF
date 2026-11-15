@@ -52,8 +52,12 @@ public:
     // `nearPlayer` (DF2, GOG Df2.exe 0x417830 local_10 -> *param_3): the
     // whole-metre distance from `bodyAt` to the player when he passes the
     // field-of-view test, else left as it was (the caller's 1024).
+    // `coverMe` (DF2, the scanner's order 2): an AI candidate targeting the
+    // player scores twice. `deadFriendAlert` (DF2): the scanner's alert,
+    // set to 2 when a body of its own side is found (see Ai.cpp).
     float bestTarget(const World& world, int self, Vec3 eye, float heading, int side, float half, const PlayerView& player,
-                     int& id, Vec3& at, bool everyone = false, float* nearPlayer = nullptr, Vec3 bodyAt = {}) const;
+                     int& id, Vec3& at, bool everyone = false, float* nearPlayer = nullptr, Vec3 bodyAt = {}, bool coverMe = false,
+                     int* deadFriendAlert = nullptr) const;
     // 0x45be04: <= 0 blocked, else 1 + see-through faces (World::sight).
     int sightLine(const World& world, Vec3 a, Vec3 b, int self, int target) const { return world.sight(a, b, self, target); }
     // One 60 Hz tick: people move (their move's speed along their heading)
@@ -158,8 +162,14 @@ private:
     void patrol(World& world, Person& p);
     // The scan's score (0x46a804; GOG Df.exe 0x45e280): the best target x
     // perception, x2 when hard, a quarter when relaxed; no random draw.
-    float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer = nullptr) const;
-    bool scan(World& world, Person& p, const PlayerView& player);
+    // DF2: `deadFriend` is set when the scan's dead-friend check alerted the
+    // scanner (the caller applies it: alert, team alert, bark 1).
+    float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer = nullptr,
+                    bool* deadFriend = nullptr) const;
+    bool scan(World& world, Person& p, const PlayerView& player, SoundSystem& sound);
+    void deadFriendAlert(World& world, Person& p, SoundSystem& sound);
+    // Delta Force 2's team share (GOG Df2.exe 0x414350): 0, or 1 / 2 / 3.
+    int teamShare(World& world, Person& p);
     Vec3 targetPos(const World& world, const Person& p, const PlayerView& player) const;
     bool targetAlive(const World& world, const Person& p, const PlayerView& player) const;
     void fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound, const PlayerView& player, bool followUp);
