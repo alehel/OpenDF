@@ -66,7 +66,9 @@ public:
     // A shot was fired (0x44d71f / 0x46c228): noise of radius `range`
     // metres for side `side`, and the shooter counts as firing (x6 to be
     // seen) until the flags are cleared (every 0x1f0 ticks).
-    void shotFired(Vec3 at, float range, int side, int object);
+    // `marks`: false for a silenced gun (flags 0x80, GOG Df.exe 0x462f20):
+    // the noise is made, the shooter is not marked as having fired.
+    void shotFired(Vec3 at, float range, int side, int object, bool marks = true);
     // Any other noise (DF2.EXE 0x412840 with flags 0: footsteps, a building
     // collapsing): a box of +-r on all three axes; heard by relaxed soldiers
     // (0x413620, any team, any flags), not turned toward by alert ones

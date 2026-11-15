@@ -1357,9 +1357,31 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound) {
     // Delta Force 2 sends these through its speed-of-sound queue (0x45E910).
     if (sound) sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
     for (auto& m : world_.blast(at, radius, heavy)) pushMessage(m);
-    // The player is a character like the others (0x785b60): body origin
-    // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
-    if (!playerDead()) {
+    // The player is a character like the others (0x785b60).
+    if (!playerDead() && mission_.version < 0x0F) {
+        // Delta Force (GOG Df.exe 0x465830, the player in the people list
+        // 0x7cca80): per axis within R + 1 m, then DF.EXE's approximate
+        // length (0x477670) within R + 1 m; the sight lines 0x42e2b0 from the
+        // origin and 0.5 m above it to the blast + 0.5 m (objects shield);
+        // both blocked: nothing for type 1, else double the distance.
+        const Vec3 p = world_.nearest(player_.origin(), at);
+        const float r = radius + 1.f;
+        float x = std::abs(p.x - at.x), y = std::abs(p.y - at.y), z = std::abs(p.z - at.z);
+        if (x <= r && y <= r && z <= r) {
+            const float mx = std::max({x, y, z}), mn = std::min({x, y, z}), md = x + y + z - mx - mn;
+            float d = mx + md * 11.f / 32.f + mn * 0.25f;
+            const Vec3 target = at + Vec3{0, 0.5f, 0};
+            const bool blocked = world_.sight(p, target, -3, -1) <= 0 && world_.sight(p + Vec3{0, 0.5f, 0}, target, -3, -1) <= 0;
+            if (d <= r && (!blocked || heavy)) {
+                if (blocked) d *= 2;
+                // Blast deaths: type 2 under 4 m; 4-8 m type 3 when the 16-bit
+                // random (0x477860) is below 0x4000, else 2; farther type 2.
+                const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
+                hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
+            }
+        }
+    } else if (!playerDead()) {
+        // Delta Force 2: Euclidean distance, terrain line of sight.
         const Vec3 p = world_.nearest(player_.origin(), at);
         const Vec3 v = p - at;
         const float d = std::sqrt(dot(v, v));
@@ -1369,15 +1391,13 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound) {
         // Blast deaths (0x44fda8): type 2 under 4 m; 4-8 m type 3 one time in
         // four, else 2; farther type 2.
         const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
-        if (mission_.version >= 0x0F) {
-            // DF2.EXE 0x44d4a0: base 8 (32 for the 12 m charge), full under
-            // 4 m, half under 8 m, a quarter beyond; blocked sight cancels
-            // type 1 and doubles the distance for the others.
-            const int base = radius > 11.f ? 32 : 8;
-            const float dd = blocked ? 2 * d : d;
-            if (d <= radius + 1.f && (!blocked || heavy))
-                hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
-        } else if (d <= radius + 1.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
+        // DF2.EXE 0x44d4a0: base 8 (32 for the 12 m charge), full under
+        // 4 m, half under 8 m, a quarter beyond; blocked sight cancels
+        // type 1 and doubles the distance for the others.
+        const int base = radius > 11.f ? 32 : 8;
+        const float dd = blocked ? 2 * d : d;
+        if (d <= radius + 1.f && (!blocked || heavy))
+            hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
     }
     if (surface == 0) smokeGens_.push_back({at, 0, 0});
 }
@@ -2149,10 +2169,18 @@ void Game::tickEffects() {
     }
 }
 
+// Delta Force's explosion noise (GOG Df.exe 0x4606b0, 0x4607e0, 0x460950,
+// 0x460a30, 0x46524e): 0x45fcf0(x, y, z, 200, 0, 0) stores the box
+// [p - 200, p + 200] in raw 16.16 units and its reader 0x45fd90 compares
+// object positions with it directly, so the box is +-200/65536 m (about
+// 3 mm): explosions effectively alert no one (gunshots pass range << 16).
+// The entry still takes a slot of the 200-entry queue.
+static constexpr float kDf1BlastNoise = 200.f / 65536.f;
+
 // A destroyed Delta Force gnrc object goes off (GOG Df.exe 0x4533f0 with
 // flag 4 -> 0x453270, CD 0x47ee6c -> 0x47ecf0): the item's sound, then
 // 0x460a30(owner 0, origin + 1 m, scale n << 14): effect 3 with +0x7c =
-// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a +-200 m noise;
+// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a noise (kDf1BlastNoise);
 // a Smoke Generator at origin + 0.5 m (0x447610); then flags |= 8, the husk.
 // The blast is queued in DF.EXE and so meets the husk; here the husk goes
 // first. The table's n: 1001 1, 1002 3, 1039 4, 1040 1, 1041 3, 1042 3,
@@ -2173,7 +2201,7 @@ void Game::gnrcExplode(int index) {
     effectScale_ = n / 4.f;
     explode(at, 1, false, 10.f, false);   // surface 1: effect 3, no smoke generator
     effectScale_ = 0;
-    ai_.noise(at, 200.f, 0, 0);
+    ai_.noise(at, kDf1BlastNoise, 0, 0);
     smokeGens_.push_back({smoke, 0, 0});
 }
 
@@ -2211,7 +2239,7 @@ bool Game::df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const {
 
 // Delta Force's touch (GOG Df.exe 0x488f00 case 0xfd6, CD 0x437f60) does
 // the same: 0x446fb0(toucher, the mine's origin, 0 fragments) -> 0x4606b0
-// (effect 3, blast type 1, sound 0x32, +-200 m noise), a Smoke Generator
+// (effect 3, blast type 1, sound 0x32, a 3 mm noise), a Smoke Generator
 // at +0.5 m (0x447610), hp and +0x76 = 0, flags |= 4; the mine stays drawn.
 // A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
 // its hp is above 0, the common blast at the mine with no fragments (owned
@@ -2228,7 +2256,7 @@ void Game::mineContact(int index) {
     if (world_.df2Rules) df2Blast(o.pos, 0, o.heading);
     else {
         explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
-        ai_.noise(o.pos, 200.f, 0, 0);
+        ai_.noise(o.pos, kDf1BlastNoise, 0, 0);
     }
     smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
 }
@@ -6515,7 +6543,7 @@ int Game::run() {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
                 // The player's gunshots are heard (0x46c228: range / 2).
-                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
+                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3, world_.df2Rules || e.marks);
             }
             for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);
             for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
@@ -6542,11 +6570,11 @@ int Game::run() {
                 if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "mine") {
                     // GOG Df.exe 0x453220 (a round or blast, hp <= 0, flag 4
                     // clear): flags |= 4 and 0x446fb0(killer, origin, 0) ->
-                    // 0x4606b0: effect 3, blast type 1, sound 0x32, +-200 m
+                    // 0x4606b0: effect 3, blast type 1, sound 0x32, a 3 mm
                     // noise, no fragments; no smoke, the mine stays drawn.
                     const Vec3 at = world_.objects[size_t(i)].pos;
                     explode(at, 1);
-                    ai_.noise(at, 200.f, 0, 0);
+                    ai_.noise(at, kDf1BlastNoise, 0, 0);
                     continue;
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).

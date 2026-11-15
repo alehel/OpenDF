@@ -479,7 +479,7 @@ static bool inTriangle(const HitFace& f, float pu, float pv, int ua, int va) {
 
 template <class Visit>
 static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip, uint32_t skipMaterial,
-                      float maxT, Visit visit) {
+                      float maxT, bool bothSides, Visit visit) {
     const GpuModel& m = *o.model;
     forPosedMeshes(world, o, a, hitSkip, [&](int mi, const Mat4& w) {
         auto toFile = [&](Vec3 p) {
@@ -496,7 +496,10 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
             if (f.material & skipMaterial) continue;
             const float ds = f.n[0] * ls[0] + f.n[1] * ls[1] + f.n[2] * ls[2] + f.d;
             const float de = f.n[0] * le[0] + f.n[1] * le[1] + f.n[2] * le[2] + f.d;
-            if (f.material & 0x2) { if ((ds > 0 && de > 0) || (ds <= 0 && de <= 0)) continue; }
+            // bothSides: any crossing of the plane, whatever the material
+            // (GOG Df.exe rounds, 0x464a44..0x464b71); else from the front
+            // only, both ways with material 0x2 (CD 0x44e918, sight 0x42db80).
+            if (bothSides || (f.material & 0x2)) { if ((ds > 0) == (de > 0)) continue; }
             else if (!(ds > 0 && de <= 0)) continue;
             const float sum = std::abs(ds) + std::abs(de);
             if (sum <= 0) continue;
@@ -821,7 +824,7 @@ Vec3 World::personStep(WorldObject& o, float velocity) const {
 
 bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
     bool found = false;
-    testFaces(*this, o, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
+    testFaces(*this, o, a, b, hitSkip_, 0x01000000, 2.f, !df2Rules, [&](const HitFace& f, int mi, float t) {
         // Ties: a later face wins among objects, not over the terrain.
         if (haveObject || found ? t > best : t >= best) return true;
         best = t;
@@ -883,7 +886,7 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
         if (y < z) std::swap(y, z);
         if (x + y * 11.f / 32.f + z * 0.25f > R) continue;
         bool blocked = false;
-        testFaces(*this, o, a, b, hitSkip_, 0x800, 2.f, [&](const HitFace& f, int, float) {
+        testFaces(*this, o, a, b, hitSkip_, 0x800, 2.f, false, [&](const HitFace& f, int, float) {
             if (f.material & 0x868C) { ++extra; return true; }
             blocked = true;
             return false;
@@ -969,8 +972,10 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
         if (!people && o.person) continue;
         // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m
         // of the body origin, then each part's sphere; the nearest along the
-        // path wins.
-        if (o.person && !o.dead && !o.spheres.empty()) {
+        // path wins. Delta Force's rounds (GOG Df.exe 0x463790) do not skip
+        // the dead (no flags & 4 test): a body's posed spheres stop them
+        // (flesh effect and sound, no damage, an armed explosive goes off).
+        if (o.person && (!o.dead || (rounds && !df2Rules && !o.removed)) && !o.spheres.empty()) {
             const Vec3 at = nearest(o.pos, mid);
             // Distance as DF.EXE measures it (0x435bf8): largest component +
             // 11/32 of the middle one + 1/4 of the smallest.
@@ -1158,11 +1163,15 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             if (std::abs(p.x - at.x) > r || std::abs(p.y - at.y) > r || std::abs(p.z - at.z) > r) continue;
             float d = len3(p.x - at.x, p.y - at.y, p.z - at.z);
             if (d > r) continue;
-            // Line of sight (0x45be04): from the body to the blast point
-            // raised 0.5 m, then from 0.5 m higher; both blocked: no damage
-            // for type 1, double distance otherwise.
+            // Line of sight: from the body to the blast point raised 0.5 m,
+            // then from 0.5 m higher; both blocked: no damage for type 1,
+            // double distance otherwise. Delta Force (GOG Df.exe 0x465830 ->
+            // 0x42e2b0, CD 0x45be04) uses the sight line, so terrain,
+            // buildings, decorations and items shield; DF2 the terrain only.
             RayHit h;
-            if (raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)) {
+            const bool blocked = df2Rules ? raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)
+                                          : sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0;
+            if (blocked) {
                 if (!heavy) continue;
                 d *= 2;
             }

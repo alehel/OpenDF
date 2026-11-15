@@ -851,10 +851,10 @@ void Arsenal::fire(Player& player) {
     if (const int bg = burstGun(slots_[size_t(current_)]); bg >= 0) {
         if (!followUp_) {
             const int id = guns_[size_t(bg)].sounds[0];
-            if (id > 0) sounds_.push_back({id, origin, true});
+            if (id > 0) sounds_.push_back({id, origin, true, !(guns_[size_t(bg)].flags & 0x80)});
         }
     } else if (g.sounds[0] > 0) {
-        sounds_.push_back({g.sounds[0], origin, true});
+        sounds_.push_back({g.sounds[0], origin, true, !(g.flags & 0x80)});
     }
     // Then the flash meshes (DF.EXE 0x44d635, DF2.EXE 0x44a9be): ammo +0x30
     // bit 0x2 mesh 1, bit 0x4 mesh 2 (the M203's grenades: 0x5).

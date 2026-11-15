@@ -135,9 +135,11 @@ bool AiSystem::targetAlive(const World& world, const Person& p, const PlayerView
 }
 
 
-void AiSystem::shotFired(Vec3 at, float range, int side, int object) {
+void AiSystem::shotFired(Vec3 at, float range, int side, int object, bool marks) {
     // 0x46c228: a box of +-r at the shot (up to 200), flags 2 = a gunshot.
     if (noise_.size() < 200) noise_.push_back({at, range, side, 2});
+    // GOG Df.exe 0x462f20: a gun with flags 0x80 returns before +0x6d |= 0x40.
+    if (!marks) return;
     if (object == -3) playerFired_ = true;
     else if (Person* p = byObject(object)) p->fired = true;
 }
@@ -482,7 +484,7 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     const int id = shots.gunAt(soundGun).sounds[0];
     if (id > 0 && !silentRound) {
         sound.play(id, muzzle);
-        shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object);
+        shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object, shots.df2() || !(shots.gunAt(soundGun).flags & 0x80));
     }
     if (!followUp && md.burst) p.burstLeft = 2;
     p.think = std::max(1, md.cooldown);

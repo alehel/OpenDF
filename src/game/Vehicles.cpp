@@ -697,7 +697,7 @@ void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& 
     // 0x451ae0: the gun's sound at the muzzle and a noise of half its range.
     if (g.sounds[0] > 0) {
         sound.play(g.sounds[0], muzzle);
-        ai.shotFired(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, v.object);
+        ai.shotFired(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, v.object, shots.df2() || !(g.flags & 0x80));
     }
     o.shotFlash = 10;
 }
