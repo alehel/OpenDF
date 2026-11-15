@@ -401,7 +401,8 @@ private:
     std::vector<Effect> effects_;
     // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
     // every 16..23 ticks, 100 puffs.
-    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; };
+    // sgen (GOG Df.exe 0x42a520): owner +0xf8 (world object, -1 none).
+    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; int owner = -1; };
     // Sound: live on the audio device, or mixed in fixed steps into the
     // recording (--record).
     Audio audio_;
@@ -2141,9 +2142,19 @@ void Game::tickEffects() {
     effects_.erase(std::remove_if(effects_.begin(), effects_.end(), [](const Effect& e) { return e.age >= e.life; }),
                    effects_.end());
     std::uniform_int_distribution<int> r(0, 0x7fff);
+    if (!world_.df2Rules)
+        for (int i : world_.takeSmokeOwners()) smokeGens_.push_back({world_.objects[size_t(i)].pos, 0, 0, i});
     for (auto& g : smokeGens_) {
         if (--g.wait > 0) continue;
-        spawnPuff(g.pos);
+        // 0x42a520: no owner, a puff at its own position; an owner not dead
+        // (+0x6c & 4 clear) removes it; else a puff at the owner's origin.
+        Vec3 at = g.pos;
+        if (g.owner >= 0) {
+            const WorldObject& w = world_.objects[size_t(g.owner)];
+            if (!(w.dead || w.wrecked)) { g.puffs = 100; continue; }
+            at = w.pos;
+        }
+        spawnPuff(at);
         ++g.puffs;
         g.wait = ((r(effectRng_) * 2) >> 13) + 16;
     }
@@ -2242,7 +2253,10 @@ void Game::mineContact(int index) {
         explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
         ai_.noise(o.pos, 200.f / 65536.f, 0, 0);   // 0x4606b0 -> 0x45fcf0: 200 raw units
     }
-    smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+    // DF1 0x488f00: 0x447610(the mine, origin + 0.5 m) owned by the mine,
+    // whose flags get 4 at once: the puffs rise from the mine's origin.
+    if (world_.df2Rules) smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+    else smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0, index});
 }
 
 // Delta Force 2's destruction of the section-8 items (the ai functions

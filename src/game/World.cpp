@@ -209,6 +209,7 @@ bool World::startMove(WorldObject& o, int number) {
     if (!mv || !o.chr->animation(mv->animation)) return false;
     o.anim.start(*o.chr, mv->animation);
     o.moveNumber = number;
+    if (!df2Rules && ((number >= 250 && number <= 253) || number == 255)) smokeOwners_.push_back(int(&o - objects.data()));
     return true;
 }
 

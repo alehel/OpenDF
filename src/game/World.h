@@ -284,6 +284,11 @@ public:
     void update(float dt);
     // Objects destroyed (not people) since the last call, for their sounds.
     std::vector<int> takeDestroyed() { std::vector<int> out; out.swap(destroyed_); return out; }
+    // Delta Force: people who entered a move whose move-table flags +0x18
+    // have bit 0 (GOG Df.exe 0x487827 -> 0x460d20: Death_G_DF..DR 250-253,
+    // Death_Fire 255, static table 0x4ef7c8 +0x30) since the last call; each
+    // gets a Smoke Generator owned by it.
+    std::vector<int> takeSmokeOwners() { std::vector<int> out; out.swap(smokeOwners_); return out; }
 
     // A new object at run time (placed charges): its model, hit points and boxes.
     int spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float heading);
@@ -301,6 +306,7 @@ public:
     std::vector<std::string> landingMessages_;   // "... destroyed" texts from landing damage, for the game to show
 private:
     std::vector<int> destroyed_;
+    std::vector<int> smokeOwners_;
     std::vector<AnimEvent> animEvents_;
     std::map<std::string, Chr> chrs_;
     std::map<std::string, AnimDefs> anms_;
