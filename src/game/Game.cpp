@@ -236,6 +236,17 @@ private:
     // 0x429810; while it is up 0x4790a0 takes the keys 1..9, 0.
     bool audioMacros_ = false;
     void drawAudioMacros(const Screen& s);
+    // GOG Df2.exe's HUD colour: the index [0x67cd08] (hudcolor steps it,
+    // 0x41f150 case 10), [0x67d378] = table [0x67d360] (0x465d60: white,
+    // 0x010101, green, 0x1040ff, yellow, red). 0x43c160 stores the index in
+    // [0x4f2f5c] at a mission's end and 0x43c280 takes it back at the next
+    // start, so it lasts the process. The CD build: white.
+    static inline int df2HudColour_ = 0;
+    Color df2HudColour() const {
+        static const uint32_t kTable[6] = {0xffffff, 0x010101, 0x00ff00, 0x1040ff, 0xffff00, 0xff0000};
+        const uint32_t c = arsenal_.df2Gog() ? kTable[df2HudColour_ % 6] : 0xffffff;
+        return rgb(int(c >> 16 & 255), int(c >> 8 & 255), int(c & 255));
+    }
     void foNext();
     void drawFoInset(const Screen& s);
     const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
@@ -4294,6 +4305,9 @@ void Game::runAction(Action act, bool reverse) {
     // ("Pansy."; the CD the literal, 0x42dfbd) in white when it turns on,
     // 0x7c -> 0x447970(1, 8).
     case Action::CycleBack: if (!df2Hud_.on) arsenal_.cycleBack(); break;
+    // GOG Df2.exe 0x41f150 case 10: [0x67cd08] + 1, past 5 back to 0, and
+    // [0x67d378] = table [0x67d360][that].
+    case Action::HudColor: if (df2Hud_.on && arsenal_.df2Gog()) df2HudColour_ = (df2HudColour_ + 1) % 6; break;
     case Action::CheatRefill: if (!df2Hud_.on) arsenal_.refill(); break;
     case Action::CheatInfiniteAmmo:
         if (!df2Hud_.on && arsenal_.toggleInfiniteAmmo())
@@ -6225,9 +6239,10 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // ([0x66f948]: colour table entry [0x66fa48], white by default).
     if (playerDead() && missionResult_ < 0 && df2Hud_.on) {
         // DF2.EXE: STRMISC11 centred at (512, top+20) in the HUD colour
-        // ([0x653618], white by default).
+        // ([0x653618], white by default; GOG Df2.exe 0x448fd0: [0x67d378],
+        // the hudcolor choice).
         const std::string dead = df2Text("Misc", "STRMISC11", "You are dead.");
-        hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
+        hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, df2HudColour(), s.text());
     } else if (playerDead() && missionResult_ < 0) {
         // GOG Df.exe 0x426c30: at the view's top ([0x67dba0]) + 20, DFGAME.BIN
         // Misc STRMISC11 ("You are dead."); the CD build's text is in the

@@ -650,7 +650,10 @@ First differences from DF1:
     OpenDF counts the player's own table entry as before the first person.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
-    STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
+    STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20;
+    GOG 0x448fd0 in the HUD colour [0x67d378], which the unbound hudcolor
+    command steps through white, 0x010101, green, 0x1040ff, yellow, red,
+    0x41f150 case 10, kept across missions by 0x43c160 / 0x43c280),
     pause (STROVER7), the message log (CD 0x442850: a panel with the system
     history 15..0, entry 0 the newest, bottom-anchored, own colours; GOG
     0x448e40: the whole view darkened without an outline, STROVER43 at

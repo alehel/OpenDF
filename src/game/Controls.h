@@ -58,6 +58,9 @@ enum class Action {
     // hitmewithyourbestshot 0x78 (refill), takeittothelimit 0x79 (infinite
     // ammunition), raindropskeepfallinonmyhead 0x7c (8 fire missions).
     CycleBack, CheatRefill, CheatInfiniteAmmo, CheatFireMissions,
+    // GOG Df2.exe hudcolor (0x41f150 case 10, no default key): the HUD
+    // colour index [0x67cd08] steps 0..5.
+    HudColor,
     Count
 };
 

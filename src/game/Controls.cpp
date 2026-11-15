@@ -32,7 +32,7 @@ const ActionName kNames[] = {
     {Action::CameraZoomOut, "CameraZoomOut"}, {Action::FoCamera, "fo"}, {Action::FoNext, "tab"},
     {Action::ScopeMag, "scopemag"}, {Action::PrintScreen, "PrintScreen"}, {Action::PicInPic, "pinp"},
     {Action::AudioMacros, "AudioMacros"},
-    {Action::CycleBack, "cycleb"}, {Action::CheatRefill, "hitmewithyourbestshot"},
+    {Action::CycleBack, "cycleb"}, {Action::CheatRefill, "hitmewithyourbestshot"}, {Action::HudColor, "hudcolor"},
     {Action::CheatInfiniteAmmo, "takeittothelimit"}, {Action::CheatFireMissions, "raindropskeepfallinonmyhead"},
 };
 
