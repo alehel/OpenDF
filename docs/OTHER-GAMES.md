@@ -416,10 +416,19 @@ First differences from DF1:
     reload end, then the burst counter's fire command), the silent cooldown-
     end chambering 0x446410 (full auto on flag 0x40), reload end 0x447950
     (an empty chamber gets the cooldown with +0x24 via 0x447f40(0); no
-    message — "Ammo reloaded" is the ammo crate in both games), dry fire
+    message), dry fire
     0x4470ae (click +0x2C, silent cooldown, burst counter 0; launchers and
     grenades click only, charges do nothing) and the fire command 0x447270
-    with no reload gate. DF2's scope flag [0x7655f4] is only toggled
+    with no reload gate; the knife strikes whenever its cooldown is out,
+    with no chamber test (GOG 0x44df60 / 0x44da80). A round from ammo
+    without flag 0x80 (GOG 0x800000; the suppressed ammo 4, 5, 6 and 17
+    have it) marks its shooter as having fired (+0x64 0x4000, x6 to be
+    seen; 0x451ae0), sound or not; suppressed rounds still make their noise
+    box. Ammo crates (0x446050): 4010, 4055, 4082 and 4089 refill
+    everything (0x44dfc0), 4118 the grenades only (modes 0x21, 0x22, 0x31,
+    0x44e310); neither touches the reload timer or the cooldown; the
+    message is Misc "STRMSIC17", misspelt in both builds, so an empty line
+    (in 0xff8000) goes into the system messages, and sound 0x164. DF2's scope flag [0x7655f4] is only toggled
     (0x447b30, from command 0x41b35a; cleared with the weapon block at the
     mission start, 0x4477bf) and counts for flag-0x1 modes (0x447b40), so it
     survives weapon changes, reloads, moving and the binoculars. DF2's
@@ -867,7 +876,9 @@ First differences from DF1:
     LAR V models drawn in their place (0x415410);
   - **delay grenade** (0x44ae50): no impact fuse; it slides off object
     faces (v −= n·(v·n)·1.07, × 0.85), stops on other surfaces, and goes
-    off (type 1) with 10 ticks of its 444 − rand(127) left.
+    off (type 1) with 10 ticks of its fuse left; the fuse is 444 −
+    ((heading >> 16) & 0x7f) ticks, from the throw's 32-bit binary heading
+    (GOG 0x451ae0), and it is drawn in flight as the grenade item 4033.
 
 ## Suggested order
 

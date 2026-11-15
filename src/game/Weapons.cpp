@@ -434,6 +434,8 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips
     // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
     kit_ = lo.secondary == 1 ? 1 : 0;
+    reloadTicks_ = 0;
+    cooldown_ = 0;
     refill();
     current_ = 3;
     if (!slots_[3]) cycle();
@@ -559,7 +561,24 @@ void Arsenal::refill() {
         mag_[size_t(g)] = gd.magazine;
         chambered_[size_t(g)] = 1;
     }
-    reloadTicks_ = 0;
+    // DF2's refill (CD 0x4472d0) leaves the reload timer: a running reload
+    // goes on.
+    if (!df2_) reloadTicks_ = 0;
+}
+
+void Arsenal::refillGrenades() {
+    // DF2's grenade crate 4118 (GOG Df2.exe message 0x1f -> 0x44e310, CD
+    // 0x447380): every slot 0-9 holding mode 0x21, 0x22 or 0x31 gets n - 1
+    // spare clips, a full magazine and a round chambered; the timers stay.
+    for (int i = 0; i < kSlots; ++i) {
+        const int m = slots_[size_t(i)];
+        if (m != 0x21 && m != 0x22 && m != 0x31) continue;
+        const int g = modes_[size_t(m)].gun;
+        if (g < 0 || g >= int(guns_.size())) continue;
+        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
+        mag_[size_t(g)] = guns_[size_t(g)].magazine;
+        chambered_[size_t(g)] = 1;
+    }
 }
 
 void Arsenal::refillDf2Gog() {
@@ -598,7 +617,8 @@ void Arsenal::refillDf2Gog() {
         if (df2Lo_.primary == 9 || df2Lo_.primary == 10)
             if (const int g = gunOf(4); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].extraClips;
     }
-    reloadTicks_ = 0;
+    // 0x44dfc0 leaves the reload timer [0x79a2d0] and the cooldown
+    // [0x79a2cc]: a running reload goes on.
 }
 
 void Arsenal::select(int slot) {
@@ -816,6 +836,14 @@ void Arsenal::fire(Player& player) {
     p.pos = origin;
     p.vel = dir * (float(g.velocity) * 60.f / 62.f);
     p.lifetime = g.lifetime;
+    if (df2_ && (g.flags & 0x1000)) {
+        // The delay grenade (GOG Df2.exe 0x451ae0, ammo flag 0x10000000 =
+        // CD 0x1000): ttl = lifetime - ((yaw >> 16) & 0x7f), the throw's
+        // 32-bit binary heading (0 east, counter-clockwise), so its fuse is
+        // 0..127 ticks shorter than the ammo's 444.
+        const uint32_t bin = uint32_t(int64_t(std::llround(double(kPi * 0.5f - yaw) / (2 * kPi) * 4294967296.0)));
+        p.lifetime -= int((bin >> 16) & 0x7f);
+    }
     p.power = g.power;
     p.falloff = g.falloff;
     p.flags = g.flags;
@@ -840,6 +868,7 @@ void Arsenal::fire(Player& player) {
     } else {
         bullets_.push_back(p);
     }
+    if (df2_ && !(g.flags & 0x80)) fired_ = true;
     // The Barrett (mode 15) pushes the shooter back 0x800 (1/32 m) along
     // -heading (0x447070).
     if (df2_ && slots_[size_t(current_)] == 15) {
@@ -977,11 +1006,12 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 if (md.type == 1) cooldown_ = md.cooldown;
             }
         } else if (md.type == 6) {
-            // Knife: DF1's strike has no chamber test, only the cooldown
-            // (GOG Df.exe 0x483b10 case 6; CD 0x44a7c8), so a switch during
-            // the cooldown (select clears it) cannot leave it dead. DF2 keeps
-            // the chamber test (0x44691b) until DF2.EXE's knife is checked.
-            if (!df2_ || chambered()) fire(player);
+            // Knife: no chamber test, only the cooldown (GOG Df.exe 0x483b10
+            // case 6, CD 0x44a7c8; GOG Df2.exe 0x44df60 lets kind 6 through
+            // with ammo 0 and 0x44d8a0 case 6 -> 0x44da80 tests only
+            // [0x79a2cc] < 1), so a switch during the cooldown (select
+            // clears it) cannot leave it dead.
+            fire(player);
         } else if (md.type == 7 || md.type == 9 || md.type == 13) {
             // Claymore, satchel: nothing without a chambered one, no click
             // (0x44aecb; DF2 0x446a5a); GOG's video camera the same (0x44d460).

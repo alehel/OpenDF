@@ -1534,8 +1534,20 @@ void Game::touchPickups() {
             o.boxes.clear();
             break;
         case 4010: case 4055:
-            arsenal_.refill();
-            pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
+        case 4082: case 4089: case 4118:
+            // DF2 (GOG Df2.exe 0x446050: 0xfaa, 0xfd7, 0xff2, 0xff9 -> 0x45b9d0
+            // message 0x1d -> 0x44dfc0; 0x1016 -> 0x45ba20 message 0x1f ->
+            // 0x44e310 the grenades only; 0x409610 then shows Misc STRMSIC17
+            // in [0x67d37c] = 0xff8000 and plays 0x164). The key is misspelt in
+            // both builds (0x4af790; DF2GAME.BIN has STRMISC17 "Ammo
+            // reloaded."), so 0x464f20 finds nothing and returns its empty
+            // string (0x4f7a50): an empty line goes into the system messages.
+            // DF1 has 4010 / 4055 only.
+            if (!world_.df2Rules && id != 4010 && id != 4055) break;
+            if (id == 4118) arsenal_.refillGrenades();
+            else arsenal_.refill();
+            if (world_.df2Rules) pushMessage(df2Text("Misc", "STRMSIC17", ""), rgb(0xff, 0x80, 0));
+            else pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
             sound_.play2D(0x164);
             o.removed = true;
             o.boxes.clear();
@@ -3411,11 +3423,13 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
-    // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
+    // 4033 (DF2's delay grenade, CD 0x1000, too: GOG Df2.exe 0x451ae0 gives
+    // GOG 0x10000000 the model [0x735e78], item 0xfc1), 0x01 the M203's
+    // 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
     // at the launch yaw and pitch for the whole flight (gnrc draw:
     // T * Rz(yaw) * Ry(pitch), the record's angles never change).
     for (const auto& p : arsenal_.projectiles()) {
-        const int id = (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
+        const int id = (p.flags & 0x10) || (arsenal_.df2() && (p.flags & 0x1000)) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
         const ItemDef* gi = id ? items_.byId(id) : nullptr;
         const GpuModel* gm = gi && !gi->graphic.empty() ? models_.get(vfs_, gi->graphic) : nullptr;
         if (!gm) continue;
@@ -6515,8 +6529,11 @@ int Game::run() {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
                 // The player's gunshots are heard (0x46c228: range / 2).
-                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
+                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3, !arsenal_.df2());
             }
+            // DF2: the player counts as firing per round of unsuppressed ammo
+            // (GOG Df2.exe 0x451ae0, ammo flag 0x800000 = CD 0x80 clear).
+            if (arsenal_.takeFired()) ai_.markFired(-3);
             for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);
             for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
             // The designator's point (0x4508be: the depth at the centre of the

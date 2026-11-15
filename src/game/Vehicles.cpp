@@ -697,8 +697,11 @@ void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& 
     // 0x451ae0: the gun's sound at the muzzle and a noise of half its range.
     if (g.sounds[0] > 0) {
         sound.play(g.sounds[0], muzzle);
-        ai.shotFired(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, v.object);
+        ai.shotFired(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, v.object, !shots.df2());
     }
+    // DF2: the gunner counts as firing unless the ammo is suppressed (CD
+    // flag 0x80; 0x451ae0 sets +0x64 0x4000 per round, sound or not).
+    if (shots.df2() && !(g.flags & 0x80)) ai.markFired(v.object);
     o.shotFlash = 10;
 }
 

@@ -66,7 +66,16 @@ public:
     // A shot was fired (0x44d71f / 0x46c228): noise of radius `range`
     // metres for side `side`, and the shooter counts as firing (x6 to be
     // seen) until the flags are cleared (every 0x1f0 ticks).
-    void shotFired(Vec3 at, float range, int side, int object);
+    // `fired` false: the noise only (DF2's suppressed rounds, see markFired).
+    void shotFired(Vec3 at, float range, int side, int object, bool fired = true);
+    // GOG Df2.exe 0x451ae0 / 0x451eb0: every round spawned from ammo without
+    // flag 0x800000 (CD 0x80, the suppressed weapons: ammo 4, 5, 6, 17) sets
+    // the shooter's +0x64 0x4000 (x6 to be seen), with or without a sound;
+    // the noise box (0x414660) is made for any round whose sound has a range.
+    void markFired(int object) {
+        if (object == -3) playerFired_ = true;
+        else if (Person* p = byObject(object)) p->fired = true;
+    }
     // Any other noise (DF2.EXE 0x412840 with flags 0: footsteps, a building
     // collapsing): a box of +-r on all three axes; heard by relaxed soldiers
     // (0x413620, any team, any flags), not turned toward by alert ones

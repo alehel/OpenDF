@@ -219,6 +219,9 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
+    // DF2's grenade crate (item 4118, GOG Df2.exe 0x44e310): modes 0x21,
+    // 0x22 and 0x31 only.
+    void refillGrenades();
     void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
     void reload();                // 0x44a004
     void toggleZoom();
@@ -344,6 +347,10 @@ public:
     std::vector<WeaponEvent> takeEvents() { std::vector<WeaponEvent> out; out.swap(events_); return out; }
     std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
+    // DF2: a round of unsuppressed ammo (CD flag 0x80 clear) left the
+    // player's weapon since the last call (GOG Df2.exe 0x451ae0 sets the
+    // shooter's 0x4000 'fired' bit per round, with or without a sound).
+    bool takeFired() { const bool f = fired_; fired_ = false; return f; }
 
 private:
     void tick(bool triggerDown, Player& player, std::vector<std::string>& messages);
@@ -404,6 +411,7 @@ private:
     std::vector<WeaponEvent> events_;
     std::vector<PlayerHit> playerHits_;
     bool followUp_ = false;
+    bool fired_ = false;   // DF2: see takeFired
     int projectileIds_ = 0;
     Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst
     Vec3 soundPos_{0, 0, 0};   // the player's position for weapon handling sounds
