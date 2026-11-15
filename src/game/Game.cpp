@@ -5376,6 +5376,9 @@ int Game::run() {
             const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.mode().oneHanded();
+            // GOG Df2.exe 0x445980 (without DF2.EXE's mode table: the DF1 hand classes).
+            player_.df2ModeFlags = arsenal_.df2() ? arsenal_.mode().df2Flags : arsenal_.mode().oneHanded() ? 4 : 8;
+            player_.scoped = arsenal_.zoomed();
             in.shooting = arsenal_.firing();
             player_.update(dt, in, world_);
             if (std::getenv("OPENDF_DEBUGPLAYER") && (ticks_ % 30) == 0) {

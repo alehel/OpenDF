@@ -34,6 +34,11 @@ public:
     bool pfoil = true;               // the player item's attribute PFoil (0x400): the chute glides (DF2.EXE 0x440651)
     const AnimDefs* moves = nullptr; // the soldier's .ANM table
     bool oneHanded = false;          // pistol: the *_1HW moves
+    // Delta Force 2: the current mode's raw flags +0x3C (0x18 _2HW moves,
+    // 4 _1HW, neither the plain WalkingN / RunningN; 0x10 SLW, 8 2HW,
+    // 0x200 BIN poses) and the scope in (+0x74 & 0x80): GOG Df2.exe 0x445980.
+    int df2ModeFlags = 0;
+    bool scoped = false;
     // Eye height above the feet per stance (stand, crouch, prone) and hand
     // (two-, one-handed): the pose's origin height (.CHR contact points) plus
     // DF.EXE's eye offset (0x449913). Filled from the game data; defaults

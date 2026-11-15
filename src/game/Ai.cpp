@@ -655,22 +655,28 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
         // +0x74: direction bits 0-2, speed bits 3-4 = 1 walk / 2 run) becomes
         // a ladder move by direction and z moves at once: walk 0x43f951
         // (table 0x43fb40), run 0x43fa42 (0x43fb60): forward +0x800 / +0x1000
-        // 16 Ladder_Up, back the same down 17 Ladder_Down, left / right 18 /
-        // 19, the diagonals half. Out of the volume the chooser gives the
-        // walk / run move again. AiSystem walks and runs forward only, so
-        // in practice an AI walking into a ladder climbs it, and none climbs
-        // down (INFERRED from the moves AiSystem gives; DF2's AI sets the
-        // control word, not the move).
+        // 16 Ladder_Up, left / right 18 / 19, the front diagonals half (the
+        // GOG build signs the climb by the aim pitch, below). Out of the
+        // volume the chooser gives the walk / run move again. AiSystem walks
+        // and runs forward only, so an AI walking into a ladder climbs up
+        // while aiming up and down otherwise (INFERRED from the moves
+        // AiSystem gives; DF2's AI sets the control word, not the move).
         if (world.df2Rules && (ticks_ & 1) && !o.chute && !o.swimming) {
             const bool onLadderMove = o.moveNumber >= 16 && o.moveNumber <= 19;
             const int want = onLadderMove ? p.gait : o.moveNumber;
             int dir = -1, speed = 0;
             for (const auto& [lo, sp] : {std::pair{20, 1}, {28, 1}, {40, 1}, {48, 1}, {60, 2}, {68, 2}, {80, 2}, {88, 2}})
                 if (want >= lo && want < lo + 8) { dir = want - lo; speed = sp; }
-            if (o.ladder && dir >= 0) {
-                static const int climb[8] = {2, 1, 0, -1, -2, -1, 0, 1};
-                static const int ladderMove[8] = {16, 18, 18, 18, 17, 19, 19, 19};
-                o.base += float(climb[dir] * (speed == 2 ? 0x800 : 0x400)) / 65536.f;
+            // GOG Df2.exe's chooser 0x445980 (0x445d1b walk, 0x445df7 run):
+            // the climb's sign is the aim pitch +0x34 (in (0, 0x7fffffff) up,
+            // level or down down), Ladder_Down is never chosen; back and its
+            // diagonals give move 0 Null walking and the run move running
+            // (AiSystem gives forward moves only, so those are left out).
+            if (o.ladder && dir >= 0 && (dir <= 2 || dir >= 6)) {
+                static const int climb[8] = {2, 1, 0, 0, 0, 0, 0, 1};
+                static const int ladderMove[8] = {16, 18, 18, 0, 0, 0, 19, 19};
+                const int s = o.aimPitch > 0 ? 1 : -1;
+                o.base += float(s * climb[dir] * (speed == 2 ? 0x800 : 0x400)) / 65536.f;
                 p.gait = want;
                 world.requestMove(o, ladderMove[dir]);
                 if (o.moveNumber != ladderMove[dir]) o.moveNumber = ladderMove[dir];   // not in this .ANM: still the ladder move

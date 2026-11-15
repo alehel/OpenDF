@@ -40,6 +40,7 @@ struct ModeDef {
     std::string viewModel;      // the first-person item's graphic
     int icon = -1;              // WEAP%i.PCX frame (0x484ae8), -1 none
     bool burst = false;         // 0x46aefc: modes 6, 8, 21, 35, 36 fire bursts of three
+    int df2Flags = 0;           // DF2: the raw +0x3C flags (the move chooser's hand class, GOG Df2.exe 0x445980)
     bool binoculars = false;    // DF2 +0x3C & 0x200: the binoculars (mode 47); the move chooser 0x43f690 raises them
     std::vector<int> elevation; // DF2: the weapon type's scope elevation per range setting (type +0x98, << 16 binary angle)
     bool oneHanded() const { return !(flags & 4); }

@@ -217,22 +217,29 @@ First differences from DF1:
     mover 0.02 m, which the terrain then lifts back); a downward push stands
     him on the object (ground distance 0, +0xF8 = it). Touch items
     (movecb) do not push. Type 4 volumes are ladders: no gravity, and the
-    chooser climbs: forward +0x800 (run +0x1000) a chooser tick (odd ticks)
-    with Ladder_Up, back down, the diagonals half, sideways Ladder_Left /
-    Right (0x43f951 walk, 0x43fa42 run; jump tables 0x43fb40 / 0x43fb60);
+    chooser climbs (GOG Df2.exe 0x445980; CD 0x43f951 / 0x43fa42, which
+    climbed down on back): forward 0x800 (run 0x1000) a chooser tick (odd
+    ticks) with Ladder_Up, up when the pitch +0x34 is above level, down
+    when level or below; the front diagonals half with Ladder_Left /
+    Right, sideways those moves with no climb; Ladder_Down is never
+    chosen. Back and its diagonals: standing and walking move 0 Null (no
+    motion), running or crouched the land moves (stepping off). Standing
+    or crouched still and not shooting: Ladder_Stand. Prone never climbs;
     the player always may, AI with ai flag 0x400 (BMS record +0xC bit
     0x1000; 73 soldiers in D03M03/06/08, D05M06/09, D06M05/11/19). The
     chooser 0x43f690 is the person move's (0x44044f) for everyone, so an AI
     walking or running into a ladder climbs it (AiSystem: the walk / run
     move becomes the ladder move while +0x64 & 0x400000, z at once; back
-    to it out of the volume). AI only goes forward, so none climbs down.
+    to it out of the volume). AI only goes forward, so it climbs up only
+    while its aim pitch (+0x34) is above level; at level it goes down.
     Only PLAYANIM.ANM has the Ladder_* moves (velocity 0.25 / 0.5); enemy
     .ANMs climb in place with no horizontal step (INFERRED: DF2's table
     entry for a missing move). A side push sinks 0.02 m a tick, so a
     walker (0x800 per odd tick) pressed against a wall cannot climb, a
     runner (0x1000) can (READ: 0x440a8b). `OPENDF_TESTLADDER=1|ITEM` sends
     the first such soldier into the nearest ladder (testing; D06M11's
-    powcamp guard tower: climbed 27.5 to 32.9 m and stepped onto it). Type 6 volumes set +0x64 & 0x1000000: the
+    powcamp guard tower: under the CD rules climbed 27.5 to 32.9 m and
+    stepped onto it; under GOG's the guard aims level and stays at the foot). Type 6 volumes set +0x64 & 0x1000000: the
     armory (item 103099 `armory`, model AMMODUMP, in the multiplayer maps;
     KHUFU and TAVERN have one too). READ quirks kept: the sum of a mesh is
     cleared only when a point reaches the mesh box, so a mesh no point
@@ -339,7 +346,13 @@ First differences from DF1:
     on each raise, the Heading/Distance texts) shows only in the raised
     moves 0x68/0x72/5, which the move chooser 0x43f690 picks for a 0x200
     mode at speed bits ((+0x74 >> 3) & 3) zero: walking keeps the
-    binoculars in hand (their HUD name red) but lowers the view. The scope
+    binoculars in hand (their HUD name red) but lowers the view. The
+    chooser's hand class (GOG 0x445980) is the mode's +0x3C: & 0x18 the
+    *_2HW moves, & 4 the *_1HW ones, anything else (knife, grenades,
+    satchel, claymores, detonator, laser, binoculars) the plain WalkingN /
+    RunningN (Running0 6.0 m/s against Running0_2HW's 5.0), _S only for
+    the two hand classes; still: BIN 0x200, SLW 0x10, SCW with the scope
+    in (standing), 2HW 8, 1HW 4, else KNIFE (prone: 1HW). The scope
     inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18), while
     the shot's origin and the designator take 0x447b40 alone; the mouse
     turns at an eighth while the inset shows (0x41ae13). DF1's [0x93353c]
