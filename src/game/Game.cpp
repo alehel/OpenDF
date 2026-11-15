@@ -2807,7 +2807,7 @@ void Game::killTeam(int team) {
 
 void Game::removeTeam(int team) {
     for (auto& o : world_.objects)
-        if (o.team == team && o.missionGroup != 2) o.removed = true;
+        if (o.team == team && o.missionGroup != 2) o.removed = true, o.blown = false;   // freed (0x45f5b0 -> 0x4471d0 -> 0x45da30)
 }
 
 void Game::showText(int id) {
@@ -6551,8 +6551,12 @@ int Game::run() {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
                 // The player's gunshots are heard (0x46c228: range / 2).
-                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
+                // Delta Force: the noise only when the range is not 0 (GOG
+                // 0x4630d6); the mark is per round, by the gun (takeFireMark).
+                if (e.shot && world_.df2Rules) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
+                else if (e.shot && sound_.range(e.id) > 0) ai_.noise(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, 2);
             }
+            if (arsenal_.takeFireMark()) ai_.markFired(-3);
             for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);
             for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
             // The designator's point (0x4508be: the depth at the centre of the

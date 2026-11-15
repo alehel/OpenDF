@@ -21,6 +21,11 @@ struct WorldObject {
     const ItemDef* item = nullptr;
     const GpuModel* model = nullptr;   // current graphic (the husk once destroyed)
     const GpuModel* husk = nullptr;
+    // Delta Force: the load-time model (GOG Df.exe object +0x10, written only
+    // by the loader 0x402ec0 and the organics spawn 0x45d520). Sight lines
+    // (0x42db80) always test it, destroyed or not; rounds take the husk
+    // (+0x14 with flags & 8, 0x464400).
+    const GpuModel* intact = nullptr;
     Vec3 pos;                          // map position (x/z wrapped into the map), y = ground + lift
     float heading = 0;                 // radians clockwise from north
     float lift = 0;                    // height above ground from the mission
@@ -36,6 +41,10 @@ struct WorldObject {
     float fall = 0;                    // 0..1 while a killed person falls
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
     bool wrecked = false;              // destroyed, husk shown
+    // Destroyed without a husk: `removed` (not drawn or hit), but Delta
+    // Force keeps the record (only 0x45da30 frees one, on no destroy path),
+    // so its intact model still blocks sight lines (0x42db80).
+    bool blown = false;
     int detonate = -1;                 // explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0)
     // Delta Force `gnrc` objects (GOG Df.exe 0x4533f0): ticks until a
     // destroyed one goes off (flags 4 set, model still intact); 0 = at the

@@ -34,6 +34,15 @@ public:
 
     // World-space ground height at (x, z), bilinear, wrapping.
     float heightAt(float x, float z) const;
+    // Delta Force sight lines (GOG Df.exe 0x47e000): heightAt plus the
+    // detail elevation e of the cell's 16x16 detail tile at the sub-texel,
+    // (e - 128) / 64 m where e >= 128.
+    float sightHeight(float x, float z) const;
+    // Delta Force (0x47d9e0, the max map 0xbd52d4): the highest of the
+    // cell's four corners, each its height plus ceil((tile max - 128) / 16)
+    // steps of its own detail tile (0..255 steps, 0.25 m a step).
+    float sightMax(float x, float z) const;
+    bool hasSightMap() const { return !sightMax_.empty(); }
     // The nearest cell's raw height, no interpolation (DF.EXE's byte map
     // 0x68c024, e.g. for sound occlusion).
     float cellHeight(float x, float z) const;
@@ -145,6 +154,10 @@ private:
     Rgb horizon_{170, 200, 230};
     Rgb skyColors_[17];
     std::vector<uint8_t> surface_;   // per colour-map pixel
+    // Delta Force only: the detail map (tile per cell), the tiles' detail
+    // elevation (256 tiles x 16x16; tiles past the file stay 0, as the
+    // EXE's zeroed buffer) and the sight-line max map (steps per cell).
+    std::vector<uint8_t> detailMap_, detailElev_, sightMax_;
     bool hasWater_ = false;
 };
 

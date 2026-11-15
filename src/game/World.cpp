@@ -132,6 +132,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.item = item;
         o.model = models.get(vfs, item->graphic);
         if (!o.model) continue;
+        o.intact = o.model;
         if (!item->husk.empty()) o.husk = models.get(vfs, item->husk);
         o.pos = {std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
         o.pos.y = terrain->heightAt(o.pos.x, o.pos.z) + mo.z;
@@ -193,6 +194,7 @@ int World::spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float hea
     WorldObject o;
     o.item = item;
     o.model = model;
+    o.intact = model;
     o.pos = pos;
     o.base = pos.y;
     o.heading = heading;
@@ -381,8 +383,7 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
 // The object's LOD 0 meshes posed by its draw routine: fn(mesh, world
 // matrix) for every mesh whose pose slot is not skipped.
 template <class Fn>
-static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, std::array<uint8_t, 64>& hitSkip, Fn fn) {
-    const GpuModel& m = *o.model;
+static void forPosedMeshes(const World& world, const WorldObject& o, const GpuModel& m, Vec3 ref, std::array<uint8_t, 64>& hitSkip, Fn fn) {
     const std::string& code = m.lodCodes[0];
     if (code == "efct" || code == "shrk" || m.hitMeshes.empty()) return;
     const size_t meshes = m.hitMeshes.size();
@@ -479,10 +480,9 @@ static bool inTriangle(const HitFace& f, float pu, float pv, int ua, int va) {
 }
 
 template <class Visit>
-static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip, uint32_t skipMaterial,
-                      float maxT, Visit visit) {
-    const GpuModel& m = *o.model;
-    forPosedMeshes(world, o, a, hitSkip, [&](int mi, const Mat4& w) {
+static void testFaces(const World& world, const WorldObject& o, const GpuModel& m, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip,
+                      uint32_t skipMaterial, float maxT, Visit visit) {
+    forPosedMeshes(world, o, m, a, hitSkip, [&](int mi, const Mat4& w) {
         auto toFile = [&](Vec3 p) {
             const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
             const Vec3 l{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
@@ -521,7 +521,7 @@ float World::faceGround(Vec3 feet, float step, int* owner, int skip) const {
         const Vec3 at = nearest(o.pos, feet);
         const float R = o.model->flatRadius;   // +0x64
         if (std::abs(at.x - feet.x) > R || std::abs(at.z - feet.z) > R) continue;
-        forPosedMeshes(*this, o, feet, hitSkip_, [&](int mi, const Mat4& w) {
+        forPosedMeshes(*this, o, *o.model, feet, hitSkip_, [&](int mi, const Mat4& w) {
             const auto L = toFileAxes(w, feet);
             for (const HitFace& f : o.model->hitMeshes[size_t(mi)]) {
                 if (L[0] < f.box[0] || L[0] > f.box[1] || L[1] < f.box[2] || L[1] > f.box[3]) continue;
@@ -598,7 +598,7 @@ bool World::df2Overlap(const WorldObject& n, const Vec3* pts, const float* halve
     if (!near || !m.hasVolumes) return false;
     bool hit = false;
     float sum[3] = {0, 0, 0};
-    forPosedMeshes(*this, n, pts[0], hitSkip_, [&](int mi, const Mat4& w) {
+    forPosedMeshes(*this, n, *n.model, pts[0], hitSkip_, [&](int mi, const Mat4& w) {
         if (size_t(mi) >= m.meshVolumes.size() || m.meshVolumes[size_t(mi)].volumes.empty()) return true;
         const MeshVolumes& mv = m.meshVolumes[size_t(mi)];
         for (int k = 0; k < count; ++k) {
@@ -823,7 +823,7 @@ Vec3 World::personStep(WorldObject& o, float velocity) const {
 
 bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
     bool found = false;
-    testFaces(*this, o, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
+    testFaces(*this, o, *o.model, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
         // Ties: a later face wins among objects, not over the terrain.
         if (haveObject || found ? t > best : t >= best) return true;
         best = t;
@@ -852,27 +852,42 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
     if (len < 1e-4f) return 1;
     RayHit h;
     if (!df2Rules) {
-        // DF.EXE's terrain march 0x433190: every 1/16 m, a point below the
-        // ground (strictly) blocks. (Its coarse 1 m skip over the max map is
-        // conservative; the 1 m step-back it does when the coarse cell at
-        // the start is not below it only re-tests points behind the start,
-        // left out: INFERRED to change nothing in practice.)
+        // GOG Df.exe's terrain march 0x47e4b0 (CD 0x433074), in 1/16 m
+        // steps i from the start, clear once i passes the length: a coarse
+        // test every 1 m against the cell's max map (0x47d9e0), a point at
+        // or below it (inclusive) backing up 1 m and testing the next 19
+        // points strictly against the ground with its detail elevation
+        // (0x47e000; so a hit at the start tests points behind the eye),
+        // then the coarse test again from the last of them. Ground that
+        // rises between coarse points above the max map's cells is missed.
         const int n = int(len * 16.f);
         const Vec3 step = d * (1.f / 16.f / len);
-        for (int i = 1; i <= n; ++i) {
+        int i = 0;
+        while (i <= n) {
             const Vec3 p = a + step * float(i);
-            if (terrain->heightAt(p.x, p.z) > p.y) return 0;
+            if (p.y > terrain->sightMax(p.x, p.z)) { i += 16; continue; }
+            i -= 16;
+            for (int k = 0; k < 19; ++k) {
+                if (++i > n) break;
+                const Vec3 q = a + step * float(i);
+                if (q.y < terrain->sightHeight(q.x, q.z)) return 0;
+            }
         }
     } else if (raycast(a, b, h, false)) return 0;
     const Vec3 mid = a + d * 0.5f;
     int extra = 0;
     for (size_t i = 0; i < objects.size(); ++i) {
         const WorldObject& o = objects[i];
-        // DF1 skips only empty records, the looker and the target (0x45b737,
-        // 0x45b74a, 0x45b792): a carried item (hidden, +0x6c & 2) still counts.
-        if (int(i) == looker || int(i) == target || o.person || !o.model || (o.removed && !(o.carried && !df2Rules))) continue;
+        // DF1 skips only empty records, the looker and the target (GOG
+        // 0x42db80; CD 0x45b737, 0x45b74a, 0x45b792): a carried item (hidden,
+        // +0x6c & 2) and one destroyed without a husk (its record kept) still
+        // count, with the intact model +0x10 (radius +0x60, its pose and
+        // faces) whether a husk or nothing is drawn.
+        if (int(i) == looker || int(i) == target || o.person || !o.model) continue;
+        if (o.removed && !(!df2Rules && (o.carried || o.blown))) continue;
+        const GpuModel& m = !df2Rules && o.intact ? *o.intact : *o.model;
         const Vec3 at = nearest(o.pos, mid);
-        const float R = o.model->headerRadius;
+        const float R = m.headerRadius;
         if (at.x < std::min(a.x, b.x) - R || at.x > std::max(a.x, b.x) + R || at.y < std::min(a.y, b.y) - R ||
             at.y > std::max(a.y, b.y) + R || at.z < std::min(a.z, b.z) - R || at.z > std::max(a.z, b.z) + R)
             continue;
@@ -885,7 +900,7 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
         if (y < z) std::swap(y, z);
         if (x + y * 11.f / 32.f + z * 0.25f > R) continue;
         bool blocked = false;
-        testFaces(*this, o, a, b, hitSkip_, 0x800, 2.f, [&](const HitFace& f, int, float) {
+        testFaces(*this, o, m, a, b, hitSkip_, 0x800, 2.f, [&](const HitFace& f, int, float) {
             if (f.material & 0x868C) { ++extra; return true; }
             blocked = true;
             return false;
@@ -1123,6 +1138,7 @@ void World::applyHusk(int index) {
         o.wrecked = true;
     } else {
         o.removed = true;
+        o.blown = true;
     }
     o.hp = 0;
     if (o.collapse < 0) destroyed_.push_back(index);

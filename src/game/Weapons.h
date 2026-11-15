@@ -344,6 +344,9 @@ public:
     std::vector<WeaponEvent> takeEvents() { std::vector<WeaponEvent> out; out.swap(events_); return out; }
     std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
+    // Delta Force: a player round fired since the last call whose gun lacks
+    // flag 0x80 (GOG Df.exe 0x463119): the player counts as having fired.
+    bool takeFireMark() { const bool m = fireMark_; fireMark_ = false; return m; }
 
 private:
     void tick(bool triggerDown, Player& player, std::vector<std::string>& messages);
@@ -404,6 +407,7 @@ private:
     std::vector<WeaponEvent> events_;
     std::vector<PlayerHit> playerHits_;
     bool followUp_ = false;
+    bool fireMark_ = false;
     int projectileIds_ = 0;
     Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst
     Vec3 soundPos_{0, 0, 0};   // the player's position for weapon handling sounds

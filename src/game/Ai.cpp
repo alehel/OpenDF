@@ -138,8 +138,13 @@ bool AiSystem::targetAlive(const World& world, const Person& p, const PlayerView
 
 
 void AiSystem::shotFired(Vec3 at, float range, int side, int object) {
-    // 0x46c228: a box of +-r at the shot (up to 200), flags 2 = a gunshot.
-    if (noise_.size() < 200) noise_.push_back({at, range, side, 2});
+    // 0x46c228 (GOG 0x45fcf0): a box of +-r at the shot (up to 200), flags 2 = a gunshot.
+    noise(at, range, side, 2);
+    markFired(object);
+}
+
+void AiSystem::markFired(int object) {
+    // obj+0x6d |= 0x40 (GOG 0x4631ef): x6 visibility until 0x445c80 clears it.
     if (object == -3) playerFired_ = true;
     else if (Person* p = byObject(object)) p->fired = true;
 }
@@ -489,9 +494,25 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     for (const auto& bg : burstGuns)
         if (bg[0] == p.weapon) { soundGun = bg[1]; silentRound = followUp; }
     const int id = shots.gunAt(soundGun).sounds[0];
-    if (id > 0 && !silentRound) {
-        sound.play(id, muzzle);
-        shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object);
+    if (df2) {
+        if (id > 0 && !silentRound) {
+            sound.play(id, muzzle);
+            shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object);
+        }
+    } else {
+        // GOG Df.exe's round 0x462f20 with the gun 0x45ea00 picks (a burst's
+        // follow-ups the next gun, silent): its sound, the noise only when
+        // that sound's range is not 0 (0x4630d6), and the shooter marked as
+        // having fired (+0x6d |= 0x40) unless the gun has flag 0x80 (the
+        // silenced guns 4, 5, 6, 17; 0x463119).
+        int roundGun = md.gun;
+        for (const auto& bg : burstGuns)
+            if (bg[0] == p.weapon) roundGun = bg[1] + (followUp ? 1 : 0);
+        if (id > 0 && !silentRound) {
+            sound.play(id, muzzle);
+            if (const float range = sound.range(id); range > 0) noise(muzzle, range * 0.5f, o.side, 2);
+        }
+        if (!(shots.gunAt(roundGun).flags & 0x80)) markFired(p.object);
     }
     if (!followUp && md.burst) p.burstLeft = 2;
     p.think = std::max(1, md.cooldown);
