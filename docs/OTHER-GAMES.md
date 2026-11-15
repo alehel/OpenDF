@@ -439,7 +439,9 @@ First differences from DF1:
     orange with white labels (columns x/100+10 as letters, rows 10 − y/100),
     route lines, double-size blips with a black outline, waypoint names, the
     toggle buttons (Gridlines, Names, People, Waypoints, Vehicles, Buildings:
-    END1/MIDL/END2, 0xff9020 on / 0x683000 off), the icon buttons, + / −
+    END1/MIDL/END2, text 0xff9020 on / 0x683000 off; every text button
+    draws frame 1 under the mouse and 2 while held there, GOG 0x40c8a0 /
+    0x40cae0), the icon buttons, + / −
     zoom, >< re-centre, right-drag pan, the DF2CURSA / DF2CROSA cursors in
     green; Mission tab: MBBRIEF in 0xc06000; Team tab (0x40f190): the side-1
     soldiers (player first) as Name/Plan/Weapon rows, picked there or by
@@ -461,7 +463,7 @@ First differences from DF1:
     0xd34dc0 cleared at mission load; full: nothing made) at the clicked
     ground point, selects it and opens the "Type in a name" prompt (16
     chars, the darkened box 0x4422b0); held left drags waypoints, mission
-    ones too (x/y only). Pool waypoints show on the map and the HUD radar as
+    ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show on the map and the HUD radar as
     green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
     (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
     list; W returns to the list at entry 1, 0x446700; a deleted one shows NO

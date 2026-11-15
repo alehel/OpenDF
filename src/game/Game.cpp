@@ -548,6 +548,7 @@ private:
         int mouseX = 0, mouseY = 0;   // in the 640x480 screen
         int lastX = 0, lastY = 0;     // the mouse the frame before (waypoint drag)
         bool panning = false, leftHeld = false;
+        bool dragHeld = false;        // [0xc08858]: the left button was held on an earlier map frame
         Df2Sel sel;                   // [0xbcb424]
         Df2Sel drag;                  // 0xbd055c: the waypoint being dragged
         bool wTool = false;           // 0xbd058c (BSS: starts 0, never reset)
@@ -3979,18 +3980,21 @@ bool Game::df2SelPos(Df2Sel s, double& x, double& y, float* z) const {
         y = player_.missionY();
         if (z) *z = player_.feet.y;
     } else if (s.kind == 2) {
-        // The copy nearest the player on the repeating map (as drawn).
+        // The copy nearest the player on the repeating map (as drawn), in
+        // absolute mission metres like the player's own (objects +0x24/+0x28
+        // are absolute 16.16 mission coordinates: GOG Df2.exe 0x44ebd0, grid
+        // reference 0x427a60), not in the player's wrapped frame.
         const Vec3 at = world_.nearest(world_.objects[size_t(s.index)].pos, player_.feet);
-        x = at.x;
-        y = -at.z;
+        x = at.x + (player_.missionX() - double(player_.feet.x));
+        y = -at.z + (player_.missionY() + double(player_.feet.z));
         if (z) *z = at.y;
     } else if (s.kind == 3) {
         const MissionObject& mo = mission_.objects[size_t(s.index)];
         for (const auto& o : world_.objects)
             if (o.missionIndex == s.index) {
                 const Vec3 at = world_.nearest(o.pos, player_.feet);
-                x = at.x;
-                y = -at.z;
+                x = at.x + (player_.missionX() - double(player_.feet.x));
+                y = -at.z + (player_.missionY() + double(player_.feet.z));
                 if (z) *z = at.y;
                 return true;
             }
@@ -4383,7 +4387,9 @@ void Game::df2MapFrame() {
         if (in(608, 700, V(32))) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);    // - (0x39999 max)
         // Held (0x40d558..0x40d5cd): the drag target moves by the world delta
         // of the mouse (+0x24 x, +0x28 y; the height +0x2c stays).
-        if (m.drag.kind && df2SelValid(m.drag) && (m.mouseX != m.lastX || m.mouseY != m.lastY)) {
+        // Not on the press frame: GOG Df2.exe 0x40dd70 only picks and
+        // anchors while [0xc08858] is 0, and moves on later held frames.
+        if (m.dragHeld && m.drag.kind && df2SelValid(m.drag) && (m.mouseX != m.lastX || m.mouseY != m.lastY)) {
             const double step = 1024.0 / 640.0 * mapScale_;
             const double dx = double(m.mouseX - m.lastX) * step, dy = -double(m.mouseY - m.lastY) * step;
             if (m.drag.kind == 4) {
@@ -4401,6 +4407,7 @@ void Game::df2MapFrame() {
         }
     }
     if (!m.leftHeld) m.drag = Df2Sel{};
+    m.dragHeld = m.leftHeld;   // [0xc08858] = 1 with the anchor [0xc08860/64] (0x40e085..0x40e09b)
     m.lastX = m.mouseX;
     m.lastY = m.mouseY;
 }
@@ -4553,10 +4560,17 @@ void Game::drawDf2CommandMap(const Screen& s) {
         hud_.sheetText(m.big, X(tx), Y(80), tabs[i], i == m.tab ? cSel : rgb(0x60, 0x30, 0), k);
         tx += Hud::sheetWidth(m.big, tabs[i]) + gap;
     }
-    // A text button: END1 + MIDL ... + END2, frame = state, text centred.
+    // A text button: END1 + MIDL ... + END2, text centred. The frame is the
+    // widget's hover state, not its on/off state (GOG Df2.exe 0x40c8a0): 1
+    // while the mouse is inside x0..x1, y0..y0 + END1's height (inclusive,
+    // 0x40cae0 sets +0x2c), 2 on the frames its callback fires because the
+    // button is held there (0x40cae0 sets 0x1000, 0x40c8a0 clears it after
+    // drawing), else 0. A toggle's state shows only in the text colour.
     auto textButton = [&](float vx, float vy, float vw, const std::string& label, bool on, Color offC, Color onC) {
         const float x0 = V(vx), y0 = V(vy), x1 = x0 + V(vw);
-        const int f = on ? 1 : 0;
+        const float bh = m.end1.texture ? float(m.end1.height) / 4.f : 16.f;
+        const bool hover = float(m.mouseX) >= x0 && float(m.mouseX) <= x1 && float(m.mouseY) >= y0 && float(m.mouseY) <= y0 + bh;
+        const int f = hover ? (m.leftHeld ? 2 : 1) : 0;
         frame(m.end1, f, x0, y0);
         for (float x = x0 + 8; x < x1 - 8; x += 8) frame(m.midl, f, x, y0);
         frame(m.end2, f, x1 - 8, y0);
@@ -5127,6 +5141,7 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
             if (d < best) { best = d; found = p.sel; }
         }
         m.drag = Df2Sel{};
+        m.dragHeld = false;
         if (found.kind) {
             df2Select(found);
             const int item = df2SelItem(found);
