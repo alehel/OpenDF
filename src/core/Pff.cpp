@@ -209,15 +209,19 @@ static void descrambleNova(std::vector<uint8_t>& data, size_t headerLen, uint32_
 }
 
 bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
-    if (auto l = loose_.find(toUpper(name)); l != loose_.end()) {
-        std::ifstream f(l->second, std::ios::binary);
-        if (f) {
-            out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-            return true;
-        }
-    }
+    // An archive entry comes first: a loose file (Delta Force 2's Quick
+    // Missions folder *.bms) never shadows one. GOG Df2.exe reads a folder
+    // file only for the list entry it came from (flag 1, [0x4f39f0]); that
+    // entry's own file goes to the mission as GameOptions::missionFile.
     auto it = index_.find(toUpper(name));
-    if (it == index_.end()) return false;
+    if (it == index_.end()) {
+        auto l = loose_.find(toUpper(name));
+        if (l == loose_.end()) return false;
+        std::ifstream f(l->second, std::ios::binary);
+        if (!f) return false;
+        out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        return true;
+    }
     if (!it->second.archive->read(it->second.archive->entries()[it->second.index], out)) return false;
     // Delta Force 2 and later scramble some text files (ITEMS.DEF, LOOP.DEF,
     // .ANM): "SCR\x01", then the payload reversed and XORed with a stream

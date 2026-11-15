@@ -1093,7 +1093,15 @@ bool Game::loadMission(int index) {
     std::string err;
     const std::string& name = missions_[index];
     loadingLine("STRLTEXT1");   // before the BMS load 0x449c70 (0x403b4c)
-    if (!vfs_.read(name + ".BMS", raw) || !parseMission(raw, mission_, &err)) {
+    bool got = false;
+    if (!o_.missionFile.empty() && toUpper(name) == toUpper(o_.mission)) {
+        if (std::ifstream f(o_.missionFile, std::ios::binary); f) {
+            raw.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            got = true;
+        }
+    }
+    if (!got) got = vfs_.read(name + ".BMS", raw);
+    if (!got || !parseMission(raw, mission_, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
     }

@@ -656,6 +656,8 @@ private:
     std::vector<bool> quickLoose_;
     std::vector<std::string> quickFile_, quickBrief_;
     bool bmsLoose_ = false;            // [0x4f39f0]: the chosen mission is such a file
+    std::filesystem::path bmsFile_;    // its file in the game folder
+    bool readBms(const std::string& bms, std::vector<uint8_t>& d);
     std::string bmsBrief_;
     int quickTop_ = 0, quickSel_ = -1;
     std::string bms_;                 // the chosen mission
@@ -1096,9 +1098,21 @@ void FrontendDf2::saveSoldiers() {
     for (auto& s : soldiers_) f.write(reinterpret_cast<const char*>(s.d.data()), std::streamsize(s.d.size()));
 }
 
+// The chosen mission's BMS: a folder Quick Mission's own file (flag 1,
+// GOG Df2.exe 0x442960 / 0x442ad0), else the archive's (0x4044a0).
+bool FrontendDf2::readBms(const std::string& bms, std::vector<uint8_t>& d) {
+    if (bmsLoose_ && !bmsFile_.empty() && upper(bms) == upper(bms_)) {
+        std::ifstream f(bmsFile_, std::ios::binary);
+        if (!f) return false;
+        d.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        return true;
+    }
+    return vfs_.read(bms + ".BMS", d);
+}
+
 uint32_t FrontendDf2::header(const std::string& bms, size_t offset) {
     std::vector<uint8_t> d;
-    if (!vfs_.read(bms + ".BMS", d) || d.size() < offset + 4) return 0;
+    if (!readBms(bms, d) || d.size() < offset + 4) return 0;
     uint32_t v;
     std::memcpy(&v, &d[offset], 4);
     return v;
@@ -2021,7 +2035,7 @@ void FrontendDf2::loadBriefing() {
     mapCentreX_ = mapCentreY_ = 0x200;
     std::vector<uint8_t> d;
     Mission m;
-    if (vfs_.read(bms_ + ".BMS", d)) {
+    if (readBms(bms_, d)) {
         std::string err;
         if (parseMission(d, m, &err)) {
             // GOG Df2.exe 0x43ce90: the picture is the header's terrain name
@@ -2292,6 +2306,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
     else if (cb == "qm_MissionBriefing" && quickSel_ >= 0 && quickSel_ < int(quick_.size())) {
         bms_ = quick_[size_t(quickSel_)];
         bmsLoose_ = quickLoose_[size_t(quickSel_)];
+        bmsFile_ = bmsLoose_ ? saveDir_ / quickFile_[size_t(quickSel_)] : std::filesystem::path();
         bmsBrief_ = quickBrief_[size_t(quickSel_)];
         fromCampaign_ = false;
         returnTo_ = Screen::Quick;
@@ -2964,6 +2979,7 @@ int FrontendDf2::run() {
                 closeWindow();
                 GameOptions g = o_.game;
                 g.mission = bms_;
+                g.missionFile = bmsLoose_ ? bmsFile_ : std::filesystem::path();
                 g.soldierName = soldier().name();
                 g.df2Sidearm = soldier().get(0x2b8);
                 g.df2Primary = soldier().get(0x2bc);

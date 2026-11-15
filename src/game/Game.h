@@ -13,6 +13,10 @@ namespace df {
 
 struct GameOptions {
     std::string mission = "C02M01";
+    // Delta Force 2: a Quick Missions entry from the game folder (flag 1,
+    // GOG Df2.exe [0x4f39f0], 0x442960 / 0x442ad0) is read from this file,
+    // not from the archives.
+    std::filesystem::path missionFile;
     std::filesystem::path gameDir;       // where DF.EXE is looked for
     int width = 1280, height = 720;
     // Testing aids: render after `frames` frames to a .ppm and exit.
