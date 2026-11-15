@@ -42,6 +42,9 @@ enum class Action {
     // 0x1e) / tab (Tab, id 0x1f) (GOG Df.exe 0x477d40); GOG Df2.exe's
     // Forward Observer fo (F11) / tab (Tab).
     FoCamera, FoNext,
+    // Delta Force: PrintScreen (Shift+P: the table's flag 0x40, command 2,
+    // GOG Df.exe 0x477d40 -> 0x473eb0, CD 0x426afc).
+    PrintScreen,
     Count
 };
 
@@ -54,8 +57,13 @@ public:
     bool initDf2(const ExeImage& exe);
     bool fromExe() const { return fromExe_; }
 
-    // The action bound to a key press, or Action::Count.
+    // The action bound to a key press, or Action::Count (PrintScreen, which
+    // asks for Shift, never: shiftActionFor).
     Action actionFor(SDL_Scancode key) const;
+    // Delta Force: with Shift down, a press entry fires only if its table
+    // flags ask for Shift (+0x26 & 0x40, GOG Df.exe 0x479380): of OpenDF's
+    // actions only PrintScreen does.
+    Action shiftActionFor(SDL_Scancode key) const;
     // Whether an action's key or mouse button is held.
     bool down(Action a, const Uint8* keys, Uint32 mouseButtons) const;
     std::string describe(Action a) const;

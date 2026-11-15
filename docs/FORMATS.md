@@ -20,8 +20,12 @@ All integers are little-endian.
 
 At install time the encrypted PFF2 packs are decoded by `PACK.EXE` and merged
 into the installed `dfbase.pff`. OpenDF instead mounts them all directly, in
-this order, with later archives overriding earlier ones:
-`DFBASE, DF, MISSIONS, AUDIO, VIEWS`.
+this order: `DFBASE, DF, MISSIONS, AUDIO, VIEWS`. DF.EXE looks a name up in
+`dfbase.pff` first and in `df.pff` only when it is missing there, taking the
+first directory entry of that name (GOG 0x48fc10, 0x48fd00, 0x49e590), so
+with `DFBASE.PFF` mounted the first archive and the first entry win (the one
+name both stock archives hold with different data, `_BACKUP_.PCX`, is never
+read). The later games' archives keep later ones overriding earlier ones.
 
 ## PFF archive
 
@@ -73,6 +77,17 @@ Because rol-7 has period 32 on a 32-bit word, the keystream is a fixed
 
 Standard ZSoft PCX v5, 8 bpp, one plane, RLE, with a 256-colour VGA palette
 after a `0x0C` marker at the end.
+
+DF.EXE also writes PCX: the PrintScreen command (Shift+P in a mission,
+table flag 0x40, command 2; Shift+P in the menus, GOG 0x40d9e0) saves the
+screen to the first free `sshot000.pcx`..`sshot998.pcx` (GOG 0x473eb0;
+the CD's 0x426afc `screen00.pcx`..`screen98.pcx`) in the game folder,
+nothing when all exist. Header 0x0A, 5, 1, 8, window 0, 0, w − 1, h − 1,
+75 dpi, bytes per line the width rounded up to even, palette info 1; an
+8-bit screen as one plane plus the palette, a hi-colour one as three
+planes (R, G, B rows) and no palette. Runs are at most 63 and stop at the
+row's end; a lone byte with its top two bits set goes out as 0xC1, byte.
+OpenDF writes the drawn window that way, 24-bit.
 
 ## TRN terrain descriptor
 
@@ -219,6 +234,13 @@ Text: `begin "name"` … `end` blocks with `id`, `type` (decoration, building,
 vehicle, person, object, marker, effect), `graphic` (`.3DI`), `husk`
 (destroyed graphic), `hp A B`, `ai_function`, `move_function`, `chr_file` and
 `anim_def` (people), and vehicle handling values.
+
+After loading it DF.EXE renames every item that has a DFGAME.BIN "Item
+Names" entry `STR_ITM%04i` (id − 100000) to that text (GOG 0x401490 ->
+0x482960, CD 0x4496c0): 110 of the 306 items, e.g. hummer → "humvee",
+sandbnk3 → "bunker, sand". Nothing looks items up by name afterwards;
+OpenDF keeps the ITEMS.DEF name for its lookups and shows the new one
+(`ItemDef::displayName`).
 
 `hp A B`: A is hit points (every person has 1). B looks like a damage class:
 0 for soft things such as crates and barrels, 1 for vehicles, 2 for trees.
@@ -594,9 +616,10 @@ either one byte with bit 7 set, an index (bits 0..6) into a 128-entry
 cache cleared at the start of every frame (0x487e61), or 3 bytes: blue =
 first byte << 1 (7 bits), green, red. The literal colours of type 1 and 2
 blocks go into the cache at a rolling index (0, 1, ... 127, 0); type 0's
-do not. In types 0 and 1 a pixel whose red byte is 0 is not written; a
-type 2 block is not written when its colour is 0, 0, 0 (so real black is
-coded as red 1). DF.EXE has a second path for 16-bit displays (0x48859d,
+do not. A pixel (types 0 and 1) or a type 2 block whose colour is 0, 0, 0
+is not written (so real black is coded as red 1): DF.EXE decodes into a
+32-bit target on any display of 24 bits or more (GOG 0x4913ec, 0x492725)
+and tests the whole colour dword. DF.EXE has a second path for 16-bit displays (0x48859d,
 the same stream converted to 16 bits); its 8-bit and 24-bit paths are the
 ones that match the files.
 

@@ -9,6 +9,7 @@
 #include "../formats/Chr.h"
 #include "../formats/Dlg.h"
 #include "../formats/HudDef.h"
+#include "../formats/Pcx.h"
 #include "../audio/Audio.h"
 #include "Controls.h"
 #include "Player.h"
@@ -867,6 +868,7 @@ private:
     float scopeFocal_ = 320;
     float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
+    bool printScreen_ = false;   // Delta Force PrintScreen: write the next drawn frame
     // Binoculars ([0x93367c], 0x44b870): a 22-degree view with a fixed
     // random aim offset chosen as they come up (yaw, pitch radians).
     bool binoculars_ = false;
@@ -3855,12 +3857,13 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // event's 0x1000000 / 0x4000000 bits, [0xd093c0] / [0xd093c1] in
     // 0x498a70) a press entry fires only if it asks for that modifier (+0x2a
     // & 0x40 Shift, +0x2b & 1 Ctrl) or its key is Shift / Ctrl itself; the
-    // others are passed over (none of OpenDF's DF1 actions asks for one:
-    // PrintScreen and debug_hud are not done). The held entries (+0x2a & 4:
+    // others are passed over (of OpenDF's DF1 actions only PrintScreen asks
+    // for Shift; debug_hud is not done). The held entries (+0x2a & 4:
     // map zoom here) are not in that search.
     if (!world_.df2Rules && (k.keysym.mod & (KMOD_SHIFT | KMOD_CTRL)) && act != Action::MapZoomIn && act != Action::MapZoomOut) {
         const SDL_Scancode sc = k.keysym.scancode;
-        if (sc != SDL_SCANCODE_LSHIFT && sc != SDL_SCANCODE_RSHIFT && sc != SDL_SCANCODE_LCTRL && sc != SDL_SCANCODE_RCTRL) act = Action::Count;
+        if (sc != SDL_SCANCODE_LSHIFT && sc != SDL_SCANCODE_RSHIFT && sc != SDL_SCANCODE_LCTRL && sc != SDL_SCANCODE_RCTRL)
+            act = (k.keysym.mod & KMOD_SHIFT) ? controls_.shiftActionFor(sc) : Action::Count;   // PrintScreen (flag 0x40)
     }
     runAction(act, df2Keys && shift);
 }
@@ -4043,6 +4046,7 @@ void Game::runAction(Action act, bool reverse) {
     case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
+    case Action::PrintScreen: printScreen_ = !world_.df2Rules; break;   // GOG Df.exe 0x477d40 cmd 2 -> 0x473eb0
     case Action::CenterView: player_.pitch = 0; break;
     // DF1 outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193 -> 0x42ac10).
     // GOG Df2.exe 0x41f150 cases 0x6f..0x72 -> 0x414240(player, 0..3): flag 1,
@@ -8170,6 +8174,7 @@ int Game::run() {
     if (vfs_.read("DFMENU.BIN", raw)) menuText_.parse(raw);
     if (vfs_.read("DF2WPN.BIN", raw)) wpnText_.parse(raw);
     if (vfs_.read(gameBin, raw)) gameTable_.parse(raw);
+    if (vfs_.exists("DFGAME.BIN")) items_.setDisplayNames(gameTable_);   // GOG Df.exe 0x401490 -> 0x482960
     {
         // The player soldier (ITEMS.DEF "player01") names its move table.
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
@@ -9170,6 +9175,19 @@ int Game::run() {
             }
             if (inputDone_ && endHold < 0) endHold = 1.5f;
             if (endHold >= 0 && (endHold -= dt) < 0) running = false;
+            if (printScreen_) {
+                // 0x473eb0 writes the screen buffer at the game resolution;
+                // OpenDF writes the drawn window, 24-bit.
+                printScreen_ = false;
+                if (const auto path = freeScreenshotPath(o_.gameDir, exe_.build() != ExeBuild::Df1Cd); !path.empty()) {
+                    std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3), rows(px.size());
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+                    for (int y = 0; y < dh; ++y)
+                        std::memcpy(&rows[size_t(y) * size_t(dw) * 3], &px[size_t(dh - 1 - y) * size_t(dw) * 3], size_t(dw) * 3);
+                    writePcx24(path, dw, dh, rows.data());
+                }
+            }
             if (test && ++frame >= o_.frames) {
                 writePpm(o_.screenshot, dw, dh);
                 std::printf("wrote %s (%dx%d)\n", o_.screenshot.c_str(), dw, dh);

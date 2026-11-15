@@ -45,11 +45,6 @@ bool layoutFor(int version, Layout& l) {
     }
 }
 
-std::string upper(std::string s) {
-    for (auto& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-    return s;
-}
-
 } // namespace
 
 bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* error, int variant) {
@@ -158,13 +153,8 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
     }
 
     std::map<int, int> bySequence;
-    std::map<std::string, int> byName;
-    for (int i = int(m.textures.size()) - 1; i >= 0; --i) {
+    for (int i = int(m.textures.size()) - 1; i >= 0; --i)
         bySequence[m.textures[i].sequence] = i;      // first one wins
-        const std::string n = upper(m.textures[i].name);
-        byName[n] = i;
-        if (n.size() > 1) byName.emplace(n.substr(1), i);
-    }
 
     for (uint32_t li = 0; li < lodCount; ++li) {
         if (!r.ok(p, layout.lodHeader)) return fail("truncated LOD header");
@@ -210,9 +200,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 const int ti = int(int8_t(r.u8(o + 0x34 + size_t(variant))));
                 if (auto it = bySequence.find(ti); it != bySequence.end()) mt.tex = it->second;
             } else if (flags & 0x0001) {
+                // GOG Df.exe 0x485e30 (loop 0x48623b, CD 0x43f217): only a
+                // texture whose sequence is the byte +0x34+variant; with none
+                // 0x486354 clears 0x0001 and the variant's RGB is drawn (no
+                // lookup by name, e.g. FPLAYRN1's GOGGLES in snow missions).
                 const uint8_t ti = r.u8(o + 0x34 + size_t(variant));
                 if (auto it = bySequence.find(ti); ti != 0xFF && it != bySequence.end()) mt.tex = it->second;
-                else if (auto jt = byName.find(upper(r.str(o, 12))); jt != byName.end()) mt.tex = jt->second;
             } else if (layout.v8 && (flags & 0x8000)) {
                 // v8: an alpha material without 0x0001 takes its texture by
                 // the signed sequence at +0x37 (GOG Df2.exe 0x444e9a vs the

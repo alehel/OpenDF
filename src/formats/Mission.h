@@ -12,7 +12,10 @@ namespace df {
 
 struct ItemDef {
     int id = 0;
-    std::string name;
+    std::string name;          // ITEMS.DEF's name (what lookups by name use)
+    // The name the game shows: Delta Force replaces it from DFGAME.BIN
+    // (setDisplayNames), otherwise ITEMS.DEF's.
+    std::string displayName;
     std::string type;      // decoration, building, vehicle, person, object, marker, effect
     std::string graphic;   // .3DI name, empty for markers
     std::string husk;      // destroyed graphic
@@ -48,6 +51,10 @@ public:
     void setMissIsFirst(bool on) { missIsFirst_ = on; }
     const ItemDef* byId(int id) const;
     const ItemDef* byName(const std::string& name) const;
+    // Delta Force (GOG Df.exe 0x482960, called by 0x401490 after the
+    // ITEMS.DEF load 0x4827a0): each item with a DFGAME.BIN "Item Names"
+    // entry STR_ITM%04i (id - 100000) is shown under that name.
+    void setDisplayNames(const class TextTable& gameText);
     size_t size() const { return items_.size(); }
 
 private:

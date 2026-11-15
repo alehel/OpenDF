@@ -1190,7 +1190,7 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         // The death animation (0x46c920 / 0x469764); without one, topple.
         if (!(deathMove >= 0 && startMove(o, deathMove)) && !startMove(o, 0xBE)) o.fall = 0.001f;
         refreshBoxes(o);
-        return o.item->name + " down";
+        return o.item->displayName + " down";
     }
     if (!df2Rules && o.item && o.item->aiFunction == "gnrc") {
         // GOG Df.exe 0x4533f0 (CD 0x47ee6c), the think and the damage
@@ -1203,7 +1203,7 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.hp -= amount;
         if (o.hp > 0) return {};
         o.gnrcTimer = 0x20;
-        return o.item->name + " destroyed";
+        return o.item->displayName + " destroyed";
     }
     if (!df2Rules && o.item && o.item->aiFunction == "brrl") {
         // GOG Df.exe 0x45bf80, the barrel's think and damage handler (the
@@ -1219,7 +1219,7 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.hp = 0;
         o.detonate = 10;
         destroyed_.push_back(index);
-        return o.item->name + " destroyed";
+        return o.item->displayName + " destroyed";
     }
     if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
@@ -1229,7 +1229,7 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.hp = 0;
         o.collapse = 0;
         destroyed_.push_back(index);
-        return o.item->name + " destroyed";
+        return o.item->displayName + " destroyed";
     }
     if (!o.husk && (o.item->aiFunction == "mine" || (df2Rules && (o.item->aiFunction == "vtrg" || o.item->aiFunction == "prnh")))) {
         // DF2.EXE 0x4295f0 / 0x42a980: flagged destroyed (4, or 0x10C) but
@@ -1241,10 +1241,10 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.hp = 0;
         o.wrecked = true;
         destroyed_.push_back(index);
-        return o.item->name + " destroyed";
+        return o.item->displayName + " destroyed";
     }
     applyHusk(index);
-    return o.item->name + " destroyed";
+    return o.item->displayName + " destroyed";
 }
 
 void World::applyHusk(int index) {

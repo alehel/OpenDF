@@ -194,12 +194,14 @@ void KdvVideo::decode8(const uint8_t* s, const uint8_t* end) {
         }
 }
 
-// i42K (0x487e45, the path for a display of 24 bits or more): the same
+// i42K (0x487e45; GOG 0x4913ec picks a 32-bit target, [0x491000] = 0x20,
+// whenever the display has 24 bits or more, and 0x492725 runs that path):
+// the same
 // block scheme in B, G, R pixels. A colour is one byte with bit 7 set, an
 // index into a 128-entry cache cleared per frame, or three bytes (the first
 // doubled: 7 bits of blue, then green, red); literal colours of two-colour
-// and solid blocks go into the cache at a rolling index. Pixels whose red
-// byte is 0 (solid blocks: all three) are not written.
+// and solid blocks go into the cache at a rolling index. A pixel whose whole
+// colour is 0 (blue, green and red) is not written.
 void KdvVideo::decode24(const uint8_t* s, const uint8_t* end) {
     for (auto& e : cache_) e = {0, 0, 0};   // 0x487e61: 0x80 dwords cleared
     cacheAt_ = 0;
@@ -230,7 +232,7 @@ void KdvVideo::decode24(const uint8_t* s, const uint8_t* end) {
             if ((count++ & 3) == 0) types = *s++;
             uint8_t* o = d + size_t(by) * 4 * stride + size_t(bx) * 12;
             auto put = [&](int i, const uint8_t* c) {
-                if (!c[2]) return;
+                if (!(c[0] | c[1] | c[2])) return;   // whole colour dword 0 (GOG 0x492725)
                 uint8_t* q = o + size_t(i >> 2) * stride + size_t(i & 3) * 3;
                 q[0] = c[0]; q[1] = c[1]; q[2] = c[2];
             };

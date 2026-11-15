@@ -178,6 +178,7 @@ private:
     // The CD's 44 key rows and profile version 0x1A, or the GOG Df.exe's 46
     // and 0x1B (its defaults from DFDK.KEY, 0x407040).
     bool gogProfile_ = false;
+    bool printScreen_ = false;   // Shift+P: write the next drawn frame (0x473eb0)
     int keyRows_ = kKeyRowsCd;
     std::array<std::array<uint32_t, 3>, kKeyRowsGog> keyDefaults_{};
     void loadKeyDefaults();
@@ -425,10 +426,14 @@ void Frontend::loadKeyDefaults() {
 }
 
 void Frontend::loadProfiles() {
-    // 0x40f40c (GOG 0x408e30): nine files; an absent or unused one is zeroed
-    // with defaults; with no soldier at all slot 0 becomes "BLACKHAWK" (NSDELETEME).
+    // 0x40f40c (GOG 0x408e30): nine files. An absent or unreadable one is
+    // zeroed with defaults and not counted; a "PLY" file whose slot is not
+    // in use (+0x24 bit 0) is reset to defaults with GroupMainMenu NSEMPTY
+    // copied as it is to +4, and counted like one in use. With none counted
+    // slot 0 becomes NSDELETEME ("BLACKHAWK"), in use.
     loadKeyDefaults();
-    bool any = false;
+    const std::string* emptyName = menuText_.find("GroupMainMenu", "NSEMPTY");
+    int files = 0;
     for (int i = 0; i < 9; ++i) {
         Profile& p = profiles_[size_t(i)];
         char name[32];
@@ -448,10 +453,14 @@ void Frontend::loadProfiles() {
                 for (int r = kKeyRowsCd; r < kKeyRowsGog; ++r)
                     for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * r + 4 * k, int32_t(keyDefaults_[size_t(r)][size_t(k)]));
             if (gogProfile_) p.d[3] = 0x1B;
+            if (!p.valid()) {
+                profileDefaults(p);
+                p.setStr(4, 16, emptyName ? *emptyName : "New Operative");
+            }
+            ++files;
         } else {
             profileDefaults(p);
         }
-        if (!p.valid()) { profileDefaults(p); p.setName("New Operative"); }
         // Profiles written by OpenDF before it kept the message macros have
         // all ten empty; they get DF.EXE's defaults (DF.EXE never writes that).
         bool noMacros = true;
@@ -469,13 +478,12 @@ void Frontend::loadProfiles() {
             profileDefaults(fresh);
             std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], size_t(keyRows_) * 12);
         }
-        any = any || p.valid();
         std::memset(&p.d[0x14], 0, 16);
         std::memcpy(&p.d[0x14], name, std::strlen(name));
     }
-    if (!any) {
+    if (files == 0) {
         const std::string* n = menuText_.find("GroupMainMenu", "NSDELETEME");
-        profiles_[0].setName(n ? *n : "BLACKHAWK");
+        profiles_[0].setStr(4, 16, n ? *n : "BLACKHAWK");
         profiles_[0].set(0x24, 1);
     }
     cur_ = 0;
@@ -1083,11 +1091,15 @@ uint32_t Frontend::missionHeader(int camp, int mis, int offset) {
 }
 
 void Frontend::refreshSoldier() {
-    // Row labels: the soldier's name or "New Operative"; the current row pushed.
+    // Row labels (0x40ed60, GOG 0x4086d0): the soldier's name, or for a slot
+    // not in use GroupMainMenu NSEMPTY as it is ("New Operative"); the
+    // current row pushed.
+    const std::string* emptyName = menuText_.find("GroupMainMenu", "NSEMPTY");
     for (int i = 0; i < 9; ++i) {
         char n[32];
         std::snprintf(n, sizeof n, "but_ns_%dtxt", i + 1);
-        if (MnuButton* b = mnu_.button(n)) b->text = profiles_[size_t(i)].name();
+        const Profile& p = profiles_[size_t(i)];
+        if (MnuButton* b = mnu_.button(n)) b->text = p.valid() ? p.name() : emptyName ? *emptyName : "New Operative";
         for (const char* suffix : {"", "l"}) {
             std::snprintf(n, sizeof n, "but_ns_%d%s", i + 1, suffix);
             if (MnuButton* b = mnu_.button(n)) b->drawstate = i == cur_ ? 3 : 1;
@@ -2187,6 +2199,9 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
         return;
     }
     if (screen_ == Start) { if (leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; } return; }
+    // GOG 0x40d9e0 (CD the same): 'P' with the key word's high half 0x100
+    // (Shift alone) saves the screen (0x473eb0), besides any hot key.
+    if (sym == SDLK_p && (k.keysym.mod & KMOD_SHIFT) && !(k.keysym.mod & (KMOD_CTRL | KMOD_ALT))) printScreen_ = true;
     const MnuMenu* m = mnu_.menu(menu_);
     if (!m) return;
     auto fire = [&](const std::string& name) {
@@ -2271,11 +2286,21 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
         // repeats too) go into the key queue (0x485a3a); a left click goes
         // to the Start Screen's mouse hook, registered before the intro
         // (0x418b91 -> 0x418b50), which marks DF_LEAD as done (0x4d9120).
+        // The GOG Df.exe's player (0x49ae00) swaps that hook for its own
+        // (0x49ae4b -> 0x49ade0, the Start Screen's back at 0x49aea5): a
+        // left press (code 2), a right or middle press or release (8..0x40)
+        // or a wheel step (0x100 / 0x200, from 0x497a90) ends the intro, and
+        // the click does not reach DF_LEAD.
         SDL_Event e;
+        bool mouseEnd = false;
         while (SDL_PollEvent(&e)) {
             if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) ++keys;
+            else if (gogProfile_ && (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)) {
+                const int b = e.button.button;
+                if ((b == SDL_BUTTON_LEFT && e.type == SDL_MOUSEBUTTONDOWN) || b == SDL_BUTTON_RIGHT || b == SDL_BUTTON_MIDDLE) mouseEnd = true;
+            } else if (gogProfile_ && e.type == SDL_MOUSEWHEEL && e.wheel.y != 0) mouseEnd = true;
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) introLeadSkip_ = true;
             else if (e.type == SDL_WINDOWEVENT && !fixed) {
                 // WM_SETFOCUS / WM_KILLFOCUS (0x48580b, 0x485c64): no frames
@@ -2285,9 +2310,10 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
             }
         }
         if (shown == testKey) ++keys;
-        if (shown == testClick) introLeadSkip_ = true;
+        if (shown == testClick) (gogProfile_ ? mouseEnd : introLeadSkip_) = true;
         if (quit) break;                   // 0x490024: the quit flag
         if (keys > 0) { --keys; break; }   // 0x48ffcc: one key from the queue skips
+        if (mouseEnd) break;               // GOG 0x49ae88: [0xd09970] set by 0x49ade0
         hear();
         if (!active) { SDL_Delay(10); continue; }
         // 0x486c15: the end, or an invalid chunk (0x49000b; INTRO.KDV ends
@@ -2352,7 +2378,9 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
 int Frontend::run() {
     if (!loadData()) { std::fprintf(stderr, "cannot read DF.MNU\n"); return 1; }
     loadProfiles();
-    // df.cfg: read at start (0x454e10), written at exit (0x40dc88).
+    // df.cfg: read at start (0x454e10), written at exit (0x40dc88); the
+    // GOG Df.exe's key set and defaults (0x407120, 0x407360).
+    if (gogProfile_) cfg_ = DfConfig::df1Gog();
     cfg_.load(o_.gameDir / "df.cfg");
     options_ = uint32_t(cfg_.get("attributes"));
     gpsIcons_ = std::clamp(cfg_.get("gpsicon"), 0, 2);
@@ -2540,9 +2568,14 @@ int Frontend::run() {
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.showGun = cfg_.get("showgun") != 0;
                 g.flipMouse = cfg_.get("flipmouse") != 0;
-                g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
-                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
-                g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
+                // 0x407a90 passes df.cfg's values on unclamped (0x406640
+                // stores atoi's result as it is). The +-2^20 bound is
+                // OpenDF's guard against overflow: the dialog gain and the
+                // gamma table already saturate far inside it.
+                constexpr int kRaw = 1 << 20;
+                g.mouseScale = cfg_.get("mousescale");
+                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), -kRaw, kRaw);
+                g.displayGamma = std::clamp(cfg_.get("gamma"), -kRaw, kRaw);
                 g.letterbox = std::clamp(cfg_.get("window_size"), 1, 2);   // 0x407a90, 0x404ba0
                 // 0x41cca0 (GOG 0x41ce20): the profile's 44 (GOG 46: +0x8b0
                 // PrevWaypoint, +0x8bc server; row 28 named AudioMacros)
@@ -2709,6 +2742,19 @@ int Frontend::run() {
         hud().end();
         captureTo(lastTex_);
         haveLast_ = true;
+        if (printScreen_) {
+            // Shift+P (GOG 0x40d9e0 -> 0x473eb0, CD 0x426afc): the first free
+            // sshotNNN.pcx / screenNN.pcx; OpenDF writes the drawn window.
+            printScreen_ = false;
+            if (const auto path = freeScreenshotPath(o_.gameDir, gogProfile_); !path.empty()) {
+                std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3), rows(px.size());
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+                for (int y = 0; y < dh; ++y)
+                    std::memcpy(&rows[size_t(y) * size_t(dw) * 3], &px[size_t(dh - 1 - y) * size_t(dw) * 3], size_t(dw) * 3);
+                writePcx24(path, dw, dh, rows.data());
+            }
+        }
         if (!o_.screenshot.empty() && ++frame >= o_.frames) {
             writeScreenshot(dw, dh);
             break;
