@@ -2432,7 +2432,10 @@ int FrontendDf2::run() {
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
-                g.mouseScale = std::clamp(soldier().get(0x5b0), 0, 255);
+                // GOG Df2.exe 0x41eb50: [0x67ccf8] under 1 becomes 0x80, over
+                // 0x1ff 0x1ff; the turn is scale << 14 a count.
+                if (const int ms = soldier().get(0x5b0); ms < 1) g.mouseScale = 0x80;
+                else g.mouseScale = std::min(ms, 0x1ff);
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
