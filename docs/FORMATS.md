@@ -111,6 +111,13 @@ type R G B material      maps colour-map colours to footstep/terrain materials
 
 Terrains are 1024×1024 and **wrap around** in both directions.
 
+Delta Force 2 (GOG Df2.exe parser 0x46f9b0, CD 0x465ab0) compares keys with
+`_strcmpi`, also reads `fog_level`, `fog_color R,G,B`, `turbidity R,G,B` and
+`height_scale`, and starts every TRN from its own defaults (0x46d890): all 0
+except `sky_height` 1236, `sun_slope` 60, `horizon` 1, `turbidity` 23,8,4 and
+fog colour 192,192,192 (so a missing `gamma`/`saturation`/`filter` is 0, not
+128). Every shipped DF2 TRN sets those three, `sun_slope` and `sky_height`.
+
 **Scale:** 1 m per map pixel and about 0.25 m per elevation step; see
 *World scale and orientation* below. The exact meaning of `gamma`, `horizon`
 and `sun_slope` is still guessed.

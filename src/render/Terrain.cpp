@@ -422,8 +422,19 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
 
     std::vector<uint8_t> raw;
     if (!vfs.read(withExt(trnName, ".TRN"), raw)) return fail("terrain " + trnName + " not found");
-    desc_ = TerrainDesc{};
-    if (!parseTrn(std::string(raw.begin(), raw.end()), desc_)) return fail("cannot parse " + trnName);
+    // A Delta Force 2 terrain (a true-colour JPEG/TGA colour map, as gen2_
+    // below) takes Df2.exe's record defaults (0x46d890) and parser
+    // (0x46f9b0); a Delta Force one DF.EXE's.
+    const std::string trnText(raw.begin(), raw.end());
+    bool df2Trn = false;
+    {
+        TerrainDesc probe = df2TerrainDefaults();
+        parseTrn(trnText, probe, true);
+        df2Trn = !probe.colorMap.empty() && !vfs.exists(withExt(probe.colorMap, ".PCX")) &&
+                 (vfs.exists(withExt(probe.colorMap, ".JPG")) || vfs.exists(withExt(probe.colorMap, ".TGA")));
+    }
+    desc_ = df2Trn ? df2TerrainDefaults() : TerrainDesc{};
+    if (!parseTrn(trnText, desc_, df2Trn)) return fail("cannot parse " + trnName);
     if (skyOverride.on) {
         desc_.skyMap = skyOverride.clouds;
         desc_.skyPalette = skyOverride.gradient;

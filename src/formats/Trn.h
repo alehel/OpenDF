@@ -33,8 +33,19 @@ struct TerrainDesc {
     // (0x4639db). No TRN on the disc has them; missions override them.
     int fogLevel = 0;
     int fogColor[3] = {192, 192, 192};
+    // Delta Force 2 only (GOG Df2.exe parser 0x46f9b0, record +0x144..+0x14c
+    // and +0x118): turbidity R,G,B, default (23, 8, 4); height_scale,
+    // default 0. Read by Df2.exe's renderer (0x470aa0, 0x472440); OpenDF
+    // keeps them but does not use them yet.
+    int turbidity[3] = {23, 8, 4};
+    int heightScale = 0;
     std::vector<TerrainColorType> types;
 };
+
+// Delta Force 2's TRN record defaults (GOG Df2.exe 0x46d890, CD 0x463990,
+// run by 0x4700f0 before each parse): everything 0 except sky_height 1236,
+// sun_slope 60, horizon 1, turbidity (23, 8, 4) and fog colour 192s.
+TerrainDesc df2TerrainDefaults();
 
 // Delta Force 2: a mission's copy of a SUNSETS.DEF entry (BMS header 0xB8..),
 // replacing the TRN's sky and colour grading when both names are set
@@ -46,6 +57,8 @@ struct SkyOverride {
     int gamma = 128, saturation = 128, filter[3] = {128, 128, 128};
 };
 
-bool parseTrn(const std::string& text, TerrainDesc& out);
+// df2: Df2.exe's parser 0x46f9b0 (CD 0x465ab0): keys compared with
+// _strcmpi, plus turbidity and height_scale.
+bool parseTrn(const std::string& text, TerrainDesc& out, bool df2 = false);
 
 } // namespace df
