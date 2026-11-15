@@ -13,7 +13,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
 layout(location = 3) in float aBone;
 uniform mat4 uViewProj, uModel;
-// DF2 skinned meshes (DF2.EXE 0x44b140): a vertex with a bone is placed by
+// Skinned meshes (GOG Df.exe 0x469fc0, DF2.EXE 0x44b140): a vertex with a bone is placed by
 // that part's pose (root x pose[bone]); its normal stays with the face's
 // mesh (the light is turned into the mesh's frame, 0x44bb70).
 uniform mat4 uRoot, uPose[32];
