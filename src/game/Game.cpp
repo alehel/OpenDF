@@ -3554,15 +3554,27 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glStencilFunc(GL_EQUAL, 1, 0xFF);
     glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 
-    // DF.EXE 0x450600 / 0x440ff0: the scope view's FOV parameter is 28 /
+    // DF.EXE 0x450600 / 0x440ff0 (DF1): the scope view's FOV parameter is 28 /
     // magnification (integer), its half-angle (fov + 1) >> 1 whole degrees,
     // and the focal length round(r / tan(half) + 0.5) in pixels of the
     // 640-wide original (r = 100), across the inset's width.
     (void)fovY;
     const float size = 2 * r;
-    const int fovParam = 28 / std::max(1, int(arsenal_.zoom()));
-    const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
-    const float focal = std::floor(100.f / std::tan(half) + 0.5f);
+    const int mag = std::max(1, int(arsenal_.zoom()));
+    float focal;
+    if (df2Hud_.on) {
+        // GOG Df2.exe 0x4557e0 (at 0x455830): the FOV is 0x46500000 /
+        // (mag * 640) in 16.16 degrees (28.125 / mag), and the camera
+        // (0x4048b0, 0x404992..0x4049bd) takes half of it with the fraction
+        // kept, focal = trunc((w * 0.5) / tan(half) + 0.5).
+        const int fov16 = 0x46500000 / (mag * 640);
+        const double half = double(fov16 >> 1) * (3.14159265358979323846 / (180.0 * 65536.0));
+        focal = float(std::trunc(100.0 / std::tan(half) + 0.5));
+    } else {
+        const int fovParam = 28 / mag;
+        const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
+        focal = std::floor(100.f / std::tan(half) + 0.5f);
+    }
     scopeFocal_ = focal * 640.f / 200.f;   // per 640 pixels of view width
     const float insetFov = 2 * std::atan(100.f / focal);
     glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
