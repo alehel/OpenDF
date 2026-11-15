@@ -309,8 +309,10 @@ public:
         o.won = missionResult_ == kPlayerSide;
         for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
         o.quit = quit_;
+        o.replayed = replayed_;
         return o;
     }
+    std::vector<MissionOutcome::Run> replayed_;   // runs ended by Space (outcome().replayed)
 private:
     bool briefingShown_ = false, helpShown_ = false;   // [0x66f96c], [0x66f968]
     std::string briefing_;                // built at mission load (0x4813c4)
@@ -2872,7 +2874,13 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
         }
-        if (k.keysym.sym == SDLK_SPACE) { leaveMissionFlags(); loadMission(current_); return; }
+        if (k.keysym.sym == SDLK_SPACE) {
+            leaveMissionFlags();
+            const MissionOutcome o = outcome();
+            replayed_.push_back({o.won, o.kills});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
+            loadMission(current_);
+            return;
+        }
     }
     // DF2's command-map name prompt takes the keyboard while it is open.
     if (df2Hud_.on && showMap_ && df2Map_.prompt) { df2MapKey(k); return; }

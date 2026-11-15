@@ -79,6 +79,11 @@ struct MissionOutcome {
     bool won = false;        // side 1 won
     int kills = 0;           // people the player killed
     bool quit = false;       // the window was closed: leave the program (exit code 2)
+    // Runs finished earlier with Space ("replay mission"), in order: GOG
+    // Df2.exe 0x466ad0 records each one (0x464140 -> 0x43c6f0) before the
+    // replay starts.
+    struct Run { bool won = false; int kills = 0; };
+    std::vector<Run> replayed;
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when

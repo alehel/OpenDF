@@ -2719,17 +2719,26 @@ int FrontendDf2::run() {
                 runGame(vfs_, g, &out, &flags);
                 soldier().set(0x5b0, mouseSens);
                 soldier().set(0x5d8, scopeSens - 0x80);
-                if (out.quit) break;
-                // 0x437550: a campaign win marks the mission done; kills add
-                // up; the unlock mask comes back from the game.
-                if (camp) {
-                    soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
-                    if (out.won && missionSel_ >= 0) {
-                        if (!soldier().get(0x30 + 4 * size_t(missionSel_))) soldier().set(0x2a4, soldier().get(0x2a4) + 1);
-                        soldier().set(0x30 + 4 * size_t(missionSel_), 1);
-                    }
-                    soldier().set(0x29c, soldier().get(0x29c) + out.kills);
+                // GOG Df2.exe 0x43c6f0 (CD 0x437550), for every finished run
+                // (those replayed with Space first, 0x466ad0 -> 0x464140,
+                // already recorded when the window is then closed): a win
+                // marks a campaign mission done ([0x4c3f88] and the
+                // selection), adds the player's kills to +0x29c and 1 to the
+                // completed missions +0x2a4 (GOG only); a loss records
+                // nothing. The unlock mask comes back from the game.
+                auto record = [&](bool won, int kills) {
+                    if (!won) return;
+                    if (camp && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
+                    soldier().set(0x29c, soldier().get(0x29c) + kills);
+                    soldier().set(0x2a4, soldier().get(0x2a4) + 1);
+                };
+                for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills);
+                if (out.quit) {
+                    if (camp && !out.replayed.empty()) soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
+                    break;
                 }
+                record(out.won, out.kills);
+                if (camp) soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;
                 if (cfg_.get("music_volume") > 0) music_.start();
