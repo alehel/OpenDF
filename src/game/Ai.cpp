@@ -1088,6 +1088,25 @@ bool AiSystem::engaging(int team, int targetTeam) const {
 
 bool AiSystem::alerted(int team) const { return team >= 0 && team < 64 && teamAlert_[size_t(team)] == 2; }
 
+int nearestPathPoint(const World& world, const Mission& mission, const MissionPath& path, Vec3 pos) {
+    const float ext = world.extent();
+    auto metres = [](float a) { return int32_t(std::lround(double(a) * 65536.0)) >> 16; };
+    uint32_t best = 0x7fffffff;
+    int at = 0;
+    for (size_t k = 0; k < path.points.size(); ++k) {
+        const MissionObject* wp = mission.inGroup(2, path.points[k]);
+        if (!wp) continue;
+        Vec3 m{std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)};
+        m.y = (world.terrain ? world.terrain->heightAt(m.x, m.z) : 0.f) + wp->z;
+        m = world.nearest(m, pos);
+        // obj - marker per axis; the EXE's y (north) is OpenDF's -z.
+        const uint32_t dx = uint32_t(metres(pos.x - m.x)), dy = uint32_t(metres(m.z - pos.z)), dz = uint32_t(metres(pos.y - m.y));
+        const int32_t d = int32_t(dz * dz + dx * dx + dy * dy);
+        if (d <= int32_t(best)) best = uint32_t(d), at = int(k);
+    }
+    return at;
+}
+
 bool AiSystem::reached(int team, int path, int point) const {
     auto it = reached_.find(team * 128 + path);
     return it != reached_.end() && point >= 0 && point < 32 && (it->second >> point & 1);
@@ -1104,17 +1123,8 @@ void AiSystem::followPath(World& world, int team, int path) {
         if (o.team != team || !o.alive()) continue;
         p.pathMode = 1;
         p.path = path;
-        p.waypoint = 0;
-        float best = 1e30f;
-        const float ext = world.extent();
-        for (size_t k = 0; k < mp.points.size(); ++k) {
-            const MissionObject* wp = mission_->inGroup(2, mp.points[k]);
-            if (!wp) continue;
-            Vec3 at{std::fmod(std::fmod(wp->x, ext) + ext, ext), o.pos.y, std::fmod(std::fmod(-wp->y, ext) + ext, ext)};
-            const Vec3 d = world.nearest(at, o.pos) - o.pos;
-            if (dot(d, d) < best) best = dot(d, d), p.waypoint = int(k);
-        }
-        p.think = 1;
+        // No think timer change: the member reacts at its next think.
+        p.waypoint = nearestPathPoint(world, *mission_, mp, o.pos);
     }
 }
 

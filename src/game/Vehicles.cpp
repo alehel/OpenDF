@@ -1101,22 +1101,14 @@ void VehicleSystem::followPath(World& world, int team, int path) {
     // path, from the nearest point; path 0 included (it halts them, pathStep).
     if (team < 3 || !mission_ || path < 0 || path >= int(mission_->paths.size())) return;
     const MissionPath& mp = mission_->paths[size_t(path)];
-    const float ext = world.extent();
     for (auto& v : vehicles_) {
         WorldObject& o = world.objects[size_t(v.object)];
         if (o.team != team || v.dead) continue;
         v.pathMode = 1;
         v.path = path;
         v.stopped = false;
-        v.waypoint = 0;
-        float best = 1e30f;
-        for (size_t k = 0; k < mp.points.size(); ++k) {
-            const MissionObject* wp = mission_->inGroup(2, mp.points[k]);
-            if (!wp) continue;
-            const Vec3 d = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos) - o.pos;
-            if (d.x * d.x + d.z * d.z < best) best = d.x * d.x + d.z * d.z, v.waypoint = int(k);
-        }
-        v.think = 1;
+        // No think timer change: the vehicle reacts at its next think.
+        v.waypoint = nearestPathPoint(world, *mission_, mp, o.pos);
     }
 }
 
