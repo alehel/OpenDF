@@ -97,11 +97,6 @@ bool Vfs::mount(const fs::path& archive, std::string* error) {
     auto a = std::make_unique<PffArchive>();
     if (!a->open(archive, error)) return false;
     for (size_t i = 0; i < a->entries().size(); ++i) index_[a->entries()[i].name] = {a.get(), i};
-    // The GOG Delta Force (Df.exe 1.00.03.03p) is the only release whose
-    // DFBASE.PFF carries DFDK.KEY; it also ships its text defs scrambled.
-    if (toUpper(archive.filename().string()) == "DFBASE.PFF")
-        for (auto& e : a->entries())
-            if (e.name == "DFDK.KEY") df1Scrambled_ = true;
     archives_.push_back(std::move(a));
     return true;
 }
@@ -148,16 +143,23 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
     return exists("DF.PFF") || mounted > 0;
 }
 
-// The files GOG Df.exe reads through 0x456720 with the scramble key.
-static bool isDf1ScrambledName(const std::string& upper) {
-    auto endsWith = [&](const char* ext) {
-        const size_t n = std::strlen(ext);
-        return upper.size() >= n && upper.compare(upper.size() - n, n, ext) == 0;
-    };
-    return upper == "ITEMS.DEF" || upper == "LOOP.DEF" || endsWith(".ANM");
-}
-
 bool Vfs::exists(const std::string& name) const { return index_.count(toUpper(name)) != 0; }
+
+// NovaLogic's text-file scrambler, reversed: drop headerLen bytes, reverse
+// the rest, then XOR each byte with the low byte of the stream
+// s = rol(rol(s, 11) + s, 4) ^ 1, stepped before each byte (GOG Df.exe
+// 0x456eb0, DF2.EXE 0x4614f0).
+static void descrambleNova(std::vector<uint8_t>& data, size_t headerLen, uint32_t seed) {
+    if (data.size() < headerLen) return;
+    std::vector<uint8_t> body(data.rbegin(), data.rend() - std::ptrdiff_t(headerLen));
+    auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+    uint32_t st = seed;
+    for (auto& b : body) {
+        st = rol(rol(st, 11) + st, 4) ^ 1;
+        b ^= uint8_t(st);
+    }
+    data.swap(body);
+}
 
 bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
     auto it = index_.find(toUpper(name));
@@ -167,28 +169,24 @@ bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
     // .ANM): "SCR\x01", then the payload reversed and XORed with a stream
     // s = rol(rol(s, 11) + s, 4) ^ 1 from s = 0x01234567 (DF2.EXE 0x4614f0).
     if (out.size() >= 4 && std::memcmp(out.data(), "SCR\x01", 4) == 0) {
-        std::vector<uint8_t> body(out.rbegin(), out.rend() - 4);
-        uint32_t st = 0x01234567;
-        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
-        for (auto& b : body) {
-            st = rol(rol(st, 11) + st, 4) ^ 1;
-            b ^= uint8_t(st);
-        }
-        out.swap(body);
-    } else if (df1Scrambled_ && !out.empty() && isDf1ScrambledName(it->first)) {
-        // GOG Df.exe scrambles the same kind of files with no header: init
-        // (GOG Df.exe 0x401050) sets the key 0x4960552, and the text-def
-        // reader (0x456720) hands it to 0x456eb0 for ITEMS.DEF (0x4827a0),
-        // LOOP.DEF (0x43edb0) and the .ANM move lists (0x42d100/0x42d200),
-        // which reverses the whole buffer and XORs the same stream.
-        // TRN, MNU, KEY and SCR files are read with key 0 and stay plain.
-        std::reverse(out.begin(), out.end());
-        uint32_t st = 0x04960552;
-        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
-        for (auto& b : out) {
-            st = rol(rol(st, 11) + st, 4) ^ 1;
-            b ^= uint8_t(st);
-        }
+        descrambleNova(out, 4, 0x01234567);
+        return true;
+    }
+    // The GOG Delta Force (Df.exe 1.00.03.03p) stores ITEMS.DEF, LOOP.DEF and
+    // every .ANM the same way but with no header and key 0x04960552: its text
+    // parser (GOG Df.exe 0x456720) runs the descrambler 0x456eb0 whenever the
+    // caller passes a key, and the key is DAT_00503228 = 0x4960552 (set in
+    // 0x401050); callers 0x4827a0/0x401490 (items.def), 0x43edb0 (LOOP.DEF)
+    // and 0x42d200/0x42d100 (.anm). Every original file of both builds starts
+    // with '/', so plain (CD or modded) files are left alone and a result is
+    // kept only when it starts with '/'.
+    const std::string up = toUpper(name);
+    const bool gogScrambled = up == "ITEMS.DEF" || up == "LOOP.DEF" ||
+                              (up.size() >= 4 && up.compare(up.size() - 4, 4, ".ANM") == 0);
+    if (gogScrambled && !out.empty() && out[0] != '/') {
+        std::vector<uint8_t> plain = out;
+        descrambleNova(plain, 0, 0x04960552);
+        if (plain[0] == '/') out.swap(plain);
     }
     return true;
 }

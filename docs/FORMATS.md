@@ -197,6 +197,14 @@ Delta Force itself draws `.3DI` via `ITEMS.DEF`, so OpenDF ignores these for now
 
 ## ITEMS.DEF
 
+The GOG release (Df.exe 1.00.03.03p) stores ITEMS.DEF, LOOP.DEF and every
+`.ANM` scrambled, with no header: the bytes reversed, then each XORed with the
+low byte of s = rol(rol(s, 11) + s, 4) ^ 1 (stepped before each byte) from
+s = 0x04960552 (descrambler 0x456eb0, called by the text parser 0x456720).
+Descrambled they match the CD files byte for byte. DF2 uses the same stream
+behind a `SCR\x01` header with seed 0x01234567. OpenDF undoes both in
+`Vfs::read`.
+
 Text: `begin "name"` … `end` blocks with `id`, `type` (decoration, building,
 vehicle, person, object, marker, effect), `graphic` (`.3DI`), `husk`
 (destroyed graphic), `hp A B`, `ai_function`, `move_function`, `chr_file` and
