@@ -29,7 +29,9 @@ int32_t approx(int32_t a, int32_t b, int32_t c) {
     if (a < b) std::swap(a, b);
     if (a < c) std::swap(a, c);
     if (b < c) std::swap(b, c);
-    return a + ((b * 11) >> 5) + (c >> 2);
+    // 32-bit wrap as the EXE's imul / add (as Ai.cpp), done unsigned: no UB.
+    const int32_t mid = int32_t(uint32_t(b) * 11u) >> 5;
+    return int32_t(uint32_t(a) + uint32_t(mid) + uint32_t(c >> 2));
 }
 int32_t mul16(int64_t a, int64_t b) { return int32_t((a * b) >> 16); }
 
@@ -358,7 +360,7 @@ void WildlifeSystem::penguinThink(World& world, AiSystem& ai, Animal& a) {
             if (go) {
                 if (a.state == 2 && dist > 0x60000) {
                     if ((rnd() & 0x1C) == 0x1C) {
-                        hdg += uint32_t((int32_t(rnd() & 0x7FFF) + 0x3C000) * 0x4000);
+                        hdg += (uint32_t(rnd() & 0x7FFF) + 0x3C000u) * 0x4000u;
                         if (hdg != a.yaw) a.wantYaw = hdg;
                     }
                 } else if (hdg != a.yaw) a.wantYaw = hdg;
@@ -420,7 +422,7 @@ void WildlifeSystem::penguinMove(World& world, Animal& a) {
         step(world, a);
         turn(world, a);
         place(world, a, unfix(fix(world.terrain->heightAt(o.pos.x, o.pos.z)) + 0x1000));
-        a.phase += (a.speed + 0x4000) << 4;
+        a.phase = int32_t(uint32_t(a.phase) + (uint32_t(a.speed + 0x4000) << 4));   // wraps as the EXE's add
         a.pitch = 0;
         break;
     case 1: {
@@ -430,14 +432,14 @@ void WildlifeSystem::penguinMove(World& world, Animal& a) {
         a.vz -= 0x134;
         place(world, a, unfix(z));
         if (z <= fix(world.terrain->waterLevel()) - 0x1000) a.vz = 0;
-        a.pitch += int32_t(0xFE000000u);
+        a.pitch = int32_t(uint32_t(a.pitch) + 0xFE000000u);
         break;
     }
     case 2:
         ramp(world, a, 0x24000);
         step(world, a);
         turn(world, a);
-        a.phase += 8 * a.speed + 0x40000;
+        a.phase = int32_t(uint32_t(a.phase) + uint32_t(8 * a.speed + 0x40000));
         a.pitch = int32_t(0xC8000000u);
         break;
     case 3: {
@@ -458,7 +460,7 @@ void WildlifeSystem::penguinMove(World& world, Animal& a) {
         ramp(world, a, 0x8000);
         step(world, a);
         place(world, a, unfix(fix(world.terrain->heightAt(o.pos.x, o.pos.z)) + 0x2000));
-        if (a.speed <= 0x8000 && a.pitch < 0) a.pitch += 0xC000000;
+        if (a.speed <= 0x8000 && a.pitch < 0) a.pitch = int32_t(uint32_t(a.pitch) + 0xC000000u);
         if (a.pitch > 0) a.pitch = 0;
         break;
     default: break;
