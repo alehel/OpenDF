@@ -255,14 +255,17 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             // Attack approach (0x47bf0c) toward the target's position when
             // acquired: > 80 m 15 m/s at 18 m; 30-80 m 5 m/s at 8 m; 8-30 m
             // hover at 8 m; closer 5 m/s at 8 m. The Black Hawk turns its door
-            // to the target: +22.5 / +67.5 degrees in the middle bands.
+            // to the target: DF +0x10000000 / +0x30000000 (anticlockwise, the
+            // nose left, the target on the right-hand door side) in the middle
+            // bands (GOG Df.exe 0x4503f0), so -22.5 / -67.5 degrees in
+            // OpenDF's clockwise headings.
             const Vec3 d = world.nearest(v.lastKnown, o.pos) - o.pos;
             const float dist = std::sqrt(d.x * d.x + d.z * d.z);
             const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
             float h = std::atan2(d.x, -d.z);
             if (dist > 80) { v.targetSpeed = 15; v.mode = 2; }
-            else if (dist > 30) { v.targetSpeed = 5; v.mode = 1; if (hawk) h += kPi / 8; }
-            else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h += 3 * kPi / 8; }
+            else if (dist > 30) { v.targetSpeed = 5; v.mode = 1; if (hawk) h -= kPi / 8; }
+            else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h -= 3 * kPi / 8; }
             else { v.targetSpeed = 5; v.mode = 1; }
             v.targetHeading = h;
         } else if (!v.dead && (v.flags & 2) && v.hasHome) {

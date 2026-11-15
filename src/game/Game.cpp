@@ -267,9 +267,11 @@ private:
         // whose item has +0x24 & 4, 0x403740, the light included).
         float perception = 1;
         int alert = 0;                   // AI byte +0xb4, from record byte +0x42 (0x403811)
+        bool lost = false;               // DF1 ai+0x24 & 0x40: the tracked target is dead
     };
     std::vector<Searchlight> lights_;
     void tickDf2Items();
+    void tickDf1Lights();
     void df2Blast(Vec3 at, int fragments, float heading);
     void fragmentBurst(Vec3 at, int fragments, float heading);
     bool df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const;
@@ -719,20 +721,23 @@ bool Game::loadMission(int index) {
     ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
     lights_.clear();
-    if (world_.df2Rules)
-        for (size_t i = 0; i < world_.objects.size(); ++i) {
-            const WorldObject& o = world_.objects[i];
-            if (!o.item || o.item->aiFunction != "slgt") continue;
-            Searchlight l;
-            l.object = int(i);
-            if (o.missionIndex >= 0) {
-                const int32_t v = mission_.objects[size_t(o.missionIndex)].raw[0x24 / 4];
-                l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
-                l.alert = reinterpret_cast<const uint8_t*>(mission_.objects[size_t(o.missionIndex)].raw)[0x42];
-            }
-            if ((mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
-            lights_.push_back(l);
+    // DF1 places them too (C03M05, C04M01, C04M03, C05M07): GOG Df.exe ai
+    // `slgt` 0x4519a0, move 0x451cb0 (tickDf1Lights).
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        const WorldObject& o = world_.objects[i];
+        if (!o.item || o.item->aiFunction != "slgt") continue;
+        Searchlight l;
+        l.object = int(i);
+        if (o.missionIndex >= 0) {
+            const int32_t v = mission_.objects[size_t(o.missionIndex)].raw[0x24 / 4];
+            l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
+            l.alert = reinterpret_cast<const uint8_t*>(mission_.objects[size_t(o.missionIndex)].raw)[0x42];
         }
+        // DF1 (GOG 0x449710: ai+0x74 = record +0x24 << 16 / 100,
+        // ai+0x9c = record byte +0x42) has no night drop.
+        if (world_.df2Rules && (mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
+        lights_.push_back(l);
+    }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
     vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
@@ -2158,6 +2163,126 @@ void Game::tickDf2Items() {
                 mineContact(int(i));
                 break;
             }
+    }
+}
+
+// DF1's searchlights (GOG Df.exe `slgt`: move 0x451cb0, turn 0x451850,
+// think 0x4519a0; CD 0x47d77c / 0x47d31c / 0x47d46c), per tick: the move,
+// then the think when its delay (+0xfc) runs out.
+void Game::tickDf1Lights() {
+    auto toYaw = [](float heading) { return uint32_t(int64_t(std::llround(double(kPi * 0.5f - heading) / (2 * kPi) * 4294967296.0))); };
+    auto fromYaw = [](uint32_t y) { return kPi * 0.5f - float(y) / 4294967296.f * 2 * kPi; };
+    auto toAng = [](double rad) { return uint32_t(int64_t(std::llround(rad / (2 * kPi) * 4294967296.0))); };
+    for (auto& l : lights_) {
+        WorldObject& o = world_.objects[size_t(l.object)];
+        if (l.dead || o.removed) continue;   // +0x6c & 4: idle (think 0x400)
+        uint32_t yaw = toYaw(o.heading), pitch = toAng(o.pitch);
+        const int R = std::max(1, int(o.item->turnRate));   // item +0xe0 (turn_rate 20)
+        // The move (0x451cb0): nothing before the first think; the turn; with
+        // no target and the turn at rest (+0x90 == 0), the sweep flips to the
+        // other side of home and the pitch goes home.
+        if (l.init) {
+            // The turn (0x451850): +0x90 = 0; the yaw speed +0xec (1/65536
+            // turn a tick) rises by R >> 3 while more than 8R off and below
+            // R, else falls by R >> 3 while above it; it snaps when closer
+            // than the speed, else turns by it (+0x90 = the step). The pitch
+            // steps R and snaps when closer than R.
+            l.moving = 0;
+            if (yaw != l.targetYaw) {
+                const int d = int32_t(l.targetYaw - yaw) >> 16, ad = std::abs(d);
+                if (ad > 8 * R) { if (l.speed < R) l.speed += R >> 3; }
+                else if ((R >> 3) < l.speed) l.speed -= R >> 3;
+                if (ad < l.speed) yaw = l.targetYaw;
+                else { l.moving = d > 0 ? (l.speed << 16) : -(l.speed << 16); yaw += uint32_t(l.moving); }
+            }
+            if (pitch != l.targetPitch) {
+                const int dp = int32_t(l.targetPitch - pitch) >> 16;
+                if (std::abs(dp) < R) pitch = l.targetPitch;
+                else pitch += uint32_t(dp > 0 ? (R << 16) : -(R << 16));
+            }
+            if (l.target == -1 && l.moving == 0) {
+                l.sweep = -l.sweep;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+        }
+        if (--l.wait <= 0) {
+            l.wait = 0x10;
+            if (o.hp <= 0) {
+                // Destroyed (hp < 1): flags |= 0x10c, the target yaw = the
+                // heading, the blast 1 m up with no fragments (0x446fb0 ->
+                // 0x46cb64), the velocities cleared.
+                l.dead = true;
+                l.targetYaw = yaw;
+                detonate(o.pos + Vec3{0, 1.f, 0}, 0, o.heading);
+                o.heading = fromYaw(yaw);
+                o.pitch = float(int32_t(pitch)) / 4294967296.f * 2 * kPi;
+                continue;
+            }
+            if (!l.init) {
+                // First think: home yaw = heading | 1, home pitch, the sweep
+                // 0x20000000 (45 degrees) and the target home + 45; the think
+                // goes on to the scan.
+                l.init = true;
+                l.homeYaw = yaw | 1;
+                l.homePitch = pitch;
+                l.sweep = 0x20000000;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+            bool tracked = false;
+            if (l.target != -1 && --l.counter > 0) {
+                if (!l.lost) {
+                    // Tracking (ai+0x38 from 8: 7 thinks): a target found dead
+                    // is marked (0x40) and still followed this think; the yaw
+                    // home + clamp(bearing - home + rand * 0x40 - 0x200000,
+                    // +-0x20000000), the pitch from the whole metres across,
+                    // home + clamp(elevation - home + jitter, +-0x8000000);
+                    // think 0x20.
+                    const bool isPlayer = l.target == -3;
+                    if (isPlayer ? playerDead() : !world_.objects[size_t(l.target)].alive()) l.lost = true;
+                    const Vec3 tp = world_.nearest(isPlayer ? player_.origin() : world_.objects[size_t(l.target)].pos, o.pos);
+                    const Vec3 d = tp - o.pos;
+                    const double mx = std::floor(d.x), mz = std::floor(-d.z);
+                    const double horiz = std::floor(std::sqrt(mx * mx + mz * mz));
+                    const int32_t want = int32_t(toAng(std::atan2(-double(d.z), double(d.x))) - l.homeYaw) + int32_t(shrapRand() & 0xFFFF) * 0x40 - 0x200000;
+                    l.targetYaw = l.homeYaw + uint32_t(std::clamp(want, -0x20000000, 0x20000000));
+                    const int32_t wantP = int32_t(toAng(std::atan2(double(d.y), horiz)) - l.homePitch) + int32_t(shrapRand() & 0xFFFF) * 0x40 - 0x200000;
+                    l.targetPitch = l.homePitch + uint32_t(std::clamp(wantP, -0x8000000, 0x8000000));
+                    l.wait = 0x20;
+                    tracked = true;
+                } else {
+                    l.target = -1;   // dropped the think after it was found dead
+                }
+            }
+            if (!tracked) {
+                // The scan (0x44f540): seen when score > a 16-bit draw (else
+                // the old target stays); then the team-spotted mark
+                // 0x42edd0(own team, target team), the target for 8 thinks.
+                AiSystem::PlayerView pv;
+                pv.alive = !playerDead();
+                pv.origin = player_.origin();
+                const int mn = moveNumber(player_.move());
+                pv.moveNumber = mn >= 0 ? mn : 2;
+                pv.side = kPlayerSide;
+                pv.team = kPlayerTeam;
+                int id = -1;
+                Vec3 at{0, 0, 0};
+                const float score = ai_.lightScan(world_, l.object, o.pos, yaw, int32_t(pitch), o.team, pv, id, at);
+                // ai+0x74 perception, a quarter when ai+0x9c is 0.
+                const float seen = score * l.perception * (l.alert == 0 ? 0.25f : 1.f);
+                if (id == -1) l.target = -1;
+                else if (seen * 65536.f > float(shrapRand() & 0xFFFF)) {
+                    ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
+                    l.counter = 8;
+                    l.target = id;
+                    l.lost = false;
+                }
+                l.wait = 0x10;
+            }
+        }
+        o.heading = fromYaw(yaw);
+        o.pitch = float(int32_t(pitch)) / 4294967296.f * 2 * kPi;
     }
 }
 
@@ -5483,6 +5608,7 @@ int Game::run() {
                 // origin +0x24..+0x2c into the carried item every tick.
                 if (carried_ >= 0 && world_.objects[size_t(carried_)].carried) world_.objects[size_t(carried_)].pos = player_.origin();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
+                else tickDf1Lights();
                 // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
                 weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
                               [this](Vec3 at) { spawnEffect(17, at); });

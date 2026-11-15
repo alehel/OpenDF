@@ -553,32 +553,75 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         // ai+0x7c to the side of flags 4 / 8, at the walk / run move.
         p.state = 1;
         float h = headingTo(o.pos, world.nearest(p.lastKnown, o.pos));
-        const float flank = p.flank * kPi / 180.f;
-        if (p.flags & 4) h += flank;
-        else if (p.flags & 8) h -= flank;
-        // Terrain probe (0x46b34c): avoid deep water and big steps.
-        auto ok = [&](float hh) {
-            const Vec3 f{std::sin(hh), 0, -std::cos(hh)};
-            const float g0 = world.terrain->heightAt(o.pos.x, o.pos.z);
-            const Vec3 a = o.pos + f * 2.f, b = o.pos + f * 4.f;
-            const float ga = world.terrain->heightAt(a.x, a.z), gb = world.terrain->heightAt(b.x, b.z);
-            const float w = world.terrain->waterLevel();
-            // DF1 rejects water deeper than 0.75 m; DF2 only with ai flag 0x800,
-            // deeper than 0.25 m (0x4151a0).
-            if (!df2 && w != 0 && w - ga > 0.75f) return false;
-            if (df2 && (p.flags & 0x800) && w != 0 && w - ga > 0.25f) return false;
-            if (ga - g0 > 0.5f || g0 - ga > 1.f) return false;
-            if (gb - g0 > 3.f || g0 - gb > 4.f) return false;
-            return true;
-        };
         float chosen = h;
-        if (!ok(h)) {
-            const int tries = int(p.flank * 256.f / 360.f) / 4 + 8;
-            const float step = float(0x4000000) / 4294967296.f * 2 * kPi;
-            const float sgn = (rnd() & 0x8000) ? 1.f : -1.f;
-            for (int k = 1; k <= tries; ++k) {
-                if (ok(h + sgn * step * float(k))) { chosen = h + sgn * step * float(k); break; }
-                if (ok(h - sgn * step * float(k))) { chosen = h - sgn * step * float(k); break; }
+        if (!df2) {
+            // Terrain probe (GOG Df.exe 0x45edd0, CD 0x46b34c), on the
+            // heading to the target. The flank (+0x7c, 1/256 turns) side is
+            // ai flag 4 (DF minus, OpenDF's clockwise plus) or 8; with
+            // neither, rand < 0x8000 picks 4, else 8, and it stays. From
+            // h +- flank, flank/4 + 8 headings 0x4000000 apart further to that
+            // side; the first whose ground 8 m and 16 m ahead passes against
+            // the person's height wins: water at 8 m <= 0.75 m deep, rise to
+            // 8 m <= 0.5 m, drop <= 1 m, rise to 16 m <= 3 m, drop <= 4 m.
+            // Else from DF h + 0x10000000 (OpenDF h - 22.5 degrees), 128
+            // steps the same way testing only 8 m (water, rise <= 2 m, drop
+            // <= 4 m); else h.
+            if (!(p.flags & 0xC)) p.flags |= rnd() < 0x8000 ? 4u : 8u;
+            const int flank256 = int(p.flank * 256.f / 360.f);   // (deg << 8) / 360 (0x4497c0)
+            const float unit = 2 * kPi / 4294967296.f;
+            const float sgn = (p.flags & 4) ? 1.f : -1.f;
+            const float step = sgn * float(0x4000000) * unit;
+            const float w = world.terrain->waterLevel();
+            auto ground = [&](float hh, float m) {
+                const Vec3 a = o.pos + Vec3{std::sin(hh), 0, -std::cos(hh)} * m;
+                return world.terrain->heightAt(a.x, a.z);
+            };
+            bool found = false;
+            float t = h + sgn * float(int64_t(flank256) << 24) * unit;
+            for (int k = 0; k < flank256 / 4 + 8; ++k, t += step) {
+                const float g8 = ground(t, 8.f), g16 = ground(t, 16.f), z = o.pos.y;
+                if (w != 0 && w - g8 > 0.75f) continue;
+                if (g8 - z > 0.5f || g16 - z > 3.f || z - g8 > 1.f || z - g16 > 4.f) continue;
+                chosen = t;
+                found = true;
+                break;
+            }
+            if (!found) {
+                t = h - float(0x10000000) * unit;
+                for (int k = 0; k < 128; ++k, t += step) {
+                    const float g8 = ground(t, 8.f), z = o.pos.y;
+                    if (w != 0 && w - g8 > 0.75f) continue;
+                    if (g8 - z > 2.f || z - g8 > 4.f) continue;
+                    chosen = t;
+                    break;
+                }
+            }
+        } else {
+            const float flank = p.flank * kPi / 180.f;
+            if (p.flags & 4) h += flank;
+            else if (p.flags & 8) h -= flank;
+            // Terrain probe: avoid deep water and big steps.
+            auto ok = [&](float hh) {
+                const Vec3 f{std::sin(hh), 0, -std::cos(hh)};
+                const float g0 = world.terrain->heightAt(o.pos.x, o.pos.z);
+                const Vec3 a = o.pos + f * 2.f, b = o.pos + f * 4.f;
+                const float ga = world.terrain->heightAt(a.x, a.z), gb = world.terrain->heightAt(b.x, b.z);
+                const float w = world.terrain->waterLevel();
+                // DF2 rejects water only with ai flag 0x800, deeper than 0.25 m (0x4151a0).
+                if ((p.flags & 0x800) && w != 0 && w - ga > 0.25f) return false;
+                if (ga - g0 > 0.5f || g0 - ga > 1.f) return false;
+                if (gb - g0 > 3.f || g0 - gb > 4.f) return false;
+                return true;
+            };
+            chosen = h;
+            if (!ok(h)) {
+                const int tries = int(p.flank * 256.f / 360.f) / 4 + 8;
+                const float step = float(0x4000000) / 4294967296.f * 2 * kPi;
+                const float sgn = (rnd() & 0x8000) ? 1.f : -1.f;
+                for (int k = 1; k <= tries; ++k) {
+                    if (ok(h + sgn * step * float(k))) { chosen = h + sgn * step * float(k); break; }
+                    if (ok(h - sgn * step * float(k))) { chosen = h - sgn * step * float(k); break; }
+                }
             }
         }
         o.heading = chosen;

@@ -204,7 +204,7 @@ First differences from DF1:
     heading and pitch. DF2's chooser (0x43f690) makes any mover under the
     level play 141 Swimming (moving forward) or 140 Floating; DF1's AI keeps
     its own move (only the player's controller picks Swimming, 0x43752e).
-    The AI's steering keeps out of deep water (DF1 0x46b34c: 0.75 m; DF2
+    The AI's steering keeps out of deep water (DF1 0x46b34c: 0.75 m at 8 m ahead; DF2
     0x4151a0: 0.25 m with ai flag 0x800 only).
   - **collision volumes** (0x440f80, 0x440984): v8 volumes are convex plane
     sets (LOD +0xB0 planes, volume +0x48 count). People and the player are
@@ -492,7 +492,7 @@ First differences from DF1:
     blast with 200 fragments (0x401240 → 0x4572d0); DF2's effect table (0x414500:
     DF1's 16 plus 17 rain, 18 snow, 19 gex5, 20 boomd, 21/22 parachutes,
     23-27). `OPENDF_TESTBLD2=1` destroys a mission's first bld2 at tick 30
-    (testing). The searchlight `slgt` (sweeps ±45° about its placed heading,
+    (testing). The searchlight `slgt` (DF1 has it too, GOG Df.exe 0x4519a0; sweeps ±45° about its placed heading,
     spots within 22.5° and 1000 m, tracks for 8 thinks, the husk and a
     blast 1 m up when shot; 0x427f30, 0x4281e0, 0x425c70), Land Mine (`mine`
     0x4295f0 when shot or blasted; any person stepping on it, 0x43fc80: a
