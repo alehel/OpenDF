@@ -1019,7 +1019,8 @@ First differences from DF1:
     them at action 8); events (0x41ad40, as Df.exe's 0x42e9e0): with a
     timer running an event only counts down and cannot fire in that
     visit; the scheduler 0x41ae50 (every 16th tick from the 16th) skips
-    flag 2 and 4 events; flag-2 events are visited once at load
+    flag 2 and 4 events, its eighth [0x4e029c] never reset (it carries
+    over between missions); flag-2 events are visited once at load
     (0x41aeb0) and flag-4 events when the mission is left, before the
     switches are saved (0x464140 -> 0x41aef0; single player sets the gate
     [0x67cd34]); condition 1/2 tests bit p2 of team p1 (0x41b180); one-point paths are marked stop-at-end (flags |= 1)

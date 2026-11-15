@@ -104,7 +104,6 @@ private:
     std::vector<Event> events_;
     std::vector<AreaBox> conditionAreas_;   // per condition, for class 1.10
     uint64_t ticks_ = 0;
-    int visitCount_ = 0;
     uint32_t goals_ = 0, fails_ = 0;
     int unhandled_ = 0;
 };

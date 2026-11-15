@@ -25,7 +25,7 @@ float len3(Vec3 v) { return std::sqrt(dot(v, v)); }
 
 } // namespace
 
-void AiSystem::init(World& world, const Mission& mission) {
+void AiSystem::init(World& world, const Mission& mission, const std::vector<int>& firstThink) {
     mission_ = &mission;
     people_.clear();
     noise_.clear();
@@ -76,8 +76,10 @@ void AiSystem::init(World& world, const Mission& mission) {
         p.waypoint = rec[0x4A];
         p.flank = rec[0x4B] ? float(rec[0x4B]) : 45.f;
         p.homeHeading = o.heading;
-        // Staggered first thinks: counter % 60, the counter +11 per person.
-        p.think = 1 + stagger % 60;
+        // Staggered first thinks: counter % 60, the counter +11 per person;
+        // Delta Force's counter runs over every loaded record (firstThink).
+        if (size_t(o.missionIndex) < firstThink.size()) p.think = 1 + firstThink[size_t(o.missionIndex)];
+        else p.think = 1 + stagger % 60;
         stagger += 11;
         p.lastHp = o.hp;
         // An alert byte of 2 from the record does not alert the team: the
@@ -1032,9 +1034,21 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         world.requestMove(o, walkMove(world, p));
         p.think = 64;
         bool friendClose = false;
-        for (const auto& q : world.objects)
-            if (&q != &o && q.person && q.alive() && std::abs(q.pos.x - o.pos.x) < 2.f && std::abs(q.pos.z - o.pos.z) < 2.f)
-                friendClose = true;
+        if (!df2) {
+            // GOG Df.exe 0x45f010 (CD 0x46b588), from 0x45b817: any other
+            // used organics record (0x7cca80: people, the dead and the
+            // player too) within 2 m on all three axes, inclusive.
+            auto near2 = [&](Vec3 q) {
+                return std::abs(q.x - o.pos.x) <= 2.f && std::abs(q.y - o.pos.y) <= 2.f && std::abs(q.z - o.pos.z) <= 2.f;
+            };
+            friendClose = near2(player.origin);
+            for (const auto& q : world.objects)
+                if (&q != &o && q.missionGroup == 3 && !q.removed && near2(q.pos)) friendClose = true;
+        } else {
+            for (const auto& q : world.objects)
+                if (&q != &o && q.person && q.alive() && std::abs(q.pos.x - o.pos.x) < 2.f && std::abs(q.pos.z - o.pos.z) < 2.f)
+                    friendClose = true;
+        }
         if ((dist <= p.closeRange && (p.flags & 0x80)) ||
             (!(p.flags & 2) && p.stateTimer > p.advanceTicks && rnd() < 0x8000 && !friendClose) || (p.flags & 2)) {
             p.state = 2;
