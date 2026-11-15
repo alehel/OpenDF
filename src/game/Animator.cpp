@@ -34,7 +34,10 @@ void Animator::enter(const Chr& chr, int anim, int frame) {
     if (prev_ && f.anchor < int(f.contacts.size()) && f.anchor < int(prev_->contacts.size()))
         for (int k = 0; k < 3; ++k) d[size_t(k)] += prev_->contacts[size_t(f.anchor)][size_t(k)] - f.contacts[size_t(f.anchor)][size_t(k)];
     rootStep_ = {-d[2] / float(left_), -d[0] / float(left_), d[1] / float(left_)};
-    if (prev_ == &f) rootStep_ = {0, 0, 0};   // holding the last frame
+    // Holding the last frame: Delta Force re-enters it (GOG Df.exe 0x43aa30
+    // -> 0x43a150 -> 0x43a690), so its root offset keeps applying (the
+    // anchor contacts cancel); OpenDF keeps a KSA body still.
+    if (prev_ == &f && chr.ksa()) rootStep_ = {0, 0, 0};
     prev_ = &f;
     for (size_t p = 0; p < n; ++p)
         for (int k = 0; k < 3; ++k) {
