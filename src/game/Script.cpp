@@ -97,7 +97,7 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
         case 10: return conditionAreas_[self].valid && host.teamInArea(p1, conditionAreas_[self]);
         case 12: return alive(p1) >= p2;                     // at least p2 alive
         case 1: return host.teamSpotted(p1, p2);              // team spotted team (0xa957e0)
-        case 2: return host.teamEngaging(p1, p2);             // team engaged team (0xa8d5e0)
+        case 2: return host.teamEngaging(p1, p2);             // team engaging (0xa8d5e0; DF2 team p2, GOG Df2.exe 0x41b180)
         case 3: return host.teamAlerted(p1);                  // team alerted (team record +4 == 2)
         case 7: return host.reachedWaypoint(p1, p2, c[5]);    // team reached point p3 of path p2
         case 11: return host.teamCarrying(p1, p2);            // team carries an item of team p2

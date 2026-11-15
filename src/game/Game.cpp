@@ -516,8 +516,8 @@ private:
     // GOG Df.exe 0x4601a0 / Df2.exe 0x4184c0: decorations (searchlights),
     // organics and items of the team, each with an AI block (0x45ff20 / 0x4185b0).
     void aiProperty(int team, int subtype, int value) override {
-        // Delta Force (GOG Df.exe 0x4601a0): not for subtype 0 or team 0.
-        if (!world_.df2Rules && (subtype == 0 || team == 0)) return;
+        // GOG Df.exe 0x4601a0 / Df2.exe 0x4184c0: not for subtype 0 or team 0.
+        if (subtype == 0 || team == 0) return;
         ai_.property(world_, team, subtype, value);
         vehicles_.property(world_, team, subtype, value);
         if (team == 0) return;
@@ -645,6 +645,12 @@ private:
     void spawnEffect(int slot, Vec3 pos);
     int missionResult_ = -1;              // winning side once the mission has ended
     int missionNumber_ = 0;               // m of CccMmm
+    // Delta Force 2's wind for the mission (GOG Df2.exe [0x512e60] degrees
+    // it blows from, [0x512e68] kph, shown on the HUD) and whether its
+    // velocity points the other way (the random wind, 0x4763e0).
+    int windDeg_ = 0, windKph_ = 0;
+    bool windFlip_ = false;
+    void setDf2Wind() { arsenal_.setWind(float(windKph_), float(windDeg_ + (windFlip_ ? 180 : 0))); }
     static constexpr int kPlayerTeam = 1, kPlayerSide = 1;
     std::vector<std::string> missions_;
     int current_ = 0;
@@ -1092,6 +1098,30 @@ bool Game::loadMission(int index) {
         if (const int r = loadoutRow(o_.secondary); r >= 0) lo.kit = r;
         bool df2Weapons = false;
         if (mission_.version >= 0x0F) {
+            // The wind (GOG Df2.exe 0x466ba0, single player by sp_wind): 0 the
+            // mission's (0x4762e0(header +0xEC, +0xE8)), 1 none (0x4762e0(0, 0)),
+            // 2 random (0x4763e0): r1, r2 from 0x41ea20, seeded 0x10101010 at
+            // the start of the load (0x41ea10) and not drawn from before it,
+            // deg = r1 * 360 >> 16, kph = r2 >> 11 (12 degrees, 18 kph); its
+            // sin/cos are taken without 0x4762e0's half turn, so the drift
+            // vector is reversed while the HUD shows deg.
+            windDeg_ = mission_.windDeg;
+            windKph_ = mission_.windKph;
+            windFlip_ = false;
+            if (o_.df2Wind == 1) windDeg_ = windKph_ = 0;
+            else if (o_.df2Wind == 2) {
+                uint32_t x = 0x10101010;
+                auto next = [&x] {
+                    auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+                    const uint32_t u = rol(x, 11) + x;
+                    x = rol(u, 4) ^ 1;
+                    return x & 0xFFFF;
+                };
+                const uint32_t r1 = next(), r2 = next();
+                windDeg_ = int((uint64_t(r1) * 360) >> 16);
+                windKph_ = int(r2 >> 11);
+                windFlip_ = true;
+            }
             // Delta Force 2: its own tables from DF2.EXE, its loadout by weapon
             // type (WeaponNames2); --loadout PRIMARY,SECONDARY,SIDEARM.
             Df2Loadout d2;
@@ -1122,7 +1152,7 @@ bool Game::loadMission(int index) {
             df2Loadout_ = d2;
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
-            arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+            setDf2Wind();
         }
         weather_.start(mission_.version >= 0x0F ? mission_.weather : 0);
         if (!df2Weapons) arsenal_.init(gameText_, &exe_, &items_, lo);
@@ -1869,6 +1899,19 @@ void Game::touchPickups() {
         case 4010: case 4055:
             arsenal_.refill();
             pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
+            sound_.play2D(0x164);
+            o.removed = true;
+            o.boxes.clear();
+            break;
+        case 4118:
+            // DF2 grenade crate (GOG Df2.exe 0x446050 case 0x1016, the player
+            // only): 0x45ba20 sends packet 0x1f, whose client side (0x409610)
+            // refills the grenades (0x44e310), shows Misc "STRMSIC17" (sic:
+            // no such key, so an empty line) in [0x67d37c] = 0xff8000 and
+            // plays 0x164; 0x418110 deletes the crate.
+            if (!world_.df2Rules) break;
+            arsenal_.refillDf2Grenades();
+            pushMessage(df2Text("Misc", "STRMSIC17", ""), kDf2Amber);
             sound_.play2D(0x164);
             o.removed = true;
             o.boxes.clear();
@@ -5528,8 +5571,8 @@ void Game::drawDf2Bottom(const Screen& s) {
     {
         static const char* kDir[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
         char wind[48];
-        if (mission_.windKph == 0) std::snprintf(wind, sizeof wind, "Wind: None");
-        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((mission_.windDeg + 22) % 360 + 360) % 360 / 45], mission_.windKph);
+        if (windKph_ == 0) std::snprintf(wind, sizeof wind, "Wind: None");
+        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((windDeg_ + 22) % 360 + 360) % 360 / 45], windKph_);
         hud_.text(X("extra2"), Y("extra2"), wind, kDf2Amber, ts);
     }
 
@@ -5985,7 +6028,7 @@ void Game::df2RequestWeapons() {
         const std::string* t = gameTable_.find("HudGuns", key);
         hudGuns.push_back(t ? *t : std::string());
     }
-    if (arsenal_.initDf2(hudGuns, df2Exe_, &items_, df2Loadout_)) arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+    if (arsenal_.initDf2(hudGuns, df2Exe_, &items_, df2Loadout_)) setDf2Wind();
     pushMessage(df2Text("Client", "STRCLI10", "Weapons Updated"));
     sound_.play2D(0x164);
     const int cur[5] = {df2Loadout_.primary, df2Loadout_.secondary, df2Loadout_.gear, df2Loadout_.sidearm, df2Loadout_.grenade};

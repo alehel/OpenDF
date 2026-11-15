@@ -97,6 +97,7 @@ private:
     bool conditions(const Event& e, ScriptHost& host) const;
     void actions(const Event& e, ScriptHost& host);
     void visit(size_t i, ScriptHost& host);
+    bool df2() const { return mission_ && mission_->version >= 0x0F; }
 
     const Mission* mission_ = nullptr;
     std::vector<Event> events_;

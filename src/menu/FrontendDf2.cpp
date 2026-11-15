@@ -2689,7 +2689,11 @@ int FrontendDf2::run() {
                 g.df2Secondary = soldier().get(0x2c0);
                 g.df2Gear = soldier().get(0x2c4);
                 g.df2Grenade = soldier().get(0x2c8);
+                // GOG Df2.exe 0x43c280: faces 10-14 ([0x67cc14] = +0x278 > 9)
+                // are female (player slot +0xc4 via 0x4604e0, read by the spawn 0x45c150).
+                g.female = soldier().get(0x278) > 9;
                 g.df2Attributes = uint32_t(cfg_.get("attributes"));
+                g.df2Wind = std::clamp(cfg_.get("sp_wind"), 0, 2);
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
@@ -2712,33 +2716,38 @@ int FrontendDf2::run() {
                     g.bindings.push_back({kDf2Keys[i].game, vk | mask << 16});
                     if (i == 8) g.bindings.push_back({"attack_2", vk | mask << 16});
                 }
-                const int camp = fromCampaign_ && missionSel_ >= 0 ? kMissions[missionSel_].campaign : 0;
-                uint32_t flags = camp ? uint32_t(soldier().get(0xa8 + 4 * size_t(camp))) : 0;
+                // The campaign switches of the soldier's campaign (+0x28), for
+                // campaign and quick missions alike (GOG Df2.exe 0x43c280:
+                // [0x67cf44] = +0xa8 + 4 * [+0x28]).
+                const size_t flagsAt = 0xa8 + 4 * size_t(std::clamp(soldier().get(0x28), 0, 7));
+                uint32_t flags = uint32_t(soldier().get(flagsAt));
                 MissionOutcome out;
                 audio_.setDfMixer(true, false);   // 0x43b68d: the hook is off from here on
                 runGame(vfs_, g, &out, &flags);
                 soldier().set(0x5b0, mouseSens);
                 soldier().set(0x5d8, scopeSens - 0x80);
-                // GOG Df2.exe 0x43c6f0 (CD 0x437550), for every finished run
-                // (those replayed with Space first, 0x466ad0 -> 0x464140,
-                // already recorded when the window is then closed): a win
-                // marks a campaign mission done ([0x4c3f88] and the
-                // selection), adds the player's kills to +0x29c and 1 to the
-                // completed missions +0x2a4 (GOG only); a loss records
-                // nothing. The unlock mask comes back from the game.
+                // GOG Df2.exe 0x43c6f0 (CD 0x437550, from 0x464140), for every
+                // finished run (those replayed with Space first, 0x466ad0 ->
+                // 0x464140, already recorded when the window is then closed):
+                // a single-player win, campaign or quick, adds the kills
+                // (+0x29c) and one completed mission (+0x2a4, every win); a
+                // campaign mission ([0x4c3f88], index [0x4c3f70] >= 0) is also
+                // marked done. Nothing on a loss. The flags word goes back
+                // every time (it only changes on a win, 0x464140). +0x2b0 /
+                // +0x2ac (from the mission's per-player stats) are not tracked.
                 auto record = [&](bool won, int kills) {
                     if (!won) return;
-                    if (camp && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
+                    if (fromCampaign_ && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
                     soldier().set(0x29c, soldier().get(0x29c) + kills);
                     soldier().set(0x2a4, soldier().get(0x2a4) + 1);
                 };
                 for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills);
                 if (out.quit) {
-                    if (camp && !out.replayed.empty()) soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
+                    if (!out.replayed.empty()) soldier().set(flagsAt, int32_t(flags));
                     break;
                 }
                 record(out.won, out.kills);
-                if (camp) soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
+                soldier().set(flagsAt, int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;
                 if (cfg_.get("music_volume") > 0) music_.start();

@@ -31,7 +31,7 @@ void AiSystem::init(World& world, const Mission& mission) {
     noise_.clear();
     teamAlert_.fill(0);
     spotted_.fill(0);
-    engaging_.fill(0);
+    engaging_.fill(0);   // GOG Df2.exe 0x41b620 clears 0xab3a00 at load
     reached_.clear();
     teamSpeed_.fill(0);
     ticks_ = 0;
@@ -1154,13 +1154,12 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
     }
     // Delta Force 2's action (GOG Df2.exe 0x4184c0): after the members,
     // sub 5 sets the team's alert word (0x4045c0) and 6 clears it (0x4045a0),
-    // the word the "team alerted" condition reads (0x41af30). Delta Force's
-    // 0x4601a0 does neither: there only a member that really reacts (0x44a3e0
-    // from 0x45e280 / 0x45fd90 / 0x464c50) alerts the team.
-    if (df2 && team >= 0 && team < 64) {
-        if (subtype == 5) teamAlert_[size_t(team)] = 2;
-        else if (subtype == 6) teamAlert_[size_t(team)] = 0;
-    }
+    // with or without members, the word the "team alerted" condition reads
+    // (0x41af30); team 0 is skipped. Delta Force's 0x4601a0 does neither:
+    // there only a member that really reacts (0x44a3e0 from 0x45e280 /
+    // 0x45fd90 / 0x464c50) alerts the team.
+    if (df2 && team > 0 && team < 64 && (subtype == 5 || subtype == 6))
+        teamAlert_[size_t(team)] = subtype == 5 ? 2 : 0;
 }
 
 void AiSystem::teamSpeed(int team, int kmh) {

@@ -60,6 +60,9 @@ struct GameOptions {
     // AI hard, 0x20 squad members off, 0x80 tracers off, 0x100 friendly-fire
     // warning off (Options3).
     uint32_t df2Attributes = 2;
+    // Delta Force 2: df2.cfg "sp_wind" (GOG Df2.exe [0x67cf4c], 0x43c280):
+    // single player's wind, 0 the mission's, 1 none, 2 random.
+    int df2Wind = 0;
     // df.cfg CONTROLS / MUSIC: crosshairs (0x40200d), flipmouse and
     // mousescale (0x42eba1: turn per count = mousescale << 14 binary angle),
     // dialog_volume (0x472f44).

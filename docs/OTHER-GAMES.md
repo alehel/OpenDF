@@ -222,8 +222,12 @@ First differences from DF1:
     stops it; OpenDF has no DF2 loadout yet, so nobody wears one;
   - **wind**: fixed for the mission from the BMS header (+0xE8 kph, +0xEC
     degrees it blows from; DF2.EXE 0x45d3f8), shown as `Wind: SW, 3kph` /
-    `Wind: None`. The `sp_wind` option (default/none/random) only applies in
-    multiplayer. Its physical effect, DF2's projectile drag toward the wind
+    `Wind: None`. In single player the `sp_wind` option picks it (GOG
+    Df2.exe 0x466ba0, CD 0x45d1c0): default the mission's, none 0 kph,
+    random 0x4763e0 with the first two draws of 0x41ea20 after its
+    0x10101010 seed, always 12 degrees / 18 kph (`Wind: N, 18kph`), its
+    drift vector the reverse of what the mission wind would give for that
+    direction (no half turn before the sin/cos). Its physical effect, DF2's projectile drag toward the wind
     velocity (0x44c2f0, per-ammo drag bands; DF1 has no drag), is in
     (`Arsenal::df2Drag`).
   - **heights** (DF2.EXE 0x464c30, 0x464798): the elevation PCX smoothed
@@ -957,6 +961,24 @@ First differences from DF1:
     heights when either record z is non-zero; pungi sticks (0x446050 case
     0x42a): hp -= 2 a tick in contact when airborne or running uncrouched,
     the player and AI alike (INFERRED for the AI: running = a Running move);
+    events (0x41ad40): flag-2 events get one visit at load before the team
+    totals and the player spawn (0x466ba0 -> 0x41aeb0), flag-4 events one
+    when the mission is left (0x464140 -> 0x41aef0), the 1-in-8 pass skips
+    both (0x41ae50, flag 16 is not skipped); a visit that finds a delay or
+    repeat countdown running only counts it down, so a repeating event
+    refires one visit after its countdown ends; condition 1/2 tests bit
+    (team p2) of row p1 (0x41b180; set from the AI 0x4018fc / 0x401f3b ->
+    0x41ac60); AI property 5/6 also sets / clears the team's alert state
+    that condition 1/3 tests (0x4184c0 -> 0x4045c0 / 0x4045a0), members or not;
+    the grenade crate 104118 (0x446050 case 0x1016, the player only):
+    packet 0x1f refills every slot holding mode 0x21 / 0x22 / 0x31
+    (0x44e310), shows Misc "STRMSIC17" (sic, no such key: an empty line)
+    with sound 0x164, and the crate goes (0x418110); leaving a mission
+    (0x43c6f0): a single-player win, campaign or quick, adds the kills and
+    1 to Completed Missions (every win) and marks a campaign mission done,
+    a loss adds nothing; the flags word of the soldier's campaign (+0x28)
+    is what both kinds start with and get back; a DF2 profile with face
+    10-14 plays the female soldier (0x43c280);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key

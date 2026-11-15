@@ -227,6 +227,10 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
+    // Delta Force 2's grenade crate (GOG Df2.exe packet 0x1f -> 0x44e310):
+    // every slot 0-9 holding mode 0x21, 0x22 or 0x31 gets n - 1 spare clips,
+    // a full magazine and a round chambered; nothing else changes.
+    void refillDf2Grenades();
     void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
     void cycleBack();             // DF1 'cycleb' (GOG Df.exe 0x484b70(-1)): previous slot with a mode, wrapping from 9
     void reload();                // 0x44a004

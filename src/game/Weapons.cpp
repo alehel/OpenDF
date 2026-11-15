@@ -604,6 +604,19 @@ void Arsenal::refillDf2Gog() {
     reloadTicks_ = 0;
 }
 
+void Arsenal::refillDf2Grenades() {
+    for (int i = 0; i < 10 && i < int(slots_.size()); ++i) {
+        const int m = slots_[size_t(i)];
+        if (m != 0x21 && m != 0x22 && m != 0x31) continue;
+        if (m >= int(modes_.size())) continue;
+        const int g = modes_[size_t(m)].gun;
+        if (g < 0 || g >= int(guns_.size())) continue;
+        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
+        mag_[size_t(g)] = guns_[size_t(g)].magazine;
+        chambered_[size_t(g)] = 1;
+    }
+}
+
 void Arsenal::select(int slot) {
     if (slot < 0 || slot >= int(slots_.size())) return;   // 10: DF2's binoculars (0x41b6e3)
     // GOG Df2.exe 0x44f160: slots 11 / 12 only with a gun manned (player
