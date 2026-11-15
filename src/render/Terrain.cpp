@@ -41,6 +41,8 @@ layout(location = 1) in vec2 aOrigin;       // per instance: the chunk's first c
 uniform sampler2D uHeight, uDetailIdx;
 uniform sampler2DArray uDetailShade;        // r: shade, g: detail elevation
 uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale, uTiles, uNear, uBumps;
+uniform float uFarBase, uKMax;
+uniform bool uHeightMips;
 uniform vec3 uEye;
 uniform mat4 uViewProj;
 out vec2 vCell;
@@ -54,6 +56,18 @@ void main() {
     // Bilinear between the corner elevations (fine meshes sit between cells).
     vec2 f = fract(c), b = floor(c);
     float h = mix(mix(elev(b), elev(b + vec2(1, 0)), f.x), mix(elev(b + vec2(0, 1)), elev(b + vec2(1, 1)), f.x), f.y);
+    // Delta Force far rings (GOG Df.exe 0x48c440): ring k's grid is 2^k
+    // cells and its heights are pyramid level k (the highest of each 2^k
+    // block), k as the colour mip below.
+    float dist0 = length(c * uCell - uEye.xz);
+    if (uHeightMips && dist0 >= uNear) {
+        int k = int(clamp(floor(log2(dist0 / uFarBase)), 0.0, uKMax));
+        float s = exp2(float(k));
+        vec2 cs = floor(c / s);
+        c = cs * s;
+        ivec2 sz = textureSize(uHeight, k);
+        h = texelFetch(uHeight, ivec2(mod(cs, vec2(sz))), k).r * uHScale;
+    }
     // Near rings: detail elevation e >= 128 raises the ground by (e - 128)/128 m
     // (DF.EXE 0x438fac).
     if (uBumps > 0.5 && length(c * uCell - uEye.xz) < uNear) {
@@ -530,10 +544,30 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     glBindTexture(GL_TEXTURE_2D, texHeight_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, size_, size_, 0, GL_RED, GL_FLOAT, heights_.data());
+    {
+        // The height pyramid (GOG Df.exe 0x47dd10 at 0x47dd9b..0x47ddc4:
+        // 0x47d620 makes level k from k - 1, each texel the highest of its
+        // 2x2), read by the far rings (0x48c440: ring k's heights from
+        // level k). Down to 1x1 so the texture is complete.
+        std::vector<float> prev = heights_, next;
+        int w = size_, level = 0;
+        while (w > 1) {
+            const int n = w / 2;
+            next.assign(size_t(n) * size_t(n), 0.f);
+            for (int z = 0; z < n; ++z)
+                for (int x = 0; x < n; ++x) {
+                    const size_t a = size_t(2 * z) * size_t(w) + size_t(2 * x), b = a + size_t(w);
+                    next[size_t(z) * size_t(n) + size_t(x)] = std::max({prev[a], prev[a + 1], prev[b], prev[b + 1]});
+                }
+            glTexImage2D(GL_TEXTURE_2D, ++level, GL_R32F, n, n, 0, GL_RED, GL_FLOAT, next.data());
+            prev.swap(next);
+            w = n;
+        }
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
 
     if (!loadImage(vfs, desc_.detailMap, detail) || detail.width != size_ || detail.height != size_) {
         detail.width = detail.height = size_;
@@ -1141,6 +1175,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     setF(progTerrain_, "uNear", nearEnd);
     setF(progTerrain_, "uFarBase", farBase);
     setF(progTerrain_, "uKMax", gen2_ ? 6.f : 5.f);
+    glUniform1i(glGetUniformLocation(progTerrain_, "uHeightMips"), gen2_ ? 0 : 1);
     setF(progTerrain_, "uEnd", gen2_ ? 1e9f : ringsEnd);
     setV3(progTerrain_, "uEye", eye);
     setV3(progTerrain_, "uFog", fog);
