@@ -377,6 +377,11 @@ private:
     HudImage cursor_;
     bool cursorLoaded_ = false;
     void drawCursor();
+    // The pages' own drawing after 0x443d90 (Choose Soldier 0x436720, Main
+    // 0x43a780): their connector lines, over the cursor.
+    void drawConnectors();
+    void hvLine(int x0, int y0, int x1, int y1, uint32_t color);
+    std::string mmHover_;   // [0x4c5998]: the Main button whose help is shown (0x43a700)
     void drawButton(D2Button& b);
     void drawDefault(D2Button& b);
     // 0x43d4c0 keeps the justification in two locals of its loop ([esp+0x14]
@@ -1042,6 +1047,7 @@ void FrontendDf2::enter(Screen s) {
     switch (s) {
     case Screen::Soldier: refreshSoldier(); break;
     case Screen::Main:
+        mmHover_.clear();   // 0x43a5ae
         // NovaWorld, Multiplayer and Update are not in OpenDF.
         for (const char* n : {"but_mm_qmb", "but_mm_nwb", "but_mm_upd"})
             if (D2Button* b = btn(n)) b->drawstate = 4;
@@ -1459,6 +1465,55 @@ void FrontendDf2::drawCursor() {
     hud().unclip();
 }
 
+// 0x46b790 for the axis-parallel lines the pages draw: one pixel wide, both
+// end points included.
+void FrontendDf2::hvLine(int x0, int y0, int x1, int y1, uint32_t color) {
+    fill(float(std::min(x0, x1)), float(std::min(y0, y1)), float(std::max(x0, x1) + 1), float(std::max(y0, y1) + 1), color);
+}
+
+void FrontendDf2::drawConnectors() {
+    if (screen_ == Screen::Soldier) {
+        // GOG Df2.exe 0x436720 (from 0x4366da): 0xCA4409 when the current
+        // soldier has a name (record +4), else 0x844030. A trunk at x 357,
+        // y 80..326; the current slot but_cs_<n> joined at its middle row to
+        // x 41, down to the middle of but_cs_oirct and across to the slot's
+        // x, and from its right edge to the trunk; the trunk's ends joined to
+        // the middles of but_cs_fcrct (to its top) and but_cs_aprct (to its
+        // bottom) at x (x + user1) / 2.
+        const uint32_t c = soldier().empty() ? 0x844030 : 0xCA4409;
+        char n[16];
+        std::snprintf(n, sizeof n, "but_cs_%d", current_);
+        const D2Button* b = btn(n);
+        const D2Button* oi = btn("but_cs_oirct");
+        const D2Button* fc = btn("but_cs_fcrct");
+        const D2Button* ap = btn("but_cs_aprct");
+        if (!b || !oi || !fc || !ap) return;
+        hvLine(357, 80, 357, 326, c);
+        const int cy = (b->h >> 1) + b->y, oy = int(unsigned(oi->user2 - oi->y) >> 1) + oi->y;
+        hvLine(41, cy, b->x, cy, c);
+        hvLine(41, cy, 41, oy, c);
+        hvLine(41, oy, b->x, oy, c);
+        hvLine(b->x + b->w, cy, 357, cy, c);
+        const int fx = int(unsigned(fc->user1 - fc->x) >> 1) + fc->x;
+        hvLine(357, 80, fx, 80, c);
+        hvLine(fx, 80, fx, fc->y, c);
+        const int ax = int(unsigned(ap->user1 - ap->x) >> 1) + ap->x;
+        hvLine(357, 326, ax, 326, c);
+        hvLine(ax, 326, ax, ap->user2, c);
+    } else if (screen_ == Screen::Main) {
+        // GOG Df2.exe 0x43a780 (from 0x43a6da): while a button's help is
+        // shown, from its middle row at x 155 down to the middle of
+        // but_mm_hlrct, both ends running right to 2 left of the button.
+        const D2Button* b = btn(mmHover_);
+        const D2Button* hl = btn("but_mm_hlrct");
+        if (!b || !hl) return;
+        const int cy = (b->h >> 1) + b->y, x2 = b->x - 2, hy = int(unsigned(hl->user2 - hl->y) >> 1) + hl->y;
+        hvLine(155, cy, x2, cy, 0xCA4409);
+        hvLine(155, cy, 155, hy, 0xCA4409);
+        hvLine(155, hy, x2, hy, 0xCA4409);
+    }
+}
+
 void FrontendDf2::drawMenu() {
     D2Menu* m = menu();
     if (!m) return;
@@ -1869,8 +1924,18 @@ void FrontendDf2::event(D2Button& b, int ev) {
         static const std::pair<const char*, const char*> kHelp[] = {
             {"mm_QuickMission", "MM_QMHELP"}, {"mm_Campaign", "MM_CAHELP"}, {"mm_Novaworld", "MM_NWHELP"}, {"mm_Multiplayer", "MM_MPHELP"},
             {"mm_Options", "MM_OPHELP"}, {"mm_NewSoldier", "MM_CSHELP"}, {"mm_Credits", "MM_CRHELP"}, {"mm_Update", "MM_UPHELP"}};
+        // 0x43ab4a: 0x43a700 keeps the button ([0x4c5998]) for the connector
+        // (0x43a780) and teletypes its help.
         for (const auto& [n, k] : kHelp)
-            if (b.callback == n) { helpText_ = menuText(k, ""); helpShown_ = 0; }
+            if (b.callback == n) { helpText_ = menuText(k, ""); helpShown_ = 0; mmHover_ = b.name; }
+    }
+    if (ev == 2 && screen_ == Screen::Main) {
+        // 0x43ab5c: leaving the button, 0x43a700(0, 0) drops the connector
+        // and empties the help box.
+        static const char* const kHelpButtons[] = {"mm_QuickMission", "mm_Campaign", "mm_Novaworld", "mm_Multiplayer",
+                                                   "mm_Options", "mm_NewSoldier", "mm_Credits", "mm_Update"};
+        for (const char* n : kHelpButtons)
+            if (b.callback == n) { helpText_.clear(); helpShown_ = 0; mmHover_.clear(); }
     }
     // mb_Map (GOG Df2.exe 0x43d250), event 3: a press on the map heads the
     // scroll for the picture point under the mouse (0x43cdf0, eased).
@@ -2573,6 +2638,7 @@ int FrontendDf2::run() {
         hud().begin(dw, dh);
         drawMenu();
         drawCursor();
+        drawConnectors();
         hud().end();
         if (!o_.screenshot.empty() && ++frame_ >= o_.frames) {
             std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
