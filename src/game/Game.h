@@ -60,6 +60,9 @@ struct GameOptions {
     // dialog_volume (0x472f44).
     bool crosshairs = true, flipMouse = false;
     int mouseScale = 128, dialogVolume = 200;
+    // GOG Df2.exe [0x67ccfc]: the scoped mouse acceleration, the soldier's
+    // +0x5d8 + 0x80 (0x43c280).
+    int df2ScopeAccel = 0x80;
     // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
     // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
     int displayGamma = 128;

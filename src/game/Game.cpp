@@ -204,6 +204,7 @@ private:
     // 0; OpenDF's view leaves the player only once he is dead) and not
     // moving (+0x74 & 0x18): the scope inset is up.
     bool df2ScopeActive() const { return arsenal_.scopeShown() && !playerDead(); }
+    void df2MouseTurn(int dx, int dy);
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -4461,6 +4462,40 @@ void Game::drawDf2Bottom(const Screen& s) {
     hud_.setBlend(0);
 }
 
+// GOG Df2.exe 0x41eb50: the frame's mouse counts turn the player (commands
+// 0x9b..0x9e) or the video camera (0x35..0x38) by gain x count binary
+// angle (0x200000 = 0.17578 degrees). The gain is the mouse sensitivity
+// [0x67ccf8] << 14 (under 1 taken as 0x80, at most 0x1ff); while 0x455790
+// holds (the scope inset up) it is instead 0x40000 plus an acceleration:
+// d = the larger count (dy on a tie) against the mode's width (dx) or
+// height (dy), r = 2d/dim in 16.16, gain = 0x40000 + 0x1000 * accel * r^2,
+// accel [0x67ccfc] kept to 0x80..0x1ff; both axes take the same gain.
+// (OpenDF reads the counts once a frame, the EXE once a tick.)
+void Game::df2MouseTurn(int dx, int dy) {
+    const int ms = o_.mouseScale < 1 ? 0x80 : std::min(o_.mouseScale, 0x1ff);
+    int64_t gain = int64_t(ms) << 14;
+    // [0x67ccf4] flipmouse off: the vertical count is negated.
+    const int vy = o_.flipMouse ? dy : -dy;
+    if (df2ScopeActive()) {
+        const int accel = std::clamp(o_.df2ScopeAccel, 0x80, 0x1ff);
+        const int w = hudMode_ ? hudMode_ : 640, h = w * 3 / 4;
+        const bool useX = std::abs(vy) < std::abs(dx);
+        const int d = useX ? dx : vy, dim = useX ? w : h;
+        const int32_t r = int32_t((int64_t(int16_t(d)) << 32) / (int64_t(dim) << 15));
+        const int32_t r2 = int32_t((int64_t(r) * r) >> 16);
+        const int32_t t = int32_t((int64_t(accel << 7) * r2) >> 16);
+        gain = int64_t(int32_t((int64_t(t) * 0x200000) >> 16)) + 0x40000;
+    }
+    const float perCount = float(double(gain) * 2.0 * 3.14159265358979323846 / 4294967296.0);
+    const float yaw = float(dx) * perCount, pitch = float(vy) * perCount;
+    if (arsenal_.cameraSteered()) {
+        arsenal_.turnCamera(yaw, pitch);
+    } else {
+        player_.yaw += yaw;
+        player_.pitch = std::clamp(player_.pitch + pitch, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+    }
+}
+
 // GOG Df2.exe 0x41be90 (HUD font 0xa6e068, box width x2 - (x1 - 4) of
 // chat_message / sys_message): a line that measures under the width (plus
 // the indent) stays whole; otherwise it breaks at the last space reached
@@ -6443,6 +6478,7 @@ int Game::run() {
 
             SDL_Event e;
             bool zoomClick = false;
+            int df2MouseX = 0, df2MouseY = 0;   // DF2: the frame's mouse counts ([0xe0ff0c] / [0xe0ff10])
             while (SDL_PollEvent(&e)) {
                 if (fullscreenEvent(win_, e)) continue;
                 if (e.type == SDL_QUIT) { running = false; quit_ = true; }
@@ -6471,30 +6507,26 @@ int Game::run() {
                 }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
-                else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
+                else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_ && arsenal_.df2()) {
+                    df2MouseX += e.motion.xrel;
+                    df2MouseY += e.motion.yrel;
+                } else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
                     // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
                     // (0x200000, 0.1758°, at the default 128), a quarter while
                     // zoomed; flipmouse flips the vertical axis (0x42ebd6).
-                    // DF2.EXE 0x41adec..0x41ae13: an eighth while the scope
-                    // shows (0x447b40, not moving: +0x74 & 0x18 clear).
-                    const float zoomScale = arsenal_.df2() ? (arsenal_.scopeShown() ? 0.125f : 1.f) : (arsenal_.zoomed() ? 0.25f : 1.f);
+                    // (Delta Force 2: df2MouseTurn.)
+                    const float zoomScale = arsenal_.zoomed() ? 0.25f : 1.f;
                     const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * zoomScale;
                     const float dy = o_.flipMouse ? -float(e.motion.yrel) : float(e.motion.yrel);
-                    // GOG Df2.exe 0x41eb50: the video camera's view takes the
-                    // mouse instead (commands 0x35..0x38, 0x41f150 cases
-                    // 0x29..0x2c), turned as the player would be.
-                    if (arsenal_.cameraSteered()) {
-                        arsenal_.turnCamera(e.motion.xrel * sens, -dy * sens);
-                    } else {
-                        player_.yaw += e.motion.xrel * sens;
-                        player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
-                    }
+                    player_.yaw += e.motion.xrel * sens;
+                    player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
                 } else if (e.type == SDL_TEXTINPUT && df2Hud_.on && showMap_ && df2Map_.prompt) {
                     // The command map's name prompt (chat input 0x41d320, max 16).
                     for (const char* c = e.text.text; *c; ++c)
                         if (uint8_t(*c) >= 32 && uint8_t(*c) < 128 && df2Map_.promptText.size() < 16) df2Map_.promptText += *c;
                 } else if (e.type == SDL_KEYDOWN && (!e.key.repeat || (df2Map_.prompt && showMap_))) handleKey(e.key);
             }
+            if (df2MouseX || df2MouseY) df2MouseTurn(df2MouseX, df2MouseY);
             if (zoomClick) arsenal_.toggleZoom();
 
             if (!inputCmds_.empty()) runInputScript(realDt);

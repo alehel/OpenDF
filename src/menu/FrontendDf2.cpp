@@ -2433,6 +2433,7 @@ int FrontendDf2::run() {
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
                 g.mouseScale = std::clamp(soldier().get(0x5b0), 0, 255);
+                g.df2ScopeAccel = soldier().get(0x5d8) + 0x80;   // GOG Df2.exe 0x43c280
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
