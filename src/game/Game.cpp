@@ -282,6 +282,7 @@ private:
     HudImage loadingWait_;
     std::vector<std::string> loadingLines_;
     void loadingLine(const char* key);
+    void df2WaitScreen();
     TextTable gameTable_;                 // DFGAME.BIN by section and key
     // Placed charges: satchels (schg), claymores (clay radio, cly2 motion).
     // `mission`: a satchel the mission placed (not the player's detonator's).
@@ -1687,6 +1688,31 @@ void Game::loadingLine(const char* key) {
         hud_.text(x0 + 50.f * px, (150.f + 20.f * float(k)) * px, loadingLines_[k], kHudPureGreen, px);
     hud_.end();
     SDL_GL_SwapWindow(win_);
+}
+
+// Delta Force 2's loading picture: GOG Df2.exe 0x466ba0(0) (a fresh start,
+// 0x465322; the Space replay 0x466ba0(1) skips it) calls 0x465ed0 at
+// 0x466c59: df2_wait.pcx (0x405560) scaled nearest to the display mode
+// (0x465210) and presented once before the mission loads (CD 0x45c550).
+// No text over it. OpenDF shows the mode's 4:3 area centred, as for
+// Delta Force's df_wait.pcx.
+void Game::df2WaitScreen() {
+    HudImage im = hud_.loadImage(vfs_, "DF2_WAIT.PCX", false);
+    if (!im.texture) return;
+    glBindTexture(GL_TEXTURE_2D, im.texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    int dw, dh;
+    SDL_GL_GetDrawableSize(win_, &dw, &dh);
+    const float u = std::min(float(dw) / 640.f, float(dh) / 480.f);
+    glViewport(0, 0, dw, dh);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    hud_.begin(dw, dh);
+    hud_.image(im.texture, (float(dw) - 640.f * u) * 0.5f, (float(dh) - 480.f * u) * 0.5f, 640.f * u, 480.f * u);
+    hud_.end();
+    SDL_GL_SwapWindow(win_);
+    glDeleteTextures(1, &im.texture);
 }
 
 // Effect slots (DF.EXE table 0xab3400) -> ITEMS.DEF items.
@@ -8065,6 +8091,7 @@ int Game::run() {
     else {
         // Delta Force (not DF2) shows df_wait.pcx while the mission loads.
         loadingScreen_ = !vfs_.exists("DF2.PWF");
+        if (!loadingScreen_) df2WaitScreen();
         if (!loadMission(int(it - missions_.begin()))) rc = 1;
         loadingScreen_ = false;
     }
