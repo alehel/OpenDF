@@ -244,7 +244,9 @@ First differences from DF1:
     and, unless prone (+0x74 & 0x20), zeroes vel_z (GOG Df2.exe 0x446e0a..
     0x446e1c), and there is no gravity on one unless prone (0x4470a5: a
     prone person falls through), so a jump or a fall stops at the ladder;
-    the AI's prone is its Prone_* / Crawling_* move (OpenDF). The
+    an AI's +0x74 is never written outside the local player (0x41efd0,
+    0x447120) and the network receive paths (0x409fae, 0x45d3e7), so the
+    prone test is always false for an AI. The
     chooser climbs (GOG Df2.exe 0x445980; CD 0x43f951 / 0x43fa42, which
     climbed down on back): forward 0x800 (run 0x1000) a chooser tick (odd
     ticks) with Ladder_Up, up when the pitch +0x34 is above level, down
