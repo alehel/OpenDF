@@ -789,6 +789,16 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     p.scanTimer += elapsed;
     p.radioTimer += elapsed;
     p.losTimer += elapsed;
+    // GOG Df.exe 0x45b3a0, which sets every think's delay, also steps the
+    // seen / unseen times by it, target or not: with 0x80 seen += d and
+    // unseen = 0, else unseen += d and seen = 0. OpenDF applies it as the
+    // next think starts (the flag is the same then). Delta Force 2 keeps
+    // its has-target bookkeeping below.
+    if (!df2 && !p.noDelay) {
+        if (p.flags & 0x80) p.seen += elapsed, p.unseen = 0;
+        else p.unseen += elapsed, p.seen = 0;
+    }
+    p.noDelay = false;
     p.think = 64;
     if (p.burstLeft > 0) {
         --p.burstLeft;
@@ -829,6 +839,7 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                     if (p.silent) {
                         p.think = 1;
                         --p.stateTimer, --p.scanTimer, --p.radioTimer, --p.losTimer;
+                        p.noDelay = true;
                     } else {
                         p.think = 16;
                     }
@@ -966,8 +977,14 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         }
         p.lastKnown = world.nearest(targetPos(world, p, player), o.pos);
     }
-    if (p.flags & 0x80) p.seen += elapsed;
-    else { p.unseen += elapsed; p.seen = 0; }
+    // Delta Force (GOG Df.exe 0x45b993 / 0x45b9a3 -> 0x45b70c -> 0x45b72b):
+    // every has-target think with 0x80 set, sight check or not, takes the
+    // target's current position as the last known.
+    if (!df2 && (p.flags & 0x80)) p.lastKnown = world.nearest(targetPos(world, p, player), o.pos);
+    if (df2) {
+        if (p.flags & 0x80) p.seen += elapsed;
+        else { p.unseen += elapsed; p.seen = 0; }
+    }
     if (p.unseen > p.giveUpTicks) {
         p.target = -1;
         p.state = 0;

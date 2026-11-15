@@ -153,6 +153,7 @@ private:
         bool silent = false;          // ai+0x25 bit 0
         int state = 0, stateTimer = 0;   // +0x28 / +0x2c: 1 advance, 2 engage
         int unseen = 0, seen = 0;     // +0x30 / +0x34
+        bool noDelay = false;         // DF1: the last think returned before 0x45b3a0 (no seen / unseen step)
         int scanTimer = 0, radioTimer = 0, losTimer = 0;   // +0x38 / +0x3c / +0x40
         int target = -1;              // +0x44: world object, -3 the player, -1 none
         Vec3 lastKnown{0, 0, 0};      // +0x48
