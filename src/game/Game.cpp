@@ -727,6 +727,24 @@ private:
     // side's objects in Delta Force 2.
     void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f, bool sound = true, int owner = -1, int effect = 0,
                  bool smoke = true);
+    // The blast's damage and the player's test (World::blast and below;
+    // GOG Df.exe 0x465830 / 0x465977). GOG queues a blast (0x4657d0: ring
+    // 0x9e2e40, count [0xa15898]) and handles it after its caller has drawn
+    // all its fragments (0x465bd0), so in the seeded Delta Force paths
+    // (detonate, bigBlast, the satchel) explode() only queues it while
+    // deferBlasts_ is set and flushBlasts() runs it after the fragments: the
+    // death draws of anyone 4-8 m away then follow the 0x5FC pattern
+    // instead of shifting it.
+    void blastDamage(Vec3 at, bool heavy, float radius, int owner);
+    struct PendingBlast { Vec3 at; bool heavy; float radius; int owner; };
+    bool deferBlasts_ = false;
+    std::vector<PendingBlast> pendingBlasts_;
+    void flushBlasts() {
+        deferBlasts_ = false;
+        std::vector<PendingBlast> q;
+        q.swap(pendingBlasts_);
+        for (const PendingBlast& b : q) blastDamage(b.at, b.heavy, b.radius, b.owner);
+    }
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
     void gnrcExplode(int index);   // Delta Force: a destroyed gnrc object goes off (0x453270)
     float effectScale_ = 0;        // > 0: the next spawnEffect's scale (effect +0x7c set by its caller)
@@ -1940,6 +1958,12 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, i
     spawnEffect(effect > 0 ? effect : surface == 2 ? 4 : 3, at);
     // Delta Force 2 sends these through its speed-of-sound queue (0x45E910).
     if (sound) sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
+    if (deferBlasts_) pendingBlasts_.push_back({at, heavy, radius, owner});
+    else blastDamage(at, heavy, radius, owner);
+    if (surface == 0 && smoke) smokeGens_.push_back({at, 0, 0});
+}
+
+void Game::blastDamage(Vec3 at, bool heavy, float radius, int owner) {
     const int ownerSide = owner == -3 ? kPlayerSide : owner >= 0 && size_t(owner) < world_.objects.size() ? world_.objects[size_t(owner)].side : 0;
     for (auto& m : world_.blast(at, radius, heavy, owner, ownerSide)) pushMessage(m);
     // The player is a character like the others (0x785b60).
@@ -1999,7 +2023,6 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, i
         if (d <= radius + 1.f && (!blocked || heavy))
             hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
     }
-    if (surface == 0 && smoke) smokeGens_.push_back({at, 0, 0});
 }
 
 // Delta Force 2 (GOG Df2.exe 0x451090, the person pose handler): a person
@@ -2329,15 +2352,19 @@ void Game::bigBlast(Vec3 at, float heading, int owner) {
         }
         return;
     }
-    // GOG Df.exe (0x460950): seeded before the effect.
+    // GOG Df.exe (0x4477f0 -> 0x4470c0 -> 0x460950): seeded before the
+    // effect; the blast handled after the fragments (blastDamage).
     if (gogRand()) shrapSeed();
+    deferBlasts_ = true;
     explode(at, 0, true, 12.f, true, -1, 0, false);   // no smoke generator (0x460950)
     for (int k = 0; k < 200; ++k) {
-        // DF yaw 0 + rand << 16, anticlockwise: -rand in OpenDF's heading.
-        const float yaw = -float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+        // DF yaw (0x4477f0: 0, so OpenDF's heading pi/2, which the strike
+        // passes) + rand << 16, anticlockwise: heading - rand here.
+        const float yaw = heading - float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
         const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
         shrapnel(at, yaw, pitch, 0x1E);
     }
+    flushBlasts();
 }
 
 void Game::startCollapse(int index) {
@@ -2573,6 +2600,7 @@ void Game::blowCharge(Charge& c) {
         // big blast at the charge itself, its yaw, owned by the placer.
         if (df2) { bigBlast(o.pos, o.heading, -3); return; }
         if (gogRand()) shrapSeed();   // GOG Df.exe 0x460950: before the effect
+        deferBlasts_ = true;   // the blast after the fragments (blastDamage)
         explode(at, 0, true, 12.f, true, -1, 0, false);
         // GOG Df.exe 0x460950 (from the schg handler 0x45c110 via 0x4470c0):
         // also an AI noise of 200 m (0x45fcf0).
@@ -2582,6 +2610,7 @@ void Game::blowCharge(Charge& c) {
             const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
             shrapnel(at, yaw, pitch, 0x1E);
         }
+        flushBlasts();
     } else if (world_.df2Rules) {
         // Delta Force 2's claymore (GOG Df2.exe 0x415520): effect 3, blast
         // type 1, sound 0x32 and a +-200 m noise (0x414660) at the charge
@@ -3652,8 +3681,10 @@ void Game::tickDf1Lights() {
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
     if (world_.df2Rules) { df2Blast(at, shrapnel, heading); return; }
     if (gogRand()) shrapSeed();   // GOG Df.exe 0x4606b0: before the effect
+    deferBlasts_ = true;   // the blast after the fragments (blastDamage)
     explode(at, 0, false, 10.f, true, -1, 0, false);   // Delta Force: the callers make the smoke
     fragmentBurst(at, shrapnel, heading);
+    flushBlasts();
 }
 
 void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
