@@ -379,6 +379,14 @@ public:
     // [0x67f548]) and the player's side (the round colour by side, 0x462f20).
     bool night = false, tracersOff = false;
     int playerSide = 1;
+    // Delta Force's attributes 0x4000 ([0x67f549] & 0x40, GOG Df.exe
+    // 0x464c50): a round from a shooter of the target person's side (not
+    // the target itself) does nothing to that person.
+    bool sameSideSafe = false;
+    // Delta Force: living AI people hit by a round since the last call,
+    // whatever the damage (GOG Df.exe 0x464c50: ai +0x9c = 2 and the team's
+    // alert, 0x44a3e0, before the armour test 0x464c00).
+    std::vector<int> takeRoundHits() { std::vector<int> out; out.swap(roundHits_); return out; }
     Tracers& tracers() { return tracers_; }
     // Delta Force 2's tracers (GOG Df2.exe 0x452290 ring, 0x452610 draw):
     // one segment per pass of a round, fading over 0x1e ticks. `tracersOff`
@@ -464,6 +472,7 @@ private:
     std::vector<SoundEvent> sounds_;
     std::vector<WeaponEvent> events_;
     std::vector<PlayerHit> playerHits_;
+    std::vector<int> roundHits_;
     bool followUp_ = false;
     bool fireMark_ = false;
     int projectileIds_ = 0;

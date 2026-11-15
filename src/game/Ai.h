@@ -88,6 +88,8 @@ public:
     // angles, whole-metre distances; the best score before perception.
     float lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
                        int& bestId) const;
+    // Delta Force's bird-tree score (GOG Df.exe 0x44fba0), 16.16.
+    int32_t birdScoreDf1(const World& world, Vec3 at, int side, const PlayerView& player) const;
     // 0x418960(a, b): sets bit b of row a of the "spotted" table that the
     // script condition 1 (team a spotted team b) reads.
     void markSpotted(int a, int b) {
@@ -97,6 +99,12 @@ public:
     void alertTeamOf(int team) { alertTeam(team); }
     // Called when someone is hurt (0x44f218): an AI victim becomes alert.
     void hurt(World& world, int object);
+    // Delta Force, a round hit a living AI person (GOG Df.exe 0x464c50),
+    // damage or not: ai +0x9c = 2 and the team's alert word 2 (0x44a3e0).
+    void roundHit(int object, int team) {
+        if (Person* p = byObject(object)) p->alert = 2;
+        alertTeam(team);
+    }
 
     // Script conditions (0x45c0e4) and actions.
     bool spotted(int team, int targetTeam) const;

@@ -1046,6 +1046,7 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
                     detonate(o.pos - fwd * 4.f, 10, o.heading);
                 } else {
                     detonate(o.pos + Vec3{0, 1, 0}, 60, o.heading);
+                    if (wreckSmoke) wreckSmoke(v.object);
                 }
             }
         }

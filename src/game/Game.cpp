@@ -405,6 +405,15 @@ private:
     std::string briefing_;                // built at mission load (0x4813c4)
     int briefStart_ = 1, briefLast_ = 1, briefPage_ = 0;   // [0xc73704], [0xc73700], [0x4f30dc]
     void touchPickups();
+    // Delta Force's bird trees (ai `btre`, GOG Df.exe 0x451e70) and
+    // sparrows (ai `spar` 0x451d40, move 0x451dd0): think timer +0xfc,
+    // the tree's cooldown +0xe0, the bird's speed +0x7c, velocity
+    // +0x3c/+0x40 and DF binary yaw +0x30.
+    struct BirdTree { int object = -1; int think = 0; int cooldown = 0; };
+    struct Sparrow { int object = -1; int think = 0; int32_t speed = 0, vx = 0, vy = 0; uint32_t yaw = 0; };
+    std::vector<BirdTree> birdTrees_;
+    std::vector<Sparrow> sparrows_;
+    void tickBirds();
     void dropCarried();
     bool teamCarrying(int team, int itemTeam) const override {
         return team == kPlayerTeam && carried_ >= 0 && world_.objects[size_t(carried_)].team == itemTeam;
@@ -1003,6 +1012,7 @@ bool Game::loadMission(int index) {
     arsenal_.night = ai_.night;
     arsenal_.tracersOff = (o_.attributes & 0x1000) != 0;
     arsenal_.playerSide = kPlayerSide;
+    arsenal_.sameSideSafe = mission_.version < 0x0F && (o_.attributes & 0x4000);
     ai_.playerGear = o_.df2Gear;
     // Squad members off, before the AI lists: DF.EXE 0x402cc5 (attributes
     // 0x200) -> 0x402a38, DF2.EXE 0x45bf44 (df2.cfg attributes 0x20, the
@@ -1050,8 +1060,30 @@ bool Game::loadMission(int index) {
         if (world_.df2Rules && (mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
         lights_.push_back(l);
     }
+    birdTrees_.clear();
+    sparrows_.clear();
+    for (size_t i = 0; !world_.df2Rules && i < world_.objects.size(); ++i) {
+        const WorldObject& o = world_.objects[i];
+        if (!o.item) continue;
+        // First think: staggered as the searchlights' (INFERRED).
+        const int wait = o.missionIndex >= 0 ? (mission_.objects[size_t(o.missionIndex)].indexInGroup * 11) % 60 : 0;
+        if (o.item->aiFunction == "btre") birdTrees_.push_back({int(i), wait, 0});
+        else if (o.item->aiFunction == "spar") {
+            Sparrow s;
+            s.object = int(i);
+            s.think = wait;
+            s.yaw = uint32_t(int64_t(std::llround(double(kPi / 2 - o.heading) / (2 * kPi) * 4294967296.0)));
+            sparrows_.push_back(s);
+        }
+    }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
+    // GOG Df.exe's blast death type (0x465977) draws from 0x477860.
+    if (gogRand()) world_.rand16 = [this] { return shrapRand(); };
+    else world_.rand16 = nullptr;
+    vehicles_.wreckSmoke = [this](int object) {
+        if (!world_.df2Rules) smokeGens_.push_back({world_.objects[size_t(object)].pos, 0, 0, object});
+    };
     vehicles_.bigBlast = [this](Vec3 at, float heading, int owner) { bigBlast(at, heading, owner); };
     vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
     wildlife_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
@@ -1719,7 +1751,13 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 
 // Explosion (DF.EXE 0x44f776 terrain, 0x44f90a / 0x44fb78 object or person,
 // 0x44fc20 water; barrels 0x46cb64): effect 3 "ground exp" (4 "water exp" in
-// water), blast type 1 with radius 10 m, and on terrain a smoke generator.
+// water), blast type 1 with radius 10 m, and on terrain a smoke generator
+// (`smoke`). Delta Force (GOG Df.exe) makes Smoke Generators (item 0xfce,
+// 0x460d20 / 0x447610) only for an armed round on the terrain (0x465242),
+// a barrel (0x45bfe0, at its origin), a ground vehicle (0x429d22, attached),
+// a gnrc object (0x4533d5), a stepped-on mine (0x48900a) and a person's
+// smoking move (0x487827); the blasts 0x4606b0 / 0x4607e0 / 0x460950 make
+// none, so helicopters, satchels, claymores and fire missions leave none.
 // Sound 0x32 (0x35 in the water). The LAW out of the water is blast
 // type 3 (`heavy`: objects lose 128 - 16 d).
 void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, int owner, int effect, bool smoke) {
@@ -1746,8 +1784,10 @@ void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, i
             if (d <= r && (!blocked || heavy)) {
                 if (blocked) d *= 2;
                 // Blast deaths: type 2 under 4 m; 4-8 m type 3 when the 16-bit
-                // random (0x477860) is below 0x4000, else 2; farther type 2.
-                const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
+                // random (0x477860, GOG 0x465977) is below 0x4000, else 2; farther type 2.
+                const bool three = d >= 4 && d < 8 &&
+                                   (gogRand() ? shrapRand() < 0x4000 : std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0);
+                const int type = three ? 3 : 2;
                 hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
             }
         }
@@ -2088,9 +2128,10 @@ void Game::bigBlast(Vec3 at, float heading, int owner) {
     }
     // GOG Df.exe (0x460950): seeded before the effect.
     if (gogRand()) shrapSeed();
-    explode(at, 0, true, 12.f);
+    explode(at, 0, true, 12.f, true, -1, 0, false);   // no smoke generator (0x460950)
     for (int k = 0; k < 200; ++k) {
-        const float yaw = float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+        // DF yaw 0 + rand << 16, anticlockwise: -rand in OpenDF's heading.
+        const float yaw = -float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
         const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
         shrapnel(at, yaw, pitch, 0x1E);
     }
@@ -2304,28 +2345,40 @@ void Game::blowCharge(Charge& c) {
     WorldObject& o = world_.objects[size_t(c.object)];
     o.removed = true;
     o.boxes.clear();
-    const Vec3 at = o.pos + Vec3{0, 0.2f, 0};
+    // Delta Force (GOG Df.exe): both charges go off at the object's origin
+    // (the satchel's +0x3333 in 0x4470c0 goes only into the network packet);
+    // only the claymore's fragments start 0.2 m up (0x460857, [0x4ccb5c]).
+    // DF's yaw runs anticlockwise, OpenDF's heading clockwise: DF yaw +
+    // offset is heading - offset here. No Smoke Generator (0x460950 /
+    // 0x4607e0 make none).
+    const bool df2 = world_.df2Rules;
+    const Vec3 at = df2 ? o.pos + Vec3{0, 0.2f, 0} : o.pos;
     if (c.item == 4020) {
         // Delta Force 2's satchel (GOG Df2.exe 0x402660 -> 0x45f910): the
         // big blast at the charge itself, its yaw, owned by the placer.
-        if (world_.df2Rules) { bigBlast(o.pos, o.heading, -3); return; }
+        if (df2) { bigBlast(o.pos, o.heading, -3); return; }
         if (gogRand()) shrapSeed();   // GOG Df.exe 0x460950: before the effect
-        explode(at, 0, true, 12.f);
+        explode(at, 0, true, 12.f, true, -1, 0, false);
         // GOG Df.exe 0x460950 (from the schg handler 0x45c110 via 0x4470c0):
         // also an AI noise of 200 m (0x45fcf0).
-        if (!world_.df2Rules) ai_.noise(at, 200.f, 0, 0);
+        ai_.noise(at, 200.f, 0, 0);
         for (int k = 0; k < 200; ++k) {
-            const float yaw = o.heading + float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+            const float yaw = o.heading - float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
             const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
             shrapnel(at, yaw, pitch, 0x1E);
         }
     } else {
-        explode(at, 0);
-        // Yaw heading - 30 degrees + k x 1.8 (DF.EXE's loop adds k x 0.3 to
-        // its 1.5-degree steps, so the fan is lopsided), pitch -2, 3, 8, 13.
+        explode(at, 0, false, 10.f, true, -1, 0, df2);
+        // GOG Df.exe 0x4607e0 (not seeded): DF yaw heading - 30 degrees +
+        // k x 1.8 (its loop adds k x 0.3 to the 1.5-degree steps, so the fan
+        // is lopsided: 40.2 degrees to the left, 30 to the right), pitch -2,
+        // 3, 8, 13.
+        const Vec3 from = df2 ? at : o.pos + Vec3{0, 0x3333 / 65536.f, 0};
+        const float sense = df2 ? 1.f : -1.f;
         for (int k = 0; k < 40; ++k)
             for (int p = 0; p < 4; ++p)
-                shrapnel(at, o.heading + (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C);
+                shrapnel(from, o.heading + sense * (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f,
+                         0x3C);
     }
 }
 
@@ -2382,11 +2435,85 @@ void Game::tickCharges() {
             // water + 0x4000; then the big blast (0x45f910) with yaw 0, owned
             // by the requester.
             Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0x1999 / 65536.f, st.target.z};
-            if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
+            // Delta Force (GOG Df.exe 0x4477f0): ground + 0.1 m, no water test.
+            if (const float w = terrain_.waterLevel(); world_.df2Rules && w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
             bigBlast(at, kPi / 2, -3);
         }
     }
     strikes_.erase(std::remove_if(strikes_.begin(), strikes_.end(), [](const Strike& s) { return s.timer <= 0; }), strikes_.end());
+}
+
+// Delta Force's birds, per tick. A bird tree's think (GOG Df.exe 0x451e70,
+// every 0x40 ticks): a cooldown above 0 counts down; else the score
+// 0x44fba0 above 0x100000 sets the cooldown to 10 and, if ITEMS.DEF has
+// item 0xfd3 (sparrow), plays sound 0x4c at the tree and makes 3 sparrows
+// (0x45d970) 4 m above its origin: two draws, the second << 16 the base
+// yaw; each bird yaw base + ((draw << 16) & 0x0f000000), the base then a
+// quarter turn on. A sparrow's think (0x451d40, every 0x10 ticks): speed
+// +0x4000 while under 0x30000; velocity speed x (cos, sin)(yaw) >> 6 (the
+// 2048-entry sine table 0xbd0068, 1.0 = 0x400000); above 100 m it is
+// removed (0x45da30). Its move (0x451dd0, every tick): x, y += velocity,
+// z += speed >> 7. (The move's +0xe0 swing, +-0x18000000 in steps of
+// 0x3000000 / 0x2000000, is not drawn.)
+void Game::tickBirds() {
+    auto draw = [this]() { return gogRand() ? shrapRand() : uint32_t(crtRand() * 2); };
+    for (auto& t : birdTrees_) {
+        WorldObject& tree = world_.objects[size_t(t.object)];
+        if (tree.removed || --t.think > 0) continue;
+        t.think = 0x40;
+        if (t.cooldown > 0) { --t.cooldown; continue; }
+        AiSystem::PlayerView pv;
+        pv.alive = !playerDead();
+        pv.origin = player_.origin();
+        const int mn = moveNumber(player_.move());
+        pv.moveNumber = mn >= 0 ? mn : 2;
+        pv.side = kPlayerSide;
+        pv.team = kPlayerTeam;
+        if (ai_.birdScoreDf1(world_, tree.pos, tree.side, pv) <= 0x100000) continue;
+        t.cooldown = 10;
+        const ItemDef* bird = items_.byId(104051);
+        const GpuModel* m = bird && !bird->graphic.empty() ? models_.get(vfs_, bird->graphic) : nullptr;
+        if (!bird) continue;
+        playSound(0x4c, tree.pos);
+        (void)draw();
+        uint32_t base = draw() << 16;
+        const Vec3 at = tree.pos + Vec3{0, 4.f, 0};
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t yaw = ((draw() << 16) & 0x0f000000u) + base;
+            base += 0x40000000u;
+            if (!m) continue;
+            Sparrow s;
+            s.object = world_.spawn(bird, m, at, kPi / 2 - float(yaw) / 4294967296.f * 2 * kPi);
+            world_.objects[size_t(s.object)].missionGroup = 0;
+            s.yaw = yaw;
+            sparrows_.push_back(s);
+        }
+    }
+    auto sine = [](uint32_t a) { return int32_t(std::lround(std::sin(double(a >> 21) / 2048.0 * 2 * kPi) * 0x400000)); };
+    for (auto& s : sparrows_) {
+        WorldObject& o = world_.objects[size_t(s.object)];
+        if (o.removed) continue;
+        if (--s.think <= 0) {
+            if (s.speed < 0x30000) s.speed += 0x4000;
+            s.vx = int32_t((int64_t(s.speed) * sine(s.yaw + 0x40000000u)) >> 22) >> 6;
+            s.vy = int32_t((int64_t(s.speed) * sine(s.yaw)) >> 22) >> 6;
+            if (o.pos.y > 100.f) {
+                o.removed = true;
+                world_.refreshBoxes(o);
+                continue;
+            }
+            s.think = 0x10;
+        }
+        o.pos.x += float(s.vx) / 65536.f;
+        o.pos.z -= float(s.vy) / 65536.f;
+        o.pos.y += float(s.speed >> 7) / 65536.f;
+        const float ext = world_.extent();
+        o.pos.x -= std::floor(o.pos.x / ext) * ext;
+        o.pos.z -= std::floor(o.pos.z / ext) * ext;
+        o.base = o.pos.y;
+    }
+    sparrows_.erase(std::remove_if(sparrows_.begin(), sparrows_.end(), [this](const Sparrow& s) { return world_.objects[size_t(s.object)].removed; }),
+                    sparrows_.end());
 }
 
 // Drop (0x46c9c0): 2 m ahead on the ground, or where the body lies.
@@ -2536,10 +2663,14 @@ void Game::spawnPuff(Vec3 at) {
     if (!m || m->lods.empty()) return;
     const auto& l = m->lods[0];
     std::uniform_int_distribution<int> r(0, 0x7fff);
-    Effect e{m, at, float((r(effectRng_) * 2 + 0x20000) >> 4) / 65536.f, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame,
-             l.frames};
+    // GOG Df.exe 0x42a440: roll 0x477860 << 16 (a full turn) first, then the
+    // scale (0x477860 + 0x20000) >> 4.
+    float roll = 0;
+    if (gogRand()) roll = float(shrapRand()) / 65536.f;
+    const float scale = gogRand() ? float((shrapRand() + 0x20000) >> 4) / 65536.f : float((r(effectRng_) * 2 + 0x20000) >> 4) / 65536.f;
+    Effect e{m, at, scale, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames};
     e.smoke = true;
-    e.roll = float(r(effectRng_)) / 65536.f;   // rand << 16: 0..180 degrees (0x480aac)
+    e.roll = gogRand() ? roll : float(r(effectRng_)) / 65536.f;   // CD: rand << 16, 0..180 degrees (0x480aac)
     effects_.push_back(e);
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());
 }
@@ -2581,6 +2712,20 @@ void Game::woodDebris(int index) {
         effects_.push_back(e);
         if (effects_.size() > 0x400) effects_.erase(effects_.begin());
     };
+    // GOG Df.exe 0x44efa5 (wdsm) / 0x44f257 (wdmd) -> 0x44fcb0: every item
+    // (BMS group 0) of the crate's team (+0x72) whose origin is within +-R
+    // (the crate's flat radius, model +0x64) across, both bounds inclusive,
+    // and above the crate's origin gets the falling mover 0x4546b0, speed 0.
+    if (f == "wdsm" || f == "wdmd") {
+        const float R = o.intact ? o.intact->flatRadius : o.model ? o.model->flatRadius : 0.f;
+        for (auto& q : world_.objects) {
+            if (&q == &o || q.removed || q.missionGroup != 0 || q.team != o.team) continue;
+            const Vec3 p = world_.nearest(q.pos, o.pos);
+            if (p.x < o.pos.x - R || p.x > o.pos.x + R || p.z < o.pos.z - R || p.z > o.pos.z + R || p.y <= o.pos.y) continue;
+            q.dropping = true;
+            q.dropVz = 0;
+        }
+    }
     if (f == "wdsm") {
         spawnPuff(o.pos + Vec3{0, 0.5f, 0});
         for (int k = 0; k < 6; ++k) {
@@ -2776,7 +2921,32 @@ void Game::tickEffects() {
                 world_.refreshBoxes(o);
             }
             detonate(o.pos, 10, o.heading);
+            // GOG Df.exe 0x45bfe0: a Smoke Generator at the barrel's origin, no owner.
+            if (!world_.df2Rules) smokeGens_.push_back({o.pos, 0, 0});
         }
+    // GOG Df.exe 0x4546b0, the falling mover: with the origin above the
+    // ground + 1/16 m it moves by vz and vz loses 0x134; at or below it, the
+    // origin goes onto it and vz = -vz / 2 (arithmetic); under 0x268 the
+    // item stops and gets its own mover back (item +0x90).
+    for (auto& o : world_.objects) {
+        if (!o.dropping) continue;
+        if (o.removed || o.carried) { o.dropping = false; continue; }
+        const float g = terrain_.heightAt(o.pos.x, o.pos.z) + 0x1000 / 65536.f;
+        if (g < o.pos.y) {
+            o.pos.y += float(o.dropVz) / 65536.f;
+            o.dropVz -= 0x134;
+        }
+        if (g >= o.pos.y) {
+            o.pos.y = g;
+            o.dropVz = -o.dropVz >> 1;
+            if (o.dropVz < 0x268) {
+                o.dropVz = 0;
+                o.dropping = false;
+            }
+        }
+        o.base = o.pos.y;
+        world_.refreshBoxes(o);
+    }
     for (size_t i = 0; i < world_.objects.size(); ++i) {
         WorldObject& o = world_.objects[i];
         if (o.gnrcTimer > 0) --o.gnrcTimer;
@@ -3212,7 +3382,7 @@ void Game::tickDf1Lights() {
 // falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
     if (gogRand()) shrapSeed();   // GOG Df.exe 0x4606b0: before the effect
-    explode(at, 0);
+    explode(at, 0, false, 10.f, true, -1, 0, world_.df2Rules);   // Delta Force: the callers make the smoke
     if (world_.df2Rules) {
         shrapSeed();   // DF2 0x412b00
         ai_.noise(at, 200.f, 0, 0);   // 0x412b5c: +-200 m, flags 0
@@ -3221,11 +3391,16 @@ void Game::detonate(Vec3 at, int shrapnel, float heading) {
 }
 
 void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
+    const uint32_t headingBits = uint32_t(int64_t(std::lround(heading / (2 * kPi) * 4294967296.0)));
     for (int group = 0; group < 2; ++group)
         for (int k = 0; k < shrapnel / 2; ++k) {
-            const uint32_t yawBits = uint32_t(int64_t(std::lround(heading / (2 * kPi) * 4294967296.0))) + (shrapRand() << 16);
+            const uint32_t turn = shrapRand() << 16;
             const uint32_t pitchBits = shrapRand() << (group ? 16 : 15);
-            const float yaw = float(yawBits) / 4294967296.f * 2 * kPi;
+            // Delta Force (GOG Df.exe 0x4606b0): DF yaw + rand << 16 runs
+            // anticlockwise, so the random turn is taken off OpenDF's
+            // clockwise heading (the seeded pattern keeps its side).
+            const float yaw = world_.df2Rules ? float(headingBits + turn) / 4294967296.f * 2 * kPi
+                                              : heading - float(turn) / 4294967296.f * 2 * kPi;
             const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
             this->shrapnel(at, yaw, pitch, 20);
         }
@@ -3285,6 +3460,10 @@ void Game::spawnImpact(const Impact& hit) {
             ai_.noise(hit.pos, 5.f, 0, 0);
             return;
         }
+        // Delta Force (GOG Df.exe 0x464eb0 case 3, people): an unarmed
+        // explosive round breaks out with no effect, sound or noise (only
+        // 0x464c50's damage); effect 5 only on objects (cases 1 / 2).
+        if (!df2 && person) return;
         spawnEffect(5, hit.pos);
         return;
     }
@@ -8373,6 +8552,7 @@ int Game::run() {
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
             for (const auto& hit : arsenal_.takeImpacts()) { recordHit(hit); spawnImpact(hit); }
+            for (int i : arsenal_.takeRoundHits()) ai_.roundHit(i, world_.objects[size_t(i)].team);
             // Rockets carry ITEMS.DEF `ambient rocket1` as a loop (0x44d6f9).
             {
                 static const int rocket = sound_.idOf("ROCKET1");
@@ -8481,6 +8661,7 @@ int Game::run() {
                 dlgDrawn = false;
                 sound_.loopTick();   // GOG Df.exe 0x4043d0 -> 0x43f0b0's counter
                 touchPickups();
+                if (mission_.version < 0x0F) tickBirds();
                 // DF1: the carrier's move (0x4365c6 -> 0x436a0c) copies its
                 // origin +0x24..+0x2c into the carried item every tick.
                 if (carried_ >= 0 && world_.objects[size_t(carried_)].carried) world_.objects[size_t(carried_)].pos = player_.origin();
