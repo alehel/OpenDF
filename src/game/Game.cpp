@@ -3546,9 +3546,15 @@ void Game::tickDialogs(bool drawn) {
         }
         const int n = int(d.parts->size());
         const DialogPart& p = (*d.parts)[size_t(d.next)];
-        sound_.playDialogLine(p.clip);
-        if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
-            pushMessage(dialogText_[size_t(p.subtitle)]);
+        // GOG Df.exe 0x456110: the line goes through the gate [0x8e3d68] =
+        // 0x43e430, 0 when dialog_volume [0x67f51c] is 0; only then are
+        // the sample (0x494dd0) and the subtitle ([0x8e3d6c] = 0x43e470)
+        // given, whether or not the clip or a sound device is there.
+        if (sound_.df2() || sound_.dialogVolume() != 0) {
+            sound_.playDialogLine(p.clip);
+            if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
+                pushMessage(dialogText_[size_t(p.subtitle)]);
+        }
         if (d.next < n - 1) {
             ++d.next;
             d.wait = p.gap * 62 / 10;
@@ -8115,6 +8121,7 @@ int Game::run() {
         // 0x4712e0), so never on in a DF2 mission.
         audio_.setDfMixer(true, mission_.version < 0x0F && o_.mixerHook);
         audio_.setDfGame(mission_.version < 0x0F ? 1 : 2);   // the WAV conversion and mixer of DF.EXE / DF2.EXE
+        audio_.setLoopVoicesReserved(true);   // GOG Df.exe 0x403f01 -> 0x43e4a0: voices 10-15 for the loops
         if (!o_.record.empty()) {
             audioOut_ = std::fopen((o_.record + ".pcm").c_str(), "wb");
         } else if (!hidden && !audio_.openDevice()) {
@@ -8472,6 +8479,7 @@ int Game::run() {
                 tickEffects();
                 tickDialogs(dlgDrawn);
                 dlgDrawn = false;
+                sound_.loopTick();   // GOG Df.exe 0x4043d0 -> 0x43f0b0's counter
                 touchPickups();
                 // DF1: the carrier's move (0x4365c6 -> 0x436a0c) copies its
                 // origin +0x24..+0x2c into the carried item every tick.

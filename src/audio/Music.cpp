@@ -52,7 +52,7 @@ void Music::start() {
     read_ = remaining_ = 0;
     queue_.clear();
     played_ = 0;
-    // DF2.EXE's start (0x46be10): fade and target full, no step.
+    // The start (GOG Df.exe 0x4c4b80, DF2.EXE 0x46be10): fade and target full, no step.
     fade_ = fadeTarget_ = 0xff0000;
     fadeStep_ = 0;
     streamVol_ = master_;
@@ -161,14 +161,19 @@ bool Music::step() {
             stack_.push_back(span > 0 ? lo + int32_t((seed_ & 0xFFFF) % uint32_t(span)) : lo);
         } else if (b == 0) {
             stack_.push_back(pop());
-        } else if (df2_ && (b == 8 || b == 9)) {
-            // DF2.EXE 0x48b74a setVolume (0x46c240: fade and target) and
-            // 0x48b75c fadeTo (0x46c280: the target), clamped to 0..255;
-            // the value stays on the stack. Not used by DFMenu.
+        } else if (b == 8 || b == 9) {
+            // setVolume (fade and target) and fadeTo (the target), clamped
+            // to 0..255; the value stays on the stack. GOG Df.exe table
+            // 0x4b6790: 0x4b70a2 -> 0x4c4fa0, 0x4b70b4 -> 0x4c4fe0; DF2.EXE
+            // 0x48b74a -> 0x46c240, 0x48b75c -> 0x46c280. Not used by DFMenu.
             const int32_t v = pop();
             fadeTarget_ = std::clamp(v, 0, 255) << 16;
             if (b == 8) fade_ = fadeTarget_;
             stack_.push_back(v);
+        } else if (!df2_ && b >= 2 && b <= 7) {
+            // GOG Df.exe 0x4b705d, a bare ret: the sub-op itself (eax) is
+            // pushed by 0x4b6fb3 and nothing is popped.
+            stack_.push_back(b);
         } else {
             pop();
             stack_.push_back(0);
@@ -225,11 +230,12 @@ void Music::update() {
                 std::memcpy(&nbytes, &sbf_[base], 4);
                 nbytes = std::min<uint32_t>({nbytes, st.block - 8, uint32_t(sbf_.size() - base - 8)});
                 queue_.push_back({base + 8, nbytes / 2, sbf_[base + 4], sbf_[base + 5]});
-                if (df2_) {
-                    // 0x46c050: the stream volume for this block, then the fade's step.
-                    streamVol_ = std::clamp((std::clamp(master_, 0, 255) * (fade_ >> 16)) >> 8, 0, 255);
-                    fade_ = std::clamp(fade_ + fadeStep_, 0, 0xff0000);
-                }
+                // The stream volume for this block, ((fade >> 16) x volume)
+                // >> 8 (GOG Df.exe 0x4c4da5 -> 0x494810, applied to the
+                // ring by 0x4b52dd; DF2.EXE 0x46c050), then the fade's step
+                // (in 0x4c4d20; the fade stays full unless the script sets it).
+                streamVol_ = std::clamp((std::clamp(master_, 0, 255) * (fade_ >> 16)) >> 8, 0, 255);
+                fade_ = std::clamp(fade_ + fadeStep_, 0, 0xff0000);
             }
             remaining_ = remaining_ > st.block ? remaining_ - st.block : 0;
             read_ += st.block;
@@ -243,8 +249,8 @@ void Music::mix(float* out, int frames) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_) return;
     // Gain per block (0x4a9c84): (V>>1)>>shift on the signed sample, V the
-    // stream volume (DF1: master, fades unused by DFMenu; DF2: see setDf2).
-    const int V = df2_ ? streamVol_ : std::clamp(master_, 0, 255);
+    // stream volume as the last block was queued (see update).
+    const int V = streamVol_;
     const float vol = float(V) / 255.f / 128.f;
     int done = 0;
     while (done < frames && !queue_.empty()) {

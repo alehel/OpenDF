@@ -59,6 +59,7 @@ public:
     bool playDialogLine(const std::string& clip);
     // df.cfg dialog_volume (0..255, default 200; 0x66fa5c); 0 plays no speech.
     void setDialogVolume(int v) { dialogVolume_ = v; }
+    int dialogVolume() const { return dialogVolume_; }
     void stopAll();
 private:
     int dialogVolume_ = 200;
@@ -68,11 +69,17 @@ public:
     void voice(int set, int slot, Vec3 at);
 
     // Looping sounds (LOOP.DEF, 0x473960 / 0x473a8c): an emitter per thing
-    // (`key`), refreshed every 8 frames: volume = min(volume x curve(d /
+    // (`key`), refreshed every 8 ticks (DF2: frames): volume = min(volume x curve(d /
     // maxdist) >> 8, clip), no occlusion; the 6 loudest play.
     void setLoop(int key, int id, Vec3 at, float pitch = 1);
     void clearLoop(int key);
     void updateLoops();
+    // Delta Force: once per 60 Hz tick (GOG Df.exe 0x404340 -> 0x43f0b0:
+    // [0x4f7ea8]++, the loops refreshed when it passes 7, then 0), so the
+    // next updateLoops refreshes every 8 ticks; Delta Force 2 counts frames.
+    void loopTick() {
+        if (!df2_ && ++loopTicks_ > 7) loopTicks_ = 0, loopDue_ = true;
+    }
     // Ends the loops not set since the previous sweep.
     void sweepLoops();
     // Table id of a sound name (case-insensitive); 0 if none.
@@ -88,14 +95,19 @@ private:
     std::vector<Emitter> emitters_;
     Vfs* vfs_ = nullptr;
     int loopFrame_ = 0;
+    int loopTicks_ = 0;
+    bool loopDue_ = false;
     int direction(Vec3 at) const;
 
-    void start(SoundDef& def, float distance, int dir, bool positional, float callerPitch);
+    void start(SoundDef& def, Pwf& bank, float distance, int dir, bool positional, float callerPitch);
+    void startDf1(SoundDef& def, Pwf& bank, float distance, int dir, bool positional, float callerPitch);
     float occlusion(Vec3 a, Vec3 b) const;
     uint32_t random();
 
     Audio* audio_ = nullptr;
     Pwf bank_, dialogs_;
+    Pwf bank2_;   // GOG Df.exe: NEW.PWF, looked up first (0x43e4a0)
+    std::array<Pwf*, 0x400> bankOf_{};   // the bank of byId_'s definition
     std::array<SoundDef*, 0x400> byId_{};   // 1024 id slots (DF2: 0x45DA50; DF1 uses 0x200)
     std::array<std::string, 0x400> names_{};
     std::array<int, 0x400> flags_{};   // the id's table flags (1 PWF definition, 2 LOOP.DEF loop)
