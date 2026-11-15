@@ -2447,22 +2447,28 @@ int FrontendDf2::run() {
                     g.bindings.push_back({kDf2Keys[i].game, vk | mask << 16});
                     if (i == 8) g.bindings.push_back({"attack_2", vk | mask << 16});
                 }
-                const int camp = fromCampaign_ && missionSel_ >= 0 ? kMissions[missionSel_].campaign : 0;
-                uint32_t flags = camp ? uint32_t(soldier().get(0xa8 + 4 * size_t(camp))) : 0;
+                // The campaign switches of the soldier's campaign (+0x28), for
+                // campaign and quick missions alike (GOG Df2.exe 0x43c280:
+                // [0x67cf44] = +0xa8 + 4 * [+0x28]).
+                const size_t flagsAt = 0xa8 + 4 * size_t(std::clamp(soldier().get(0x28), 0, 7));
+                uint32_t flags = uint32_t(soldier().get(flagsAt));
                 MissionOutcome out;
                 audio_.setDfMixer(true, false);   // 0x43b68d: the hook is off from here on
                 runGame(vfs_, g, &out, &flags);
                 if (out.quit) break;
-                // 0x437550: a campaign win marks the mission done; kills add
-                // up; the unlock mask comes back from the game.
-                if (camp) {
-                    soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
-                    if (out.won && missionSel_ >= 0) {
-                        if (!soldier().get(0x30 + 4 * size_t(missionSel_))) soldier().set(0x2a4, soldier().get(0x2a4) + 1);
-                        soldier().set(0x30 + 4 * size_t(missionSel_), 1);
-                    }
+                // GOG Df2.exe 0x43c6f0 (from 0x464140): a single-player win,
+                // campaign or quick, adds the kills (+0x29c) and one completed
+                // mission (+0x2a4, every win); a campaign mission ([0x4c3f88],
+                // index [0x4c3f70] >= 0) is also marked done. Nothing on a
+                // loss. The flags word goes back every time (it only changes
+                // on a win, 0x464140). +0x2b0 / +0x2ac (from the mission's
+                // per-player stats) are not tracked.
+                if (out.won) {
+                    if (fromCampaign_ && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
                     soldier().set(0x29c, soldier().get(0x29c) + out.kills);
+                    soldier().set(0x2a4, soldier().get(0x2a4) + 1);
                 }
+                soldier().set(flagsAt, int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;
                 if (cfg_.get("music_volume") > 0) music_.start();

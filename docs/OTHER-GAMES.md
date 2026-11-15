@@ -792,7 +792,12 @@ First differences from DF1:
     the grenade crate 104118 (0x446050 case 0x1016, the player only):
     packet 0x1f refills every slot holding mode 0x21 / 0x22 / 0x31
     (0x44e310), shows Misc "STRMSIC17" (sic, no such key: an empty line)
-    with sound 0x164, and the crate goes (0x418110);
+    with sound 0x164, and the crate goes (0x418110); leaving a mission
+    (0x43c6f0): a single-player win, campaign or quick, adds the kills and
+    1 to Completed Missions (every win) and marks a campaign mission done,
+    a loss adds nothing; the flags word of the soldier's campaign (+0x28)
+    is what both kinds start with and get back; a DF2 profile with face
+    10-14 plays the female soldier (0x43c280);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key
