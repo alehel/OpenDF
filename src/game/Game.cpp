@@ -6298,7 +6298,12 @@ int Game::run() {
             if (o_.walkForward) in.forward = 1;
             // Dead (0x45a234): no more control. The death sequence itself
             // (animation, mission end 0x444d24 / 0x46c9c0) is not done yet.
-            if (showMap_ || playerDead()) in = PlayerInput{};
+            // DF1's map flag [0x67db80] only picks the frame drawn (0x404640;
+            // its other readers are 0x477d40 and 0x429740): the controller
+            // keeps running, turning and firing on the held keys. DF2's
+            // command map takes the controls.
+            const bool mapHoldsControls = df2Hud_.on && showMap_;
+            if (mapHoldsControls || playerDead()) in = PlayerInput{};
             in.dead = playerDead();
             // DF2 control word +0x74 speed bits (GOG Df2.exe 0x41efd0): 2 (run)
             // with a move direction and no walk key.
@@ -6306,7 +6311,7 @@ int Game::run() {
             // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
             // angle per 30 Hz controller tick (84.375°/s), half that with NoRun
             // held; the same for pitch, which stays within -67.5°..+90° (0x437435).
-            if (!showMap_) {
+            if (!mapHoldsControls) {
                 const float rate = (in.walk ? 42.1875f : 84.375f) * kPi / 180.f * dt;
                 player_.yaw += rate * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
                 player_.pitch += rate * (float(down(Action::LookUp)) - float(down(Action::LookDown)));
@@ -6334,7 +6339,7 @@ int Game::run() {
                 if (raised && !binoculars_) pickBinocularOffset();
                 binoculars_ = raised;
             }
-            const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
+            const bool trigger = !mapHoldsControls && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.mode().oneHanded();
             // GOG Df2.exe 0x445980 (without DF2.EXE's mode table: the DF1 hand classes).
