@@ -1453,10 +1453,20 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         // hp2 < 0: stopped above, whatever the face.
                         goesOn = it->damageClass >= 0 && (cost == 0 || spend(b, int64_t(cost) * 65536, it->damageClass));
                     }
-                } else
+                } else {
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
-                if (hit.object == -3) {
+                // GOG Df.exe 0x464c50, a living person: with attributes 0x4000
+                // a same-side shooter's round does nothing (the player is
+                // a person of side playerSide). (Its exception for a target
+                // with flags & 0x80 is not modelled.)
+                const int shooterSide = b.shooter == -3 ? playerSide
+                                        : b.shooter >= 0 && size_t(b.shooter) < world.objects.size() ? world.objects[size_t(b.shooter)].side
+                                                                                                      : -1;
+                const bool targetPerson = hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person);
+                const int targetSide = hit.object == -3 ? playerSide : hit.object >= 0 ? world.objects[size_t(hit.object)].side : -1;
+                if (targetPerson && sameSideSafe && b.shooter != hit.object && shooterSide != -1 && shooterSide == targetSide) {
+                } else if (hit.object == -3) {
                     // The player (0x44f184 / 0x44f2b2): armour class 0.
                     playerHits_.push_back({(1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), hit.part, b.from});
                 } else if (hit.object >= 0 && (b.flags & 0x100) && world.objects[size_t(hit.object)].item &&
@@ -1464,6 +1474,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // 0x44f184: rounds with flag 0x100 do nothing to `noak` items.
                 } else if (hit.object >= 0) {
                     WorldObject& target = world.objects[size_t(hit.object)];
+                    if (target.person && !target.dead) roundHits_.push_back(hit.object);   // 0x464c50: the alert first
                     const int before = target.hp;
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
                                  world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
@@ -1475,6 +1486,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         ++target.hp;
                         if (hit.mesh != 6) ++target.tailHits;   // +0xD4 (mesh 6: +0xD8, never read)
                     }
+                }
                 }
                 // The pass's tracer (0x454797) ends 0x4000 before the hit;
                 // once a pass (0x452290), so the tick end below does not

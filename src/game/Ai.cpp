@@ -342,6 +342,42 @@ float AiSystem::lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw
     return float(best) / 65536.f;
 }
 
+// GOG Df.exe 0x44fba0 (from the btre think 0x451e70): over the people list
+// (the player included), every living one of a side other than the tree's
+// and not 0: d = max + 11/32 mid + 1/4 min of |dx|, |dy|, |dz| (0x477670)
+// in whole metres; (0x50000 / d, 0x50000 at 0) x move visibility (move
+// table +0x10) x 0x40 if it fired lately (+0x6d & 0x40), else x 8, each
+// product >> 16; the highest. The invisibility cheat (0x67dbc9 & 8) is not
+// modelled.
+int32_t AiSystem::birdScoreDf1(const World& world, Vec3 at, int side, const PlayerView& player) const {
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    int32_t best = 0;
+    auto consider = [&](Vec3 pos, int pside, int move, bool fired) {
+        if (pside == side || pside == 0) return;
+        const Vec3 tp = world.nearest(pos, at);
+        int32_t a = std::abs(fx(tp.x - at.x)), b = std::abs(fx(tp.z - at.z)), c = std::abs(fx(tp.y - at.y));
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        const int32_t d = (a + (b * 11 >> 5) + (c >> 2)) >> 16;
+        if (d >= 0x50000) return;
+        const int64_t q = d == 0 ? 0x50000 : 0x50000 / d;
+        int64_t s = q * int64_t(std::lround(double(moveVisibility(move)) * 65536.0)) >> 16;
+        s = s * (fired ? 0x400000 : 0x80000) >> 16;
+        if (s > best) best = int32_t(s);
+    };
+    if (player.alive) consider(player.origin, player.side, player.moveNumber, playerFired_);
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& o = world.objects[i];
+        if (!o.person || !o.alive()) continue;
+        const Person* q = nullptr;
+        for (const auto& x : people_)
+            if (x.object == int(i)) q = &x;
+        consider(o.pos, o.side, o.moveNumber, q && q->fired);
+    }
+    return best;
+}
+
 float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer,
                           bool* deadFriend) const {
     const WorldObject& self = world.objects[size_t(p.object)];

@@ -968,8 +968,37 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
     const float len = std::sqrt(dot(d, d));
     if (len < 1e-5f) return false;
 
+    // Delta Force's rounds (GOG Df.exe 0x47e390, from the round mover
+    // 0x464eb0): 1 m steps from the start while above the raw corner byte of
+    // the cell (x0, y0); at or below it, 1 m back and up to 19 steps of
+    // 1/16 m against the bilinear ground (below it: a hit at that many
+    // sixteenths, which can lie behind the start), then coarse again; no hit
+    // once the count passes the length in sixteenths.
+    const int steps = rounds && !df2Rules ? 0 : std::max(2, int(len / 0.5f));
+    if (rounds && !df2Rules) {
+        const Vec3 dir = d * (1.f / len);
+        const int limit = int(len * 16.f);
+        int n = 0;
+        bool hitGround = false;
+        for (;;) {
+            if (n > limit) break;
+            const Vec3 p = a + dir * (float(n) / 16.f);
+            if (p.y > terrain->cornerHeight(p.x, p.z)) { n += 16; continue; }
+            n -= 16;
+            for (int fine = 0; fine < 19; ++fine) {
+                if (++n > limit) break;
+                const Vec3 q = a + dir * (float(n) / 16.f);
+                if (q.y < terrain->heightAt(q.x, q.z)) { hitGround = true; break; }
+            }
+            if (hitGround || n > limit) break;
+        }
+        if (hitGround) {
+            hit.t = float(n) / 16.f / len;
+            hit.object = -1;
+            found = true;
+        }
+    }
     // Terrain: march, then refine by bisection.
-    const int steps = std::max(2, int(len / 0.5f));
     float prev = 0;
     for (int i = 1; i <= steps; ++i) {
         float t = float(i) / steps;
@@ -999,6 +1028,21 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
         if (y < z) std::swap(y, z);
         return x + y * 11.f / 32.f + z * 0.25f;
     };
+    // Delta Force's rounds (GOG Df.exe 0x463790, the player among the
+    // people): the body origin inside the segment's box grown by 2 m, its
+    // projection on the line not behind the start (-1 < dot(origin - a,
+    // dir)), and that line point (not clamped to the end) within 1.5 m
+    // (0x477670) of the origin; only then the posed spheres.
+    const bool df1Round = rounds && !df2Rules;
+    auto broadPhase = [&](Vec3 at, float& tc, auto&& closest) {
+        if (!df1Round) return closest(at, tc) <= 1.5f;
+        if (at.x < std::min(a.x, b.x) - 2.f || at.x > std::max(a.x, b.x) + 2.f || at.y < std::min(a.y, b.y) - 2.f ||
+            at.y > std::max(a.y, b.y) + 2.f || at.z < std::min(a.z, b.z) - 2.f || at.z > std::max(a.z, b.z) + 2.f)
+            return false;
+        tc = dot(at - a, d) / (len * len);
+        if (tc < 0) return false;
+        return approxLen(a + d * tc - at) <= 1.5f;
+    };
     if (objects && people && ignore != -3 && playerBody.present) {
         const Vec3 at = nearest(playerBody.origin, mid);
         auto closest = [&](Vec3 c, float& t) {
@@ -1006,7 +1050,7 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
             return approxLen(a + d * t - c);
         };
         float tc;
-        if (closest(at, tc) <= 1.5f) {
+        if (broadPhase(at, tc, closest)) {
             const float h = playerBody.heading;
             const Vec3 fwd{std::sin(h), 0, -std::cos(h)}, left{-std::cos(h), 0, -std::sin(h)};
             for (size_t k = 0; k < playerBody.spheres.size(); ++k) {
@@ -1056,7 +1100,7 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
                 return approxLen(a + d * t - c);
             };
             float tc;
-            if (closest(at, tc) > 1.5f) continue;
+            if (!broadPhase(at, tc, closest)) continue;
             const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, left{-std::cos(o.heading), 0, -std::sin(o.heading)};
             for (size_t k = 0; k < o.spheres.size(); ++k) {
                 const auto& sp = o.spheres[k];
@@ -1267,8 +1311,9 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int own
             // 4 m, half under 8 m, a quarter beyond.
             const int base = radius > 11.f ? 32 : 8;
             const int amount = df2Rules ? (d < 4 ? base : d < 8 ? base / 2 : base / 4) : d < 4 ? 4 : d < 8 ? 2 : 1;
-            // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8).
-            const int type = (d >= 4 && d < 8 && (std::rand() & 3) == 0) ? 3 : 2;
+            // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8;
+            // GOG Df.exe 0x465977: 0x477860 below 0x4000).
+            const int type = (d >= 4 && d < 8 && (rand16 ? rand16() < 0x4000 : (std::rand() & 3) == 0)) ? 3 : 2;
             // DF2 0x454cd7: the owner goes into the victim's +0xF8.
             std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at), df2Rules ? owner : -1);
             if (!m.empty()) out.push_back(m);
@@ -1310,7 +1355,11 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int own
             if (!heavy) continue;
             amount >>= 1;
         }
-        if (amount <= 0) continue;
+        // Delta Force (GOG Df.exe 0x465830, 0x4659de): the amount is clamped
+        // to 0 and the object still gets the event, so a destroyed gnrc
+        // object waiting to go off (0x4533f0) fires at once.
+        if (df2Rules && amount <= 0) continue;
+        amount = std::max(amount, 0);
         std::string m = damage(int(i), amount, 99, -1, df2Rules ? owner : -1);
         if (!m.empty()) out.push_back(m);
     }

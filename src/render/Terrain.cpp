@@ -1099,6 +1099,15 @@ void Terrain::df2Gradient(float x, float z, float& gx, float& gz) const {
     gz = float((H(ix, iz + 2) - H(ix, iz - 2)) * 0x20) / 65536.f;
 }
 
+float Terrain::cornerHeight(float x, float z) const {
+    if (size_ == 0) return 0;
+    // GOG row n is OpenDF row -n (see df2Gradient), so the cell's row is ceil(z).
+    long ix = long(std::floor(x / scale.cellSize)), iz = long(std::ceil(z / scale.cellSize));
+    ix = ((ix % size_) + size_) % size_;
+    iz = ((iz % size_) + size_) % size_;
+    return float(heights_[size_t(iz) * size_ + size_t(ix)]) * scale.heightScale;
+}
+
 float Terrain::cellHeight(float x, float z) const {
     if (size_ == 0) return 0;
     long ix = long(std::floor(x / scale.cellSize)), iz = long(std::floor(z / scale.cellSize));

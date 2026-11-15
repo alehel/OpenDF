@@ -11,6 +11,7 @@
 #include "Animator.h"
 
 #include <array>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -52,6 +53,10 @@ struct WorldObject {
     // destroyed one goes off (flags 4 set, model still intact); 0 = at the
     // next tick (hit again while waiting), -1 = idle or done.
     int gnrcTimer = -1;
+    // Delta Force: an item falling off a destroyed crate (GOG Df.exe mover
+    // 0x4546b0, +0x10c): its vertical speed (+0x44, 16.16 m a tick).
+    bool dropping = false;
+    int32_t dropVz = 0;
     // From the mission record: its group in the file (0 moving objects,
     // 1 scenery, 2 markers, 3 people), team (byte +0x48), side (+0x43) and
     // position in mission coordinates.
@@ -309,6 +314,9 @@ public:
     void update(float dt);
     // Objects destroyed (not people) since the last call, for their sounds.
     std::vector<int> takeDestroyed() { std::vector<int> out; out.swap(destroyed_); return out; }
+    // GOG Df.exe's 16-bit generator (0x477860), set by the game for that
+    // build; empty: std::rand.
+    std::function<uint32_t()> rand16;
     // Delta Force: people who entered a move whose move-table flags +0x18
     // have bit 0 (GOG Df.exe 0x487827 -> 0x460d20: Death_G_DF..DR 250-253,
     // Death_Fire 255, static table 0x4ef7c8 +0x30) since the last call; each

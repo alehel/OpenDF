@@ -46,6 +46,9 @@ public:
     // The nearest cell's raw height, no interpolation (DF.EXE's byte map
     // 0x68c024, e.g. for sound occlusion).
     float cellHeight(float x, float z) const;
+    // Delta Force's raw corner byte of the cell holding (x, z): GOG Df.exe
+    // [0xbd5284] at (x >> 16, y >> 16), y = -z (the round march 0x47e390).
+    float cornerHeight(float x, float z) const;
     // Delta Force 2's terrain gradient for sliding (GOG Df2.exe 0x46eaa0):
     // at the cell holding (x, z), no interpolation, the height change over
     // +-2 cells / 4 of the word grid [0x535ae8], which holds the smoothed

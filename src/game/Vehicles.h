@@ -26,6 +26,10 @@ public:
     void tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem& sound, const AiSystem::PlayerView& player);
     // A smoke puff (0x480aac) at a point: a damaged tail rotor.
     std::function<void(Vec3 at)> smoke;
+    // A destroyed ground vehicle's Smoke Generator, attached to it (GOG
+    // Df.exe 0x429d22: 0x447610(the vehicle, 0, 0, 0)); none for a
+    // helicopter (0x450d50).
+    std::function<void(int object)> wreckSmoke;
     // A vehicle was destroyed: blast with shrapnel (0x46cb64 with n pieces)
     // at a point and heading (set by the game).
     std::function<void(Vec3 at, int shrapnel, float heading)> detonate;
