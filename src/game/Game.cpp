@@ -4497,7 +4497,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     // pixels of its display mode, or the scope view's own focal length.
     terrain_.ringScale = insetFocal_ > 0 ? insetFocal_ / 320.f : zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     // view+0x4c (0x40423d binoculars); Delta Force 2: 22.5 in 16.16 (GOG Df2.exe 0x465f90 stores 0x168000; CD 22).
-    terrain_.df2FovDeg = binoculars_ && !playerDead() ? (arsenal_.df2() ? 22.5f : 22.f) : 90.f;
+    terrain_.df2FovDeg = binoculars_ && !playerDead() ? (arsenal_.df2Gog() ? 22.5f : 22.f) : 90.f;
     terrain_.skyTicks = arsenal_.df2() ? -1.f : float(missionSteps_);   // DF1 cloud drift (GOG Df.exe 0x489980)
     // DF1 sky gradient (GOG Df.exe 0x48c990): the view's FOV +0x4c and width
     // (+0x3c - +0x34 + 1) set the step per row, its focal the horizon row;
@@ -10160,7 +10160,7 @@ int Game::run() {
             // the binoculars' FOV 22 (0x40423d); Delta Force 2: 22.5 (GOG Df2.exe
             // 0x465f90: 0x168000 in 16.16, halved by 0x4048b0; the CD build 22).
             // The letterbox crops the height.
-            const float binoHalfDeg = arsenal_.df2() ? 11.25f : 11.f;
+            const float binoHalfDeg = arsenal_.df2Gog() ? 11.25f : 11.f;
             const float tanHalfX = binoculars_ && !playerDead() && outsideView() == 0 ? std::tan(binoHalfDeg * kPi / 180.f) : 1.f;
             const float fovY = 2.f * std::atan(tanHalfX * std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
             viewFovY_ = 2.f * std::atan(std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
