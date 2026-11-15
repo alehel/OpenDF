@@ -1099,6 +1099,33 @@ void Terrain::df2Gradient(float x, float z, float& gx, float& gz) const {
     gz = float((H(ix, iz + 2) - H(ix, iz - 2)) * 0x20) / 65536.f;
 }
 
+namespace {
+// The word grid [0x535ae8] at GOG cell (gx, gy): heightAt's corners put GOG
+// row n at OpenDF row -n (see df2Gradient).
+int32_t df2Word(const std::vector<float>& heights, const std::vector<uint8_t>& top, int size, long gx, long gy) {
+    gx = ((gx % size) + size) % size;
+    gy = ((-gy % size) + size) % size;
+    const size_t i = size_t(gy) * size_t(size) + size_t(gx);
+    return int32_t(std::lround(heights[i] * 256.f)) + (i < top.size() ? 2 * int32_t(top[i]) : 0);
+}
+} // namespace
+
+int32_t Terrain::df2SightVertex(int32_t x, int32_t y) const {
+    if (size_ == 0 || !gen2_) return 0;
+    return df2Word(heights_, detailTop_, size_, x >> 16, y >> 16) * 0x80;
+}
+
+int32_t Terrain::df2SightGround(int32_t x, int32_t y) const {
+    if (size_ == 0 || !gen2_) return 0;
+    // 0x46e870: twice each corner word, along y on both edges, then x, x 0x40.
+    const long gx = x >> 16, gy = y >> 16;
+    const int64_t fx = x & 0xffff, fy = y & 0xffff;
+    const int32_t a = 2 * df2Word(heights_, detailTop_, size_, gx, gy), b = 2 * df2Word(heights_, detailTop_, size_, gx + 1, gy);
+    const int32_t c = 2 * df2Word(heights_, detailTop_, size_, gx, gy + 1), d = 2 * df2Word(heights_, detailTop_, size_, gx + 1, gy + 1);
+    const int32_t left = a + int32_t((fy * (c - a)) >> 16), right = b + int32_t((fy * (d - b)) >> 16);
+    return (left + int32_t((fx * (right - left)) >> 16)) * 0x40;
+}
+
 float Terrain::cellHeight(float x, float z) const {
     if (size_ == 0) return 0;
     long ix = long(std::floor(x / scale.cellSize)), iz = long(std::floor(z / scale.cellSize));

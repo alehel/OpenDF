@@ -900,7 +900,6 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
     // Delta Force 2 (0x406180): with fog on, not past the fog distance.
     if (df2Rules && fog && fogLevel > 0 && len > float(1 << fogLevel)) return 0;
     if (len < 1e-4f) return 1;
-    RayHit h;
     if (!df2Rules) {
         // GOG Df.exe's terrain march 0x47e4b0 (CD 0x433074), in 1/16 m
         // steps i from the start, clear once i passes the length: a coarse
@@ -923,7 +922,48 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
                 if (q.y < terrain->sightHeight(q.x, q.z)) return 0;
             }
         }
-    } else if (raycast(a, b, h, false)) return 0;
+    } else {
+        // GOG Df2.exe 0x4063d0 -> 0x46e740, in its 16.16 axes (x east, y
+        // north = -z, z up): the length isqrt(sum of d^2 >> 22) << 11, the
+        // unit direction d * (2^32 / length) >> 16, and n = length >> 12
+        // steps i of 1/16 m from the start. Every 1 m a coarse test against
+        // the word grid's vertex at (x >> 16, y >> 16); a point at or below
+        // it (inclusive) backs up 1 m and tests the next 19 points (dir >> 4
+        // each) strictly against the bilinear height 0x46e870, then the
+        // coarse test again. Clear once i passes n; blocked returns -i <<
+        // 12, which is positive for a hit behind the start (i < 0).
+        auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+        const int32_t dx = fx(d.x), dy = fx(-d.z), dz = fx(d.y);
+        auto sq = [](int32_t v) { return uint32_t(uint64_t(int64_t(v) * v) >> 22); };
+        const uint32_t sum = sq(dx) + sq(dy) + sq(dz);
+        uint32_t root = uint32_t(std::sqrt(double(sum)));
+        while (uint64_t(root) * root > sum) --root;
+        while (uint64_t(root + 1) * (root + 1) <= sum) ++root;
+        const int32_t length = int32_t(root << 11);
+        if (length == 0) return 1;
+        const int32_t inv = int32_t(0x100000000LL / length);
+        const int32_t ux = int32_t((int64_t(dx) * inv) >> 16), uy = int32_t((int64_t(dy) * inv) >> 16), uz = int32_t((int64_t(dz) * inv) >> 16);
+        const int n = length >> 12;
+        int32_t x = fx(a.x), y = fx(-a.z), z = fx(a.y);
+        int i = 0;
+        for (;;) {
+            if (i > n) break;
+            if (z > terrain->df2SightVertex(x, y)) {
+                x += ux, y += uy, z += uz;
+                i += 16;
+                continue;
+            }
+            i -= 16;
+            x -= ux, y -= uy, z -= uz;
+            bool clear = false;
+            for (int k = 0; k < 19; ++k) {
+                x += ux >> 4, y += uy >> 4, z += uz >> 4;
+                if (++i > n) { clear = true; break; }
+                if (z < terrain->df2SightGround(x, y)) return -i * 0x1000;
+            }
+            if (clear) break;
+        }
+    }
     const Vec3 mid = a + d * 0.5f;
     int extra = 0;
     for (size_t i = 0; i < objects.size(); ++i) {
