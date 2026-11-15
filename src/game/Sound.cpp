@@ -547,12 +547,6 @@ bool SoundSystem::playDialogLine(const std::string& clip) {
     return audio_->play(dialogs_.clip(i), g, g2, 1.f, vol) != 0;
 }
 
-int SoundSystem::dialogLineTicks(const std::string& clip) {
-    const int i = dialogs_.sampleIndex(clip);
-    const SoundClip* c = i >= 0 ? dialogs_.clip(i) : nullptr;
-    return c && c->rate > 0 ? int(c->samples.size() * 60 / size_t(c->rate)) : 0;
-}
-
 void SoundSystem::voice(int set, int slot, Vec3 at) {
     if (set < 0 || set >= sets_ || slot < 0 || slot >= 12) return;
     const int id = phrases_.empty() ? 0 : phrases_[size_t(set * 12 + slot)];

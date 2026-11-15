@@ -357,9 +357,9 @@ private:
     // mission load).
     struct LoopMarker { int record; int id; Vec3 at; };
     std::vector<LoopMarker> loopMarkers_;
-    struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; };
+    struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; bool armed; };
     std::vector<ActiveDialog> activeDialogs_;
-    void tickDialogs();
+    void tickDialogs(bool drawn);
     float scriptClock_ = 0;
     uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
     // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
@@ -2707,22 +2707,37 @@ void Game::radio(int id) {
     char name[16];
     std::snprintf(name, sizeof name, "dlg%03d", id);
     if (const auto* parts = dialogs_.find(name); parts && !parts->empty() && activeDialogs_.size() < 16)
-        activeDialogs_.push_back({parts, 0, 0});
+        activeDialogs_.push_back({parts, 0, 0, false});
 }
 
-// Per 60 Hz tick: each queued dialog plays its lines in order (all queued
-// dialogs advance at once); a line shows its subtitle as it starts
-// (0x472f7c -> 0x42f400) and the next follows the line's length plus its
-// gap byte x 62 / 10 ticks.
-void Game::tickDialogs() {
+// Per 60 Hz tick (GOG Df.exe 0x4562a0, CD 0x477f70; GOG Df2.exe 0x4197b0
+// is the same), all queued dialogs at once. A slot whose wait is 0 plays
+// line `next` with its subtitle (0x456110, 0x447c60); if more lines follow,
+// next++ and wait = the played line's gap byte (+0x35) x 62 / 10 (the 62
+// from 0x456070(0x3e), Df2.exe 0x419590(0x3e)), disarmed; on the last line
+// the dialog leaves the queue at once (0x456000). A waiting slot first arms
+// on a tick that follows a drawn frame, then counts its wait down, so the
+// next line starts W + 2 ticks after this one (1 if W = 0). The clip's
+// length is never read: the gap byte is the line's whole duration.
+void Game::tickDialogs(bool drawn) {
     for (auto& d : activeDialogs_) {
-        if (d.wait > 0 && --d.wait > 0) continue;
-        if (d.next >= int(d.parts->size())) { d.next = -1; continue; }
-        const DialogPart& p = (*d.parts)[size_t(d.next++)];
+        if (d.wait != 0) {
+            if (!d.armed) d.armed = drawn;
+            else --d.wait;
+            continue;
+        }
+        const int n = int(d.parts->size());
+        const DialogPart& p = (*d.parts)[size_t(d.next)];
         sound_.playDialogLine(p.clip);
         if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
             pushMessage(dialogText_[size_t(p.subtitle)]);
-        d.wait = sound_.dialogLineTicks(p.clip) + p.gap * 62 / 10 + 1;
+        if (d.next < n - 1) {
+            ++d.next;
+            d.wait = p.gap * 62 / 10;
+            d.armed = false;
+        } else {
+            d.next = -1;
+        }
     }
     activeDialogs_.erase(std::remove_if(activeDialogs_.begin(), activeDialogs_.end(), [](const ActiveDialog& d) { return d.next < 0; }),
                          activeDialogs_.end());
@@ -6351,10 +6366,12 @@ int Game::run() {
                 }
                 spawnEffect(sp.slot, sp.pos);
             }
+            bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
                 tickEffects();
-                tickDialogs();
+                tickDialogs(dlgDrawn);
+                dlgDrawn = false;
                 touchPickups();
                 // DF1: the carrier's move (0x4365c6 -> 0x436a0c) copies its
                 // origin +0x24..+0x2c into the carried item every tick.
