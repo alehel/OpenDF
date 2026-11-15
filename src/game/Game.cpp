@@ -2528,7 +2528,7 @@ void Game::spawnPuff(Vec3 at) {
 //     the draw is set, else wooddebris2 (104070), x +-0x2000, y +-0x1000,
 //     z + 1 m, vx, vy +-0x800, vz 0x600 + 0..0xfff; sound 0x139.
 //   wdmd: 10 puffs at z + 0.5 m, y then x + (r << 2) - 0x20000; 32 pieces,
-//     x, y + ((r & 0x7fff) << 2) - 0x10000, z + 1 m + 0..0xffff, vx, vy
+//     x, y + ((r & 0x7fff) << 2) - 0x10000, z + 0.5 m + 0..0xffff, vx, vy
 //     +-0x1000, vz 0x800 + 0..0x1fff; sound 0x13A.
 //   cact: 8 puffs at z + 1 m, + 0.75 m each; 48 pieces, one of 104058..62
 //     by (r * 5) >> 16, at z + 1 m + k/8 m, x +-0x2000, y +-0x1000, vx, vy
@@ -2572,7 +2572,9 @@ void Game::woodDebris(int index) {
         for (int k = 0; k < 32; ++k) {
             const int id = (r() & 0x100) ? 4069 : 4070;
             const int32_t dx = ((r() & 0x7fff) << 2) - 0x10000, dy = ((r() & 0x7fff) << 2) - 0x10000;
-            const float z = o.pos.y + m((r() & 0xffff) + 0x8000) + 0.5f;
+            // z + 0.5 m + 0..0xffff: the object copy at 0x44f0bd overwrote the
+            // puffs' z + 0x8000 with the object's own z (0x44f12a..0x44f142).
+            const float z = o.pos.y + m((r() & 0xffff) + 0x8000);
             const int32_t vx = (r() & 0x1fff) - 0x1000, vy = (r() & 0x1fff) - 0x1000, vz = (r() & 0x1fff) + 0x800;
             piece(id, dx, dy, z, vx, vy, vz);
         }
@@ -2843,6 +2845,7 @@ void Game::mineContact(int index) {
     o.radarShape = 0;
     if (world_.df2Rules) df2Blast(o.pos, 0, o.heading);
     else {
+        if (gogRand()) shrapSeed();   // GOG Df.exe 0x446fb0 -> 0x4606b0: 0x477850(0x5FC) before the effect
         explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
         ai_.noise(o.pos, kDf1BlastNoise, 0, 0);
     }
