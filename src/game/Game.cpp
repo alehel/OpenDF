@@ -628,7 +628,9 @@ private:
     }
     bool paused_ = false;                 // [0xc70ac4] (0x42df53)
     bool oldMessages_ = false;            // [0x66f974]
-    bool friendlyTags_ = false;           // [0x66f978]
+    // [0x66f978]; Delta Force 2 [0x67d3a4] (GOG Df2.exe): 0 off, 1 names,
+    // 2 abbreviated (glyph 4).
+    int friendlyTags_ = 0;
     int letterbox_ = 1;                   // lbsize (0x404650): 1 or 2 eighths of the height per band
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
     std::deque<std::pair<std::string, Color>> history_;   // the 16 latest messages and their colours (ring 0x68a280, +0x78)
@@ -649,6 +651,17 @@ private:
         while (history_.size() > 16) history_.pop_front();
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj);
+    // Delta Force 2's name of an object (+0x54): the mission record +4 as
+    // DF2WPN.BIN PeopleNames STRNAME%03i, at most 15 characters (GOG
+    // Df2.exe 0x403790); people only (+0xc, their AI record, is set).
+    std::string df2PersonName(const WorldObject& o) const;
+    // GOG Df2.exe 0x4189b0: the first object on the player's side or side 0
+    // along the aim within `range` and 2 m of the ray, or nullptr.
+    const WorldObject* df2AimPick(float range) const;
+    // The red identification ticks and name (GOG Df2.exe 0x4642b0 crosshair,
+    // 0x455be0 scope): `r` the scope radius, 0 for the crosshair.
+    void drawDf2TargetId(const Screen& s, float cx, float cy, float r);
     void drawPaused(const Screen& s);
     void drawBinoculars(const Screen& s);
     bool captured_ = true;
@@ -2405,6 +2418,15 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Help: helpShown_ = !helpShown_; break;
     case Action::OldMessages: oldMessages_ = !oldMessages_; break;
     case Action::ShowFriendly:
+        if (df2Hud_.on) {
+            // GOG Df2.exe 0x41f150 command 0x28 (case 0x1d): 0 -> 1 -> 2 -> 0,
+            // STRMISC05 "Off" / STRMISC04 "On" / STRMISC33 "On, Abbreviated".
+            friendlyTags_ = (friendlyTags_ + 1) % 3;
+            static const char* const kKey[3] = {"STRMISC05", "STRMISC04", "STRMISC33"};
+            static const char* const kDef[3] = {"Friendly Tags: Off", "Friendly Tags: On", "Friendly Tags: On, Abbreviated"};
+            pushMessage(df2Text("Misc", kKey[friendlyTags_], kDef[friendlyTags_]));
+            break;
+        }
         friendlyTags_ = !friendlyTags_;
         pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
         break;
@@ -3157,6 +3179,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
         hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
     }
+    // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
+    // crosshairs on or off.
+    if (!showMap_ && df2Hud_.on) drawDf2TargetId(s, cx, cy, 0);
 
     // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
     // bright green border, ticks from r/4 to r/2 in the four directions, the
@@ -3205,6 +3230,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
             }
         }
+        drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
     } else if (scopeShown() && !showMap_) {
         const float zx = s.cx(160), zy = cy, r = s.y(100);
         hud_.ring(zx, zy, r, t, kHudBright);
@@ -3257,7 +3283,8 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
     }
 
-    if (friendlyTags_) drawFriendlyTags(s, viewProj);
+    if (friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
+    else if (friendlyTags_) drawFriendlyTags(s, viewProj);
     if (binoculars_ && !playerDead()) drawBinoculars(s);
     // Delta Force 2's breath bar (0x441540) while the air count is not 0, in
     // the virtual 1024x768 space: half-width w = 100 - air*100/2880 about
@@ -5002,6 +5029,112 @@ void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
     }
 }
 
+std::string Game::df2PersonName(const WorldObject& o) const {
+    if (!o.person || o.missionIndex < 0) return {};
+    const int id = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
+    if (id == 0) return {};
+    char key[24];
+    std::snprintf(key, sizeof key, "STRNAME%03d", id);
+    const std::string* n = wpnText_.find("PeopleNames", key);
+    return n ? n->substr(0, 15) : std::string();
+}
+
+const WorldObject* Game::df2AimPick(float range) const {
+    // GOG Df2.exe 0x4189b0: from the player's origin 0.75 m up along its yaw
+    // and pitch (the player's pitch lowered by the zeroing, weapon table
+    // +0x98), the first object in the table (slot in use, not +0x64 & 2, not
+    // the player, side the player's or 0) whose distance along the ray is
+    // in (1/256 m, range] and whose miss (0x41e880's approximate length)
+    // is at most 2 m.
+    const Vec3 from = player_.origin() + Vec3{0, 0.75f, 0};
+    const float pitch = player_.pitch - arsenal_.zeroElevation();
+    const Vec3 dir{std::cos(pitch) * std::sin(player_.yaw), std::sin(pitch), -std::cos(pitch) * std::cos(player_.yaw)};
+    for (const auto& o : world_.objects) {
+        if (o.removed || (o.side != kPlayerSide && o.side != 0)) continue;
+        const Vec3 d = world_.nearest(o.pos, from) - from;
+        const float along = dot(d, dir);
+        if (along <= 1.f / 256.f || along > range) continue;
+        const Vec3 m = d - dir * along;
+        float a = std::abs(m.x), b = std::abs(m.y), c = std::abs(m.z);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        if (a + b * 11.f / 32.f + c * 0.25f <= 2.f) return &o;
+    }
+    return nullptr;
+}
+
+void Game::drawDf2TargetId(const Screen& s, float cx, float cy, float r) {
+    // GOG Df2.exe 0x4642b0 (after LAB_00464776) / 0x455be0 (LAB_004562ab):
+    // the pick at the centre's range + 2 m; nothing with attributes & 0x100
+    // (the single-player "FF" option off; & 8 in multiplayer). A same-side
+    // object gets four red diagonal ticks; a person (+0xc) with a name, of
+    // either side, its name centred in red ([0x67d374] = 0xff0000), drawn
+    // with 0x4577f0 in screen pixels.
+    if (o_.df2Attributes & 0x100) return;
+    const float aim = rangeToAim();
+    const WorldObject* o = df2AimPick((aim < 0 ? viewDistance_ : aim) + 2.f);
+    if (!o) return;
+    const float t = s.px();
+    float nameY = cy;
+    if (r <= 0) {
+        // The crosshair: ticks from ±(gap + arm) to ±gap on both axes (no
+        // spread or bloom: attributes & 0x1000 clear); the name W*1920/65536
+        // above the top arm.
+        const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
+        if (o->side == kPlayerSide)
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                    hud_.line(cx + float(sx) * (a + b), cy + float(sy) * (a + b), cx + float(sx) * a, cy + float(sy) * a, t, kHudRed);
+        nameY = cy - float(s.modeW * 1920 / 65536) * s.art() - a - b;
+    } else if (o->side == kPlayerSide) {
+        // The scope: ticks from (±r/2, ±r/2) to (±r/4, ±r/4) about the centre.
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                hud_.line(cx + float(sx) * r / 2, cy + float(sy) * r / 2, cx + float(sx) * r / 4, cy + float(sy) * r / 4, t, kHudRed);
+    }
+    const std::string name = df2PersonName(*o);
+    if (!name.empty()) hud_.text(cx - hud_.textWidth(name, s.text()) / 2, nameY, name, kHudRed, s.text());
+}
+
+void Game::drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj) {
+    // GOG Df2.exe 0x465f90 -> 0x44fe70 -> 0x44fee0: unless attributes &
+    // 0x400, every person this frame draws (the list 0x780d40 of 0x4501b0:
+    // in the view, not +0x64 & 2) on the player's side, the player only in
+    // an outside view, with a name (+0x54) and the projected size of 1 m
+    // over half a pixel; at the projected origin raised by that size, in
+    // the virtual 1024x768 space 25 up, centred, no clip. Mode 1 the name,
+    // mode 2 glyph 4; always green ([0x67d368] = 0x00ff00; the CD build's
+    // 0x448de0 coloured by side).
+    if (o_.df2Attributes & 0x400) return;
+    const Vec3 eye = viewEye();
+    auto project = [&](Vec3 p, float& px, float& py) {
+        const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
+        const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
+        const float cw = viewProj.at(3, 0) * p.x + viewProj.at(3, 1) * p.y + viewProj.at(3, 2) * p.z + viewProj.at(3, 3);
+        if (cw <= 0.1f) return false;   // the near plane ([0xc30fc8])
+        px = (cx / cw * 0.5f + 0.5f) * s.w;
+        py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH;
+        return true;
+    };
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide) continue;
+        const std::string name = df2PersonName(o);
+        if (name.empty()) continue;
+        const Vec3 at = world_.nearest(o.pos, eye);
+        if (std::abs(at.x - eye.x) > viewDistance_ || std::abs(at.z - eye.z) > viewDistance_) continue;
+        float px, py, ux, uy;
+        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) continue;
+        const float size = py - uy;
+        if (size <= 0.5f * s.art()) continue;
+        // 0x4501b0's view test (0x404c70) with a 1 m sphere.
+        if (px < -size || px > s.w + size || py < s.playY - size || py > s.playY + s.playH + size) continue;
+        const float ty = uy - s.vy(25);
+        const std::string label = friendlyTags_ == 2 ? std::string(1, '\x04') : name;
+        hud_.text(px - hud_.textWidth(label, s.text()) / 2, ty, label, kHudPureGreen, s.text());
+    }
+}
+
 void Game::drawBinoculars(const Screen& s) {
     // 0x401f94: "Distance: %3im" at (768, 369) (the depth at the centre of
     // the view, "1km+" from 1000 m) and "Heading: %3i" at (256, 369), both
@@ -5215,6 +5348,9 @@ int Game::run() {
     // Force Dagger have a HUD.DEF too, with other art).
     if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
         df2Hud_.on = df2Hud_.def.parse(def);
+    // GOG Df2.exe 0x466ba0: a fresh mission start (param 0, 0x465322) sets the
+    // friendly tags to 1 (names); the Space replay (0x466ad0) keeps them.
+    if (df2Hud_.on) friendlyTags_ = 1;
 
     if (rc == 0 && std::getenv("OPENDF_LOWEST")) {
         float best = 1e9, bx = 0, bz = 0;

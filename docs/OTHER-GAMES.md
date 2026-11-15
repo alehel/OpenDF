@@ -127,7 +127,20 @@ First differences from DF1:
     0x443850); the top strip: the last three of two 40-line histories
     (system and chat), each line in its own colour, no timeout (0x442170);
     the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
-    (0x45a9e0). Wider windows (amenity): each strip is split inside one
+    (0x45a9e0); target identification (GOG 0x4642b0, scope 0x455be0,
+    pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
+    first object of the player's side or side 0 along the aim within the
+    centre's range + 2 m and 2 m of the ray gets, if on the player's side,
+    four red diagonal ticks at the crosshair corners (scope: ±r/2 to ±r/4),
+    and, if it is a named person (DF2WPN.BIN `PeopleNames` STRNAME%03i of
+    record +4), its name in red W·1920/65536 above the top arm (scope: at
+    the inset centre), with the crosshairs on or off; friendly tags (F,
+    GOG 0x41f150 / 0x44fe70 / 0x44fee0): 0 off, 1 names, 2 glyph 4, with
+    STRMISC05 / 04 / 33, on (1) at every fresh mission start but kept on a
+    replay (0x466ba0), none with attributes & 0x400; named people on the
+    player's side in view, 1 m projecting over half a pixel, 25 above the
+    origin raised by 1 m, centred, no clip, always green 0x00ff00 (the CD
+    build coloured by side). Wider windows (amenity): each strip is split inside one
     panel, the halves stay at the window's sides and that panel stretches;
     HUD.DEF points follow their half. INFERRED: the weapon's ammo kind uses
     DF1's weapon type numbers; radar objects use record +0x4C as their
