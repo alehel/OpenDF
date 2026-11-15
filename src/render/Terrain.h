@@ -131,6 +131,7 @@ private:
     bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha
 
     GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0;
+    GLuint texColorFar_ = 0;   // DF2: the colour map with each cell's detail-tile tint (far rings)
     std::vector<uint8_t> colorRgb_;   // DF2: the colour map as drawn (for the radar)
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
     GLuint texDisplayLut_ = 0;   // Delta Force: the df.cfg gamma table (filters 128)

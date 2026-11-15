@@ -71,7 +71,7 @@ void main() {
 const char* kTerrainFSBody = R"(
 in vec2 vCell;
 in vec3 vWorld;
-uniform sampler2D uColor, uDetailIdx;
+uniform sampler2D uColor, uDetailIdx, uColorFar;
 uniform sampler2DArray uDetailColor, uDetailShade;
 uniform bool uAlphaDetail;
 uniform float uMapSize, uTiles, uNear, uFarBase, uKMax, uEnd;
@@ -104,7 +104,9 @@ void main() {
     // Delta Force 2 has no ring fog (its bands 0x4678ed..0x467954 are only
     // cut at the fog distance; distance fog is the fog_level pass alone).
     float k = clamp(floor(log2(dist / uFarBase)), 0.0, uKMax);
-    vec3 base = textureLod(uColor, uv, k).rgb;
+    // Delta Force 2 (GOG Df2.exe 0x470900): every far mip carries its cells'
+    // detail-tile tint (uColorFar, built at load).
+    vec3 base = uAlphaDetail ? textureLod(uColorFar, uv, k).rgb : textureLod(uColor, uv, k).rgb;
     float f = uDf2 ? 0.0 : max(0.0, 20.0 * k - 15.0) / 256.0;
 #ifdef RING_END
     if (dist > uEnd) discard;   // Delta Force: no ring past the last (far k 5)
@@ -345,11 +347,11 @@ void setM4(GLuint p, const char* n, const Mat4& m) { glUniformMatrix4fv(glGetUni
 Terrain::~Terrain() { release(); }
 
 void Terrain::release() {
-    GLuint texs[] = {texDisplayLut_, texColor_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
+    GLuint texs[] = {texDisplayLut_, texColor_, texColorFar_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
                      texWaterGrad_, texScene_, texRadar_, texSkyGrad_, texDepth_};
     for (GLuint t : texs) if (t) glDeleteTextures(1, &t);
     texRadar_ = texDisplayLut_ = 0;
-    texColor_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
+    texColor_ = texColorFar_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
     texWaterGrad_ = texScene_ = texSkyGrad_ = texDepth_ = 0;
     sceneW_ = sceneH_ = depthW_ = depthH_ = 0;
     for (auto& m : lods_) {
@@ -604,6 +606,56 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             dsRg.assign(size_t(tile) * tile * 2, 120);
         }
     }
+    // GOG Df2.exe's far terrain (0x470900): colour-only rings are tinted by
+    // the cell's detail tile, out = sat(c * S[t] / 256 + C[t]) per channel,
+    // at mip 0 when drawn (0x472380 tables -> 0x490a79) and baked into mips
+    // 1..9 (0x46e0f0, then the box mips 0x46dc00). The loader (0x46f680)
+    // premultiplies the tile's RGB by its alpha (pmulhw of the 12-bit
+    // expansions x * 257 >> 4); 0x46d970 reduces each 64x64 tile by 2x2
+    // averages to one texel: C[t] its premultiplied RGB (sums >> 2), S[t]
+    // 255 minus its alpha ((sum + 2) >> 2).
+    if (alphaDetail_ && !colorRgb_.empty() && tile > 0 && (tile & (tile - 1)) == 0) {
+        auto x12 = [](int v) { return (v * 257) >> 4; };
+        std::vector<std::array<int, 3>> meanC(static_cast<size_t>(tiles));
+        std::vector<int> meanS(static_cast<size_t>(tiles));
+        for (int t = 0; t < tiles; ++t) {
+            const size_t at = size_t(t) * size_t(tile) * size_t(tile);
+            std::vector<std::array<int, 3>> c(size_t(tile) * size_t(tile));
+            std::vector<int> a(size_t(tile) * size_t(tile));
+            for (size_t i = 0; i < c.size(); ++i) {
+                const uint8_t* p = &dcRgba[(at + i) * 4];
+                a[i] = p[3];
+                for (int k = 0; k < 3; ++k) c[i][size_t(k)] = (x12(p[k]) * x12(p[3])) >> 16;
+            }
+            for (int w = tile; w > 1; w /= 2) {
+                const int h = w / 2;
+                std::vector<std::array<int, 3>> c2(size_t(h) * size_t(h));
+                std::vector<int> a2(size_t(h) * size_t(h));
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < h; ++x) {
+                        const size_t i0 = size_t(2 * y) * size_t(w) + size_t(2 * x), i1 = i0 + 1, i2 = i0 + size_t(w), i3 = i2 + 1;
+                        const size_t o = size_t(y) * size_t(h) + size_t(x);
+                        for (int k = 0; k < 3; ++k)
+                            c2[o][size_t(k)] = std::min(255, (c[i0][size_t(k)] + c[i1][size_t(k)] + c[i2][size_t(k)] + c[i3][size_t(k)]) >> 2);
+                        a2[o] = (a[i0] + a[i1] + a[i2] + a[i3] + 2) >> 2;
+                    }
+                c.swap(c2);
+                a.swap(a2);
+            }
+            meanC[size_t(t)] = c[0];
+            meanS[size_t(t)] = 255 - a[0];
+        }
+        std::vector<uint8_t> far(colorRgb_.size());
+        for (size_t i = 0; i < size_t(size_) * size_t(size_); ++i) {
+            const int t = std::min(int(i < detail.pixels.size() ? detail.pixels[i] : 0), tiles - 1);
+            const int s = x12(meanS[size_t(t)]);
+            for (int k = 0; k < 3; ++k) {
+                const int v = ((x12(colorRgb_[i * 3 + size_t(k)]) * s) >> 16) + meanC[size_t(t)][size_t(k)];
+                far[i * 3 + size_t(k)] = uint8_t(std::clamp(v, 0, 255));
+            }
+        }
+        texColorFar_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, far.data(), true, true);
+    }
     texDetailColor_ = makeTexArray(tile, tile, tiles, GL_RGBA8, GL_RGBA, dcRgba.data());
     texDetailShade_ = makeTexArray(tile, tile, tiles, GL_RG8, GL_RG, dsRg.data());
 
@@ -756,6 +808,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     setInt(progTerrain_, "uAlphaDetail", alphaDetail_ ? 1 : 0);
     setInt(progTerrain_, "uDf2", gen2_ ? 1 : 0);
     setInt(progTerrain_, "uLut", 5);
+    setInt(progTerrain_, "uColorFar", 6);
     setF(progTerrain_, "uTiles", float(tiles));
     setF(progTerrain_, "uSat", saturationFactor());
     glUseProgram(progSky_);
@@ -1080,6 +1133,8 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
         glActiveTexture(GL_TEXTURE0 + i);
         glBindTexture(i == 3 || i == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D, units[i]);
     }
+    glActiveTexture(GL_TEXTURE0 + 6);
+    glBindTexture(GL_TEXTURE_2D, texColorFar_ ? texColorFar_ : texColor_);
 
     // Delta Force 2 with fog: bands starting past 2^fog_level m are not
     // drawn (0x4678ed..0x467905, 0x46793a..0x467956).

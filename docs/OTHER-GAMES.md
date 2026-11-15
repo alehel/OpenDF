@@ -177,7 +177,13 @@ First differences from DF1:
     at D, every pixel blended c + (C − c)·min(255, depth·256/D)/256 after the
     objects (the software frame's pass 0x4485b0; INFERRED: depth = view
     depth), the water plane out to min(D, 2047 m), soldiers see no farther
-    than D (0x406180). DF2 has no ring fog on its far terrain;
+    than D (0x406180). DF2 has no ring fog on its far terrain; GOG Df2.exe
+    tints its colour-only (far) rings by each cell's detail tile, out =
+    sat(c · S[t]/256 + C[t]) with C the tile's mean alpha-premultiplied
+    RGB and S 255 − its mean alpha (loader 0x46f680, 2×2 reductions
+    0x46d970), at mip 0 while drawing (0x470900 -> 0x472380, 0x490a79)
+    and baked into mips 1..9 (0x46e0f0); OpenDF builds that tinted map
+    once with its mips for the far rings;
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
     born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
