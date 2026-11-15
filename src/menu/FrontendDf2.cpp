@@ -214,7 +214,8 @@ bool df2KeyAllowed(uint32_t vk) {
 // ---------------------------------------------------------------- soldiers
 
 // df2plyrs.sav (GOG Df2.exe 0x436890 / 0x4369f0; CD 0x431ba0 / 0x431c90):
-// 'FPBC', version 14 (the CD wrote and read 10), 5 records of 0x6E8.
+// 'FPBC', version 14 (the CD wrote and read 10), 5 records of 0x6E8, the
+// same layout in both builds (GOG fills more of it: defaultSoldier).
 struct Soldier {
     std::array<uint8_t, 0x6E8> d{};
     int32_t get(size_t o) const { int32_t v; std::memcpy(&v, &d[o], 4); return v; }
@@ -225,16 +226,28 @@ struct Soldier {
         std::memcpy(&d[4], n.data(), std::min<size_t>(15, n.size()));
     }
     bool empty() const { return name().empty(); }
-    // Defaults (0x431c00): the key bindings 0x4b2cb8, campaign 1, gear sidearm 5, primary 10, secondary
-    // 21, auxiliary 1, grenade 26, mouse 128, SFX 255, music 255, dialogue 200.
-    void defaults() {
-        d.fill(0);
-        set(0x28, 1);
-        for (size_t i = 0; i < kDf2KeyRows; ++i) { set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
-        set(0x2b8, 5); set(0x2bc, 10); set(0x2c0, 21); set(0x2c4, 1); set(0x2c8, 26);
-        set(0x5b0, 128); set(0x5b8, 255); set(0x5bc, 255); set(0x5c0, 200);
-    }
 };
+
+// GOG Df2.exe 0x425170: the default key table 0x4c7190 (0x2d0 bytes, 60
+// rows of {VK, mouse button, 0}), read over from df2.dfk when the game
+// folder has one (fread of one 0x2d0 item: a short file replaces what it
+// holds); without it, the table built into Df2.exe (kDf2Keys).
+using Df2KeyTable = std::array<uint8_t, 0x2d0>;
+Df2KeyTable loadDf2KeyTable(const std::filesystem::path& dir) {
+    Df2KeyTable t{};
+    for (size_t i = 0; i < kDf2KeyRows; ++i) {
+        const uint32_t vk = kDf2Keys[i].vk, mouse = kDf2Keys[i].mouse;
+        std::memcpy(&t[12 * i], &vk, 4);
+        std::memcpy(&t[12 * i + 4], &mouse, 4);
+    }
+    std::ifstream k(dir / "Df2.dfk", std::ios::binary);
+    Df2KeyTable file{};
+    if (k) {
+        k.read(reinterpret_cast<char*>(file.data()), std::streamsize(file.size()));
+        std::memcpy(t.data(), file.data(), size_t(k.gcount()));
+    }
+    return t;
+}
 
 // Campaign missions (table 0x4afba0): BMS, campaign 1/2, region 0..4.
 struct CampMission { const char* bms; int campaign, region; };
@@ -370,6 +383,8 @@ private:
 
     // Data.
     void loadSoldiers();
+    void defaultSoldier(Soldier& s);
+    Df2KeyTable keyTable_{};   // GOG Df2.exe 0x4c7190, loadDf2KeyTable
     void saveSoldiers();
     Soldier& soldier() { return soldiers_[size_t(current_)]; }
     uint32_t header(const std::string& bms, size_t offset);
@@ -802,8 +817,31 @@ void FrontendDf2::sound(const std::string& name, int channel) {
 
 // ---------------------------------------------------------------- soldiers
 
+// GOG Df2.exe 0x4368f0 (CD 0x431c00 filled 48 rows and none of the
+// GOG fields): zeroed; the 59 key rows (0xb1 dwords) from the default key
+// table; mouse 128 (+0x5b0), +0x5c8 1, +0x5cc 0x7f, SFX 255, music 255,
+// dialogue 200; gear sidearm 5, primary 10, secondary 21, auxiliary 1,
+// grenade 26; MACRO_0..MACRO_9 (MENU text, "??key??" when missing as
+// 0x4338d0 does) into the 40-byte macro slots at +0xe8, 39 characters and
+// a NUL. Version 14 files hold these, so what OpenDF writes is what GOG's
+// 0x4369f0 reads without a patch.
+void FrontendDf2::defaultSoldier(Soldier& s) {
+    s.d.fill(0);
+    std::memcpy(&s.d[0x2e0], keyTable_.data(), 0xb1 * 4);
+    s.set(0x5b0, 0x80); s.set(0x5c8, 1); s.set(0x5cc, 0x7f); s.set(0x5b8, 0xff); s.set(0x5bc, 0xff); s.set(0x5c0, 200);
+    s.set(0x2bc, 10); s.set(0x2b8, 5); s.set(0x2c0, 0x15); s.set(0x2c4, 1); s.set(0x2c8, 0x1a);
+    for (int i = 0; i < 10; ++i) {
+        const std::string key = "MACRO_" + std::to_string(i);
+        const std::string t = menuText(key.c_str(), ("??" + key + "??").c_str());
+        char* slot = reinterpret_cast<char*>(&s.d[0xe8 + 0x28 * size_t(i)]);
+        std::strncpy(slot, t.c_str(), 0x27);
+        slot[0x27] = 0;
+    }
+}
+
 void FrontendDf2::loadSoldiers() {
-    for (auto& s : soldiers_) s.defaults();
+    keyTable_ = loadDf2KeyTable(saveDir_);
+    for (auto& s : soldiers_) defaultSoldier(s);
     std::ifstream f(saveDir_ / "df2plyrs.sav", std::ios::binary);
     char head[8] = {};
     // GOG Df2.exe 0x4369f0: 'FPBC' with version 10..14 reads the five
@@ -818,15 +856,8 @@ void FrontendDf2::loadSoldiers() {
                 for (auto& s : soldiers_) { s.set(0x5c8, 1); s.set(0x5cc, 0x7f); }
             } else if (ver == 11) {
                 // Key rows 48..57 (30 dwords) from the default key table
-                // (0x4c7190 + 0x240), which 0x425170 fills from df2.dfk; the
-                // table built into Df2.exe when the file is missing.
-                static const uint8_t kRows[10] = {'I', 'o', 'j', 'm', 'k', 'a', 'c', '`', 'n', 0xdc};
-                std::array<uint8_t, 0x2d0> dfk{};
-                for (size_t i = 0; i < 10; ++i) dfk[0x240 + 12 * i] = kRows[i];
-                std::ifstream k(saveDir_ / "Df2.dfk", std::ios::binary);
-                std::array<uint8_t, 0x2d0> file{};
-                if (k.read(reinterpret_cast<char*>(file.data()), std::streamsize(file.size()))) dfk = file;
-                for (auto& s : soldiers_) std::memcpy(&s.d[0x520], &dfk[0x240], 30 * 4);
+                // (0x4c7190 + 0x240, loadDf2KeyTable).
+                for (auto& s : soldiers_) std::memcpy(&s.d[0x520], &keyTable_[0x240], 30 * 4);
             } else if (ver == 12) {
                 // MACRO_0..MACRO_9 (MENU text, "??key??" when missing as
                 // 0x4338d0 does) into the 40-byte macro slots at +0xe8.
@@ -842,17 +873,21 @@ void FrontendDf2::loadSoldiers() {
         }
     }
     // OpenDF's first DF2 builds wrote soldiers without the default bindings;
-    // a named soldier with all rows empty gets the defaults (an OpenDF repair).
+    // a named soldier with all rows empty gets the default rows (an OpenDF
+    // repair). Rows 48..58 alone empty are left so: GOG's version 10 patch
+    // does not fill them either (a CD file keeps them unbound).
     for (auto& s : soldiers_) {
         bool none = true;
         for (size_t i = 0; i < kDf2KeyRows && none; ++i) none = s.get(0x2e0 + 12 * i) == 0 && s.get(0x2e4 + 12 * i) == 0;
-        if (none && !s.empty())
-            for (size_t i = 0; i < kDf2KeyRows; ++i) { s.set(0x2e0 + 12 * i, int32_t(kDf2Keys[i].vk)); s.set(0x2e4 + 12 * i, int32_t(kDf2Keys[i].mouse)); }
+        if (none && !s.empty()) std::memcpy(&s.d[0x2e0], keyTable_.data(), 0xb1 * 4);
     }
     bool any = false;
     for (auto& s : soldiers_) any = any || !s.empty();
-    // All empty: slot 0 becomes CS_DEFAULTNAME "Blackhawk".
-    if (!any) soldiers_[0].setName(menuText("CS_DEFAULTNAME", "Blackhawk"));
+    // All empty: slot 0 is defaulted again and becomes CS_DEFAULTNAME "Blackhawk".
+    if (!any) {
+        defaultSoldier(soldiers_[0]);
+        soldiers_[0].setName(menuText("CS_DEFAULTNAME", "Blackhawk"));
+    }
 }
 
 // GOG Df2.exe 0x436890: 'FPBC', version 14, the five records.
@@ -1058,34 +1093,38 @@ void FrontendDf2::drawCredits() {
     }
 }
 
-// 0x439fe0: a binding's text.
+// GOG Df2.exe 0x43f9b0 (CD 0x439fe0): a binding's text. The key first by
+// 0x43f520's names (MENU text keys), then the punctuation keys, then "%c"
+// when the VK is a printable character (ctype & 0x157), else "KEY %d".
 std::string FrontendDf2::keyName(size_t row) {
     const uint32_t vk = uint32_t(soldier().get(0x2e0 + 12 * row)), m = uint32_t(soldier().get(0x2e4 + 12 * row));
     std::string s;
     static const std::pair<uint32_t, const char*> named[] = {
-        {0x08, "BACKSPACE"}, {0x09, "TAB"}, {0x0D, "ENTER"}, {0x10, "SHIFT"}, {0x11, "CTRL"}, {0x20, "SPACE_BAR"},
-        {0x21, "PAGE_UP"}, {0x22, "PAGE_DOWN"}, {0x23, "END"}, {0x24, "HOME"}, {0x25, "LEFT"}, {0x26, "UP"},
-        {0x27, "RIGHT"}, {0x28, "DOWN"}, {0x2D, "INSERT"}, {0x2E, "DELETE"}};
+        {0x03, "CANCEL"}, {0x08, "BACKSPACE"}, {0x09, "TAB"}, {0x0C, "CLEAR"}, {0x0D, "ENTER"}, {0x10, "SHIFT"},
+        {0x11, "CTRL"}, {0x12, "ALT"}, {0x14, "CAPS_LOCK"}, {0x15, "HANGUL"}, {0x17, "JUNJA"}, {0x18, "FINAL"},
+        {0x19, "KANJI"}, {0x1C, "CONVERT"}, {0x1D, "NONCONVERT"}, {0x1E, "ACCEPT"}, {0x1F, "MODECHANGE"},
+        {0x20, "SPACE_BAR"}, {0x21, "PAGE_UP"}, {0x22, "PAGE_DOWN"}, {0x23, "END"}, {0x24, "HOME"}, {0x25, "LEFT"},
+        {0x26, "UP"}, {0x27, "RIGHT"}, {0x28, "DOWN"}, {0x29, "SELECT"}, {0x2B, "EXECUTE"}, {0x2C, "SNAPSHOT"},
+        {0x2D, "INSERT"}, {0x2E, "DELETE"}, {0x2F, "HELP"}, {0x5D, "APPS"}, {0x60, "KEYPAD_0"}, {0x61, "KEYPAD_1"},
+        {0x62, "KEYPAD_2"}, {0x63, "KEYPAD_3"}, {0x64, "KEYPAD_4"}, {0x65, "KEYPAD_5"}, {0x66, "KEYPAD_6"},
+        {0x67, "KEYPAD_7"}, {0x68, "KEYPAD_8"}, {0x69, "KEYPAD_9"}, {0x6A, "KEYPAD_*"}, {0x6B, "KEYPAD_+"},
+        {0x6C, "SEPARATOR"}, {0x6D, "KEYPAD_-"}, {0x6E, "KEYPAD_."}, {0x6F, "KEYPAD_/"}, {0x90, "NUM_LOCK"},
+        {0xA4, "LEFT_MENU"}, {0xA5, "RIGHT_MENU"}, {0xE5, "PROCESS"}, {0xF6, "ATTN"}, {0xF7, "CRSEL"},
+        {0xF8, "EXSEL"}, {0xF9, "EREOF"}, {0xFA, "PLAY"}, {0xFB, "ZOOM"}, {0xFC, "NONAME"}, {0xFD, "PA1"},
+        {0xFE, "OEM_CLEAR"}};
+    static const std::pair<uint32_t, const char*> punct[] = {
+        {0xBA, ";"}, {0xBB, "="}, {0xBC, ","}, {0xBD, "-"}, {0xBE, "."}, {0xBF, "/"},
+        {0xDB, "["}, {0xDC, "\\"}, {0xDD, "]"}, {0xDE, "'"}};
+    bool found = vk == 0;
     for (const auto& [v, k] : named)
-        if (v == vk) s = upper(menuText(k, k));
-    const std::string keypad = upper(menuText("KEYPAD", "KEYPAD"));
-    if (vk == 0x6A) s = keypad + " *";
-    else if (vk == 0x6B) s = keypad + " +";
-    else if (vk == 0x6D) s = keypad + " -";
-    else if (vk == 0x6E) s = keypad + " .";
-    else if (vk == 0x6F) s = keypad + " /";
-    else if (vk >= 0x60 && vk <= 0x69) s = keypad + " " + char(vk - 0x30);
-    else if (vk == 0xBA) s = ";";
-    else if (vk == 0xBB) s = "=";
-    else if (vk == 0xBC) s = ",";
-    else if (vk == 0xBD) s = "-";
-    else if (vk == 0xBE) s = ".";
-    else if (vk == 0xDB) s = "[";
-    else if (vk == 0xDD) s = "]";
-    else if (vk == 0xBF) s = "/";    // GOG Df2.exe 0x43f9b0
-    else if (vk == 0xDC) s = "\\";   // GOG 0x43f9b0: SELECT_TARGETED's default
-    else if (vk == 0xDE) s = "'";
-    else if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) s = std::string(1, char(vk));
+        if (!found && v == vk) { s = upper(menuText(k, k)); found = true; }
+    for (const auto& [v, k] : punct)
+        if (!found && v == vk) { s = k; found = true; }
+    if (!found) {
+        // MSVC's C-locale ctype & 0x157 (alpha, digit, punct, blank): 0x20..0x7e and tab.
+        if ((vk >= 0x20 && vk < 0x7F) || vk == 0x09) s = std::string(1, char(vk));
+        else s = upper(menuText("KEY", "KEY")) + " " + std::to_string(vk);
+    }
     if (m) {
         if (vk) s += " " + upper(menuText("OR", "OR")) + " ";
         s += upper(menuText("MOUSE", "MOUSE")) + " " + std::to_string(m);
@@ -1693,7 +1732,7 @@ void FrontendDf2::event(D2Button& b, int ev) {
         editBefore_ = editText_;
         SDL_StartTextInput();
     } else if (cb == "cs_DeleteSoldier") {
-        soldier().defaults();
+        defaultSoldier(soldier());
         refreshSoldier();
     } else if (cb == "cs_PrevFace" || cb == "cs_NextFace") {
         soldier().set(0x278, (soldier().get(0x278) + (cb == "cs_NextFace" ? 1 : 14)) % 15);
