@@ -1013,9 +1013,12 @@ bool Game::loadMission(int index) {
         briefPage_ = 0;
     }
     {
-        // Radio dialogs: the mission header names the set ("dfdlg02").
+        // Radio dialogs: the mission header names the set ("dfdlg02"). DF2
+        // replaces whatever follows the first '.' with "dbf" (GOG Df2.exe
+        // 0x4679c0 -> 0x46a920) and cuts the name there for the .pwf / .bin
+        // (0x4191a0), so a header "Dfdlgco.scr" loads DFDLGCO.
         std::vector<uint8_t> raw;
-        const std::string set = toUpper(mission_.dialogue);
+        const std::string set = toUpper(mission_.version >= 0x0F ? mission_.dialogue.substr(0, mission_.dialogue.find('.')) : mission_.dialogue);
         dialogs_ = DialogIndex{};
         dialogText_.clear();
         activeDialogs_.clear();
