@@ -437,6 +437,8 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     reloadTicks_ = 0;
     cooldown_ = 0;
     refill();
+    // GOG Df2.exe 0x44eeb0's end: the scope power, if 0, from the slot-3 mode.
+    if (magLevel_ == 0) magLevel_ = modes_[size_t(slots_[3])].scope;
     current_ = 3;
     if (!slots_[3]) cycle();
     zoomLevel_ = 0;

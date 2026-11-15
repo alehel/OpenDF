@@ -202,7 +202,9 @@ public:
     // slots 3-5, 0..10 (0..15 for the Barrett); the scope view is lowered by
     // the type's elevation for it (0x44e143).
     void zeroStep(int d) {
-        if (current_ < 3 || current_ > 5) return;
+        // GOG Df2.exe 0x44c770: only while 0x455790 holds (scopeShown); the
+        // CD's 0x445ff0 has no such test.
+        if ((df2Gog_ && !scopeShown()) || current_ < 3 || current_ > 5) return;
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
@@ -281,7 +283,36 @@ public:
     int rounds() const { return mag_[size_t(mode().gun)]; }
     int spares() const { return spares_[size_t(mode().gun)]; }
 
-    float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
+    float zoom() const { return zoomed() ? float(df2Gog_ ? magnification() : mode().scope) : 1.f; }
+    bool df2Gog() const { return df2_ && df2Gog_; }
+    // GOG Df2.exe's scope power [0x79a698] (not in the CD build): cleared with the weapon block
+    // at the mission start (0x44e7f0), then the slot-3 mode's scope (end of
+    // 0x44eeb0, which Request Weapons runs again without the clear).
+    void resetScopeMag() { magLevel_ = 0; }
+    int magLevel() const { return magLevel_; }
+    // 0x44c7e0 (command 0x61, scopemag E: +1, Shift+E: -1): with the scope
+    // shown (0x455790) and a mode with a scope, the power steps by d; above
+    // the mode's scope it wraps to 2, below 2 to the full scope.
+    void magStep(int d) {
+        if (!df2Gog_ || !scopeShown()) return;
+        const int full = mode().scope;
+        if (!full) return;
+        const int v = magLevel_ + d;
+        if (v > full) magLevel_ = 2;
+        else magLevel_ = v < 2 ? full : v;
+    }
+    // 0x44e6a0 (the scope view 0x4557e0): slots 3-5 use the stored power,
+    // raised to 2 when the mode has a scope and it is 1 or less, kept at 0
+    // or more, cut to the mode's scope (each written back); other slots
+    // the mode's scope.
+    int magnification() const {
+        const int full = mode().scope;
+        if (current_ < 3 || current_ > 5) return full;
+        if (full != 0 && magLevel_ <= 1) magLevel_ = 2;
+        else if (magLevel_ < 0) magLevel_ = 0;
+        if (magLevel_ > full) magLevel_ = full;
+        return magLevel_;
+    }
     // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40:
     // the held mode's +0x3C & 1 and [0x7655f4]; the binoculars, mode 47,
     // have no such bit, so holding them hides the scope and it comes back
@@ -296,8 +327,14 @@ public:
     // (+0x74 & 0x18) zero, i.e. not while moving; the shot's origin
     // (0x447102) and the designator (0x45aad6) take 0x447b40 alone.
     // INFERRED: the speed bits are non-zero exactly while a move key is down.
-    bool scopeShown() const { return zoomed() && (!df2_ || !moveKeys_); }
+    // GOG Df2.exe 0x455790 also wants none of the player's +0x64 bits
+    // 0x422004 (4 dead, 0x2000 airborne, 0x20000 swimming, 0x400000 on a
+    // ladder) and not an outside view ([0xbf2b40], OpenDF's only one is the
+    // dead player's), set each tick by setScopeBlocked; the CD build tests
+    // the speed bits only (0x45c682).
+    bool scopeShown() const { return zoomed() && (!df2_ || (!moveKeys_ && !(df2Gog_ && scopeBlocked_))); }
     void setMoveKeys(bool down) { moveKeys_ = down; }
+    void setScopeBlocked(bool b) { scopeBlocked_ = b; }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
@@ -398,6 +435,8 @@ private:
     float kick_[3] = {0, 0, 0};
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
+    bool scopeBlocked_ = false;   // DF2: dead, airborne, swimming or on a ladder (0x455790)
+    mutable int magLevel_ = 0;    // GOG Df2.exe [0x79a698] (0x44e6a0 writes its clamps back)
     std::vector<Projectile> bullets_;
     Tracers tracers_;
     uint32_t df1TracerColour(const Projectile& b, const World& world) const;

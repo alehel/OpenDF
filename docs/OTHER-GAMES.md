@@ -447,7 +447,10 @@ First differences from DF1:
     RunningN (Running0 6.0 m/s against Running0_2HW's 5.0), _S only for
     the two hand classes; still: BIN 0x200, SLW 0x10, SCW with the scope
     in (standing), 2HW 8, 1HW 4, else KNIFE (prone: 1HW). The scope
-    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18), while
+    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18; GOG
+    0x455790 also while dead, airborne, swimming or on a ladder, +0x64 &
+    0x422004, and in an outside view, the same test gating the zeroing and
+    magnification keys), while
     the shot's origin and the designator take 0x447b40 alone; the mouse
     turns at an eighth while the inset shows (0x41ae13). DF1's [0x93353c]
     is the same (AUDIT G5), hidden while moving or with the binoculars up
@@ -485,7 +488,12 @@ First differences from DF1:
     0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
     in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
-    DF1's 28 / mag whole degrees;
+    DF1's 28 / mag whole degrees. GOG Df2.exe's mag for slots 3-5 is the
+    stored power [0x79a698] (0x44e6a0: at least 2 for a scoped mode, at
+    most its scope; set to the slot-3 mode's scope at the mission start,
+    0x44eeb0), stepped by scopemag E (Shift+E down; 0x44c7e0: past the
+    scope wraps to 2, under 2 to the full scope) and shown as "%2ix" in
+    yellow at (700, 480) (0x455be0);
     night vision (key N, on at the start of night missions: 0x44781e) as an
     ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
     scope image green ×4 at night. DF2 has no "Player Health: Easy".
@@ -553,7 +561,7 @@ First differences from DF1:
     1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
-    attack_1 and attack_2 (GOG 0x441140; PrintScreen, scopemag and the Von*
+    attack_1 and attack_2 (GOG 0x441140; PrintScreen and the Von*
     commands have no game-side action in OpenDF yet). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits

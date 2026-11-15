@@ -27,6 +27,9 @@ enum class Action {
     MapTerrain, MapElevation,
     // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
     VCam,
+    // GOG Df2.exe: the scope's magnification step (scopemag, E; Shift+E
+    // down; command 0x61 -> 0x44c7e0).
+    ScopeMag,
     Count
 };
 

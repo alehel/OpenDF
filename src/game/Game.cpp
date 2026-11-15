@@ -932,6 +932,7 @@ bool Game::loadMission(int index) {
                 const std::string* t = gameTable_.find("HudGuns", key);
                 hudGuns.push_back(t ? *t : std::string());
             }
+            arsenal_.resetScopeMag();   // GOG Df2.exe 0x44e7f0 clears [0x79a698]
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
@@ -2985,6 +2986,7 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
+    case Action::ScopeMag: arsenal_.magStep((k.keysym.mod & KMOD_SHIFT) ? -1 : 1); break;   // GOG Df2.exe 0x41f150 case 0x61
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
@@ -4092,6 +4094,12 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the raw scope power [0x79a698] as
+                // "%2ix" (0x4cc418) at (700, 0x1e0) in the same colour.
+                if (arsenal_.df2Gog()) {
+                    std::snprintf(buf, sizeof buf, "%2ix", arsenal_.magLevel());
+                    hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
+                }
             }
         }
         drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
@@ -6474,6 +6482,7 @@ int Game::run() {
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
             const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
             arsenal_.setMoveKeys(moveKeys);
+            arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.swimming() || player_.onLadder());   // GOG Df2.exe 0x455790
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
