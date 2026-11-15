@@ -34,6 +34,7 @@ approximation), **todo** = not checked yet.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | V1 | Crosshair | fixed | bright green one-pixel arms 4..10 / 5..11 from the centre (0x401f94) |
+| V1b | Break X (team-mate identification) | fixed | GOG Df.exe 0x402300 (main view) and 0x466090 (scope, 0x46662c): the pick 0x45f740 from the player's origin 0.75 m up along yaw and pitch finds the first person of the player's side (not the player, not +0x6c & 2) between 1/256 m and the centre depth + 2 m and within 2 m of the ray (0x477670's approximate length); unless attributes 0x2000 (Break X off), four red diagonals from 15 to 5 (virtual 1024x768) off the centre and the AI's name centred at y 339; in the scope inset diagonals r/2 to r/4 and the name at the inset centre. With the crosshairs on or off; none outside the first-person view ([0x6ba3ec]). Was not drawn |
 | V2 | Bullet impacts (puffs) | fixed | invented puffs replaced by DF.EXE effect objects: see X6 |
 | V3 | Gun bob, reload lowering, recoil push, muzzle flash time | fixed | see V2b |
 | V6 | Water | fixed | DF.EXE 0x431b3e/0x431d04/0x43bfd8/0x43bd7a/0x43c500: none when TRN water_height is 0; pixel = T[(1−op)·lum + op·4r] with lum = (R+2G+B)/4 of what is already drawn, r = water texel >> 2, T = 256-step gradient from water palette entries 0..15 (through the TRN colour pipeline); 16 texels/m, waves warp ±4 texels (period 16 m, phase 2 table entries per tick); no fog; drawn last, out to 1023 m; under water the whole view is tinted through r = 0. Verified on C02M03 |
