@@ -233,6 +233,13 @@ private:
     // ([0xbf2b44], hideObject_).
     void df2FoNext();
     void drawDf2FoInset(const Screen& s);
+    // Delta Force 2's picture-in-picture ([0x67cd10], pinp F8; CD
+    // [0x652fc8]): in an outside view the player's own first-person view in
+    // the inset rectangle (GOG 0x456480, CD 0x44eaf0), ahead of the video
+    // camera and FO insets; it also lets the scope show there (0x455790).
+    bool pinp_ = false;
+    bool pinpShown() const { return df2Hud_.on && pinp_ && outsideView() != 0; }
+    void drawDf2PinpInset(const Screen& s);
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -3858,6 +3865,7 @@ void Game::runAction(Action act, bool reverse) {
     // fo / tab: Delta Force's FO camera (GOG Df.exe 0x477d40 ids 0x1e / 0x1f
     // -> 0x484a50); Delta Force 2's Forward Observer (GOG Df2.exe 0x41f150
     // cases 0x14 / 0x15 -> 0x44e590), which also turns the night vision off.
+    case Action::PicInPic: if (df2Hud_.on) pinp_ = !pinp_; break;   // GOG Df2.exe 0x41f150 case 0x13
     case Action::FoCamera:
         if (df2Hud_.on) nvg_ = false;
         foOn_ = !foOn_;
@@ -4644,7 +4652,23 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    // In an outside view (with picture-in-picture on, 0x455790) the scope
+    // still looks from the player's eye along his aim (0x4557e0 builds its
+    // camera from the player), his body left out.
+    const bool outside = df2Hud_.on && outsideView() != 0;
+    const Vec3 fpEye = player_.eye(), fpDir = player_.forward();
+    const Mat4 insetView = outside ? lookDir(fpEye, fpDir, {0, 1, 0}) : view;
+    if (outside) {
+        eyeOverride_ = &fpEye;
+        dirOverride_ = &fpDir;
+        foPlayer_ = true;
+    }
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * insetView : insetView, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    if (outside) {
+        eyeOverride_ = nullptr;
+        dirOverride_ = nullptr;
+        foPlayer_ = false;
+    }
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
@@ -4664,7 +4688,7 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
 // ([0x79a6c0] / [0x79a6bc]), FOV 0x5a0000 (90 degrees across), into x
 // 0x2c0..0x3c0, y view top + 0x40..+0x100 of the 1024x768 frame.
 void Game::drawCameraInset(const Screen& s) {
-    if (!arsenal_.cameraView() || scopeShown() || showMap_) return;
+    if (!arsenal_.cameraView() || scopeShown() || showMap_ || pinpShown()) return;
     const int c = arsenal_.camera();
     if (c < 0 || size_t(c) >= world_.objects.size() || world_.objects[size_t(c)].removed) {
         arsenal_.clearCameraView();
@@ -4818,8 +4842,47 @@ void Game::df2FoNext() {
 // 1024x768 frame, x rounded down to 4 pixels, the target itself not drawn
 // ([0xbf2b44]); then a one-pixel 0xff8000 outline and the target's name
 // (+0x54) at (x0 + 10, y1 + 10) in frame pixels (0x4577f0 flag 0).
+// GOG Df2.exe 0x465f90 -> 0x456480 (CD 0x45c610 -> 0x44eaf0), composited by
+// 0x4559d0(.., 0): unless the scope shows, in an outside view with
+// picture-in-picture on and the player alive (+0x64 & 4), the view from the
+// player's eye ([0x79a688] above the origin) with his yaw and pitch, FOV
+// 0x5a (90 degrees across), as the main first-person view ([0xbf2b40] 0,
+// the player the camera object: his body not drawn, no weapon), in x
+// 0x2c0..0x3c0 (rounded down to 4 pixels), y view top + 0x40..+0x100;
+// outlined in [0x67d37c], no name.
+void Game::drawDf2PinpInset(const Screen& s) {
+    if (!pinpShown() || scopeShown() || showMap_ || playerDead()) return;
+    const float k = s.art();
+    const float x0 = std::floor(std::floor(s.vx(0x2c0) / k) / 4.f) * 4.f * k, x1 = std::floor(std::floor(s.vx(0x3c0) / k) / 4.f) * 4.f * k;
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const Vec3 eye = player_.eye(), fwd = player_.forward();
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    foPlayer_ = true;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    foPlayer_ = false;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float px = std::max(1.f, k);
+    hud_.rect(x0, y0, w, px, kDf2Amber);
+    hud_.rect(x1, y0, px, h + px, kDf2Amber);
+    hud_.rect(x0, y1, w, px, kDf2Amber);
+    hud_.rect(x0, y0, px, h, kDf2Amber);
+    hud_.end();
+}
+
 void Game::drawDf2FoInset(const Screen& s) {
-    if (!foOn_ || arsenal_.cameraView() || scopeShown() || showMap_) return;
+    if (!foOn_ || arsenal_.cameraView() || scopeShown() || showMap_ || pinpShown()) return;
     const WorldObject* t = nullptr;
     if (foTarget_ >= 0) {
         if (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed) { foOn_ = false; return; }
@@ -8165,6 +8228,7 @@ int Game::run() {
         if (!sound_.init(vfs_, &exe_, &audio_, &sndErr, &df2Exe_)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
+        pinp_ = o_.df2PicInPic;   // GOG Df2.exe 0x43c280
         gunVisible_ = o_.showGun;   // GOG 0x407a90: [0x67f514] = showgun
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
@@ -8463,7 +8527,7 @@ int Game::run() {
             // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004 (dead,
             // airborne, swimming, on a ladder) and an outside view.
             arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder() ||
-                                     outsideView() != 0);   // [0xbf2b40] with picture-in-picture [0x67cd10] off
+                                     (outsideView() != 0 && !pinp_));   // [0xbf2b40] with picture-in-picture [0x67cd10] off
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
@@ -9064,6 +9128,7 @@ int Game::run() {
                     drawDf2Waypoints3d(s, proj * view);
                     hud_.end();
                     drawZoomInset(s, view, fovY);
+                    drawDf2PinpInset(s);
                     drawCameraInset(s);
                     drawDf2FoInset(s);
                     glViewport(0, 0, dw, dh);

@@ -730,10 +730,15 @@ First differences from DF1:
     (pitch -67.5..90 degrees) and zoom (1/8 m a tick, 1..500 m). Dead, the
     chase view is forced with the yaw tick << 21 (0x465f90). Outside
     views draw the player's body and hide the gun, crosshair and target
-    ID; the scope does not show (0x455790) and the listener is the camera
-    (0x418c80). Not done: the body's held weapon, rounds from the gun's
-    muzzle (0x44dd50 -> 0x416f60) and picture-in-picture (pinp, F8,
-    [0x67cd10]). Page 4 "Voice-over-net": drawn from the
+    ID; the scope does not show (0x455790) unless picture-in-picture is
+    on, and the listener is the camera (0x418c80). Picture-in-picture
+    (pinp, F8, [0x67cd10] from df2.cfg picinpic, 0x43c280; CD [0x652fc8]):
+    in an outside view the player's own first-person view (FOV 90, his body
+    and gun not drawn) in the inset rectangle with an amber outline and no
+    name (0x456480 / CD 0x44eaf0), ahead of the video camera and FO insets,
+    not while the scope shows (its inset then looks from the player's eye)
+    or the player is dead. Not done: the body's held weapon, rounds from
+    the gun's muzzle (0x44dd50 -> 0x416f60). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
     (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`

@@ -45,6 +45,9 @@ enum class Action {
     // Delta Force 2's audio macros list (AudioMacros, A; GOG Df2.exe
     // 0x41f150 case 0x20, CD 0x41b1e0 case 0x2b).
     AudioMacros,
+    // Delta Force 2's picture-in-picture (pinp, F8; GOG Df2.exe 0x41f150
+    // case 0x13 toggles [0x67cd10]).
+    PicInPic,
     Count
 };
 

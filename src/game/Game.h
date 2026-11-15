@@ -74,6 +74,9 @@ struct GameOptions {
     // Delta Force 2: the scope sensitivity [0x67ccfc] (soldier +0x5d8 +
     // 0x80, GOG Df2.exe 0x43c352), the scoped mouse turn rate (0x41eb50).
     int df2ScopeSens = 0x80;
+    // Delta Force 2: df2.cfg CONTROLS picinpic, the picture-in-picture flag
+    // at mission start (GOG Df2.exe 0x43c280: [0x67cd10] = [0x4f29a8]).
+    bool df2PicInPic = false;
     // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
     // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
     int displayGamma = 128;
