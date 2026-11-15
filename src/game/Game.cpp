@@ -3610,8 +3610,9 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
-    // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.
-    if (df2Hud_.on && (mission_.lightFlags & 0x10)) {
+    // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
+    // the scope image is green only, ×4 (paddusb twice, & 0xff00).
+    if (df2Hud_.on && nvg_) {
         hud_.begin(int(s.w), int(s.h));
         hud_.nightVision(cx, cy, r, 1.f);
         hud_.end();
@@ -6982,7 +6983,9 @@ int Game::run() {
                     drawZoomInset(s, view, fovY);
                     drawCameraInset(s);
                     glViewport(0, 0, dw, dh);
-                    if (nvg_ && !showMap_) {
+                    // GOG Df2.exe 0x465fde: the scoped path (0x455be0 at
+                    // 0x4662dd, JMP 0x4662ef) skips the night vision 0x450550.
+                    if (nvg_ && !showMap_ && !scopeShown()) {
                         hud_.begin(dw, dh);
                         hud_.nightVision(s.w * 0.5f, s.playY + s.playH * 0.5f, float(s.modeW) * 5.f / 32.f * s.art());
                         hud_.end();
