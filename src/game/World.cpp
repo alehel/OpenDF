@@ -124,7 +124,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
     };
     const float ext = extent();
     for (const auto& mo : mission.objects) {
-        if (mo.absent) continue;   // not created (GOG Df.exe 0x449710)
+        if (mo.omitted) continue;
         const ItemDef* item = items.byMissionType(mo.type);
         if (!item || item->graphic.empty() || item->type == "effect") continue;
         WorldObject o;
