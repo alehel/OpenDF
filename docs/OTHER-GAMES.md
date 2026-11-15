@@ -926,9 +926,17 @@ First differences from DF1:
     person within 2 m, the player too) with effect 0x10 and
     ENV_PIRANHA_BITE every time, backing off at -4 m/s; destroyed: belly
     up, rising to just under the surface (no husk: it stays drawn).
+    Bird trees `btre` (fir_bird; think 0x42d170 every 0x40 ticks): after a
+    rest of 10 thinks, the scan 0x42b070 (people of another side, not side
+    0, alive, no field of view or sight line: 5 / whole metres × move
+    visibility × 8, × 64 if they fired lately) over 16 flushes three
+    sparrows (item 104051, 0x414850) 4 m above the tree at random yaws a
+    quarter turn apart with ENV_SPARROW_CALL; a sparrow `spar` (think
+    0x42d030, move 0x42d0d0) speeds up 0x4000 a think to 3 m/s along its
+    yaw, climbs speed >> 7 a tick and is removed above 100 m.
     INFERRED: the first think staggered as the markers' (+11 a record % 60);
-    the penguin's flipper / foot phases and the vulture's wing beat (+0xB0)
-    are not drawn;
+    the penguin's flipper / foot phases, the vulture's wing beat (+0xB0)
+    and the sparrow's swing (+0xB0, reader not located) are not drawn;
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
     and the player and teleported teams at a start or teleport marker more
     than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe
@@ -1125,9 +1133,18 @@ First differences from DF1:
     than 0x40 ticks of continuous sight (0x401a8f); the scan interval by
     +0xAC, the player's distance (1024 m unless in the field of view,
     0x417830) stored whenever the scan returns a candidate, before the
-    draw (0x401de5 / 0x401efe): 62 / 124 / 372, or 248 when alert; the ghillie suit hides a crouched or prone
-    player who has not fired beyond 50 m and halves visibility within
-    (0x415a69); BMS flag bits 0x800/0x1000/0x2000/0x4000 → attack everyone
+    draw (0x401de5 / 0x401efe): 62 / 124 / 372, or 248 when alert; the
+    scan's distance is the whole metres of 0x41e880 between the body
+    origins (100 / d, 100 at 0, under 1000; 0x417830), the sight line from
+    1 m up; a spot sets only the target (no last known position, unseen
+    time or 0x80, which the next sight check fills), relaxed: think in
+    0x10 (0x401f5d), alert: marked spotted at once (0x401e00); the
+    ghillie suit hides a crouched or prone player who has not fired at 51
+    m or more and halves visibility within (0x415a69); noise boxes are
+    cleared every 0x1b3 ticks and the fired flags every 0x1f1 (0x45fc50,
+    counters kept across missions); the sight lines' terrain test is
+    0x46e740 (1 m vertex steps on the word grid, 19 bilinear 1/16 m steps
+    from 1 m back where a point is not above it); BMS flag bits 0x800/0x1000/0x2000/0x4000 → attack everyone
     / (movement) / avoid water over 0.25 m / deaf; flag 1 blocks
     acquisition; script properties 16-19 set or clear them and 2/3/4/14/15
     can clear; night lowers perception 0.15; alert soldiers no longer turn

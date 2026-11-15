@@ -23,6 +23,18 @@ float octagonal(Vec3 a, Vec3 b) {
 
 float len3(Vec3 v) { return std::sqrt(dot(v, v)); }
 
+// 0x41e880 of |dx|, |dy|, |dz| in 16.16: max + 11/32 mid + 1/4 min, with
+// the EXE's 32-bit wrap (done unsigned) and arithmetic shifts.
+int32_t approx16(Vec3 v) {
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    int32_t a = std::abs(fx(v.x)), b = std::abs(fx(v.z)), c = std::abs(fx(v.y));
+    if (a < b) std::swap(a, b);
+    if (a < c) std::swap(a, c);
+    if (b < c) std::swap(b, c);
+    const int32_t mid = int32_t(uint32_t(b) * 11u) >> 5;
+    return int32_t(uint32_t(a) + uint32_t(mid) + uint32_t(c >> 2));
+}
+
 } // namespace
 
 void AiSystem::init(World& world, const Mission& mission) {
@@ -189,6 +201,8 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
             *deadFriendAlert = 2;
         }
     }
+    // DF2's person scan (0x417830; Vehicles' scans pass no dead-friend alert).
+    const bool org = df2 && deadFriendAlert;
     auto consider = [&](int id, Vec3 at, int side, int move, bool fired, bool targetsPlayer) {
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "scan %d side %d cand %d side %d\n", selfId, self.side, id, side);
         // DF2 ai flag 0x200: everyone is a target, own side and side 0 too.
@@ -215,8 +229,21 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
             const float m = float(sum >> 16);
             if (m < *nearPlayer) *nearPlayer = m;
         }
-        const float d = len3(tp - eye);
-        if (d >= 1000.f || d < 0.01f) return;
+        // DF2's person scan (GOG Df2.exe 0x417830): the distance is the
+        // whole metres of 0x41e880(|dx|, |dy|, |dz|) between the body
+        // origins (the +1 m eye only for the sight line), 100 / d as 16.16
+        // (100 at 0), under 1000.
+        float d, inv;
+        if (org) {
+            const int32_t m = approx16(tp - bodyAt) >> 16;
+            if (m >= 1000) return;
+            d = float(m);
+            inv = float(m == 0 ? 0x640000 : 0x640000 / m) / 65536.f;
+        } else {
+            d = len3(tp - eye);
+            if (d >= 1000.f || d < 0.01f) return;
+            inv = 100.f / d;
+        }
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  in fov, d %.1f\n", d);
         // Visible: 1 or 2, i.e. at most one see-through face (0x46a804).
         if (const int r = sightLine(world, eye, tp, selfId, id); r < 1 || r > 2) return;
@@ -225,11 +252,13 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
         // DF2's ghillie suit (0x415a69): the player in it (kit 32), crouched
         // or prone (visibility <= 0.5) and not firing lately: unseen beyond
         // 50 m, half as visible within.
+        // (0x417830 tests the candidate's ai+0xb8, set for the player only
+        // outside multiplayer; the cut-off is whole metres d < 0x33.)
         if (df2 && id == -3 && playerGear == 32 && vis <= 0.5f && !fired) {
-            if (d > 50.f) return;
+            if (org ? d >= 51.f : d > 50.f) return;
             vis *= 0.5f;
         }
-        float score = (half - std::abs(diff)) / half * (100.f / d) * vis * (fired ? 6.f : 1.f);
+        float score = (half - std::abs(diff)) / half * inv * vis * (fired ? 6.f : 1.f);
         // DF2 "cover me" (GOG Df2.exe 0x417830, after the x6 term): with the
         // scanner's order (+0xbb) 2, a candidate whose AI target is the
         // player scores twice.
@@ -271,10 +300,12 @@ float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, i
         const int32_t tpi = int32_t(int64_t(std::llround(double(std::atan2(d.y, horiz)) / (2 * kPi) * 4294967296.0)));
         const int dyaw = std::abs(int32_t(ty - yaw)) >> 24, dpitch = std::abs(int32_t(uint32_t(tpi) - uint32_t(pitch))) >> 24;
         if (dyaw > 0x10 || dpitch > 0x10) return;
-        const float dist = len3(d);
-        if (dist >= 1000.f || dist < 0.01f) return;
+        // Whole metres of 0x41e880(|dx|, |dy|, |dz|) from the light's
+        // origin, 100 / d as 16.16 (100 at 0), under 1000 (GOG 0x42aa10).
+        const int32_t dist = approx16(d) >> 16;
+        if (dist >= 1000) return;
         if (const int r = world.sight(at, tp, self, id); r < 1 || r > 2) return;
-        float score = (100.f / dist) * float(16 - dyaw) / 16.f * moveVisibility(move) * (fired ? 6.f : 1.f) * (isPlayer ? 1.f : 2.f);
+        float score = float(dist == 0 ? 0x640000 : 0x640000 / dist) / 65536.f * float(16 - dyaw) / 16.f * moveVisibility(move) * (fired ? 6.f : 1.f) * (isPlayer ? 1.f : 2.f);
         if (score > best) best = score, bestId = id, bestPos = tp;
     };
     if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, true);
@@ -438,11 +469,15 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player, SoundSyst
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d (team %d) spots %d at %.0f m, score %.3f\n", p.object, self.team, bestId, len3(bestPos - eye), score);
     p.target = bestId;
+    p.flags &= ~0x40u;
+    // DF2's spot (GOG Df2.exe 0x401e05 alert / 0x401f43 relaxed) stores only
+    // the target and clears 0x40: the last known position, the unseen and
+    // seen times and 0x80 are left to the has-target sight check.
+    if (df2) return true;
     p.lastKnown = bestPos;
     p.unseen = 0;
     p.seen = 0;
     p.flags |= 0x80;
-    p.flags &= ~0x40u;
     return true;
 }
 
@@ -680,7 +715,8 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                     alertTeam(o.team);
                     p.state = 2;
                     p.stateTimer = 0;
-                    p.think = 8;
+                    // DF2 thinks again in 0x10 (GOG Df2.exe 0x401f5d).
+                    p.think = df2 ? 16 : 8;
                     return;
                 }
             }
@@ -696,6 +732,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             if (p.scanTimer >= (df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 248) : 0xf8)) {
                 p.scanTimer = 0;
                 if (scan(world, p, player, sound)) {
+                    // DF2 marks the spot at once (GOG Df2.exe 0x401e00:
+                    // 0x41ac00(own team, target team)).
+                    if (df2) markSpotted(o.team & 63, (p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
                     p.state = 2;
                     p.stateTimer = 0;
                     p.think = 8;
@@ -981,8 +1020,19 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
     ++ticks_;
     // Noise boxes are cleared every 0x1b2 ticks (0x4459e8), the "fired"
     // flags every 0x1f0 (0x4473bc).
-    if (ticks_ % 0x1b2 == 0) noise_.clear();
-    if (ticks_ % 0x1f0 == 0) {
+    // DF2 counts each up and clears once it passes 0x1b2 / 0x1f0 (GOG
+    // Df2.exe 0x45fc50: [0x67fff8] -> 0x4156a0, [0x67fff4] -> 0x45adc0),
+    // every 0x1b3 / 0x1f1 ticks, the counters kept across missions.
+    bool clearNoise, clearFired;
+    if (df2) {
+        if ((clearNoise = ++noiseTick_ > 0x1b2)) noiseTick_ = 0;
+        if ((clearFired = ++firedTick_ > 0x1f0)) firedTick_ = 0;
+    } else {
+        clearNoise = ticks_ % 0x1b2 == 0;
+        clearFired = ticks_ % 0x1f0 == 0;
+    }
+    if (clearNoise) noise_.clear();
+    if (clearFired) {
         playerFired_ = false;
         for (auto& p : people_) p.fired = false;
     }
