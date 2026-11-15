@@ -591,9 +591,10 @@ either one byte with bit 7 set, an index (bits 0..6) into a 128-entry
 cache cleared at the start of every frame (0x487e61), or 3 bytes: blue =
 first byte << 1 (7 bits), green, red. The literal colours of type 1 and 2
 blocks go into the cache at a rolling index (0, 1, ... 127, 0); type 0's
-do not. In types 0 and 1 a pixel whose red byte is 0 is not written; a
-type 2 block is not written when its colour is 0, 0, 0 (so real black is
-coded as red 1). DF.EXE has a second path for 16-bit displays (0x48859d,
+do not. A pixel (types 0 and 1) or a type 2 block whose colour is 0, 0, 0
+is not written (so real black is coded as red 1): DF.EXE decodes into a
+32-bit target on any display of 24 bits or more (GOG 0x4913ec, 0x492725)
+and tests the whole colour dword. DF.EXE has a second path for 16-bit displays (0x48859d,
 the same stream converted to 16 bits); its 8-bit and 24-bit paths are the
 ones that match the files.
 
