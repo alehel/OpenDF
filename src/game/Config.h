@@ -1,6 +1,7 @@
 // df.cfg: DF.EXE's settings file. Defaults as 0x40dab8, read line by line
-// as "key = value" (lines starting with '/' skipped; 0x454e10, 0x40d1e4),
-// written at program exit in DF.EXE's own layout (0x40dc88).
+// as tokens "key = value" (GOG 0x4568e0 / 0x4565f0, lines starting with '/'
+// skipped; 0x406640), written at program exit in DF.EXE's own layout
+// (0x40dc88).
 #pragma once
 
 #include <filesystem>
@@ -15,6 +16,8 @@ public:
     // Delta Force 2's df2.cfg: DF2.EXE's keys, defaults (0x436ab0) and
     // write order (0x436cd0).
     static DfConfig df2();
+    // The GOG Df.exe's df.cfg (0x407120 defaults, 0x407360 write order).
+    static DfConfig df1Gog();
     bool load(const std::filesystem::path& file);
     bool save(const std::filesystem::path& file) const;
     int get(const std::string& key) const;
@@ -26,6 +29,7 @@ private:
         bool text = false;
         int value = 0;
         std::string str;
+        std::string label;   // a text key's text before " = " when not the key padded to 16
     };
     Entry* find(const std::string& key);
     const Entry* find(const std::string& key) const;

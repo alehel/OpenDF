@@ -2352,7 +2352,9 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
 int Frontend::run() {
     if (!loadData()) { std::fprintf(stderr, "cannot read DF.MNU\n"); return 1; }
     loadProfiles();
-    // df.cfg: read at start (0x454e10), written at exit (0x40dc88).
+    // df.cfg: read at start (0x454e10), written at exit (0x40dc88); the
+    // GOG Df.exe's key set and defaults (0x407120, 0x407360).
+    if (gogProfile_) cfg_ = DfConfig::df1Gog();
     cfg_.load(o_.gameDir / "df.cfg");
     options_ = uint32_t(cfg_.get("attributes"));
     gpsIcons_ = std::clamp(cfg_.get("gpsicon"), 0, 2);
@@ -2540,9 +2542,14 @@ int Frontend::run() {
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.showGun = cfg_.get("showgun") != 0;
                 g.flipMouse = cfg_.get("flipmouse") != 0;
-                g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
-                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
-                g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
+                // 0x407a90 passes df.cfg's values on unclamped (0x406640
+                // stores atoi's result as it is). The +-2^20 bound is
+                // OpenDF's guard against overflow: the dialog gain and the
+                // gamma table already saturate far inside it.
+                constexpr int kRaw = 1 << 20;
+                g.mouseScale = cfg_.get("mousescale");
+                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), -kRaw, kRaw);
+                g.displayGamma = std::clamp(cfg_.get("gamma"), -kRaw, kRaw);
                 g.letterbox = std::clamp(cfg_.get("window_size"), 1, 2);   // 0x407a90, 0x404ba0
                 // 0x41cca0 (GOG 0x41ce20): the profile's 44 (GOG 46: +0x8b0
                 // PrevWaypoint, +0x8bc server; row 28 named AudioMacros)
