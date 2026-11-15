@@ -44,6 +44,10 @@ public:
     float floatOrigin = 0.1489f, swimOrigin = 0.3184f;
 
     void update(float dt, const PlayerInput& in, const World& world);
+    // Delta Force: the Crouch / Prone / Stand commands are latched (GOG
+    // Df.exe 0x477d40: 0xa1 [0xc23a04], 0xa2 [0xc23a08], 0xa4 [0xc23a0c])
+    // and taken in update's on-ground branch (0x488200).
+    void requestStance(Stance s) { (s == Stance::Crouch ? reqCrouch_ : s == Stance::Prone ? reqProne_ : reqStand_) = true; }
     float landOrigin() const;
     // Effect slots spawned since the last call (water entry splash), with
     // their position.
@@ -103,6 +107,8 @@ private:
     float originY_ = 0, eyeOffset_ = 0;
     std::vector<Spawn> spawns_;
     bool sliding_ = false;
+    bool reqCrouch_ = false, reqProne_ = false, reqStand_ = false;
+    bool jumpArmed_ = true;          // DF1 GOG [0xc23a10]: set while the jump key is up (0x4795a0)
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)
     float vy_ = 0;
     float landingSpeed_ = 0;
