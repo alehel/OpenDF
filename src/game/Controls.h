@@ -27,6 +27,9 @@ enum class Action {
     MapTerrain, MapElevation,
     // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
     VCam,
+    // Delta Force: the squad-mate inset on/off (pinp, F8, command 0x1e)
+    // and its next squad mate (fo, F9, command 0x1f; GOG Df.exe 0x477d40).
+    SquadInset, SquadCycle,
     Count
 };
 

@@ -187,6 +187,13 @@ private:
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
+    // Delta Force's squad-mate inset (GOG Df.exe 0x466d90, from 0x404640).
+    void drawSquadInset(const Screen& s);
+    void cycleSquadInset();
+    bool squadInset_ = false;                 // [0xc23a34]
+    int squadTarget_ = -1;                    // [0xc23a38]: world object, -1 the player, -2 none
+    const WorldObject* hiddenObject_ = nullptr;   // [0x6ba3f0] with camera mode 0: not drawn (0x4854d0)
+    float insetFocal_ = 0;                    // an inset's own focal length for rings and LODs (0 = none)
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -2944,6 +2951,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Weapon9: arsenal_.select(9); break;
     case Action::Cycle: arsenal_.cycle(); break;
     case Action::VCam: arsenal_.toggleCameraView(); break;   // GOG Df2.exe 0x41f150 case 0x28
+    // GOG Df.exe 0x477d40: 0x1e flips [0xc23a34]; 0x1f cycles (0x484a50) only while it is on.
+    case Action::SquadInset: if (!df2Hud_.on) squadInset_ = !squadInset_; break;
+    case Action::SquadCycle: if (!df2Hud_.on && squadInset_) cycleSquadInset(); break;
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
@@ -3030,7 +3040,7 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     const Vec3 eye = viewEye();
     // Terrain rings scale with the original's focal length: F = 320 per 640
     // pixels of its display mode, or the scope view's own focal length.
-    terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
+    terrain_.ringScale = insetFocal_ > 0 ? insetFocal_ / 320.f : zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
     terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
     // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
     // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
@@ -3124,7 +3134,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         return depth >= -sr && depth + sr <= 4080.f;
     };
     for (const auto& o : world_.objects) {
-        if (o.removed) continue;
+        if (o.removed || &o == hiddenObject_) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
         const float depth = dot(d, fwd);
@@ -3682,6 +3692,89 @@ void Game::drawCameraInset(const Screen& s) {
     dirOverride_ = nullptr;
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
+}
+
+void Game::cycleSquadInset() {
+    // GOG Df.exe 0x484a50: from the current target ([0xc23a38]; the player
+    // at mission start, 0x4829f0), the next organic in use on the player's
+    // side whose item has attrib FO (def +0x24 & 8) and not +0x6c & 2,
+    // wrapping round to the current one; none: no target. (OpenDF keeps
+    // the player out of the object list: he sits before the first.)
+    auto eligible = [&](const WorldObject& o) {
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int from = squadTarget_ >= 0 ? squadTarget_ : -1;
+    for (int i = from + 1; i < n; ++i)
+        if (eligible(world_.objects[size_t(i)])) { squadTarget_ = i; return; }
+    for (int i = 0; i <= from && i < n; ++i)
+        if (eligible(world_.objects[size_t(i)])) { squadTarget_ = i; return; }
+    squadTarget_ = -2;
+}
+
+void Game::drawSquadInset(const Screen& s) {
+    // GOG Df.exe 0x404640: with no scope inset, the squad inset when on
+    // (picinpic with an external camera would show 0x466b70 instead;
+    // OpenDF has no external camera). 0x466d90: no target turns it off;
+    // drawn only while the player is alive: the box x 0x2c0..0x3c0 (& ~3),
+    // y dba0 + 0x40 .. + 0x100 (virtual 1024x768), the target's view from
+    // its position raised by the player's eye height ([0xc23a18]) with its
+    // own angles, FOV 90 across the box, rings 2.2 / 2.2, the target not
+    // drawn; then a frame and the target's name at (0x2d4, dba0 + 0x114),
+    // both in the bright HUD green ([0x67db5c]).
+    if (!squadInset_ || df2Hud_.on || scopeShown()) return;
+    if (squadTarget_ == -2 || (squadTarget_ >= 0 && (size_t(squadTarget_) >= world_.objects.size() || world_.objects[size_t(squadTarget_)].removed))) {
+        squadInset_ = false;
+        return;
+    }
+    if (playerDead()) return;
+    const float x0 = float(int(s.vx(0x2c0)) & ~3), x1 = float(int(s.vx(0x3c0)) & ~3);
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeHeight = player_.eye().y - player_.feet.y;
+    Vec3 eye, fwd;
+    std::string name;
+    const WorldObject* target = nullptr;
+    if (squadTarget_ < 0) {
+        eye = player_.eye();
+        fwd = player_.forward();
+        name = o_.soldierName;
+    } else {
+        target = &world_.objects[size_t(squadTarget_)];
+        eye = target->pos + Vec3{0, eyeHeight, 0};
+        const float yaw = target->heading, pitch = target->aimPitch;
+        fwd = {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+        if (target->missionIndex >= 0 && size_t(target->missionIndex) < mission_.objects.size()) {
+            char key[16];
+            std::snprintf(key, sizeof key, "NAMEID%03d", int(mission_.objects[size_t(target->missionIndex)].raw[1]));
+            if (const std::string* nm = campText_.find("People Names", key)) name = *nm;
+        }
+    }
+    const float fovY = 2 * std::atan(h / w);   // 90 degrees across the width
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hiddenObject_ = target;
+    insetFocal_ = 0.5f * (w / s.u) * float(hudMode_ ? hudMode_ : 640) / 640.f;   // (box width / 2) / tan 45, mode pixels
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    insetFocal_ = 0;
+    hiddenObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float t = s.px();
+    hud_.rect(x0, y0, w, t, kHudBright);
+    hud_.rect(x0, y1 - t, w, t, kHudBright);
+    hud_.rect(x0, y0, t, h, kHudBright);
+    hud_.rect(x1 - t, y0, t, h, kHudBright);
+    if (!name.empty()) hud_.text(s.vx(0x2d4), s.playY + s.vy(0x114), name, kHudBright, s.text());
+    hud_.end();
 }
 
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
@@ -7037,6 +7130,7 @@ int Game::run() {
                     drawViewModel(s);
                     if (underWater) terrain_.tintUnderwaterOver(viewEye());
                     drawZoomInset(s, view, fovY);
+                    drawSquadInset(s);
                 }
                 glViewport(0, 0, dw, dh);
                 if (!o_.noHud) drawHud(s, proj * view);
