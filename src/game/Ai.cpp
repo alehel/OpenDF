@@ -31,7 +31,7 @@ void AiSystem::init(World& world, const Mission& mission) {
     noise_.clear();
     teamAlert_.fill(0);
     spotted_.fill(0);
-    engaging_.fill(false);
+    engaging_.fill(0);
     reached_.clear();
     teamSpeed_.fill(0);
     ticks_ = 0;
@@ -79,7 +79,11 @@ void AiSystem::init(World& world, const Mission& mission) {
         p.think = 1 + stagger % 60;
         stagger += 11;
         p.lastHp = o.hp;
-        if (p.alert == 2 && o.team >= 0 && o.team < 64) teamAlert_[size_t(o.team)] = 2;
+        // Delta Force: the record's alert goes only into ai+0x9c (GOG Df.exe
+        // 0x449710); the team alert [0x7936a4] has one writer, 0x44a3e0, from
+        // run-time code only (alarm boxes 0x45fd90, hearing 0x45e280, hits
+        // 0x464c50).
+        if (df2 && p.alert == 2 && o.team >= 0 && o.team < 64) teamAlert_[size_t(o.team)] = 2;
         o.weaponMode = p.weapon;
         people_.push_back(p);
         world.requestMove(o, idleMove(world, p));
@@ -538,8 +542,11 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                 p.scanTimer = 0;
                 if (scan(world, p, player)) {
                     bark(world, p, sound, 3);
-                    spotted_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
-                    engaging_[size_t(o.team & 63)] = true;
+                    // GOG Df.exe 0x45bd90 / 0x45bda6: 0x42edd0 and 0x42ee00
+                    // (own team, target team) set the spotted and engaged bits.
+                    const int tt = (p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63;
+                    spotted_[size_t(o.team & 63)] |= 1ull << tt;
+                    engaging_[size_t(o.team & 63)] |= 1ull << tt;
                     p.alert = 2;
                     alertTeam(o.team);
                     p.state = 2;
@@ -581,7 +588,8 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     }
 
     // Has a target.
-    engaging_[size_t(o.team & 63)] = true;   // 0x45c918
+    // 0x45c918 (GOG Df.exe 0x45b643: 0x42ee00(own team, target team)).
+    engaging_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
     if (!targetAlive(world, p, player)) {
         // 0x40: the target is dead; GOTONE if this soldier killed it.
         p.flags |= 0x40;
@@ -885,7 +893,9 @@ bool AiSystem::spotted(int team, int targetTeam) const {
     return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (spotted_[size_t(team)] >> targetTeam & 1);
 }
 
-bool AiSystem::engaging(int team) const { return team >= 0 && team < 64 && engaging_[size_t(team)]; }
+bool AiSystem::engaging(int team, int targetTeam) const {
+    return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (engaging_[size_t(team)] >> targetTeam & 1);
+}
 
 bool AiSystem::alerted(int team) const { return team >= 0 && team < 64 && teamAlert_[size_t(team)] == 2; }
 
@@ -929,7 +939,8 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         case 2: if (!value) p.flags &= ~2u; else p.flags |= 2; break;
         case 3: if (!value) p.flags &= ~0x10u; else p.flags |= 0x10; break;
         case 4: if (!value) p.flags &= ~0x20u; else p.flags |= 0x20; break;
-        case 5: p.alert = 2; alertTeam(team); break;
+        // Delta Force: ai+0x9c only (GOG Df.exe 0x45ff20 case 5), not the team alert.
+        case 5: p.alert = 2; if (df2) alertTeam(team); break;
         case 6: p.alert = 0; break;
         case 7: p.fov = float(value); break;
         case 8: if (value > 0) p.accuracy = float(value); break;

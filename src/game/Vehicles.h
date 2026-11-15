@@ -43,6 +43,9 @@ public:
     }
     // Script "follow path" for vehicles (0x46bbe8).
     void followPath(World& world, int team, int path);
+    // Script "AI property" (Delta Force, GOG Df.exe 0x4601a0 -> 0x45ff20):
+    // the shared AI block of every vehicle and helicopter of the team.
+    void property(World& world, int team, int subtype, int value);
 
 private:
     // Delta Force 2's movers (ITEMS.DEF move_function): herc flies level at its

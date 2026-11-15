@@ -76,6 +76,10 @@ struct MissionOutcome {
     bool won = false;        // side 1 won
     int kills = 0;           // people the player killed
     bool quit = false;       // the window was closed: leave the program (exit code 2)
+    // Delta Force: earlier attempts of this run won and then replayed with
+    // Space (GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 records each one).
+    bool earlierWin = false;
+    int earlierKills = 0;
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when

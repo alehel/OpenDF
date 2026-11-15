@@ -145,8 +145,16 @@ public:
     int run();
 
     // ScriptHost: what the mission's events can see and do.
-    int teamTotal(int team) const override { return teamCount(team, false); }
-    int teamAlive(int team) const override { return teamCount(team, true); }
+    // Delta Force: the team table (GOG Df.exe [0x7936a8] totals, [0x7936ac]
+    // alive, 64 teams of 0x40 bytes); Delta Force 2 counts live.
+    int teamTotal(int team) const override {
+        if (world_.df2Rules) return teamCount(team, false);
+        return team > 0 && team < 64 ? teamTotal_[size_t(team)] : 0;
+    }
+    int teamAlive(int team) const override {
+        if (world_.df2Rules) return teamCount(team, true);
+        return team > 0 && team < 64 ? teamAlive_[size_t(team)] : 0;
+    }
     bool teamInArea(int team, const AreaBox& a) const override;
     void killTeam(int team) override;
     void removeTeam(int team) override;
@@ -218,7 +226,8 @@ private:
     TextTable menuText_;                  // DFMENU.BIN
     TextTable gameTable_;                 // DFGAME.BIN by section and key
     // Placed charges: satchels (schg), claymores (clay radio, cly2 motion).
-    struct Charge { int object; int item; int fuse; };
+    // `mission`: a satchel the mission placed (not the player's detonator's).
+    struct Charge { int object; int item; int fuse; bool mission = false; };
     std::vector<Charge> charges_;
     // Fire missions (0x4482e0 / 0x448368): strikes left (BMS header +0x84),
     // up to 16 on the way, the lasered point and its 64-tick window.
@@ -309,8 +318,13 @@ public:
         o.won = missionResult_ == kPlayerSide;
         for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
         o.quit = quit_;
+        o.earlierWin = earlierWin_;
+        o.earlierKills = earlierKills_;
         return o;
     }
+    // Won attempts left with Space (Delta Force), already recorded.
+    bool earlierWin_ = false;
+    int earlierKills_ = 0;
 private:
     bool briefingShown_ = false, helpShown_ = false;   // [0x66f96c], [0x66f968]
     std::string briefing_;                // built at mission load (0x4813c4)
@@ -330,6 +344,9 @@ private:
     void buildRoute();
     void updateRoute();
     int teamCount(int team, bool aliveOnly) const;
+    std::array<int, 64> teamTotal_{}, teamAlive_{};
+    uint32_t teamRecountClock_ = 0;       // GOG Df.exe [0x6e4738] (never reset)
+    void countTeams(bool atStart);
     void drawMissionEnd(const Screen& s);
     void drawGoals(const Screen& s);
 
@@ -422,11 +439,18 @@ private:
         return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (teamHits_[size_t(team)] >> targetTeam & 1);
     }
     void recordHit(const Impact& hit);
-    bool teamEngaging(int team) const override { return ai_.engaging(team); }
+    bool teamEngaging(int team, int targetTeam) const override { return ai_.engaging(team, targetTeam); }
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
     void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
-    void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
+    void aiProperty(int team, int subtype, int value) override {
+        // Delta Force (GOG Df.exe 0x4601a0): not for subtype 0 or team 0;
+        // 0x45ff20 changes the AI block of every object of the team, so
+        // vehicles and helicopters too.
+        if (!world_.df2Rules && (subtype == 0 || team == 0)) return;
+        ai_.property(world_, team, subtype, value);
+        if (!world_.df2Rules) vehicles_.property(world_, team, subtype, value);
+    }
     void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
     void setTeamSide(int team, int side) override {
         if (team == 0) return;   // 0x4133c5: team 0 is left alone
@@ -987,6 +1011,12 @@ bool Game::loadMission(int index) {
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
     charges_.clear();
+    // Delta Force: satchels the mission places share the satchel's handler
+    // (`schg`, GOG Df.exe 0x45c110): at hp <= 0 they blow up as the player's do.
+    if (!world_.df2Rules)
+        for (size_t i = 0; i < world_.objects.size(); ++i)
+            if (const auto& o = world_.objects[i]; o.item && o.item->aiFunction == "schg" && !o.removed)
+                charges_.push_back({int(i), 4020, -1, true});
     strikes_.clear();
     collapses_.clear();
     fireMissions_ = mission_.fireMissions;
@@ -1015,7 +1045,10 @@ bool Game::loadMission(int index) {
                 std::string cond = briefing_.substr(c + 4, tagEnd - c - 4);
                 const bool neg = !cond.empty() && cond[0] == '!';
                 const int flag = std::atoi(cond.c_str() + (neg ? 1 : 0));
-                const bool set = flag >= 0 && flag < 32 && (campaignFlags() >> flag & 1);
+                // GOG Df.exe 0x414520 tests the soldier record's campaign
+                // flags (+0x70 of its campaign), which 0x407980 sets from the
+                // saved word at every mission start and exit.
+                const bool set = flag >= 0 && flag < 32 && (savedCampaignFlags() >> flag & 1);
                 include = neg ? !set : set;
                 ++tagEnd;
             } else {
@@ -1147,6 +1180,11 @@ bool Game::loadMission(int index) {
     df2Map_.sel = df2Map_.drag = Df2Sel{};
     df2Map_.prompt = false;
     df2Map_.entered = false;
+    // The mission-start events (flag 2), visited once after the start
+    // removals: GOG Df.exe 0x404e30 -> 0x42eb60, then the team totals
+    // 0x44a110; GOG Df2.exe 0x41aeb0 (single player sets [0x67cd34]).
+    script_.visitFlagged(2, *this);
+    if (!world_.df2Rules) countTeams(true);
     if (exe_.loaded() && !arsenal_.fromExe())
         std::fprintf(stderr, "DF.EXE is not the expected version; using built-in weapon values\n");
     else if (arsenal_.fromExe()) std::printf("weapon tables read from %s\n", (arsenal_.df2() ? df2Exe_ : exe_).buildName());
@@ -1614,7 +1652,7 @@ void Game::weaponEvent(const WeaponEvent& e) {
     case WeaponEvent::Detonate:
         // 0x447db4: every satchel and radio claymore of the player, at once.
         for (auto& c : charges_)
-            if ((c.item == 4020 || c.item == 4040) && !world_.objects[size_t(c.object)].removed) world_.objects[size_t(c.object)].hp = 0;
+            if ((c.item == 4020 || c.item == 4040) && !c.mission && !world_.objects[size_t(c.object)].removed) world_.objects[size_t(c.object)].hp = 0;
         break;
     case WeaponEvent::LaserPressed:
         sound_.play2D(0x1AE);
@@ -1855,6 +1893,9 @@ void Game::blowCharge(Charge& c) {
     if (c.item == 4020) {
         if (world_.df2Rules) shrapSeed();
         explode(at, 0, true, 12.f);
+        // GOG Df.exe 0x460950 (from the schg handler 0x45c110 via 0x4470c0):
+        // also an AI noise of 200 m (0x45fcf0).
+        if (!world_.df2Rules) ai_.noise(at, 200.f, 0, 0);
         for (int k = 0; k < 200; ++k) {
             const float yaw = o.heading + float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
             const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
@@ -1938,6 +1979,9 @@ void Game::dropCarried() {
     const float ext = world_.extent();
     at.x -= std::floor(at.x / ext) * ext;
     at.z -= std::floor(at.z / ext) * ext;
+    // Delta Force (GOG Df.exe 0x4604c0): z is the bare terrain height
+    // (0x47df40) at the drop point; the record's height is not added again.
+    if (!world_.df2Rules) o.lift = 0;
     o.pos = {at.x, terrain_.heightAt(at.x, at.z) + o.lift, at.z};
     o.base = o.pos.y - o.lift;
     o.removed = false;
@@ -2634,6 +2678,25 @@ void Game::spawnImpact(const Impact& hit) {
     spawnEffect(slot, hit.pos);
 }
 
+// Delta Force's team table. At the start (GOG Df.exe 0x44a110, after the
+// start removals and the flag-2 events) every decoration, organic and item
+// of a team is its total and alive count: the player is an organic of team
+// 1; deleted objects (squad members off, powerups) are zeroed, so team 0,
+// and team 0 itself is cleared. Every 63 ticks (0x44a200 from 0x443c50) the
+// alive count is redone over the objects not destroyed (flags & 4 clear);
+// objects removed later are zeroed and drop out of it but not of the total.
+void Game::countTeams(bool atStart) {
+    teamAlive_.fill(0);
+    if (atStart) teamTotal_.fill(0);
+    for (const auto& o : world_.objects) {
+        if (o.team <= 0 || o.team >= 64 || o.missionGroup == 2 || (o.removed && !o.carried)) continue;
+        if (atStart) ++teamTotal_[size_t(o.team)];
+        if (atStart || o.alive() || o.carried) ++teamAlive_[size_t(o.team)];
+    }
+    if (atStart) ++teamTotal_[kPlayerTeam];
+    if (atStart || !playerDead()) ++teamAlive_[kPlayerTeam];
+}
+
 int Game::teamCount(int team, bool aliveOnly) const {
     // DF.EXE 0x440904/0x4409f4 counts the players and every object of a team
     // in file groups 0 (moving objects), 1 (scenery and props) and 3 (people);
@@ -2760,12 +2823,15 @@ void Game::killTeam(int team) {
     // people die, vehicles wreck and explosive barrels go off (GOG DF2.exe
     // 0x416380 does the same over its object lists). Here: through
     // World::damage with what takes the object below 0 (no damage class).
+    // A satchel's handler (schg, 0x45c110) blows it up at hp <= 0: it gets
+    // hp -50 and tickCharges sets it off.
     if (team == 0) return;
     for (int group : {1, 3, 0})
         for (size_t i = 0; i < world_.objects.size(); ++i) {
-            const auto& o = world_.objects[i];
-            if (o.team == team && o.missionGroup == group && !o.removed && !o.dead)
-                world_.damage(int(i), std::max(o.hp, 0) + 50, 0x7fff);
+            auto& o = world_.objects[i];
+            if (o.team != team || o.missionGroup != group || o.removed || o.dead) continue;
+            if (o.item && o.item->aiFunction == "schg") { o.hp = -50; continue; }
+            world_.damage(int(i), std::max(o.hp, 0) + 50, 0x7fff);
         }
 }
 
@@ -2826,11 +2892,14 @@ void Game::endMission(int winnerSide) {
 }
 
 // Leaving a mission (GOG Df.exe 0x401e70, from the mission loop's end 0x40420a
-// and the Space replay 0x404ed2; GOG Df2.exe 0x45a870): in single player the
+// and the Space replay 0x404ed2; GOG Df2.exe 0x464140): in single player the
 // live campaign flags become the saved ones when side 1 has won ([0x67f718]
-// == 1). Its flag-4 event pass (0x42eba0) is gated on [0x67f528], network
-// state that single player keeps at 0 (0x41e2e0), so it is not done here.
+// == 1). Delta Force's flag-4 event pass (0x42eba0) is gated on [0x67f528],
+// network state that single player keeps at 0 (0x41e2e0), so it is not done;
+// Delta Force 2's (0x41aef0) is gated on [0x67cd34], which single player
+// sets, and runs before the flags are saved.
 void Game::leaveMissionFlags() {
+    if (world_.df2Rules) script_.visitFlagged(4, *this);
     if (missionResult_ == kPlayerSide) savedCampaignFlags() = campaignFlags();
 }
 
@@ -2872,7 +2941,20 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
         }
-        if (k.keysym.sym == SDLK_SPACE) { leaveMissionFlags(); loadMission(current_); return; }
+        if (k.keysym.sym == SDLK_SPACE) {
+            // Delta Force: the replay goes through the mission start 0x404e30,
+            // whose 0x401e70 records the finished attempt in the soldier
+            // file (0x407de0: a win marks the mission done and adds its
+            // kills) before the next one starts.
+            if (!world_.df2Rules && missionResult_ == kPlayerSide) {
+                const MissionOutcome o = outcome();
+                earlierWin_ = true;
+                earlierKills_ += o.kills;
+            }
+            leaveMissionFlags();
+            loadMission(current_);
+            return;
+        }
     }
     // DF2's command-map name prompt takes the keyboard while it is open.
     if (df2Hud_.on && showMap_ && df2Map_.prompt) { df2MapKey(k); return; }
@@ -6894,7 +6976,14 @@ int Game::run() {
                 // 0x446148, every 64 ticks: a dead player ends the mission
                 // (0x44663c(2)); no side wins.
                 if (playerDead() && missionResult_ < 0 && (ticks_ & 63) == 0) endMission(0);
-                if (missionResult_ < 0) script_.tick(*this);
+                // Delta Force runs the events after the mission has ended
+                // too (GOG Df.exe 0x443c50 is called without testing the
+                // end latch [0x67dbc0]; 0x444ca0 keeps the first result),
+                // then every 63 ticks recounts the teams (0x44a200).
+                if (!world_.df2Rules) {
+                    script_.tick(*this);
+                    if (++teamRecountClock_ > 0x3e) { countTeams(false); teamRecountClock_ = 0; }
+                } else if (missionResult_ < 0) script_.tick(*this);
             }
             std::vector<std::string> msgs;
             // The listener (0x4735b8): the player, or the external camera once dead.

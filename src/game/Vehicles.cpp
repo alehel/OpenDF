@@ -775,6 +775,29 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
     }
 }
 
+void VehicleSystem::property(World& world, int team, int subtype, int value) {
+    // GOG Df.exe 0x45ff20 on the AI block the vehicles read: flags ai+0x24
+    // (2 return home: subtype 2; 1 no targeting: 15; 3 / 4 set 0x10 / 0x20),
+    // alert ai+0x9c (5: 2, 6: 0), field of view ai+0x98 (7: degrees << 16 /
+    // 360, the half angle as at load) and perception ai+0x74 (9: %). The
+    // others change fields the vehicles do not read.
+    for (auto& v : vehicles_) {
+        if (world.objects[size_t(v.object)].team != team) continue;
+        auto bit = [&](uint32_t b) { if (value) v.flags |= b; else v.flags &= ~b; };
+        switch (subtype) {
+        case 2: bit(2); break;
+        case 3: bit(0x10); break;
+        case 4: bit(0x20); break;
+        case 15: bit(1); break;
+        case 5: v.alert = 2; v.alerted = true; break;
+        case 6: v.alert = 0; v.alerted = false; break;
+        case 7: v.fovHalf = float((((value << 16) / 0x168) >> 9) | 1) / 256.f * 2 * kPi; break;
+        case 9: v.perception = float((value << 16) / 100) / 65536.f; break;
+        default: break;
+        }
+    }
+}
+
 void VehicleSystem::followPath(World& world, int team, int path) {
     // 0x46bbe8 (GOG Df.exe 0x45f670) also sends vehicles of the team down the
     // path, from the nearest point; path 0 included (it halts them, pathStep).

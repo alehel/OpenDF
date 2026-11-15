@@ -97,7 +97,7 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
         case 10: return conditionAreas_[self].valid && host.teamInArea(p1, conditionAreas_[self]);
         case 12: return alive(p1) >= p2;                     // at least p2 alive
         case 1: return host.teamSpotted(p1, p2);              // team spotted team (0xa957e0)
-        case 2: return host.teamEngaging(p1);                 // team engaging (0xa8d5e0)
+        case 2: return host.teamEngaging(p1, p2);             // team engaged team (0xa8d5e0)
         case 3: return host.teamAlerted(p1);                  // team alerted (team record +4 == 2)
         case 7: return host.reachedWaypoint(p1, p2, c[5]);    // team reached point p3 of path p2
         case 11: return host.teamCarrying(p1, p2);            // team carries an item of team p2
@@ -170,21 +170,13 @@ void MissionScript::actions(const Event& e, ScriptHost& host) {
     }
 }
 
+// One visit (GOG Df.exe 0x42e9e0, GOG Df2.exe 0x41ad40 the same): with no
+// timer running the event may fire; otherwise its timers count down and it
+// cannot fire again in that visit, only on its next one, 128 ticks later.
 void MissionScript::visit(size_t i, ScriptHost& host) {
     Event& e = events_[i];
-    if (e.delayLeft > 0) {
-        e.delayLeft -= kVisit;
-        if (e.delayLeft <= 0) {
-            e.delayLeft = 0;
-            if (conditions(e, host)) actions(e, host);
-            else { e.fired = false; e.repeatLeft = 0; }
-        }
-    }
-    if (e.repeatLeft > 0) {
-        e.repeatLeft -= kVisit;
-        if (e.repeatLeft <= 0) { e.repeatLeft = 0; e.fired = false; }
-    }
-    if (e.delayLeft == 0 && e.repeatLeft == 0 && !e.fired && conditions(e, host)) {
+    if (e.delayLeft == 0 && e.repeatLeft == 0) {
+        if (e.fired || !conditions(e, host)) return;
         e.fired = true;
         if (e.delay) e.delayLeft = e.delay;
         else actions(e, host);
@@ -192,18 +184,40 @@ void MissionScript::visit(size_t i, ScriptHost& host) {
             if (e.interval) e.repeatLeft = e.interval;
             else e.fired = false;
         }
+        return;
     }
+    if (e.delayLeft != 0) {
+        e.delayLeft -= kVisit;
+        if (e.delayLeft < 1) {
+            e.delayLeft = 0;
+            // The conditions again when the delay ends: false disarms it.
+            if (!conditions(e, host)) { e.fired = false; e.repeatLeft = 0; return; }
+            actions(e, host);
+        }
+    }
+    if (e.repeatLeft != 0) {
+        e.repeatLeft -= kVisit;
+        if (e.repeatLeft < 1) { e.repeatLeft = 0; e.fired = false; }
+    }
+}
+
+void MissionScript::visitFlagged(uint32_t bit, ScriptHost& host) {
+    if (!mission_) return;
+    for (size_t i = 0; i < events_.size(); ++i)
+        if (events_[i].flags & bit) visit(i, host);
 }
 
 void MissionScript::tick(ScriptHost& host) {
     if (!mission_) return;
-    if (ticks_ == 0)   // mission-start events (flag bit 2; none in the shipped missions)
-        for (auto& e : events_)
-            if ((e.flags & 4) && conditions(e, host)) { e.fired = true; actions(e, host); }
-    if (ticks_++ % 16) return;
+    // Every 16th tick, the first on the 16th (GOG Df.exe 0x443c50: the
+    // counter [0x6e4734], 0 from the mission start 0x440130, is incremented
+    // and tested > 15; GOG Df2.exe [0x67ffe4] the same). 0x42eaf0 (GOG
+    // Df2.exe 0x41ae50) visits one eighth of the events, those with flag 2
+    // (mission start) or 4 (mission end) left out.
+    if (++ticks_ % 16) return;
     const int k = visitCount_++ % 8;
     for (size_t i = size_t(k); i < events_.size(); i += 8)
-        if (!(events_[i].flags & (4 | 16))) visit(i, host);
+        if (!(events_[i].flags & 6)) visit(i, host);
 }
 
 } // namespace df
