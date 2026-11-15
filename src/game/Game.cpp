@@ -497,6 +497,14 @@ private:
     static std::vector<Mat4> personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns,
                                         float aimPitch = 0);
     Vec3 viewDir() const;
+    // The model shade ramp's highlight: sky palette entry 16 (GOG Df.exe
+    // 0x47b590 -> 0x47eb70); Delta Force night missions (header flag 0x10)
+    // override it with pure green at mission load (0x403e25: 0x47eb70(0,
+    // 0xff, 0)), before the Light CLUT is built.
+    Vec3 modelHighlight() const {
+        if (!world_.df2Rules && (mission_.lightFlags & 0x10)) return {0, 1, 0};
+        return terrain_.highlight();
+    }
     bool playerDead() const { return playerHp_ <= 0; }
     void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f, bool sound = true);
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
@@ -3091,7 +3099,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
     light.saturation = terrain_.saturationFactor();
     light.gradeLut = terrain_.gradeLutTexture();
     light.gradeSaturation = terrain_.gradeSaturation();
-    light.highlight = terrain_.highlight();
+    light.highlight = modelHighlight();
     const Vec3 fwd = viewDir();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
@@ -3483,7 +3491,7 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     light.saturation = terrain_.saturationFactor();
     light.gradeLut = terrain_.gradeLutTexture();
     light.gradeSaturation = terrain_.gradeSaturation();
-    light.highlight = terrain_.highlight();
+    light.highlight = modelHighlight();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
     weather_.forEachFlake([&](Vec3 p) {
@@ -3549,7 +3557,7 @@ void Game::drawViewModel(const Screen& s) {
         light.saturation = terrain_.saturationFactor();
         light.gradeLut = terrain_.gradeLutTexture();
         light.gradeSaturation = terrain_.gradeSaturation();
-        light.highlight = terrain_.highlight();
+        light.highlight = modelHighlight();
     }
     // The flash meshes' animation frame (DF.EXE [0x933980] -> [0xb7a874],
     // DF2.EXE [0x4d2990] -> [0x765a04]): stepped 1, 2, 0, ... each time a
