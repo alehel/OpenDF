@@ -182,6 +182,14 @@ private:
 
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
+    // DF1's command gate (GOG Df.exe 0x477d40 entry, CD 0x42d990): the byte
+    // at 0x4fb326 + action id * 0x2c (the command table indexed by the id,
+    // not by entry) drops an action with bit 0 while paused ([0x6e4714]) or
+    // dead (player +0x6c & 4). Of the ids OpenDF has, that is scope (6) and
+    // briefing (0x25); everything else still runs while paused.
+    bool df1PauseGated(Action a) const {
+        return (a == Action::Scope || a == Action::Briefing) && (paused_ || playerDead());
+    }
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
     void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
     void drawViewModel(const Screen& s);
@@ -683,6 +691,7 @@ private:
         binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
     }
     bool paused_ = false;                 // [0xc70ac4] (0x42df53)
+    int wheelDelta_ = 0;                  // DF1 WM_MOUSEWHEEL remainder, 120 per notch (GOG [0xd09364])
     bool oldMessages_ = false;            // [0x66f974]
     // "End Mission? (Y/N)": DF.EXE [0x66f95c], DF2.EXE [0x65362c]. Opened by
     // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
@@ -1233,6 +1242,7 @@ bool Game::loadInputScript(const std::string& path) {
     //   turn DEG/S     keep turning (negative = left); "turn 0" stops
     //   look DEG/S     keep pitching (positive = up)
     //   face DEG       turn smoothly to a compass heading (0 = north, 90 = east)
+    //   wheel N        turn the mouse wheel N notches (positive = forward)
     //   end            finish the run
     std::ifstream f(path);
     if (!f) return false;
@@ -1244,7 +1254,7 @@ bool Game::loadInputScript(const std::string& path) {
         if (!(ls >> c.t >> c.op)) continue;
         std::string rest, word;
         while (ls >> word) rest += (rest.empty() ? "" : " ") + word;
-        if (c.op == "turn" || c.op == "look" || c.op == "face") c.value = float(std::atof(rest.c_str()));
+        if (c.op == "turn" || c.op == "look" || c.op == "face" || c.op == "wheel") c.value = float(std::atof(rest.c_str()));
         else c.arg = rest;
         inputCmds_.push_back(c);
     }
@@ -1276,6 +1286,13 @@ void Game::runInputScript(float dt) {
         } else if (c.op == "turn") turnRate_ = c.value;
         else if (c.op == "look") lookRate_ = c.value;
         else if (c.op == "face") { faceTarget_ = c.value; turnRate_ = 0; }
+        else if (c.op == "wheel") {
+            SDL_Event w{};
+            w.type = SDL_MOUSEWHEEL;
+            w.wheel.y = int(c.value);
+            w.wheel.preciseY = c.value;
+            SDL_PushEvent(&w);
+        }
         else if (c.op == "end") inputDone_ = true;
         else std::fprintf(stderr, "input script: unknown command \"%s %s\"\n", c.op.c_str(), c.arg.c_str());
     }
@@ -2893,8 +2910,12 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         return;
     }
     const Action act = controls_.actionFor(k.keysym.scancode);
-    // While paused, the game's commands (flag 0x10000) are ignored (0x42d9e3).
-    if (paused_ && act != Action::Pause && act != Action::Escape) return;
+    if (df2Hud_.on) {
+        // DF2: while paused only Pause and Escape are taken.
+        if (paused_ && act != Action::Pause && act != Action::Escape) return;
+    } else if (df1PauseGated(act)) {
+        return;
+    }
     switch (act) {
     case Action::Escape:
         // Esc closes the first overlay open (DF.EXE 0x42e1c1: pause, old
@@ -6409,13 +6430,26 @@ int Game::run() {
                         player_.yaw += e.motion.xrel * sens;
                         player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
                     }
+                } else if (e.type == SDL_MOUSEWHEEL && !df2Hud_.on) {
+                    // DF1's wheel (GOG Df.exe 0x497a40 case 0x20a): the delta
+                    // summed in 120s, one 0x100 per notch forward and 0x200
+                    // per notch back; the in-game mouse hook 0x47a150 queues
+                    // command 0xc0 'cycleb' for 0x100 and 0xbf 'cycle' for
+                    // 0x200 (0x47a1b4..0x47a27f), run as 0x484b70(-1) / (1).
+                    // Neither id is gated by pause (0x477d40). SDL's notches
+                    // (fractions from fine wheels) times 120 stand in for the
+                    // WM_MOUSEWHEEL delta; a flipped wheel is turned back.
+                    const float y = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.preciseY : e.wheel.preciseY;
+                    wheelDelta_ += int(std::lround(y * 120.f));
+                    while (wheelDelta_ > 0x77) { wheelDelta_ -= 0x78; arsenal_.cycleBack(); }
+                    while (wheelDelta_ < -0x77) { wheelDelta_ += 0x78; arsenal_.cycle(); }
                 } else if (e.type == SDL_TEXTINPUT && df2Hud_.on && showMap_ && df2Map_.prompt) {
                     // The command map's name prompt (chat input 0x41d320, max 16).
                     for (const char* c = e.text.text; *c; ++c)
                         if (uint8_t(*c) >= 32 && uint8_t(*c) < 128 && df2Map_.promptText.size() < 16) df2Map_.promptText += *c;
                 } else if (e.type == SDL_KEYDOWN && (!e.key.repeat || (df2Map_.prompt && showMap_))) handleKey(e.key);
             }
-            if (zoomClick) arsenal_.toggleZoom();
+            if (zoomClick && (df2Hud_.on || !df1PauseGated(Action::Scope))) arsenal_.toggleZoom();
 
             if (!inputCmds_.empty()) runInputScript(realDt);
             const Uint8* kb = SDL_GetKeyboardState(nullptr);

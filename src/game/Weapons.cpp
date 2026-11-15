@@ -642,6 +642,16 @@ void Arsenal::cycle() {
     }
 }
 
+// GOG Df.exe 0x484b70(-1): slots current-1 down to 0, then 9 down to the
+// current one; the first holding a weapon is selected (0x483dd0).
+void Arsenal::cycleBack() {
+    if (current_ >= kSlots) return;
+    for (int k = 1; k <= kSlots; ++k) {
+        const int s = (current_ - k + kSlots) % kSlots;
+        if (slots_[size_t(s)]) { select(s); return; }
+    }
+}
+
 void Arsenal::reload() {
     if (mode().type != 1) return;   // only guns have magazines (0x44a860)
     startReload();
