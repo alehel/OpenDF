@@ -353,6 +353,7 @@ private:
     void text(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align = 0);
     int wrapped(const std::string& fontName, float x0, float y0, float x1, float y1, const std::string& s, uint32_t color,
                 int skipLines = 0);
+    int breakLines(const std::string& fontName, int width, const std::string& s, std::vector<std::string>* lines = nullptr);
     void boxText(const std::string& fontName, int l, int r, int top, int bottom, const std::string& s, uint32_t color, int justify);
     void blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh);
     void rectOutline(float x0, float y0, float x1, float y1, uint32_t color);
@@ -364,11 +365,23 @@ private:
     void playIntroMovie();   // 0x435830: DF2INTRO.BIK through binkplay.exe
     void playBinkVideo(const std::filesystem::path& path);   // binkplay's part
     bool introShot_ = false;   // testing: --screenshot was taken during the intro
+    bool cdExe_ = false;       // the CD's DF2.EXE: DF2.MNU hot keys are DirectInput scancodes
     D2Menu* menu() { auto it = mnu_.menus.find(menuName_); return it == mnu_.menus.end() ? nullptr : &it->second; }
     D2Button* btn(const std::string& name) { return mnu_.button(name); }
     void layout(D2Button& b);
     D2Button* hit(int x, int y);
     void drawMenu();
+    // GOG Df2.exe 0x434000 (0x434151 / 0x43415d): ImageCurTarg is the menu
+    // cursor with its hot spot at (12, 12) (0x433780); drawn every frame
+    // after the page (0x443d90 -> 0x4436a0).
+    HudImage cursor_;
+    bool cursorLoaded_ = false;
+    void drawCursor();
+    // The pages' own drawing after 0x443d90 (Choose Soldier 0x436720, Main
+    // 0x43a780): their connector lines, over the cursor.
+    void drawConnectors();
+    void hvLine(int x0, int y0, int x1, int y1, uint32_t color);
+    std::string mmHover_;   // [0x4c5998]: the Main button whose help is shown (0x43a700)
     void drawButton(D2Button& b);
     void drawDefault(D2Button& b);
     // 0x43d4c0 keeps the justification in two locals of its loop ([esp+0x14]
@@ -460,12 +473,12 @@ private:
     // Event 0xA: a slider's new value is written where it belongs.
     void sliderChanged(D2Button& b) {
         if (b.name == "but_opt1_mssl") soldier().set(0x5b0, b.p2);
+        else if (b.name == "but_opt1_sshsl") soldier().set(0x5d8, b.p2);   // opt_Accept 0x43ebf7
         else if (b.name == "but_opt1_sfsl") soldier().set(0x5b8, b.p2);
         else if (b.name == "but_opt1_dvsl") soldier().set(0x5c0, b.p2);
         else if (b.name == "but_opt1_mvsl") setMusicVolume(b.p2);
         else if (b.name == "but_qm_vsl") { quickTop_ = b.p2; refreshQuick(); }
         else if (b.name == "but_opt2_vsl") { b.p2 = std::min(b.p2, b.p1 - 1); refreshKeys(); }   // opt2_ScrollTo 0x43a6b0
-        else if (b.name == "but_mb_brvsl") briefLine_ = b.p2;
         // mb_MapVSlide / mb_MapHSlide (GOG Df2.exe 0x43d970 / 0x43d950): the
         // map's scroll target follows the slider.
         else if (b.name == "but_mb_mpvsl") mapTargetY_ = b.p2;
@@ -543,14 +556,28 @@ private:
     std::string editing_;   // button being edited (soldier name)
     std::string editText_, editBefore_;
 
-    int campaign_ = 1, region_ = -1, missionSel_ = -1;
+    int campaign_ = 1, missionSel_ = -1;   // missionSel_: [0x4c3f70]
+    // GOG Df2.exe 0x4c3f74..0x4c3f84 (static data -1, -1, -1, -1, 0): the
+    // region shown per campaign at 0x4c3f74 + c·4 and the region that
+    // blinks at 0x4c3f7c + c·4, c = 1 / 2; the blink timer 0x4c3f84 is the
+    // same word as campaign 2's blink region (so campaign 2's blink only
+    // ever toggles region 0, a campaign 1 button).
+    std::array<int, 5> campMem_{{-1, -1, -1, -1, 0}};
+    int& campRegion(int c) { return campMem_[size_t(c)]; }
+    int& campBlink(int c) { return campMem_[size_t(c) + 2]; }
+    int& campTimer() { return campMem_[4]; }
+    struct RegionStats { bool avail = false; int total = 0, complete = 0; };
+    RegionStats regionStats(int r);
+    int nextRegion(int c);
+    void blinkNext(int c);
+    void campaignInit();
+    void campaignTick();
     bool fromCampaign_ = true;
     std::vector<std::string> quick_;   // quick missions (D06*)
     int quickTop_ = 0, quickSel_ = -1;
     std::string bms_;                 // the chosen mission
     std::string helpText_;
     size_t helpShown_ = 0;
-    int briefLine_ = 0;
     HudImage briefMap_;
     // The map's scroll is the value (+0x6c) of but_mb_mphsl / but_mb_mpvsl
     // (GOG Df2.exe 0x4f39b8 / 0x4f37c0); this is where it is heading.
@@ -669,7 +696,9 @@ bool FrontendDf2::openWindow() {
     images_.clear();
     fonts_.clear();
     briefMap_ = {};
-    SDL_ShowCursor(SDL_ENABLE);
+    cursor_ = {};
+    cursorLoaded_ = false;
+    SDL_ShowCursor(SDL_DISABLE);   // the menus draw their own cursor (drawCursor)
     return true;
 }
 
@@ -678,6 +707,9 @@ void FrontendDf2::closeWindow() {
     images_.clear();
     fonts_.clear();
     briefMap_ = {};
+    cursor_ = {};
+    cursorLoaded_ = false;
+    SDL_ShowCursor(SDL_ENABLE);
     if (ctx_) SDL_GL_DeleteContext(ctx_);
     if (win_) SDL_DestroyWindow(win_);
     ctx_ = nullptr;
@@ -799,34 +831,64 @@ void FrontendDf2::text(const std::string& fontName, float x, float y, const std:
     }
 }
 
-// Word-wrapped text in a box (0x419d50); "\r\n" / "~" break lines. Returns the line count.
+// GOG Df2.exe 0x41bf70 (the counter) and 0x41c0e0's loop: the text broken
+// into lines of at most `width` pixels. Characters go into a line buffer
+// (0x09 skipped; 0x0a, 0x0d and 0x0d 0x0a end the line); a space marks the
+// last break point; once the buffer is wider than `width` the line is cut at
+// that space and what followed it is read again, or, with no space, after the
+// overflowing character. After every break the spaces that follow are
+// skipped (leading spaces of the text itself are kept); runs of spaces stay.
+// Returns the number of ended lines: a last line without a newline is not
+// counted (but is in `lines`, when not empty).
+int FrontendDf2::breakLines(const std::string& fontName, int width, const std::string& s, std::vector<std::string>* lines) {
+    int count = 0;
+    std::string buf;
+    size_t lastSpace = std::string::npos;
+    size_t i = 0;
+    auto lineBreak = [&]() {
+        if (lines) lines->push_back(buf);
+        buf.clear();
+        lastSpace = std::string::npos;
+        ++count;
+        while (i < s.size() && s[i] == ' ') ++i;
+    };
+    while (i < s.size() && s[i] != 0) {
+        const char c = s[i];
+        if (c == '\t') { ++i; continue; }
+        if (c == '\n' || c == '\r') {
+            if (c == '\r' && i + 1 < s.size() && s[i + 1] == '\n') ++i;
+            ++i;
+            lineBreak();
+            continue;
+        }
+        buf += c;
+        ++i;
+        if (c == ' ') lastSpace = buf.size() - 1;
+        if (int(textWidth(fontName, buf)) <= width) continue;
+        if (lastSpace != std::string::npos) {
+            i -= buf.size() - lastSpace - 1;   // read again what followed the space
+            buf.resize(lastSpace);
+        }
+        lineBreak();
+    }
+    if (lines && !buf.empty()) lines->push_back(buf);
+    return count;
+}
+
+// GOG Df2.exe 0x41c0e0 (CD 0x419d50): the text (its first 3999 characters)
+// broken as breakLines at width x1 - x0; lines before `skipLines` are passed
+// over, the others drawn from y0 down, (height of 'A') + 4 apart (the CD
+// build: + 3), while y + (height of 'A') + 3 <= y1.
 int FrontendDf2::wrapped(const std::string& fontName, float x0, float y0, float x1, float y1, const std::string& s, uint32_t color,
                          int skipLines) {
     D2FontTex& f = font(fontName);
     if (!f.ok) return 0;
     std::vector<std::string> lines;
-    std::string line, word;
-    auto flushWord = [&]() {
-        if (word.empty()) return;
-        const std::string cand = line.empty() ? word : line + " " + word;
-        if (!line.empty() && textWidth(fontName, cand) > x1 - x0) { lines.push_back(line); line = word; }
-        else line = cand;
-        word.clear();
-    };
-    for (size_t i = 0; i < s.size(); ++i) {
-        const char c = s[i];
-        if (c == '\r') continue;
-        if (c == '\n' || c == '~') { flushWord(); lines.push_back(line); line.clear(); continue; }
-        if (c == ' ') { flushWord(); continue; }
-        word += c;
-    }
-    flushWord();
-    if (!line.empty()) lines.push_back(line);
-    // 0x419d50: lines (height of 'A') + 3 apart; a line is drawn while y + that <= the box bottom.
-    const float lh = float(f.height + 3);
+    const int count = breakLines(fontName, int(x1 - x0), s.substr(0, 3999), &lines);
+    const float hA = float(f.height);
     float y = y0;
-    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + lh <= y1; ++i, y += lh) text(fontName, x0, y, lines[i], color);
-    return int(lines.size());
+    for (size_t i = size_t(std::max(0, skipLines)); i < lines.size() && y + hA + 3 <= y1; ++i, y += hA + 4) text(fontName, x0, y, lines[i], color);
+    return count;
 }
 
 void FrontendDf2::blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh) {
@@ -1001,11 +1063,13 @@ void FrontendDf2::enter(Screen s) {
     switch (s) {
     case Screen::Soldier: refreshSoldier(); break;
     case Screen::Main:
+        mmHover_.clear();   // 0x43a5ae
+        soldier().set(0x28, 1);   // 0x43a5c9: the Campaign page opens on campaign 1
         // NovaWorld, Multiplayer and Update are not in OpenDF.
         for (const char* n : {"but_mm_qmb", "but_mm_nwb", "but_mm_upd"})
             if (D2Button* b = btn(n)) b->drawstate = 4;
         break;
-    case Screen::Campaign: refreshCampaign(); break;
+    case Screen::Campaign: campaignInit(); break;
     case Screen::Quick: refreshQuick(); break;
     case Screen::Briefing: loadBriefing(); break;
     case Screen::Gear: refreshGear(); break;
@@ -1396,6 +1460,77 @@ void FrontendDf2::boxText(const std::string& fontName, int l, int r, int top, in
     text(fontName, float(tx), float(ty), s, color);
 }
 
+// GOG Df2.exe 0x4436a0: the cursor image at (mouse - hot spot), the area
+// under it saved first (0x46b4f0) and put back before the next frame
+// (0x443d90); 0x46d130 skips pixels whose RGB is 0 and draws the others
+// opaque. Clipped to the 640x480 screen. Hit tests use the mouse itself.
+void FrontendDf2::drawCursor() {
+    if (!cursorLoaded_) {
+        cursorLoaded_ = true;
+        auto it = mnu_.images.find("IMAGECURTARG");
+        std::vector<uint8_t> data;
+        RgbaImage rgba;
+        if (it != mnu_.images.end() && vfs_.read(upper(it->second.file), data) && decodeRgbaImage(data, rgba)) {
+            for (size_t i = 0; i + 3 < rgba.rgba.size(); i += 4)
+                rgba.rgba[i + 3] = (rgba.rgba[i] | rgba.rgba[i + 1] | rgba.rgba[i + 2]) ? 255 : 0;
+            cursor_ = hud().makeImage(rgba.width, rgba.height, rgba.rgba);
+        }
+    }
+    if (!cursor_.texture) return;
+    hud().clip(offX_, offY_, 640.f * scale_, 480.f * scale_);
+    blit(cursor_, float(mouseX_ - 12), float(mouseY_ - 12), 0, 0, float(cursor_.width), float(cursor_.height));
+    hud().unclip();
+}
+
+// 0x46b790 for the axis-parallel lines the pages draw: one pixel wide, both
+// end points included.
+void FrontendDf2::hvLine(int x0, int y0, int x1, int y1, uint32_t color) {
+    fill(float(std::min(x0, x1)), float(std::min(y0, y1)), float(std::max(x0, x1) + 1), float(std::max(y0, y1) + 1), color);
+}
+
+void FrontendDf2::drawConnectors() {
+    if (screen_ == Screen::Soldier) {
+        // GOG Df2.exe 0x436720 (from 0x4366da): 0xCA4409 when the current
+        // soldier has a name (record +4), else 0x844030. A trunk at x 357,
+        // y 80..326; the current slot but_cs_<n> joined at its middle row to
+        // x 41, down to the middle of but_cs_oirct and across to the slot's
+        // x, and from its right edge to the trunk; the trunk's ends joined to
+        // the middles of but_cs_fcrct (to its top) and but_cs_aprct (to its
+        // bottom) at x (x + user1) / 2.
+        const uint32_t c = soldier().empty() ? 0x844030 : 0xCA4409;
+        char n[16];
+        std::snprintf(n, sizeof n, "but_cs_%d", current_);
+        const D2Button* b = btn(n);
+        const D2Button* oi = btn("but_cs_oirct");
+        const D2Button* fc = btn("but_cs_fcrct");
+        const D2Button* ap = btn("but_cs_aprct");
+        if (!b || !oi || !fc || !ap) return;
+        hvLine(357, 80, 357, 326, c);
+        const int cy = (b->h >> 1) + b->y, oy = int(unsigned(oi->user2 - oi->y) >> 1) + oi->y;
+        hvLine(41, cy, b->x, cy, c);
+        hvLine(41, cy, 41, oy, c);
+        hvLine(41, oy, b->x, oy, c);
+        hvLine(b->x + b->w, cy, 357, cy, c);
+        const int fx = int(unsigned(fc->user1 - fc->x) >> 1) + fc->x;
+        hvLine(357, 80, fx, 80, c);
+        hvLine(fx, 80, fx, fc->y, c);
+        const int ax = int(unsigned(ap->user1 - ap->x) >> 1) + ap->x;
+        hvLine(357, 326, ax, 326, c);
+        hvLine(ax, 326, ax, ap->user2, c);
+    } else if (screen_ == Screen::Main) {
+        // GOG Df2.exe 0x43a780 (from 0x43a6da): while a button's help is
+        // shown, from its middle row at x 155 down to the middle of
+        // but_mm_hlrct, both ends running right to 2 left of the button.
+        const D2Button* b = btn(mmHover_);
+        const D2Button* hl = btn("but_mm_hlrct");
+        if (!b || !hl) return;
+        const int cy = (b->h >> 1) + b->y, x2 = b->x - 2, hy = int(unsigned(hl->user2 - hl->y) >> 1) + hl->y;
+        hvLine(155, cy, x2, cy, 0xCA4409);
+        hvLine(155, cy, 155, hy, 0xCA4409);
+        hvLine(155, hy, x2, hy, 0xCA4409);
+    }
+}
+
 void FrontendDf2::drawMenu() {
     D2Menu* m = menu();
     if (!m) return;
@@ -1428,12 +1563,13 @@ void FrontendDf2::ownerDraw(D2Button& b) {
         wrapped(b.font, float(b.x), float(b.y), float(b.user1), float(b.user2), b.text,
                 b.drawstate == 4 ? df.fg[2] : b.drawstate == 2 ? df.fg[1] : df.fg[0]);
     } else if (cb == "ca_DrawRegion") {
-        if (region_ >= 0) {
-            const HudImage im = image(kRegionImage[region_]);
+        const int region = campRegion(campaign_);
+        if (region >= 0 && region < 5) {
+            const HudImage im = image(kRegionImage[region]);
             blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height));
             // Titles of the available missions under their dots (LCD10N; LCD10S selected).
             for (int i = 0; i < 28; ++i) {
-                if (kMissions[i].region != region_ || !missionOpen(i)) continue;
+                if (kMissions[i].region != region || kMissions[i].campaign != campaign_ || !missionOpen(i)) continue;
                 char name[16];
                 std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
                 const D2Button* dot = btn(name);
@@ -1470,9 +1606,15 @@ void FrontendDf2::ownerDraw(D2Button& b) {
             text("FRK11N", float(b.x + 6), float(b.y + 20), l2, mnu_.fonts["FRK11N"].fg[0]);
         }
     } else if (cb == "mb_TextBrief") {
-        const std::string key = bms_.substr(0, std::min<size_t>(6, bms_.size()));
-        if (const std::string* t = briefText_.find("MBBRIEF", key))
-            wrapped("LCD10S", float(b.x), float(b.y), float(b.user1), float(b.user2), *t, mnu_.fonts["LCD10S"].fg[0], briefLine_);
+        // GOG Df2.exe 0x43d120, event 7, not in drawstate 0: the border
+        // (0x43afc0), then the button's text (the briefing, set by 0x43d000)
+        // in its font, coloured by state, from (x + 5, y + 5), width
+        // user1 - x - 10, down to user2, from line but_mb_brvsl's value.
+        rectOutline(float(b.x), float(b.y), float(b.user1), float(b.user2), b.drawstate == 4 ? 0x844030 : 0xCA4409);
+        auto fi = mnu_.fonts.find(b.font);
+        const D2Font df = fi == mnu_.fonts.end() ? D2Font{} : fi->second;
+        wrapped(b.font, float(b.x + 5), float(b.y + 5), float(b.user1 - 5), float(b.user2), b.text,
+                b.drawstate == 4 ? df.fg[2] : b.drawstate == 2 ? df.fg[1] : df.fg[0], sliderValue("but_mb_brvsl"));
     } else if (cb == "mb_Map") {
         // GOG Df2.exe 0x43d250 (CD 0x437fd0), event 7, only with the picture
         // (+0x64): the mm_Rect border (0x43afc0), then the tiled terrain
@@ -1561,6 +1703,68 @@ void FrontendDf2::refreshSoldier() {
     if (D2Button* b = btn("but_cs_apimg")) b->image = img;
 }
 
+// GOG Df2.exe 0x434670: a region is available when one of its missions is
+// completed or unlocked; total and completed missions.
+FrontendDf2::RegionStats FrontendDf2::regionStats(int r) {
+    RegionStats st;
+    for (int i = 0; i < 28; ++i) {
+        if (kMissions[i].region != r) continue;
+        ++st.total;
+        if (soldier().get(0x30 + 4 * size_t(i))) ++st.complete;
+        if (missionOpen(i)) st.avail = true;
+    }
+    return st;
+}
+
+// 0x434a90 / 0x434a20's search: the first available region of campaign c
+// with missions left, else -1.
+int FrontendDf2::nextRegion(int c) {
+    for (int r = 0; r < 5; ++r) {
+        const RegionStats st = regionStats(r);
+        if (st.avail && (r < 3 ? 1 : 2) == c && st.total > st.complete) return r;
+    }
+    return -1;
+}
+
+// GOG Df2.exe 0x434a20: the timer and the blink region cleared, then the
+// next region with missions left blinks, the timer at 30 (written in that
+// order, so for campaign 2 the shared word ends up as that region).
+void FrontendDf2::blinkNext(int c) {
+    campTimer() = 0;
+    campBlink(c) = -1;
+    if (const int r = nextRegion(c); r >= 0) { campTimer() = 30; campBlink(c) = r; }
+}
+
+// GOG Df2.exe 0x434440, the page's init: the campaign clamped to 1..2
+// (0x434670); with no region shown yet the first one with missions left
+// (0x434a90, none: still none); a shown region that is complete makes the
+// next such region blink (0x434a20: [0x4c3f84] = 30); a completed selected
+// mission is deselected (0x4344cb); then the buttons (0x434800).
+void FrontendDf2::campaignInit() {
+    if (soldier().get(0x28) < 1 || soldier().get(0x28) > 2) soldier().set(0x28, 1);
+    const int c = soldier().get(0x28);
+    if (campRegion(c) == -1) {
+        briefStarted_ = false;   // [0x4f39d0]
+        if (const int r = nextRegion(c); r >= 0) campRegion(c) = r;
+    } else if (campRegion(c) >= 0 && campRegion(c) < 5) {
+        const RegionStats st = regionStats(campRegion(c));
+        if (st.total == st.complete) blinkNext(c);
+    }
+    if (missionSel_ >= 0 && missionSel_ < 28 && soldier().get(0x30 + 4 * size_t(missionSel_))) missionSel_ = -1;
+    refreshCampaign();
+}
+
+// The page's tick (GOG Df2.exe 0x43457b): the timer counts down; at 0 the
+// blink region's button flips its selected flag and the timer restarts at 30.
+void FrontendDf2::campaignTick() {
+    if (campTimer() > 0) { --campTimer(); return; }
+    const int r = campBlink(soldier().get(0x28) == 2 ? 2 : 1);
+    if (r < 0 || r >= 5) return;
+    static const char* const kRegionBtn[5] = {"but_ca_anbtn", "but_ca_ugbtn", "but_ca_gabtn", "but_ca_chbtn", "but_ca_kabtn"};
+    if (D2Button* b = btn(kRegionBtn[r])) b->selected = !b->selected;
+    campTimer() = 30;
+}
+
 void FrontendDf2::refreshCampaign() {
     campaign_ = std::clamp(soldier().get(0x28), 1, 2);
     for (int c = 1; c <= 2; ++c) {
@@ -1571,33 +1775,24 @@ void FrontendDf2::refreshCampaign() {
         }
     }
     const char* regionBtn[5] = {"but_ca_anbtn", "but_ca_ugbtn", "but_ca_gabtn", "but_ca_chbtn", "but_ca_kabtn"};
-    int firstOpen = -1;
+    const int region = campRegion(campaign_);
+    // GOG Df2.exe 0x434670: a region's button picture is its "B" one when all
+    // its missions are completed.
     for (int r = 0; r < 5; ++r) {
-        bool all = true, any = false;
-        for (int i = 0; i < 28; ++i)
-            if (kMissions[i].region == r) {
-                any = true;
-                if (!soldier().get(0x30 + 4 * size_t(i))) all = false;
-            }
-        const bool mine = (r < 3 ? 1 : 2) == campaign_;
-        if (D2Button* b = btn(regionBtn[r])) b->image = std::string(kRegionButton[r]) + (all && any ? "B" : "");
-        if (mine && !all && firstOpen < 0) firstOpen = r;
+        const RegionStats st = regionStats(r);
+        if (D2Button* b = btn(regionBtn[r])) b->image = std::string(kRegionButton[r]) + (st.total == st.complete ? "B" : "");
     }
-    if (region_ < 0 || (region_ < 3 ? 1 : 2) != campaign_) region_ = firstOpen >= 0 ? firstOpen : (campaign_ == 1 ? 0 : 3);
     // GOG Df2.exe 0x434800 (CD 0x42fa30): every region and mission button
     // starts at drawstate 0, unselected. A region of this campaign is selected
-    // when it is the current one and drawn only when available (0x434670: one
-    // of its missions completed or unlocked); a mission dot is drawn only when
-    // available and in this campaign's current region. Drawstate 0 is neither
-    // drawn nor clickable.
+    // when it is the one shown (no region shown: no picture, no dots) and
+    // drawn only when available; a mission dot is drawn only when available
+    // and in this campaign's shown region. Drawstate 0 is neither drawn nor
+    // clickable.
     for (int r = 0; r < 5; ++r) {
         const bool mine = (r < 3 ? 1 : 2) == campaign_;
-        bool open = false;
-        for (int i = 0; i < 28; ++i)
-            if (kMissions[i].region == r && missionOpen(i)) open = true;
         if (D2Button* b = btn(regionBtn[r])) {
-            b->drawstate = mine && open ? 1 : 0;
-            b->selected = mine && r == region_;
+            b->drawstate = mine && regionStats(r).avail ? 1 : 0;
+            b->selected = mine && r == region;
             layout(*b);
         }
     }
@@ -1605,7 +1800,7 @@ void FrontendDf2::refreshCampaign() {
         char name[16];
         std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
         if (D2Button* b = btn(name)) {
-            const bool shown = missionOpen(i) && kMissions[i].campaign == campaign_ && kMissions[i].region == region_;
+            const bool shown = missionOpen(i) && kMissions[i].campaign == campaign_ && kMissions[i].region == region;
             b->drawstate = shown ? 1 : 0;
             b->image = soldier().get(0x30 + 4 * size_t(i)) ? "IMAGEBTN37" : "IMAGEBTN36";
             b->selected = shown && i == missionSel_;
@@ -1634,7 +1829,18 @@ void FrontendDf2::refreshQuick() {
 }
 
 void FrontendDf2::loadBriefing() {
-    briefLine_ = 0;
+    // GOG Df2.exe 0x43d000: but_mb_mbrct's text is the mission's MBBRIEF
+    // (keyed by its first six letters); but_mb_brvsl's range is the number
+    // of lines it breaks into (0x41bf70 at the text's width user1 - x - 10)
+    // less the 25 the box shows, at least 0, and its value 0.
+    if (D2Button* t = btn("but_mb_mbrct")) {
+        const std::string* brief = briefText_.find("MBBRIEF", bms_.substr(0, std::min<size_t>(6, bms_.size())));
+        t->text = brief ? *brief : std::string();
+        if (D2Button* sl = btn("but_mb_brvsl")) {
+            sl->p1 = std::max(0, breakLines(t->font, t->user1 - t->x - 10, t->text) - 25);
+            sl->p2 = 0;
+        }
+    }
     briefMap_ = {};
     mapMarkers_.clear();
     mapCentreX_ = mapCentreY_ = 0x200;
@@ -1753,6 +1959,9 @@ void FrontendDf2::refreshOptions() {
     auto set = [&](const char* name, const std::string& t) { if (D2Button* b = btn(name)) b->text = t; };
     if (screen_ == Screen::Options1) {
         if (D2Button* b = btn("but_opt1_mssl")) { b->p1 = 512; b->p2 = soldier().get(0x5b0); b->p3 = 260; }
+        // GOG Df2.exe 0x43e683 / 0x43ec70: SCOPE SENSITIVITY 0..0x180, the
+        // soldier's +0x5d8.
+        if (D2Button* b = btn("but_opt1_sshsl")) { b->p1 = 0x180; b->p2 = soldier().get(0x5d8); }
         set("but_opt1_fmtxt", soldier().get(0x5b4) ? menuText("YES", "YES") : menuText("NO", "NO"));
         set("but_opt1_dvtxt", menuText("FULL_SCREEN_(HARDWARE)", "OpenGL"));
         char res[32];
@@ -1789,8 +1998,18 @@ void FrontendDf2::event(D2Button& b, int ev) {
         static const std::pair<const char*, const char*> kHelp[] = {
             {"mm_QuickMission", "MM_QMHELP"}, {"mm_Campaign", "MM_CAHELP"}, {"mm_Novaworld", "MM_NWHELP"}, {"mm_Multiplayer", "MM_MPHELP"},
             {"mm_Options", "MM_OPHELP"}, {"mm_NewSoldier", "MM_CSHELP"}, {"mm_Credits", "MM_CRHELP"}, {"mm_Update", "MM_UPHELP"}};
+        // 0x43ab4a: 0x43a700 keeps the button ([0x4c5998]) for the connector
+        // (0x43a780) and teletypes its help.
         for (const auto& [n, k] : kHelp)
-            if (b.callback == n) { helpText_ = menuText(k, ""); helpShown_ = 0; }
+            if (b.callback == n) { helpText_ = menuText(k, ""); helpShown_ = 0; mmHover_ = b.name; }
+    }
+    if (ev == 2 && screen_ == Screen::Main) {
+        // 0x43ab5c: leaving the button, 0x43a700(0, 0) drops the connector
+        // and empties the help box.
+        static const char* const kHelpButtons[] = {"mm_QuickMission", "mm_Campaign", "mm_Novaworld", "mm_Multiplayer",
+                                                   "mm_Options", "mm_NewSoldier", "mm_Credits", "mm_Update"};
+        for (const char* n : kHelpButtons)
+            if (b.callback == n) { helpText_.clear(); helpShown_ = 0; mmHover_.clear(); }
     }
     // mb_Map (GOG Df2.exe 0x43d250), event 3: a press on the map heads the
     // scroll for the picture point under the mouse (0x43cdf0, eased).
@@ -1836,18 +2055,48 @@ void FrontendDf2::event(D2Button& b, int ev) {
     }
     // Campaign.
     else if (cb == "ca_ChooseCampaign") {
-        soldier().set(0x28, b.user2);
-        region_ = -1;
-        missionSel_ = -1;
-        refreshCampaign();
+        // GOG Df2.exe 0x434d10: another campaign only; the selection cleared,
+        // its region (none yet: the first with missions left, 0x434a90; a
+        // complete one: the next blinks, 0x434a20).
+        if (b.user2 != soldier().get(0x28)) {
+            missionSel_ = -1;
+            soldier().set(0x28, b.user2);
+            const int c = b.user2;
+            if (c >= 1 && c <= 2) {
+                if (campRegion(c) == -1) {
+                    if (const int r = nextRegion(c); r >= 0) campRegion(c) = r;
+                } else if (campRegion(c) >= 0 && campRegion(c) < 5) {
+                    const RegionStats st = regionStats(campRegion(c));
+                    if (st.total == st.complete) blinkNext(c);
+                }
+            }
+            refreshCampaign();
+        }
     } else if (cb == "ca_ChooseRegion") {
-        region_ = b.user2;
-        missionSel_ = -1;
-        refreshCampaign();
+        // GOG Df2.exe 0x434c80: another region only; the selection cleared;
+        // choosing the blinking region stops the blink, a complete one makes
+        // the next blink (0x434a20).
+        const int c = soldier().get(0x28) == 2 ? 2 : 1;
+        if (campRegion(c) != b.user2) {
+            missionSel_ = -1;
+            campRegion(c) = b.user2;
+            if (campRegion(c) == campBlink(c)) {
+                campBlink(c) = -1;
+                campTimer() = 0;
+            } else if (campRegion(c) >= 0 && campRegion(c) < 5) {
+                const RegionStats st = regionStats(campRegion(c));
+                if (st.total == st.complete) blinkNext(c);
+            }
+            refreshCampaign();
+        }
     } else if (cb == "ca_ChooseMission") {
-        if (b.user2 != missionSel_) briefStarted_ = false;   // 0x42fea0: another mission, its voices play again
-        missionSel_ = b.user2;
-        refreshCampaign();
+        // GOG Df2.exe 0x434c50: another mission only ([0x4f39d0] = 0: its
+        // voices play again).
+        if (b.user2 != missionSel_) {
+            missionSel_ = b.user2;
+            briefStarted_ = false;
+            refreshCampaign();
+        }
     } else if (cb == "ca_MissionBriefing" && missionSel_ >= 0) {
         bms_ = kMissions[missionSel_].bms;
         fromCampaign_ = true;
@@ -1892,8 +2141,10 @@ void FrontendDf2::event(D2Button& b, int ev) {
             startVoice();
         }
     }
-    else if (cb == "mb_BriefUp") briefLine_ = std::max(0, briefLine_ - 1);
-    else if (cb == "mb_BriefDown") ++briefLine_;
+    // mb_BriefUp / mb_BriefDown (GOG Df2.exe 0x43d1c0 / 0x43d1f0): the
+    // briefing slider's value -1 (not below 0) / +1 (not above its range).
+    else if (cb == "mb_BriefUp") { if (D2Button* sl = btn("but_mb_brvsl")) sl->p2 = std::max(0, sl->p2 - 1); }
+    else if (cb == "mb_BriefDown") { if (D2Button* sl = btn("but_mb_brvsl")) sl->p2 = std::min(sl->p2 + 1, sl->p1); }
     // mb_MapUp / Down / Left / Right (GOG Df2.exe 0x43d650 / 0x43d610 /
     // 0x43d690 / 0x43d6d0): the slider's value -+10 within its range, the
     // target with it; mb_MapCenter (0x43d930) heads back for the mission's
@@ -1964,11 +2215,14 @@ void FrontendDf2::event(D2Button& b, int ev) {
     else if (cb == "opt1_FMChange") { soldier().set(0x5b4, !soldier().get(0x5b4)); refreshOptions(); }
     else if (cb == "opt1_TUChange") { cfg_.set("turbo", !cfg_.get("turbo")); refreshOptions(); }
     else if (cb == "opt1_MSLeft" || cb == "opt1_MSRight" || cb == "opt1_FXLeft" || cb == "opt1_FXRight" || cb == "opt1_MVLeft" ||
-             cb == "opt1_MVRight" || cb == "opt1_DVLeft" || cb == "opt1_DVRight") {
-        // 0x4399c0.. / 0x439d90.. / 0x439de0.. / 0x439e50..: the slider's
-        // value +-1 within 0..range, then the same write as dragging it.
+             cb == "opt1_MVRight" || cb == "opt1_DVLeft" || cb == "opt1_DVRight" || cb == "opt1_SSLeft" || cb == "opt1_SSRight") {
+        // 0x4399c0.. / 0x439d90.. / 0x439de0.. / 0x439e50..; GOG Df2.exe
+        // opt1_SSLeft / opt1_SSRight 0x43ef70 / 0x43ef90 (but_opt1_sshsl):
+        // the slider's value +-1 within 0..range, then the same write as
+        // dragging it.
         const std::string k = cb.substr(5, 2);
-        const char* name = k == "MS" ? "but_opt1_mssl" : k == "FX" ? "but_opt1_sfsl" : k == "MV" ? "but_opt1_mvsl" : "but_opt1_dvsl";
+        const char* name = k == "MS" ? "but_opt1_mssl" : k == "FX" ? "but_opt1_sfsl" : k == "MV" ? "but_opt1_mvsl"
+                         : k == "SS" ? "but_opt1_sshsl" : "but_opt1_dvsl";
         if (D2Button* sl = btn(name)) {
             const bool right = cb.find("Right") != std::string::npos;
             sl->p2 = std::clamp(sl->p2 + (right ? 1 : -1), 0, sl->p1);
@@ -2016,20 +2270,26 @@ void FrontendDf2::key(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    // 0x42e832: the first button (z-order) whose hotkey1/2 is the key's
-    // DirectInput scancode (0x42dea0), else the first whose '&' key is the
-    // upper-cased character (0x42de50); a hidden or disabled match, or one
-    // without a callback, does nothing. Then pushed for 3 frames, btn_slct on
-    // channel 3, events 3 and 4. DF2.MNU only uses scancode 1 (Escape, the BACK
-    // buttons), so only that one is mapped; the character is the key's
-    // unshifted symbol (INFERRED: the EXE's key event carries the translated
-    // character; letters and digits are the same either way).
+    // GOG Df2.exe 0x4333c0 (0x4335e0; CD 0x42e832): the first button
+    // (z-order) whose hotkey1/2 (+0x84 / +0x88) is the key (0x432c50), else
+    // the first whose '&' key is the upper-cased character (0x432c00); a
+    // hidden or disabled match, or one without a callback, does nothing. Then
+    // pushed for 3 frames (+0xa0), btn_slct on channel 3, events 3 and 4. GOG
+    // matches the Windows virtual key of WM_KEYDOWN (0x473690): its DF2.MNU
+    // has 13 (Enter) on the accept / start buttons and 27 (Escape) on BACK.
+    // The CD build's input gave DirectInput scancodes (CD 0x42dea0) and its
+    // DF2.MNU has 1 (Escape) on BACK only, so with the CD's DF2.EXE that one
+    // is mapped. The character is the key's unshifted symbol (INFERRED: the
+    // EXE's key event carries the translated character; letters and digits
+    // are the same either way).
     if (D2Menu* m = menu()) {
         D2Button* hit = nullptr;
-        if (sym == SDLK_ESCAPE)
+        int code = int(Controls::toVirtualKey(k.keysym.scancode));
+        if (cdExe_) code = k.keysym.scancode == SDL_SCANCODE_ESCAPE ? 1 : 0;   // DIK_ESCAPE
+        if (code != 0)
             for (int i : m->buttons) {
                 D2Button& b = mnu_.buttons[size_t(i)];
-                if (b.hot1 == 1 || b.hot2 == 1) { hit = &b; break; }
+                if (b.hot1 == code || b.hot2 == code) { hit = &b; break; }
             }
         if (!hit && sym > 0 && sym < 128) {
             const int ch = std::toupper(int(sym));
@@ -2199,6 +2459,7 @@ int FrontendDf2::run() {
     }
     const auto exe = findDf2Exe(o_.gameDir);
     saveDir_ = exe.empty() ? o_.gameDir : exe.parent_path();
+    if (ExeImage im; !exe.empty() && im.load(exe, nullptr)) cdExe_ = im.build() == ExeBuild::Df2Cd;
     loadSoldiers();
     cfg_ = DfConfig::df2();   // DF2.EXE's own keys (0x436ab0 / 0x436cd0)
     cfg_.load(saveDir_ / "df2.cfg");
@@ -2398,7 +2659,7 @@ int FrontendDf2::run() {
                     D2Button& b = mnu_.buttons[size_t(i)];
                     if (b.flash > 0) --b.flash;
                 }
-            // The next incomplete region blinks while none is chosen (0x42fc50).
+            if (screen_ == Screen::Campaign) campaignTick();   // GOG 0x43457b
             if (screen_ == Screen::Briefing) { mapTick(); voiceTick(); }   // GOG 0x43ca20 (CD 0x437820), the page's tick
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             music_.update();
@@ -2432,7 +2693,15 @@ int FrontendDf2::run() {
                 g.gpsIcons = std::clamp(cfg_.get("gpsicon"), 0, 2);
                 g.crosshairs = cfg_.get("crosshairs") != 0;
                 g.flipMouse = soldier().get(0x5b4) != 0;
-                g.mouseScale = std::clamp(soldier().get(0x5b0), 0, 255);
+                // GOG Df2.exe 0x43c346 / 0x43c352: [0x67ccf8] = +0x5b0, [0x67ccfc]
+                // = +0x5d8 + 0x80, both clamped by the mouse code 0x41eb50
+                // (<= 0 -> 0x80 / <= 0x80 -> 0x80, > 0x1ff -> 0x1ff) and
+                // written back after the mission (0x43c1f0 / 0x43c205: +0x5d8
+                // = [0x67ccfc] - 0x80).
+                const int mouseSens = soldier().get(0x5b0) <= 0 ? 0x80 : std::min(soldier().get(0x5b0), 0x1ff);
+                const int scopeSens = std::clamp(soldier().get(0x5d8) + 0x80, 0x80, 0x1ff);
+                g.mouseScale = mouseSens;
+                g.df2ScopeSens = scopeSens;
                 g.dialogVolume = std::clamp(soldier().get(0x5c0), 0, 255);
                 // 0x43afb0: each row's command takes the VK (0 clears it) and the
                 // mouse mask (1, 2, 0x10 for button 3); FIRE_WEAPON sets attack_2 too.
@@ -2448,17 +2717,28 @@ int FrontendDf2::run() {
                 MissionOutcome out;
                 audio_.setDfMixer(true, false);   // 0x43b68d: the hook is off from here on
                 runGame(vfs_, g, &out, &flags);
-                if (out.quit) break;
-                // 0x437550: a campaign win marks the mission done; kills add
-                // up; the unlock mask comes back from the game.
-                if (camp) {
-                    soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
-                    if (out.won && missionSel_ >= 0) {
-                        if (!soldier().get(0x30 + 4 * size_t(missionSel_))) soldier().set(0x2a4, soldier().get(0x2a4) + 1);
-                        soldier().set(0x30 + 4 * size_t(missionSel_), 1);
-                    }
-                    soldier().set(0x29c, soldier().get(0x29c) + out.kills);
+                soldier().set(0x5b0, mouseSens);
+                soldier().set(0x5d8, scopeSens - 0x80);
+                // GOG Df2.exe 0x43c6f0 (CD 0x437550), for every finished run
+                // (those replayed with Space first, 0x466ad0 -> 0x464140,
+                // already recorded when the window is then closed): a win
+                // marks a campaign mission done ([0x4c3f88] and the
+                // selection), adds the player's kills to +0x29c and 1 to the
+                // completed missions +0x2a4 (GOG only); a loss records
+                // nothing. The unlock mask comes back from the game.
+                auto record = [&](bool won, int kills) {
+                    if (!won) return;
+                    if (camp && missionSel_ >= 0) soldier().set(0x30 + 4 * size_t(missionSel_), 1);
+                    soldier().set(0x29c, soldier().get(0x29c) + kills);
+                    soldier().set(0x2a4, soldier().get(0x2a4) + 1);
+                };
+                for (const MissionOutcome::Run& r : out.replayed) record(r.won, r.kills);
+                if (out.quit) {
+                    if (camp && !out.replayed.empty()) soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
+                    break;
                 }
+                record(out.won, out.kills);
+                if (camp) soldier().set(0xa8 + 4 * size_t(camp), int32_t(flags));
                 saveSoldiers();
                 if (!openWindow()) return 1;
                 if (cfg_.get("music_volume") > 0) music_.start();
@@ -2483,6 +2763,8 @@ int FrontendDf2::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         hud().begin(dw, dh);
         drawMenu();
+        drawCursor();
+        drawConnectors();
         hud().end();
         if (!o_.screenshot.empty() && ++frame_ >= o_.frames) {
             std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
