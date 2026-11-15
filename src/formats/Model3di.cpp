@@ -236,6 +236,18 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
 
         ModelLod lod;
         lod.materialTextures = matTextures;
+        for (const auto& mt : mats) {
+            ModelMaterial mm;
+            mm.texture = mt.tex;
+            std::copy(mt.rgb, mt.rgb + 3, mm.color);
+            mm.blend = mt.blend;
+            mm.flags = mt.flags;
+            mm.specular = mt.spec;
+            mm.specularPower = mt.specPow;
+            mm.fullbright = mt.bright;
+            mm.hidden = mt.hidden;
+            lod.materials.push_back(mm);
+        }
         // Hardpoints: i32 x, y, z in 16.16 metres, file axes as the vertices.
         for (uint32_t i = 0; i < nh; ++i) {
             const size_t o = hOff + size_t(i) * 12;
@@ -363,7 +375,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                         lod.hitMeshes[mi].push_back(h);
                     }
                 }
-                if (matIdx >= nmat || mats[matIdx].hidden) continue;
+                // Delta Force (GOG Df.exe 0x46b1d0): an animated slot-1
+                // material is swapped for its frame's record before the
+                // 0x0800 test, so its faces are kept (the draw tests the
+                // frame's record).
+                const bool df1Anim = !layout.v8 && matIdx < nmat && (mats[matIdx].flags & 0x4000) && mats[matIdx].slot == 1;
+                if (matIdx >= nmat || (mats[matIdx].hidden && !(df1Anim && !mats[matIdx].noSpan))) continue;
                 uint32_t vi[3], ni[3];
                 bool valid = true;
                 for (int c = 0; c < 3; ++c) {
@@ -379,8 +396,11 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 // and slot +0x1F == 0x7F is drawn with the next material
                 // (+0x78: its texture, flags, blend and brightness), turned
                 // and lit from its back; its front keeps the material.
-                // Only flag 0x0800 is tested on the front material.
-                const bool backMaterial = layout.v8 && (mt.flags & 0x4002) == 0x4002 && mt.slot == 0x7F && matIdx + 1 < nmat;
+                // Only flag 0x0800 is tested on the front material. Delta
+                // Force the same (GOG Df.exe 0x46b1d0: +0x10 & 2, +0x11 &
+                // 0x40, +0x1F == 0x7F -> the next 0x4c record), e.g. the
+                // BGUY01 hat, BAGTENT and BRDM panels.
+                const bool backMaterial = (mt.flags & 0x4002) == 0x4002 && mt.slot == 0x7F && matIdx + 1 < nmat;
                 auto batchFor = [&](int key, const Mat& bm, uint32_t index, bool doubleSided) -> size_t {
                     auto it = batchIndex.find(key);
                     if (it == batchIndex.end()) {
@@ -396,6 +416,7 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                         b.fullbright = bm.bright;
                         b.doubleSided = doubleSided;
                         b.impact = bm.impact;
+                        b.slot = mt.slot;
                         it = batchIndex.emplace(key, lod.batches.size()).first;
                         lod.batches.push_back(std::move(b));
                     }

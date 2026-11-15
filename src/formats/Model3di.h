@@ -54,7 +54,21 @@ struct ModelBatch {
     float fullbright = -1;           // +0x3c when flag 0x0020, else -1
     uint16_t impact = 0;             // +0x12: surface for impact effects (metal, wood, stone, ...)
     bool doubleSided = false;
+    int slot = 0;                    // the (front) material's signed +0x1F: animated frame slot, or 0x7F
     std::vector<ModelVertex> vertices;   // triangle list
+};
+
+// One material record of a LOD as drawn (Delta Force's animated materials
+// draw with the frame's whole record, GOG Df.exe 0x46b1d0).
+struct ModelMaterial {
+    int texture = -1;
+    float color[3] = {0.7f, 0.7f, 0.7f};
+    int blend = 0;
+    uint32_t flags = 0;
+    float specular = 0;
+    int specularPower = 0;
+    float fullbright = -1;
+    bool hidden = false;             // flag 0x0800 or no span
 };
 
 // Axis-aligned box in model space (already in OpenDF axes, metres).
@@ -104,6 +118,7 @@ struct ModelLod {
     // (GOG Df.exe 0x481060) animates the LOD's 0x4000 materials.
     bool animated = false;
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
+    std::vector<ModelMaterial> materials;   // per material record
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
     // v5: per mesh its box (+0x40..+0x54), OpenDF axes: min x, y, z, max x,
     // y, z; GOG Df.exe's mover test 0x4889c0 tests it before the volumes.

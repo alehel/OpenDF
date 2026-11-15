@@ -42,6 +42,8 @@ layout(location = 1) in vec2 aOrigin;       // per instance: the chunk's first c
 uniform sampler2D uHeight, uDetailIdx;
 uniform sampler2DArray uDetailShade;        // r: shade, g: detail elevation
 uniform float uCell, uHScale, uMapSize, uSkirt, uChunkScale, uTiles, uNear, uBumps;
+uniform float uFarBase, uKMax;
+uniform bool uHeightMips;
 uniform vec3 uEye;
 uniform mat4 uViewProj;
 out vec2 vCell;
@@ -55,6 +57,18 @@ void main() {
     // Bilinear between the corner elevations (fine meshes sit between cells).
     vec2 f = fract(c), b = floor(c);
     float h = mix(mix(elev(b), elev(b + vec2(1, 0)), f.x), mix(elev(b + vec2(0, 1)), elev(b + vec2(1, 1)), f.x), f.y);
+    // Delta Force far rings (GOG Df.exe 0x48c440): ring k's grid is 2^k
+    // cells and its heights are pyramid level k (the highest of each 2^k
+    // block), k as the colour mip below.
+    float dist0 = length(c * uCell - uEye.xz);
+    if (uHeightMips && dist0 >= uNear) {
+        int k = int(clamp(floor(log2(dist0 / uFarBase)), 0.0, uKMax));
+        float s = exp2(float(k));
+        vec2 cs = floor(c / s);
+        c = cs * s;
+        ivec2 sz = textureSize(uHeight, k);
+        h = texelFetch(uHeight, ivec2(mod(cs, vec2(sz))), k).r * uHScale;
+    }
     // Near rings: detail elevation e >= 128 raises the ground by (e - 128)/128 m
     // (DF.EXE 0x438fac).
     if (uBumps > 0.5 && length(c * uCell - uEye.xz) < uNear) {
@@ -90,12 +104,26 @@ void main() {
         ivec2 cell = ivec2(mod(floor(vCell), uMapSize));
         float tile = min(texelFetch(uDetailIdx, cell, 0).r * 255.0, uTiles - 1.0);
         vec3 duv = vec3(fract(vCell), tile);
-        float sh = texture(uDetailShade, duv).r * 255.0;
-        if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
-        else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
-        vec4 dc = texture(uDetailColor, duv);
-        if (uAlphaDetail) col = mix(col, post(dc.rgb), dc.a);   // Delta Force 2
-        else if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
+        if (uAlphaDetail) {   // Delta Force 2
+            vec4 dc = texture(uDetailColor, duv);
+            col = mix(col, post(dc.rgb), dc.a);
+            oColor = vec4(col, 1.0);
+            return;
+        }
+        // Delta Force (GOG Df.exe 0x489ff0): the tile texel's raw shade s
+        // and colour d; s == 0: d's colour replaces the ground (none: as
+        // is); otherwise shade, then d averaged 50/50.
+        ivec3 dsz = textureSize(uDetailShade, 0);
+        ivec3 dt = ivec3(min(ivec2(fract(vCell) * vec2(dsz.xy)), dsz.xy - 1), int(tile));
+        float sh = texelFetch(uDetailShade, dt, 0).r * 255.0;
+        vec4 dc = texelFetch(uDetailColor, dt, 0);
+        if (sh < 0.5) {
+            if (dc.a > 0.5) col = post(dc.rgb);
+        } else {
+            if (sh < 128.0) col *= 1.0 - 2.0 * (128.0 - sh) / 256.0;
+            else col += (post(uCloudCol) - col) * (2.0 * (sh - 128.0) / 256.0);
+            if (dc.a > 0.5) col = 0.5 * col + 0.5 * post(dc.rgb);
+        }
         oColor = vec4(col, 1.0);
         return;
     }
@@ -223,11 +251,12 @@ uniform vec3 uEye;
 uniform float uLevel, uExtent;
 uniform mat4 uViewProj;
 uniform bool uBelow;
+uniform float uQuadDepth;   // the full-screen quad's NDC z
 out vec3 vWorld;
 void main() {
     vWorld = vec3(uEye.x + aPos.x * uExtent, uLevel, uEye.z + aPos.y * uExtent);
     // Under water: the whole view (a full-screen quad).
-    gl_Position = uBelow ? vec4(aPos, 0.0, 1.0) : uViewProj * vec4(vWorld, 1.0);
+    gl_Position = uBelow ? vec4(aPos, uQuadDepth, 1.0) : uViewProj * vec4(vWorld, 1.0);
 }
 )";
 
@@ -241,7 +270,8 @@ const char* kWaterFS = R"(#version 330 core
 in vec3 vWorld;
 uniform sampler2D uWaterIdx, uGradient, uScene;
 uniform vec4 uViewport;     // x, y, w, h of the 3D view
-uniform float uOpacity, uPhase;
+uniform float uOpacity, uPhase, uMaxDepth;   // uMaxDepth: the surface seen from below, view depth limit
+uniform vec3 uEye, uFwd;
 uniform bool uBelow, uDf2, uTint;
 uniform vec3 uWaterColor;
 out vec4 oColor;
@@ -262,6 +292,7 @@ void main() {
     vec3 under = texture(uScene, (gl_FragCoord.xy - uViewport.xy) / uViewport.zw).rgb * 255.0;
     float lum = floor((under.r + 2.0 * under.g + under.b) / 4.0);
     float r = 0.0;
+    if (uMaxDepth > 0.0 && dot(vWorld - uEye, uFwd) > uMaxDepth) discard;
     if (!uBelow) {
         vec2 t = vWorld.xz * 16.0;                                // texels
         float iu = mod(t.x * 4.0 + uPhase, 1024.0), iv = mod(t.y * 4.0 + uPhase, 1024.0);
@@ -497,13 +528,17 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         texElevation_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, elevRgb.data(), false, false);
     }
     {
+        // GOG Df.exe 0x47d080 ends with 0x47b4a0(0xbd5480): the colour-map
+        // palette as graded by 0x47be90 -> 0x480d00 (TRN saturation and
+        // gamma/filter table) against the TRN type colours, the first of the
+        // nearest (plain squared RGB) wins; no types: 1.
+        const std::array<Rgb, 256> pal = trueColor ? color.palette : gradedPalette(color.palette);
         uint8_t byIndex[256];
         for (int i = 0; i < 256; ++i) {
             int best = 1;
             long bestD = -1;
             for (const auto& t : desc_.types) {
-                const long dr = color.palette[size_t(i)].r - t.r, dg = color.palette[size_t(i)].g - t.g,
-                           db = color.palette[size_t(i)].b - t.b;
+                const long dr = pal[size_t(i)].r - t.r, dg = pal[size_t(i)].g - t.g, db = pal[size_t(i)].b - t.b;
                 const long d = dr * dr + dg * dg + db * db;
                 if (bestD < 0 || d < bestD) {
                     bestD = d;
@@ -525,10 +560,30 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     glBindTexture(GL_TEXTURE_2D, texHeight_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, size_, size_, 0, GL_RED, GL_FLOAT, heights_.data());
+    {
+        // The height pyramid (GOG Df.exe 0x47dd10 at 0x47dd9b..0x47ddc4:
+        // 0x47d620 makes level k from k - 1, each texel the highest of its
+        // 2x2), read by the far rings (0x48c440: ring k's heights from
+        // level k). Down to 1x1 so the texture is complete.
+        std::vector<float> prev = heights_, next;
+        int w = size_, level = 0;
+        while (w > 1) {
+            const int n = w / 2;
+            next.assign(size_t(n) * size_t(n), 0.f);
+            for (int z = 0; z < n; ++z)
+                for (int x = 0; x < n; ++x) {
+                    const size_t a = size_t(2 * z) * size_t(w) + size_t(2 * x), b = a + size_t(w);
+                    next[size_t(z) * size_t(n) + size_t(x)] = std::max({prev[a], prev[a + 1], prev[b], prev[b + 1]});
+                }
+            glTexImage2D(GL_TEXTURE_2D, ++level, GL_R32F, n, n, 0, GL_RED, GL_FLOAT, next.data());
+            prev.swap(next);
+            w = n;
+        }
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
 
     if (!loadImage(vfs, desc_.detailMap, detail) || detail.width != size_ || detail.height != size_) {
         detail.width = detail.height = size_;
@@ -602,7 +657,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
             const Rgb& c = dPal[dC.pixels[i]];
             dcRgba[i * 4] = c.r; dcRgba[i * 4 + 1] = c.g; dcRgba[i * 4 + 2] = c.b;
             dcRgba[i * 4 + 3] = dC.pixels[i] ? 255 : 0;
-            dsRg[i * 2] = dS.pixels[i] ? dS.pixels[i] : 120;
+            dsRg[i * 2] = dS.pixels[i];   // raw: 0 means the detail colour replaces (0x489ff0)
             dsRg[i * 2 + 1] = haveElev ? dD.pixels[i] : 128;
         }
     } else {
@@ -977,10 +1032,22 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
         glBindVertexArray(0);
         return;
     }
-    // Under water the tint covers the whole view: once, in the near pass.
-    if (eye.y < level && pass == Pass::Far) return;
-    glUseProgram(progWater_);
-    glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
+    // Under water nothing here: drawUnderwater() after the objects
+    // (GOG Df.exe 0x48d570, called near the end of 0x485610).
+    if (eye.y <= level) return;
+    df1WaterSetup(eye, ticks);
+    // The surface out to 1023 m, only where it is in front (depth test).
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
+    setM4(progWater_, "uViewProj", proj * view);
+    setF(progWater_, "uLevel", level);
+    setF(progWater_, "uExtent", 1023.f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDepthMask(GL_TRUE);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void Terrain::df1WaterSetup(Vec3 eye, float phaseTicks) {
     // What is already drawn: copied so the water can read its luminance.
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
@@ -993,14 +1060,12 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     glActiveTexture(GL_TEXTURE0 + 2);
     glBindTexture(GL_TEXTURE_2D, texScene_);
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
-
     glUseProgram(progWater_);
-    const bool below = eye.y < level;
+    glUniform1i(glGetUniformLocation(progWater_, "uDf2"), 0);
     glUniform4f(glGetUniformLocation(progWater_, "uViewport"), float(vp[0]), float(vp[1]), float(vp[2]), float(vp[3]));
     setF(progWater_, "uOpacity", desc_.waterOpacity);
     // Phase: tick << 23 in table units of 2^22 -> 2 entries per tick.
-    setF(progWater_, "uPhase", std::fmod(ticks * 2.f, 1024.f));
-    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), below);
+    setF(progWater_, "uPhase", std::fmod(phaseTicks * 2.f, 1024.f));
     setV3(progWater_, "uEye", eye);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texWater_);
@@ -1008,22 +1073,61 @@ void Terrain::drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float tick
     glBindTexture(GL_TEXTURE_2D, texWaterGrad_);
     glBindVertexArray(waterVao_);
     glDepthMask(GL_FALSE);
-    if (below) {
-        // Under water: everything is tinted through row 0 (0x43c500).
-        glDisable(GL_DEPTH_TEST);
-        setM4(progWater_, "uViewProj", Mat4{});
-        setF(progWater_, "uLevel", 0.f);
-        setF(progWater_, "uExtent", 1.f);
-        setV3(progWater_, "uEye", {0, 0, 0});
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glEnable(GL_DEPTH_TEST);
-    } else {
-        // The surface out to 1023 m, only where it is in front (depth test).
-        setM4(progWater_, "uViewProj", proj * view);
-        setF(progWater_, "uLevel", level);
-        setF(progWater_, "uExtent", 1023.f);
+}
+
+bool Terrain::df1UnderWater(Vec3 eye) const { return !gen2_ && hasWater_ && eye.y <= waterLevel(); }
+
+void Terrain::drawUnderwater(const Mat4& view, const Mat4& projNear, const Mat4& projFar, Vec3 eye, float phaseTicks) {
+    // GOG Df.exe 0x48d570 (view z <= the water level): every pixel through
+    // the water table with r = 0 (0x43c500), except where the surface is in
+    // front: there the ripple texel as above water, mapped from below with
+    // the phase of the 20 Hz timer ([0x491014] << 0x17), out to 1023 m of
+    // view depth (0x3feffff). Both read the colours as drawn before it.
+    if (!df1UnderWater(eye)) return;
+    df1WaterSetup(eye, phaseTicks);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
+    setM4(progWater_, "uViewProj", Mat4{});
+    setF(progWater_, "uLevel", 0.f);
+    setF(progWater_, "uExtent", 1.f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glEnable(GL_DEPTH_TEST);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 0);
+    setV3(progWater_, "uEye", eye);
+    setF(progWater_, "uLevel", waterLevel());
+    setF(progWater_, "uExtent", 1023.f);
+    setF(progWater_, "uMaxDepth", 1023.f);
+    setV3(progWater_, "uFwd", Vec3{-view.at(2, 0), -view.at(2, 1), -view.at(2, 2)});
+    // The caller's two depth ranges (far 0.5..1, near 0..0.5).
+    for (int range = 0; range < 2; ++range) {
+        glDepthRange(range ? 0.0 : 0.5, range ? 0.5 : 1.0);
+        setM4(progWater_, "uViewProj", (range ? projNear : projFar) * view);
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
+    glDepthRange(0.0, 1.0);
+    setF(progWater_, "uMaxDepth", 0.f);
+    glDepthMask(GL_TRUE);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void Terrain::tintUnderwaterOver(Vec3 eye) {
+    // (OpenDF) What was drawn after drawUnderwater() with depth cleared first
+    // (the first-person weapon): GOG Df.exe draws the gun before 0x48d570,
+    // so it is tinted with r = 0 too. Only where depth was written since.
+    if (!df1UnderWater(eye)) return;
+    df1WaterSetup(eye, 0.f);
+    glUniform1i(glGetUniformLocation(progWater_, "uBelow"), 1);
+    glUniform1f(glGetUniformLocation(progWater_, "uQuadDepth"), 0.99999f);
+    setM4(progWater_, "uViewProj", Mat4{});
+    setF(progWater_, "uLevel", 0.f);
+    setF(progWater_, "uExtent", 1.f);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_GREATER);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDepthFunc(GL_LESS);
+    glUniform1f(glGetUniformLocation(progWater_, "uQuadDepth"), 0.f);
     glDepthMask(GL_TRUE);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
@@ -1135,6 +1239,7 @@ void Terrain::draw(const Mat4& view, const Mat4& proj, Vec3 eye, float viewDista
     setF(progTerrain_, "uNear", nearEnd);
     setF(progTerrain_, "uFarBase", farBase);
     setF(progTerrain_, "uKMax", gen2_ ? 6.f : 5.f);
+    glUniform1i(glGetUniformLocation(progTerrain_, "uHeightMips"), gen2_ ? 0 : 1);
     setF(progTerrain_, "uEnd", gen2_ ? 1e9f : ringsEnd);
     setV3(progTerrain_, "uEye", eye);
     setV3(progTerrain_, "uFog", fog);

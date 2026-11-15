@@ -256,7 +256,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         std::vector<ModelVertex> all;
         for (auto& b : l.batches) {
             GpuModel::Batch gb{GLint(all.size()), GLsizei(b.vertices.size()), b.texture, {b.color[0], b.color[1], b.color[2]},
-                               b.blend, b.flags, b.material, b.mesh, b.specular, b.specularPower, b.fullbright, b.doubleSided};
+                               b.blend, b.flags, b.material, b.mesh, b.specular, b.specularPower, b.fullbright, b.doubleSided,
+                               b.slot};
             all.insert(all.end(), b.vertices.begin(), b.vertices.end());
             gl.batches.push_back(gb);
         }
@@ -265,6 +266,8 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
         gl.triangles = l.triangleCount;
         gl.frames = l.frames;
         gl.materialTextures = l.materialTextures;
+        gl.materials = l.materials;
+        gl.df1 = src.version < 8;
         gl.meshParent = l.meshParent;
         gl.meshPivot = l.meshPivot;
         gl.meshRadius = l.meshRadius;
@@ -353,7 +356,22 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
     }
     glBindVertexArray(l.vao);
     for (const auto& b : l.batches) {
-        if ((b.blend != 0) != translucent) continue;
+        const int bFrame = weapon && b.mesh == 0 ? 0 : frame;
+        // Delta Force animated materials (GOG Df.exe 0x46b1d0, 0x46b345):
+        // flag 0x4000 with unsigned slot +0x1F < 11 draws material +
+        // table[slot]; only slot 1 ([0xad3cf4]) is ever set (the frame
+        // given here), the others read 0. The frame's whole record is used:
+        // blend and queue, key, fixed shade, colour, specular, decal and
+        // the 0x0800 skip.
+        const ModelMaterial* rec = nullptr;
+        if (l.df1 && (b.flags & 0x4000) && unsigned(uint8_t(b.slot)) < 11) {
+            const int idx = b.material + (b.slot == 1 ? bFrame : 0);
+            if (idx >= 0 && idx < int(l.materials.size())) rec = &l.materials[size_t(idx)];
+            if (rec && rec->hidden) continue;
+        }
+        const int blend = rec ? rec->blend : b.blend;
+        const uint32_t flags = rec ? rec->flags : b.flags;
+        if ((blend != 0) != translucent) continue;
         if (meshes) {
             const Mat4 mm = b.mesh >= 0 && b.mesh < int(meshes->size()) ? model * (*meshes)[size_t(b.mesh)] : model;
             glUniformMatrix4fv(locModel_, 1, GL_FALSE, mm.m);
@@ -363,27 +381,27 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         // 0x44aceb, DF2.EXE 0x44a290 / 0x44a2db; the model's other meshes
         // are never drawn).
         if (weapon && b.mesh != 0 && !(b.mesh <= 2 && (flash & (1 << (b.mesh - 1))))) continue;
-        const int bFrame = weapon && b.mesh == 0 ? 0 : frame;
         if (b.doubleSided) glDisable(GL_CULL_FACE);
         else glEnable(GL_CULL_FACE);
-        if (b.flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)
+        if (flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)
             glEnable(GL_POLYGON_OFFSET_FILL);
             glPolygonOffset(-1.f, -2.f);
         }
-        glUniform1i(locMode_, b.blend);
-        glUniform1i(locKey_, (b.flags & 0x0200) != 0);
-        glUniform1f(locSpec_, b.specular);
-        glUniform1i(locSpecPow_, b.specularPower);
-        glUniform1f(locBright_, b.fullbright);
+        glUniform1i(locMode_, blend);
+        glUniform1i(locKey_, (flags & 0x0200) != 0);
+        glUniform1f(locSpec_, rec ? rec->specular : b.specular);
+        glUniform1i(locSpecPow_, rec ? rec->specularPower : b.specularPower);
+        glUniform1f(locBright_, rec ? rec->fullbright : b.fullbright);
         // Animated materials (flag 0x4000): material base + frame is used
-        // instead (DF.EXE 0x46f72f); here, its texture.
-        int texture = b.texture;
-        if ((b.flags & 0x4000) && bFrame > 0 && b.material + bFrame < int(l.materialTextures.size()))
+        // instead (DF.EXE 0x46f72f); Delta Force 2 here: its texture.
+        int texture = rec ? rec->texture : b.texture;
+        if (!l.df1 && (b.flags & 0x4000) && bFrame > 0 && b.material + bFrame < int(l.materialTextures.size()))
             texture = l.materialTextures[size_t(b.material + bFrame)];
         const bool textured = texture >= 0 && texture < int(m.textures.size());
         glUniform1i(locTextured_, textured);
         glUniform1i(locGradeTexel_, grade_ && textured && !m.textureNoGrade[size_t(texture)]);
-        glUniform3f(locColor_, b.color[0], b.color[1], b.color[2]);
+        const float* colour = rec ? rec->color : b.color;
+        glUniform3f(locColor_, colour[0], colour[1], colour[2]);
         if (textured) {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, m.indexTextures[size_t(texture)]);
@@ -391,7 +409,7 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
             glBindTexture(GL_TEXTURE_2D, m.textures[size_t(texture)]);
         }
         glDrawArrays(GL_TRIANGLES, b.first, b.count);
-        if (b.flags & 0x0040) glDisable(GL_POLYGON_OFFSET_FILL);
+        if (flags & 0x0040) glDisable(GL_POLYGON_OFFSET_FILL);
     }
     glDisable(GL_CULL_FACE);
 }
@@ -400,30 +418,57 @@ void ModelRenderer::draw(const GpuModel& m, int lod, const Mat4& model, bool wea
     drawBatches(m, lod, model, false, weapon, flash, frame);
 }
 
-void ModelRenderer::drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes) {
-    drawBatches(m, lod, model, false, false, 0, 0, &meshes);
+void ModelRenderer::drawPosed(const GpuModel& m, int lod, const Mat4& model, const std::vector<Mat4>& meshes, int frame) {
+    drawBatches(m, lod, model, false, false, 0, frame, &meshes);
+    if (defer_) {
+        deferred_.push_back({&m, lod, model, false, 0, frame, true, meshes, {tint_[0], tint_[1], tint_[2], tint_[3]}, tintReplace_, tintRaw_});
+        return;
+    }
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    drawBatches(m, lod, model, true, false, 0, 0, &meshes);
+    drawBatches(m, lod, model, true, false, 0, frame, &meshes);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 }
 
 void ModelRenderer::drawTranslucent(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame) {
+    if (defer_) {
+        deferred_.push_back({&m, lod, model, weapon, flash, frame, false, {}, {tint_[0], tint_[1], tint_[2], tint_[3]}, tintReplace_, tintRaw_});
+        return;
+    }
+    drawTranslucentNow(m, lod, model, weapon, flash, frame, nullptr);
+}
+
+void ModelRenderer::drawTranslucentNow(const GpuModel& m, int lod, const Mat4& model, bool weapon, int flash, int frame,
+                                       const std::vector<Mat4>* meshes) {
     // Translucent faces test depth but do not write it, in submission order.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-1.f, -4.f);
-    drawBatches(m, lod, model, true, weapon, flash, frame);
+    if (!meshes) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-1.f, -4.f);
+    }
+    drawBatches(m, lod, model, true, weapon, flash, frame, meshes);
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 }
 
+void ModelRenderer::drawDeferred() {
+    for (const auto& d : deferred_) {
+        setTint(d.tint[0], d.tint[1], d.tint[2], d.tint[3], d.replace, d.raw);
+        drawTranslucentNow(*d.m, d.lod, d.model, d.weapon, d.flash, d.frame, d.posed ? &d.meshes : nullptr);
+    }
+    deferred_.clear();
+    setTint(1, 1, 1, 1);
+}
+
 void ModelRenderer::setTint(float r, float g, float b, float a, bool replace, bool raw) {
+    tint_[0] = r; tint_[1] = g; tint_[2] = b; tint_[3] = a;
+    tintReplace_ = replace;
+    tintRaw_ = raw;
     glUniform4f(glGetUniformLocation(prog_, "uTint"), r, g, b, a);
     glUniform1i(glGetUniformLocation(prog_, "uOverride"), replace ? 1 : 0);
     glUniform1i(glGetUniformLocation(prog_, "uTintRaw"), raw ? 1 : 0);

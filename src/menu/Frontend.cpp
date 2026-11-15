@@ -2529,6 +2529,12 @@ int Frontend::run() {
                 g.sidearm = sidearmName(prof().get(0x680));
                 g.soldierName = prof().name();
                 g.female = prof().get(0x640) >= 8;
+                {
+                    // 0x407a90: the face table 0x4d0490 (+0x00 of each 0x84 record).
+                    static const int kFaceVariant[13] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 0, 0};
+                    const int face = prof().get(0x640);
+                    g.faceVariant = face >= 0 && face < 13 ? kFaceVariant[face] : 0;
+                }
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;
@@ -2537,6 +2543,7 @@ int Frontend::run() {
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
                 g.displayGamma = std::clamp(cfg_.get("gamma"), 0, 255);
+                g.letterbox = std::clamp(cfg_.get("window_size"), 1, 2);   // 0x407a90, 0x404ba0
                 // 0x41cca0 (GOG 0x41ce20): the profile's 44 (GOG 46: +0x8b0
                 // PrevWaypoint, +0x8bc server; row 28 named AudioMacros)
                 // bindings over the game table;
@@ -2561,6 +2568,7 @@ int Frontend::run() {
                     cfg_.set("crosshairs", outcome_.crosshairs ? 1 : 0);
                     cfg_.set("showgun", outcome_.showGun ? 1 : 0);
                 }
+                if (outcome_.letterbox) cfg_.set("window_size", outcome_.letterbox);   // 0x407980: back to df.cfg
                 if (outcome_.quit) break;
                 // 0x40e5d4 (GOG Df.exe 0x407de0): only a win records
                 // anything, the mission done and its kills (+0x664; the two

@@ -45,6 +45,11 @@ struct GameOptions {
     std::string soldierName;
     bool mixerHook = true;               // DF1: the mixer's mode-3 hook (on from start-up until a mission has ended)
     bool female = false;                 // the soldier's face is a female one (profile +0x640 >= 8)
+    // The player's person variant (organic +0x98): GOG Df.exe 0x407a90 reads
+    // [0x67f430] from the face table 0x4d0490 (stride 0x84) by profile
+    // +0x640, 0x4829f0 stores it; the person draw (0x481330) puts it in the
+    // animated-material slot 1.
+    int faceVariant = 0;
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.
     int gpsIcons = 1;
@@ -66,6 +71,9 @@ struct GameOptions {
     // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
     // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
     int displayGamma = 128;
+    // df.cfg DISPLAY window_size: the letterbox, 1 or 2 eighths of the
+    // height per band (GOG Df.exe 0x407a90 -> [0x67f4f8], 0x404ba0 clamps).
+    int letterbox = 1;
     // The soldier's key bindings (profile +0x6a0), applied over the game
     // table at mission start (0x41cca0): DF.EXE name, VK | mouse mask << 16.
     std::vector<std::pair<std::string, uint32_t>> bindings;
@@ -86,6 +94,7 @@ struct MissionOutcome {
     // Space (GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 records each one).
     bool earlierWin = false;
     int earlierKills = 0;
+    int letterbox = 0;       // the letterbox at the end (0x407980 -> df.cfg window_size); 0 = not played
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when
