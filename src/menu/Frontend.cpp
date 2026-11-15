@@ -447,7 +447,7 @@ void Frontend::loadProfiles() {
         }
         // Likewise key bindings (all empty: never written by DF.EXE).
         bool noKeys = true;
-        for (int m = 0; m < keyRows_; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
+        for (int m = 0; m < kKeyRowsCd; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
         if (noKeys) {
             Profile fresh;
             profileDefaults(fresh);
