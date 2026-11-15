@@ -240,7 +240,11 @@ First differences from DF1:
     (nothing within 0.1 m), vertically less 0.02 m (a side push sinks the
     mover 0.02 m, which the terrain then lifts back); a downward push stands
     him on the object (ground distance 0, +0xF8 = it). Touch items
-    (movecb) do not push. Type 4 volumes are ladders: no gravity, and the
+    (movecb) do not push. Type 4 volumes are ladders: contact clears airborne
+    and, unless prone (+0x74 & 0x20), zeroes vel_z (GOG Df2.exe 0x446e0a..
+    0x446e1c), and there is no gravity on one unless prone (0x4470a5: a
+    prone person falls through), so a jump or a fall stops at the ladder;
+    the AI's prone is its Prone_* / Crawling_* move (OpenDF). The
     chooser climbs (GOG Df2.exe 0x445980; CD 0x43f951 / 0x43fa42, which
     climbed down on back): forward 0x800 (run 0x1000) a chooser tick (odd
     ticks) with Ladder_Up, up when the pitch +0x34 is above level, down

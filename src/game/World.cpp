@@ -1324,6 +1324,11 @@ void World::personTickDf1(WorldObject& o) {
     o.pos.y = o.base + o.hip;
 }
 
+// A person's prone bit (+0x74 & 0x20, read at 0x446e15 / 0x4470ac). OpenDF's
+// AI keeps no control word; its prone stance is the Prone_* / Crawling_* move
+// it plays (110..127).
+static bool df2Prone(const WorldObject& o) { return o.moveNumber >= 110 && o.moveNumber <= 127; }
+
 // DF2.EXE person move 0x440400 (READ), every tick for everyone, alive or
 // dead; the horizontal part comes from AiSystem (personStep) or the death
 // root motion, and on a parachute from the drift below.
@@ -1356,7 +1361,13 @@ void World::personTickDf2(WorldObject& o) {
         o.pos.z = origin.z;
         o.base = origin.y - o.hip;
         if (c.onObject) { onObject = true; o.platform = c.platform; }
-        if (c.ladder) { o.airborne = false; o.ladder = true; }
+        // GOG Df2.exe 0x446e0a: airborne cleared, 0x400000 set; not prone
+        // (+0x74 & 0x20, 0x446e15) vel_z = 0 (0x446e1c).
+        if (c.ladder) {
+            o.airborne = false;
+            o.ladder = true;
+            if (!df2Prone(o)) o.vz = 0;
+        }
         if (c.armory) o.armory = true;
         // GOG Df2.exe 0x4467d0: flags 8 -> 0x4145a0(person, gun); a new
         // link places the origin at the gun (0x418300). The control
@@ -1424,7 +1435,8 @@ void World::personTickDf2(WorldObject& o) {
     } else if (below) {
         o.swimming = true;   // 0x440c5c: walking in, no splash, gravity once
         o.vz -= G;
-    } else if (d > 0x800 / 65536.f && !o.ladder) {
+    } else if (d > 0x800 / 65536.f && !(o.ladder && !df2Prone(o))) {
+        // 0x4470a5: no gravity on a ladder unless prone.
         o.vz -= G;
         if (d > 0x8000 / 65536.f || o.vz > 0) o.airborne = true;
     }

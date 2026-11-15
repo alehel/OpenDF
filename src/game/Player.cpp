@@ -512,7 +512,14 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
         z = origin.y;
         onObject = c.onObject;
         if (c.onObject) platform_ = c.platform;   // 0x440a24
-        if (c.ladder) { onGround_ = true; ladder_ = true; }   // 0x440abf: not airborne, 0x400000
+        // GOG Df2.exe 0x446e0a: a ladder clears airborne (0x2000) and sets
+        // 0x400000; not prone (+0x74 & 0x20, 0x446e15) vel_z is zeroed too
+        // (0x446e1c), so only the ladder moves change the height.
+        if (c.ladder) {
+            onGround_ = true;
+            ladder_ = true;
+            if (stance != Stance::Prone) vz_ = 0;
+        }
         armory_ = c.armory;
         // GOG Df2.exe 0x4467d0: type-7 volumes (flags 8) -> 0x4145a0 with
         // the control direction (+0x74 & 7, 0x41efd0: the keys held, 0
@@ -566,7 +573,8 @@ void Player::tickDf2(const PlayerInput& in, World& world) {
     } else if (below) {
         enterWater(z);
         vz_ -= G;
-    } else if (d > kGlue && !ladder_) {
+    } else if (d > kGlue && !(ladder_ && stance != Stance::Prone)) {
+        // GOG Df2.exe 0x4470a5: no gravity on a ladder unless prone.
         vz_ -= G;
         if (d > kAirborne || vz_ > 0) onGround_ = false;
     }
