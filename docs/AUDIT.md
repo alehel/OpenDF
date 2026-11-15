@@ -20,6 +20,7 @@ approximation), **todo** = not checked yet.
 | T8 | Compass | fixed | (382,30) r 20; letters are font characters 2-5; inner circle r 5 + needle 10 in team colour; dot r 2 bright green (0x483d9c) |
 | T9 | Grid / Carrying / WP boxes | fixed | positions from 0x4836b8 / 0x483718 / 0x483d48; "None" without a route |
 | T10 | Font and size | fixed | F_SML%i with the width capped at 800 (0x40298c), 1:1 in the original display mode that fits the window (640x480 / 800x600 / 1024x768); the footage was recorded at 800x600 |
+| T11 | Health gauge (Player Health: Easy) | fixed | GOG Df.exe 0x426c30 -> 0x427780 (CD 0x482dd0 -> 0x483834), single player with df.cfg attributes 0x100 only: a red fill x 10-16.25 from 47.5 - floor(hp * 3.75) * 0.625 down to 47.5 (hp out of 16), then a one-pixel HUD-green outline (10,10)-(16.25,47.5) with no scanlines; it was not drawn |
 
 ## Bottom bar
 

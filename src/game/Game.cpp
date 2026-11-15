@@ -2916,6 +2916,23 @@ void Game::drawTopBar(const Screen& s) {
         hud_.imageUV(stanceIcons_.texture, s.lx(50) - w / 2, s.y(3.75f), w, h, 0, frame / 3.f, 1, (frame + 1) / 3.f);
     }
 
+    // Health gauge (GOG Df.exe 0x426c30 -> 0x427780; CD 0x482dd0 -> 0x483834):
+    // single player with Player Health: Easy only (attributes 0x100). A bar
+    // x 16..26, y 16..76 virtual (640 units 10..16.25, 10..47.5): red lines
+    // (0x402270) from 60 - floor(hp * 60 / 16) below the top down to the
+    // bottom line inclusive, then the one-pixel HUD-green outline (0x402140,
+    // no scanlines), which covers the one red line left at 0 hp.
+    if ((o_.attributes & 0x100) && mission_.version < 0x0F) {
+        const int fillV = (std::max(playerHp_, 0) * 60) >> 4;   // hp * 3.75, virtual lines
+        const float X0 = s.lx(10), X1 = s.lx(16.25f), Y0 = s.y(10), Y1 = s.y(47.5f);
+        const float top = s.y(float(16 + 60 - fillV) * 0.625f);
+        hud_.rect(X0, top, X1 - X0 + t, Y1 + t - top, kHudRed);
+        hud_.rect(X0, Y0, X1 - X0 + t, t, kHudGreen);
+        hud_.rect(X0, Y1, X1 - X0 + t, t, kHudGreen);
+        hud_.rect(X0, Y0, t, Y1 - Y0 + t, kHudGreen);
+        hud_.rect(X1, Y0, t, Y1 - Y0 + t, kHudGreen);
+    }
+
     // Weapon name (0x483444) at (75, 10); red while reloading or with no
     // ammunition left at all (0x44b0a0 / 0x44b164).
     const ModeDef& md = arsenal_.mode();
