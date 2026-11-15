@@ -232,11 +232,16 @@ private:
     void tickCharges();
     void blowCharge(Charge& c);
     void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
-    // Shrapnel's random numbers: DF.EXE rand()*2 (0x435db4; its seed call
-    // 0x435dbc is a bare ret); DF2.EXE 0x41ac40 (x = rol(x,11) + x, x =
-    // rol(x,4) ^ 1, 16 bits), reseeded to 0x5FC by every burst (0x41ac30).
+    // Shrapnel's random numbers: the CD's DF.EXE rand()*2 (0x435db4; its
+    // seed call 0x435dbc is a bare ret); DF2.EXE 0x41ac40 (x = rol(x,11) + x,
+    // x = rol(x,4) ^ 1, 16 bits), reseeded to 0x5FC by every burst (0x41ac30).
+    // GOG Df.exe has the same generator (0x477860, state 0xbd0060, seed
+    // 0x477850) for these and the effects (0x45dc70 / 0x45dab0), ambience
+    // waits (0x45c3a0 / 0x45c400 / 0x45c460) and the binoculars (0x484c20),
+    // reseeded to 0x5FC by its bursts (0x4606b0, 0x460950, 0x460a30).
+    bool gogRand() const { return !world_.df2Rules && exe_.build() == ExeBuild::Df1Gog; }
     uint32_t shrapRand() {
-        if (!world_.df2Rules) return uint32_t(std::uniform_int_distribution<int>(0, 0x7fff)(effectRng_) * 2);
+        if (!world_.df2Rules && !gogRand()) return uint32_t(std::uniform_int_distribution<int>(0, 0x7fff)(effectRng_) * 2);
         auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
         df2Rng_ = rol(df2Rng_, 11) + df2Rng_;
         df2Rng_ = rol(df2Rng_, 4) ^ 1;
@@ -691,7 +696,8 @@ private:
     // (0x435c40 / 0x41ab10), times 8: up to 2^25 binary angle (2.8125
     // degrees), the first added to the yaw, the second to the pitch.
     void pickBinocularOffset() {
-        const float r = std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
+        const float r = gogRand() ? float(shrapRand()) / 65536.f * 2 * kPi   // GOG 0x484c20: 0x477860 << 16
+                                  : std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
         binoYaw_ = std::sin(r) * 2.8125f * kPi / 180.f;
         binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
     }
@@ -1349,9 +1355,15 @@ void Game::spawnEffect(int slot, Vec3 pos) {
     const GpuModel* m = models_.get(vfs_, item->graphic);
     if (!m || m->lods.empty()) return;
     const auto& l = m->lods[0];
-    // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5.
+    // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5. GOG Df.exe (0x45dc70 /
+    // 0x45dab0): a roll from 0x477860 << 16 first (not drawn here), then
+    // the scale 0x477860 + 0x8000.
     std::uniform_real_distribution<float> u(0.5f, 1.5f);
-    float scale = u(effectRng_);
+    float scale;
+    if (gogRand()) {
+        (void)shrapRand();
+        scale = float(shrapRand() + 0x8000) / 65536.f;
+    } else scale = u(effectRng_);
     if (effectScale_ > 0) scale = effectScale_;
     effects_.push_back({m, pos, scale, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
     if (std::getenv("OPENDF_DEBUGHITS"))
@@ -1652,9 +1664,11 @@ void Game::weaponEvent(const WeaponEvent& e) {
 // A placed charge goes off (0x447d28 -> 0x46cdfc satchel: blast type 5,
 // radius 12, 200 shrapnel all round and upward; 0x447cac -> 0x46cc90
 // claymore: blast type 1 and a fan of 160 pieces).
-// Delta Force 2 (0x4572d0 -> 0x415490): 0.2 m higher, seeded.
+// Delta Force 2 (0x4572d0 -> 0x415490): 0.2 m higher, seeded. GOG Df.exe
+// (0x460950): seeded before the effect.
 void Game::bigBlast(Vec3 at) {
     if (world_.df2Rules) { at.y += 0x3333 / 65536.f; shrapSeed(); }
+    if (gogRand()) shrapSeed();
     explode(at, 0, true, 12.f);
     for (int k = 0; k < 200; ++k) {
         const float yaw = float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
@@ -1866,7 +1880,7 @@ void Game::blowCharge(Charge& c) {
     o.boxes.clear();
     const Vec3 at = o.pos + Vec3{0, 0.2f, 0};
     if (c.item == 4020) {
-        if (world_.df2Rules) shrapSeed();
+        if (world_.df2Rules || gogRand()) shrapSeed();   // GOG Df.exe 0x460950: before the effect
         explode(at, 0, true, 12.f);
         for (int k = 0; k < 200; ++k) {
             const float yaw = o.heading + float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
@@ -2194,6 +2208,7 @@ void Game::gnrcExplode(int index) {
     const Vec3 smoke = o.pos + Vec3{0, 0.5f, 0};
     world_.applyHusk(index);   // flags |= 8; the destroyed loop plays the 0x453270 sound
     effectScale_ = n / 4.f;
+    if (gogRand()) shrapSeed();   // GOG Df.exe 0x460a30: before the effect
     explode(at, 1, false, 10.f, false);   // surface 1: effect 3, no smoke generator
     effectScale_ = 0;
     ai_.noise(at, 200.f / 65536.f, 0, 0);   // 0x45fcf0 adds the 200 raw: +-200/65536 m
@@ -2587,6 +2602,7 @@ void Game::tickDf1Lights() {
 // (16.16 m per tick, up to 18.75 m/s); flags 0x20, 400 ticks, power 1,
 // falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
+    if (gogRand()) shrapSeed();   // GOG Df.exe 0x4606b0: before the effect
     explode(at, 0);
     if (world_.df2Rules) {
         shrapSeed();   // DF2 0x412b00
@@ -6932,7 +6948,9 @@ int Game::run() {
                     if (!sound) at.y += 4.f;
                     if (f == "tree" && !o.alive()) { a.wait = 0x400; continue; }
                     if (o.alive() || sound) playSound(o.item->interruptSound, at);
-                    const int r = crtRand() * 2;
+                    // GOG Df.exe (0x45c180 dec0 / palm, 0x45c340 snd0, 0x45c3a0
+                    // snd1, 0x45c400 snd2, 0x45c460 tree): r from 0x477860, 16 bits.
+                    const int r = gogRand() ? int(shrapRand()) : crtRand() * 2;
                     a.wait = f == "snd0" ? (((r * 6) >> 16) + 20) << 6 : f == "snd1" ? (((r * 4) >> 16) + 8) << 6
                            : f == "snd2" ? (((r * 2) >> 16) + 3) << 6 : ((r >> 14) + 5) << 6;
                     // snd3 (GOG Df2.exe 0x402910): acceleration·64 + rand·axle_dist·64 ticks
