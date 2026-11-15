@@ -364,6 +364,7 @@ private:
     void playIntroMovie();   // 0x435830: DF2INTRO.BIK through binkplay.exe
     void playBinkVideo(const std::filesystem::path& path);   // binkplay's part
     bool introShot_ = false;   // testing: --screenshot was taken during the intro
+    bool cdExe_ = false;       // the CD's DF2.EXE: DF2.MNU hot keys are DirectInput scancodes
     D2Menu* menu() { auto it = mnu_.menus.find(menuName_); return it == mnu_.menus.end() ? nullptr : &it->second; }
     D2Button* btn(const std::string& name) { return mnu_.button(name); }
     void layout(D2Button& b);
@@ -2016,20 +2017,26 @@ void FrontendDf2::key(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    // 0x42e832: the first button (z-order) whose hotkey1/2 is the key's
-    // DirectInput scancode (0x42dea0), else the first whose '&' key is the
-    // upper-cased character (0x42de50); a hidden or disabled match, or one
-    // without a callback, does nothing. Then pushed for 3 frames, btn_slct on
-    // channel 3, events 3 and 4. DF2.MNU only uses scancode 1 (Escape, the BACK
-    // buttons), so only that one is mapped; the character is the key's
-    // unshifted symbol (INFERRED: the EXE's key event carries the translated
-    // character; letters and digits are the same either way).
+    // GOG Df2.exe 0x4333c0 (0x4335e0; CD 0x42e832): the first button
+    // (z-order) whose hotkey1/2 (+0x84 / +0x88) is the key (0x432c50), else
+    // the first whose '&' key is the upper-cased character (0x432c00); a
+    // hidden or disabled match, or one without a callback, does nothing. Then
+    // pushed for 3 frames (+0xa0), btn_slct on channel 3, events 3 and 4. GOG
+    // matches the Windows virtual key of WM_KEYDOWN (0x473690): its DF2.MNU
+    // has 13 (Enter) on the accept / start buttons and 27 (Escape) on BACK.
+    // The CD build's input gave DirectInput scancodes (CD 0x42dea0) and its
+    // DF2.MNU has 1 (Escape) on BACK only, so with the CD's DF2.EXE that one
+    // is mapped. The character is the key's unshifted symbol (INFERRED: the
+    // EXE's key event carries the translated character; letters and digits
+    // are the same either way).
     if (D2Menu* m = menu()) {
         D2Button* hit = nullptr;
-        if (sym == SDLK_ESCAPE)
+        int code = int(Controls::toVirtualKey(k.keysym.scancode));
+        if (cdExe_) code = k.keysym.scancode == SDL_SCANCODE_ESCAPE ? 1 : 0;   // DIK_ESCAPE
+        if (code != 0)
             for (int i : m->buttons) {
                 D2Button& b = mnu_.buttons[size_t(i)];
-                if (b.hot1 == 1 || b.hot2 == 1) { hit = &b; break; }
+                if (b.hot1 == code || b.hot2 == code) { hit = &b; break; }
             }
         if (!hit && sym > 0 && sym < 128) {
             const int ch = std::toupper(int(sym));
@@ -2199,6 +2206,7 @@ int FrontendDf2::run() {
     }
     const auto exe = findDf2Exe(o_.gameDir);
     saveDir_ = exe.empty() ? o_.gameDir : exe.parent_path();
+    if (ExeImage im; !exe.empty() && im.load(exe, nullptr)) cdExe_ = im.build() == ExeBuild::Df2Cd;
     loadSoldiers();
     cfg_ = DfConfig::df2();   // DF2.EXE's own keys (0x436ab0 / 0x436cd0)
     cfg_.load(saveDir_ / "df2.cfg");
