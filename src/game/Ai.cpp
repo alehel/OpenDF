@@ -243,17 +243,78 @@ float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, i
     return best;
 }
 
-bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
+// GOG Df.exe 0x44f540 (CD 0x47b074): over the 256 people slots, skipping
+// the empty, those of the light's side (+0x70) or side 0 and the dead. In
+// DF's axes (x east, y north, z up, 16.16): the yaw atan(dx, dy) less the
+// light's yaw and the pitch atan(isqrt(whole-metre dx^2 + dy^2), dz) less
+// its pitch, each folded to 0..128 in 1/256 turns, at most 0x10; the length
+// max + 11/32 mid + 1/4 min (0x477670) in whole metres under 1000; the
+// sight line from the light's origin (0x42e2b0) 1..2. Score (16.16): 100 /
+// metres (100 at 0) x (16 - dyaw) / 16 x move visibility x 6 if it fired
+// (+0x6d & 0x40) x 2 unless the player's slot (+0x6c & 1), the best kept
+// when strictly higher. The invisibility cheat (0x67dbc9 & 8) is not
+// modelled. Returns the score as a fraction (0x10000 = 1).
+float AiSystem::lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
+                             int& bestId) const {
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    auto ang = [](double y, double x) { return uint32_t(int64_t(std::llround(std::atan2(y, x) / (2 * kPi) * 4294967296.0))); };
+    auto fold = [](uint32_t a) { uint32_t v = a >> 24; return v > 0x7f ? 0x100 - v : v; };
+    int64_t best = 0;
+    bestId = -1;
+    auto consider = [&](int id, Vec3 pos, int tside, int move, bool fired, bool isPlayer) {
+        if (tside == 0 || tside == side) return;
+        const Vec3 tp = world.nearest(pos, at);
+        const int32_t dx = fx(tp.x - at.x), dy = fx(at.z - tp.z), dz = fx(tp.y - at.y);
+        const uint32_t dyaw = fold(ang(dy, dx) - yaw);
+        if (dyaw > 0x10) return;
+        const int64_t hx = dx >> 16, hy = dy >> 16;
+        const int64_t horiz = std::llround(std::sqrt(double(hx * hx + hy * hy)));
+        if (fold(ang(dz, double(horiz << 16)) - uint32_t(pitch)) > 0x10) return;
+        int32_t a = std::abs(dx), b = std::abs(dy), c = std::abs(dz);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        const int32_t d = (a + (b * 11 >> 5) + (c >> 2)) >> 16;
+        const int64_t inv = d == 0 ? 0x640000 : 0x640000 / d;
+        if (d >= 1000) return;
+        if (const int r = world.sight(at, tp, self, id); r < 1 || r > 2) return;
+        int64_t s = inv * int64_t((int32_t(16 - dyaw) * 0x10000) >> 4) >> 16;
+        s = s * int64_t(std::lround(double(moveVisibility(move)) * 65536.0)) >> 16;
+        s = s * (fired ? 0x60000 : 0x10000) >> 16;
+        if (!isPlayer) s *= 2;
+        if (s > best) best = s, bestId = id;
+    };
+    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, true);
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& o = world.objects[i];
+        if (!o.person || !o.alive() || int(i) == self) continue;
+        const Person* q = nullptr;
+        for (const auto& x : people_)
+            if (x.object == int(i)) q = &x;
+        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired, false);
+    }
+    return float(best) / 65536.f;
+}
+
+float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
-    int bestId = -1;
-    Vec3 bestPos{0, 0, 0};
+    bestId = -1;
     // DF2: ai flag 1 blocks acquisition entirely.
-    if (df2 && (p.flags & 1)) return false;
+    if (df2 && (p.flags & 1)) return 0;
     const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200));
     float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
     if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
+    return score;
+}
+
+bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
+    const WorldObject& self = world.objects[size_t(p.object)];
+    const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
+    int bestId = -1;
+    Vec3 bestPos{0, 0, 0};
+    const float score = scanScore(world, p, player, bestId, bestPos);
     if (bestId == -1 || float(rnd()) >= score * 65536.f) return false;
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d (team %d) spots %d at %.0f m, score %.3f\n", p.object, self.team, bestId, len3(bestPos - eye), score);
@@ -515,6 +576,23 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             spotted_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
         } else {
             p.flags &= ~0x80u;
+        }
+        // Seen or not, the scan runs again with no random draw (GOG Df.exe
+        // 0x45b6b3 -> 0x45e280, switch 0x45b6bf..0x45b704; DF2 GOG Df2.exe
+        // 0x40197f -> 0x417830, 0x401987..0x4019cd): a different best target
+        // scoring over 0x4000 (0.25) is taken, seen, marked spotted, think
+        // 0x10, and its position is the last known (0x45b72b).
+        int id = -1;
+        Vec3 at{0, 0, 0};
+        const float score = scanScore(world, p, player, id, at);
+        if (id != -1 && id != p.target && score * 65536.f > float(0x4000)) {
+            p.target = id;
+            p.flags |= 0x80;
+            spotted_[size_t(o.team & 63)] |= 1ull << ((id == -3 ? player.team : world.objects[size_t(id)].team) & 63);
+            p.think = 16;
+            p.lastKnown = at;
+            p.unseen = 0;
+            if (std::getenv("OPENDF_DEBUGAI")) std::fprintf(stderr, "ai %d switches to %d, score %.3f\n", p.object, id, score);
         }
     }
     if (p.flags & 0x80) p.seen += elapsed;
