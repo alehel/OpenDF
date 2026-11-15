@@ -27,7 +27,9 @@ constexpr float kGlue = 0x800 / 65536.f;               // ground within 1/32 m h
 constexpr float kAirborne = 0x8000 / 65536.f;          // more than 0.5 m above ground: airborne
 constexpr float kSlideStart = 0x14ccc / 65536.f;       // gradient 1.3 on either axis starts a slide
 constexpr float kSlideStop = 0xb333 / 65536.f;         // until both are under 0.7
-constexpr float kSlideRate = 0x1999 / 65536.f * 60.f;  // xy moves -gradient x 0.1 m per tick
+// xy moves -gradient x 0x1999 on the odd ticks only (0x487370 param_3 & 1;
+// the even ticks reuse the stored move, Jumping_1HW's): 3 m/s a unit.
+constexpr float kSlideRate = 0x1999 / 65536.f * 30.f;
 // Water (0x436158, 0x43621a, 0x449918):
 constexpr float kWaterDrag = 0xcccc / 65536.f;         // vertical speed x0.8 per tick, no gravity
 constexpr float kSwimDepth = 26214.4f / 65536.f;       // no rising once origin + 0.4 m is above the surface
@@ -197,17 +199,14 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
     // 0x4874d6), where the slide and uphill flags are kept and the move is
     // used. A slide starts at 1.3 on either axis (the move still applies that
     // tick) and stops under 0.7 on both (the move applies); while it lasts
-    // xy moves -gradient x 0x1999 a tick. Not sliding, uphill steeper than
+    // xy moves -gradient x 0x1999 every other tick. Not sliding, uphill steeper than
     // 0.7 along the move's direction sets 0x80000, which the next move
     // selection turns into a walking move (0x4874f6 clears it first).
     bool slideMove = false;
     float gx = 0, gz = 0;
     const float moveAngle = yaw - float(dirMove ? moveDirection(in.forward, in.strafe) : 0) * 3.14159265f / 4.f;
     if (onGround_ && platform_ < 0) {
-        const float h0x = world.terrain->heightAt(feet.x - 0.5f, feet.z), h1x = world.terrain->heightAt(feet.x + 0.5f, feet.z);
-        const float h0z = world.terrain->heightAt(feet.x, feet.z - 0.5f), h1z = world.terrain->heightAt(feet.x, feet.z + 0.5f);
-        gx = h1x - h0x;
-        gz = h1z - h0z;
+        world.terrain->df1Gradient(feet.x, feet.z, gx, gz);   // raw cells +-2, 0x47e5d0
         uphill_ = false;
         if (sliding_) {
             if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
@@ -240,7 +239,16 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
     // until landing. No falling damage.
     const float ground = world.groundHeight(feet, kStep, &platform_);   // 0x435dc0 also sets +0x100
     float d = feet.y - ground;
-    if (onGround_) {
+    if (onGround_ && sliding_) {
+        // Sliding (0x487370, flags 0x40000): below the ground the body is
+        // lifted onto it, the vertical speed kept; gravity every tick. Never
+        // airborne and no water entry; only the gradient test ends it.
+        if (d < 0) feet.y = ground;
+        vy_ -= kGravity * dt;
+        feet.y += vy_ * dt;
+        const float g2 = world.groundHeight(feet, kStep, &platform_);
+        if (feet.y < g2) feet.y = g2;
+    } else if (onGround_) {
         if (d < 0) { feet.y = ground; vy_ = 0; }
         else if (d <= kGlue && vy_ <= 0) { feet.y = ground; vy_ = 0; }
         else {
@@ -259,8 +267,9 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
     // Into the water (0x436577 airborne, 0x43697d walking): once the level is
     // above the body origin. Falling in splashes: effect 4 "water exp" on the
     // surface (0x4365a2).
-    if (water != 0 && water > feet.y + landOrigin()) {
-        if (!onGround_) spawns_.push_back({4, {feet.x, water, feet.z}});
+    if (water != 0 && water > feet.y + landOrigin() && !(onGround_ && sliding_)) {
+        // 0x4877ba / 0x4877d6: the effect and sound 0x8A (FS_WATER_SLOSH).
+        if (!onGround_) spawns_.push_back({4, {feet.x, water, feet.z}, 0x8A});
         inWater_ = true;
         swimMove_ = false;
         originY_ = feet.y + landOrigin();

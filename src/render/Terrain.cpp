@@ -1099,6 +1099,19 @@ void Terrain::df2Gradient(float x, float z, float& gx, float& gz) const {
     gz = float((H(ix, iz + 2) - H(ix, iz - 2)) * 0x20) / 65536.f;
 }
 
+void Terrain::df1Gradient(float x, float z, float& gx, float& gz) const {
+    gx = gz = 0;
+    if (size_ == 0) return;
+    const long ix = long(std::floor(x / scale.cellSize)), iz = long(std::ceil(z / scale.cellSize));
+    auto H = [&](long cx, long cz) {
+        cx = ((cx % size_) + size_) % size_;
+        cz = ((cz % size_) + size_) % size_;
+        return heights_[size_t(cz) * size_t(size_) + size_t(cx)];
+    };
+    gx = (H(ix + 2, iz) - H(ix - 2, iz)) * 0x1000 / 65536.f;
+    gz = (H(ix, iz + 2) - H(ix, iz - 2)) * 0x1000 / 65536.f;
+}
+
 float Terrain::cellHeight(float x, float z) const {
     if (size_ == 0) return 0;
     long ix = long(std::floor(x / scale.cellSize)), iz = long(std::floor(z / scale.cellSize));
