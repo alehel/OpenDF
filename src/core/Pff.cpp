@@ -34,7 +34,17 @@ void pffDecrypt(uint8_t* data, size_t size) {
     for (size_t i = 0; i < size; ++i) data[i] ^= stream[i & 31];
 }
 
-bool PffArchive::open(const fs::path& path, std::string* error) {
+void pffDecryptDf2(uint8_t* data, size_t size) {
+    // GOG Df2.exe 0x47d9f0 (CD 0x472b50): k = 0x312a4ce, k = rol(k, 7)
+    // before each byte, byte ^= low byte of k.
+    uint32_t k = 0x0312A4CEu;
+    for (size_t i = 0; i < size; ++i) {
+        k = (k << 7) | (k >> 25);
+        data[i] ^= static_cast<uint8_t>(k);
+    }
+}
+
+bool PffArchive::open(const fs::path& path, std::string* error, bool df2Rules) {
     path_ = path;
     file_.open(path, std::ios::binary);
     if (!file_) {
@@ -48,14 +58,19 @@ bool PffArchive::open(const fs::path& path, std::string* error) {
     }
     const uint32_t headerSize = readU32(hdr);
     const uint32_t count = readU32(hdr + 8);
-    const uint32_t recordSize = readU32(hdr + 12);
+    uint32_t recordSize = readU32(hdr + 12);
     const uint32_t tableOffset = readU32(hdr + 16);
-    if (std::memcmp(hdr + 4, "PFF", 3) != 0 || headerSize < 20 || recordSize < 32) {
+    // GOG Df2.exe 0x47d720 (CD 0x472880) checks only header size >= 0x14:
+    // no magic, a fixed 0x20 stride, every entry kept (looked up by name,
+    // 0x47d810), and only entries with bit 0 of byte 2 set are decrypted
+    // (0x47da20 / 0x47dab0).
+    if (df2Rules) recordSize = 32;
+    if ((!df2Rules && std::memcmp(hdr + 4, "PFF", 3) != 0) || headerSize < 20 || recordSize < 32) {
         if (error) *error = path.string() + " is not a PFF archive";
         return false;
     }
     const char version = static_cast<char>(hdr[7]);
-    encrypted_ = (version == '2');
+    encrypted_ = !df2Rules && version == '2';
 
     std::vector<uint8_t> table(size_t(count) * recordSize);
     file_.seekg(tableOffset);
@@ -70,8 +85,9 @@ bool PffArchive::open(const fs::path& path, std::string* error) {
     for (uint32_t i = 0; i < count; ++i) {
         const uint8_t* r = table.data() + size_t(i) * recordSize;
         // PFF3: first dword is a "deleted" flag. PFF2: a per-entry checksum.
-        if (!encrypted_ && readU32(r) != 0) continue;
+        if (!df2Rules && !encrypted_ && readU32(r) != 0) continue;
         PffEntry e;
+        e.encrypted = df2Rules && (r[2] & 1);
         e.offset = readU32(r + 4);
         e.size = readU32(r + 8);
         e.timestamp = readU32(r + 12);
@@ -90,12 +106,13 @@ bool PffArchive::read(const PffEntry& e, std::vector<uint8_t>& out) {
     file_.seekg(e.offset);
     if (!file_.read(reinterpret_cast<char*>(out.data()), e.size)) return false;
     if (encrypted_) pffDecrypt(out.data(), out.size());
+    else if (e.encrypted) pffDecryptDf2(out.data(), out.size());
     return true;
 }
 
-bool Vfs::mount(const fs::path& archive, std::string* error) {
+bool Vfs::mount(const fs::path& archive, std::string* error, bool df2Rules) {
     auto a = std::make_unique<PffArchive>();
-    if (!a->open(archive, error)) return false;
+    if (!a->open(archive, error, df2Rules)) return false;
     for (size_t i = 0; i < a->entries().size(); ++i) index_[a->entries()[i].name] = {a.get(), i};
     archives_.push_back(std::move(a));
     return true;
@@ -128,13 +145,21 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
         return {};
     };
 
+    // A Delta Force 2 folder (one with DF2.PFF): the archives Df2.exe opens
+    // itself, DF2.PFF and TERRAINS.PFF, follow its reader's rules; the CD's
+    // PFF2 install packs (MISSIONS/AUDIO.PFF) stay PACK.EXE's.
+    bool df2 = false;
+    for (auto& root : roots)
+        if (!findIn(root, "DF2.PFF").empty()) df2 = true;
+
     int mounted = 0;
     for (const char* name : kArchives) {
         for (auto& root : roots) {
             fs::path p = findIn(root, name);
             if (p.empty()) continue;
             std::string err;
-            if (mount(p, &err)) ++mounted;
+            const std::string n = name;
+            if (mount(p, &err, df2 && (n == "DF2.PFF" || n == "TERRAINS.PFF"))) ++mounted;
             else if (error) *error += err + "\n";
             break;
         }
