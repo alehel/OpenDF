@@ -3612,7 +3612,11 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
         const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
         focal = std::floor(100.f / std::tan(half) + 0.5f);
     }
-    scopeFocal_ = focal * 640.f / 200.f;   // per 640 pixels of view width
+    // The terrain rings and object LODs use the inset view's own focal
+    // length (GOG Df.exe 0x466090: the view 0x8cfa20 over the inset, W·100/640
+    // pixels each side of the centre, 0x465f30; ring table 0x489440): the
+    // 640-mode focal scaled by the mode's width. (Delta Force 2: as before.)
+    scopeFocal_ = df2Hud_.on ? focal * 640.f / 200.f : focal * float(hudMode_ ? hudMode_ : 640) / 640.f;
     const float insetFov = 2 * std::atan(100.f / focal);
     glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
     glClear(GL_DEPTH_BUFFER_BIT);
@@ -6981,7 +6985,8 @@ int Game::run() {
             // With the binoculars up the camera carries their random offset (0x404246).
             Player cam = player_;
             if (binoculars_) { cam.yaw += binoYaw_; cam.pitch += binoPitch_; }
-            if (binoculars_) scopeFocal_ = 320.f / tanHalfX;
+            // Binoculars: FOV 22 across the mode's width (0x40423d), F = (W/2) / tan 11.
+            if (binoculars_) scopeFocal_ = 320.f / tanHalfX * (df2Hud_.on ? 1.f : float(hudMode_ ? hudMode_ : 640) / 640.f);
             Mat4 view = playerDead() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
                 glClearColor(1, 0, 1, 1);
