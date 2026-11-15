@@ -212,6 +212,7 @@ private:
     void drawCaptured(GLuint tex, float x, float y, float w, float h);
     void drawWipe();
     void pushTestEvents(const char* events);
+    void commitEdit();
 
     void enter(Screen s);
     void setMenu(const std::string& name);
@@ -1510,10 +1511,14 @@ void Frontend::event(MnuButton& b, int ev) {
     // Choose Soldier.
     if (cb == "MNU_NS_NAMEBUTTON1") {
         const int row = std::atoi(b.name.c_str() + 7) - 1;   // BUT_NS_<n>[L]
-        if (row < 0 || row > 8 || !editing_.empty()) return;
+        if (row < 0 || row > 8) return;
         if (ev == 6 && row != cur_) b.drawstate = 2;
         else if (ev == 7 && row != cur_) b.drawstate = 1;
         else if (ev == 2) {
+            // 0x409330 acts only on another row: a click on the row being
+            // edited leaves the edit alone (another row's click committed it
+            // first, 0x40dd80).
+            if (!editing_.empty()) return;
             cur_ = row;
             deleting_ = false;
             refreshSoldier();
@@ -2046,35 +2051,42 @@ void Frontend::textInput(const char* t) {
         if (int(b->text.size()) + 1 < editMax_ && *p >= 32 && *p < 127) b->text += *p;
 }
 
+void Frontend::commitEdit() {
+    // GOG 0x40d970: the edit ends and its callback gets 4, from Enter or from
+    // a click elsewhere (0x40dd80).
+    MnuButton* b = mnu_.button(editing_);
+    if (!b) { editing_.clear(); return; }
+    editing_.clear();
+    SDL_StopTextInput();
+    if (b->callback != "MNU_NS_TEXT") { event(*b, 4); return; }
+    // mnu_ns_text (0x410074): empty keeps the old name; else the
+    // upper-cased name, slot in use, saved at once.
+    if (!b->text.empty()) {
+        if (editMode_ == 1) profileDefaults(prof());
+        prof().setName(b->text);
+        prof().set(0x24, prof().get(0x24) | 1);
+        saveProfile(cur_);
+    } else if (editMode_ == 1) {
+        profileDefaults(prof());
+        prof().setName("New Operative");
+    }
+    b->text = prof().name();
+    refreshSoldier();
+}
+
 void Frontend::key(const SDL_KeyboardEvent& k) {
     const SDL_Keycode sym = k.keysym.sym;
     if (!editing_.empty()) {
         MnuButton* b = mnu_.button(editing_);
         if (!b) { editing_.clear(); return; }
         if (sym == SDLK_BACKSPACE && !b->text.empty()) b->text.pop_back();
-        else if (b->callback != "MNU_NS_TEXT" && (sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE)) {
-            // Framework (0x406bf8): Enter -> cb(4), Esc -> text restored, cb(5).
-            const bool commit = sym != SDLK_ESCAPE;
-            if (!commit) b->text = editBackup_;
+        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) commitEdit();   // GOG 0x40d9e0 -> 0x40d970
+        else if (b->callback != "MNU_NS_TEXT" && sym == SDLK_ESCAPE) {
+            // Framework (0x406bf8): Esc -> text restored, cb(5).
+            b->text = editBackup_;
             editing_.clear();
             SDL_StopTextInput();
-            event(*b, commit ? 4 : 5);
-        } else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
-            // mnu_ns_text (0x410074): empty keeps the old name; else the
-            // upper-cased name, slot in use, saved at once.
-            if (!b->text.empty()) {
-                if (editMode_ == 1) profileDefaults(prof());
-                prof().setName(b->text);
-                prof().set(0x24, prof().get(0x24) | 1);
-                saveProfile(cur_);
-            } else if (editMode_ == 1) {
-                profileDefaults(prof());
-                prof().setName("New Operative");
-            }
-            b->text = prof().name();
-            editing_.clear();
-            SDL_StopTextInput();
-            refreshSoldier();
+            event(*b, 5);
         } else if (sym == SDLK_ESCAPE) {
             b->text = editBackup_;
             editing_.clear();
@@ -2341,6 +2353,13 @@ int Frontend::run() {
                     continue;
                 }
                 MnuButton* b = hit(mouseX_, mouseY_);
+                if (!editing_.empty()) {
+                    // GOG 0x40dd80: while a text field is edited, moves reach no
+                    // button (no hover); a press or release off the button hovered
+                    // when the edit began commits it first, as Enter does.
+                    if (e.type == SDL_MOUSEMOTION) continue;
+                    if (!b || b->name != hover_) commitEdit();
+                }
                 if (b && (b->type == 2 || b->type == 3) && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && !(b->attrib & 2) && b->drawstate != 4) {
                     sound("CLICK9.WAV");
                     dragging_ = b->name;
@@ -2627,10 +2646,7 @@ void Frontend::pushTestEvents(const char* ev) {
         } else if (op == "t") {
             std::string text;
             std::getline(in >> std::ws, text);
-            SDL_Event t{};
-            t.type = SDL_TEXTINPUT;
-            std::snprintf(t.text.text, sizeof t.text.text, "%s", text.c_str());
-            SDL_PushEvent(&t);
+            if (!editing_.empty()) textInput(text.c_str());   // straight in (a pushed SDL_TEXTINPUT is not portable)
         }
     }
 }
