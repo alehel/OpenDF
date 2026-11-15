@@ -1162,7 +1162,10 @@ void Game::buildRoute() {
     for (const auto& p : mission_.paths)
         if (p.flags & 2) { path = &p; break; }
     if (!path) return;
-    for (size_t i = 0; i < path->points.size() && i < 8; ++i) {
+    // DF.EXE keeps 8 points; DF2 clamps the count to 16 (GOG Df2.exe
+    // 0x459740, the first path with flag 2).
+    const size_t maxPoints = mission_.version >= 0x0F ? 16 : 8;
+    for (size_t i = 0; i < path->points.size() && i < maxPoints; ++i) {
         const MissionObject* o = mission_.inGroup(2, path->points[i]);
         if (!o) continue;
         RoutePoint rp{o->x, o->y, float(o->raw[7]), {}, o};   // record +0x1C: arrival radius, metres
@@ -4228,6 +4231,24 @@ void Game::drawDf2Strips(const Screen& s) {
     hud_.setBlend(0);
 }
 
+// A blip's colour on the command map and the HUD radar (GOG Df2.exe
+// 0x4273b0, 0x4274e6..0x427520; the radar runs the same 0x4261e0): a person
+// (item kind 3) of the player's side is 0xff8000 when it is the player
+// itself, else [0x67d368] green; a person of any other side [0x67d374] red.
+// Anything else by its side: 0 green, 1 0x1040ff, 2 red, 3 0xffff00, 4
+// 0xff027f, other sides the caller's colour (0, black, from 0x4261e0).
+static Color df2BlipColour(bool person, int side, bool player = false) {
+    if (person) return side == 1 ? (player ? rgb(0xff, 0x80, 0) : rgb(0, 0xff, 0)) : rgb(0xff, 0, 0);
+    switch (side) {
+    case 0: return rgb(0, 0xff, 0);
+    case 1: return rgb(0x10, 0x40, 0xff);
+    case 2: return rgb(0xff, 0, 0);
+    case 3: return rgb(0xff, 0xff, 0);
+    case 4: return rgb(0xff, 0x02, 0x7f);
+    default: return rgb(0, 0, 0);
+    }
+}
+
 void Game::drawDf2Bottom(const Screen& s) {
     // DF2.EXE 0x442020, in this order: radar, weapon block, waypoint block,
     // extras, stance icon, carried item. Text in the HUD font, 0xff8000.
@@ -4271,8 +4292,11 @@ void Game::drawDf2Bottom(const Screen& s) {
     {
         hud_.clip(mx0, my0, mx1 - mx0, my1 - my0);
         const float blip = float(std::max(1, 5 * n / 1024)) * k;
-        auto teamColour = [](int side) {
-            return side == 1 ? rgb(0x10, 0x40, 0xff) : side == 2 ? rgb(0xff, 0, 0) : side == 3 ? rgb(0xff, 0xff, 0) : side == 4 ? rgb(0xff, 0xff, 0xff) : rgb(0, 0xff, 0);
+        auto teamColour = [](int side) { return df2BlipColour(false, side); };
+        // People (item kind 3) by df2BlipColour's person rule.
+        auto shapeColour = [&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
+            return df2BlipColour(d.world ? d.world->person : it && it->type == "person", d.side);
         };
         const double px = player_.missionX(), py = player_.missionY();
         auto toRadar = [&](double x, double y) {
@@ -4290,7 +4314,7 @@ void Game::drawDf2Bottom(const Screen& s) {
                 if (o.missionGroup != 3 || !o.person || o.removed) continue;
                 if (o_.gpsIcons == 1 && !o.mapMarker) continue;
                 const Vec3 at = world_.nearest(o.pos, c);
-                drawMapMarker(s, mcx + (at.x - c.x) / mPerPx, mcy + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead,
+                drawMapMarker(s, mcx + (at.x - c.x) / mPerPx, mcy + (at.z - c.z) / mPerPx, 5, df2BlipColour(true, o.side), o.heading, o.dead,
                               blip);
             }
         // Objects with a radar shape (obj+0x6E, 0x421d2f): at their live
@@ -4304,7 +4328,7 @@ void Game::drawDf2Bottom(const Screen& s) {
                 bx = mcx + (at.x - c.x) / mPerPx;
                 by = mcy + (at.z - c.z) / mPerPx;
             } else std::tie(bx, by) = toRadar(d.mission->x, d.mission->y);
-            drawMapMarker(s, bx, by, d.shape, teamColour(d.side), 0, false, blip);
+            drawMapMarker(s, bx, by, d.shape, shapeColour(d), 0, false, blip);
         });
         // Player waypoints (pool loop 0x421e48): diamonds in team 0's green;
         // the HUD waypoint blinks (0x421e60).
@@ -4313,8 +4337,8 @@ void Game::drawDf2Bottom(const Screen& s) {
             auto [bx, by] = toRadar(df2Wps_[i].x, df2Wps_[i].y);
             drawMapMarker(s, bx, by, 3, teamColour(0), 0, false, blip);
         }
-        // The player: shape 5 in its team colour (green).
-        drawMapMarker(s, mcx, mcy, 5, teamColour(0), player_.yaw, false, blip);
+        // The player: shape 5 in 0xff8000 (0x4274f9).
+        drawMapMarker(s, mcx, mcy, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, blip);
         hud_.unclip();
     }
     // The next waypoint (0x443850): a filled dot of radius 3 on the ring of
@@ -4477,14 +4501,26 @@ const signed char kDf2TypeFrame[39] = {-1, 18, 12, 12, -1, 7,  10, -1, 4,  -1, 1
                                        5,  2,  -1, 9,  6,  -1, 0,  0,  15, 16, -1, 19, 21, 20, -1, 14, 17, 0,  0};
 // 0x4a4c88: the categories (type +0x94) each Weapons slot accepts, as bits.
 const int kDf2SlotMask[5] = {8, 0x10, 0x30, 4, 0x40};
-// Grid name of a point (0x422d60): columns (x + 1000) / 100 as the map's
-// letters, rows (1000 - y) / 100 + 1.
+// A grid column's letters (GOG Df2.exe 0x427a60 / 0x4261e0): a negative
+// index wraps by 702 (the 26 + 26 * 26 one- and two-letter columns), then
+// 'A' + i below 26, else '@' + i / 26, 'A' + i % 26.
+std::string df2GridColumn(int i) {
+    if (i < 0) i += int((uint32_t(701) - uint32_t(i)) / 702u * 702u);
+    if (i < 26) return std::string(1, char('A' + i));
+    return std::string(1, char('@' + i / 26)) + char('A' + i % 26);
+}
+// Grid name of a point (GOG Df2.exe 0x427a60 = CD 0x422d60), in the 16.16
+// position: column c = (x + 1000 m) >> 16, wrapped by 70200 m when negative,
+// / 100 (then the letters above); row r = 1000 m - y, wrapped by 10000 m
+// when negative, r / 100 m + 1. 32-bit arithmetic as in the EXE.
 std::string df2GridName(double x, double y) {
-    const int i = (int(std::floor(x)) + 1000) / 100, row = (1000 - int(std::floor(y))) / 100 + 1;
-    std::string col;
-    if (i >= 0 && i < 26) col = std::string(1, char('A' + i));
-    else if (i >= 26) col = std::string(1, char('@' + i / 26)) + char('A' + i % 26);
-    return col + std::to_string(row);
+    const int32_t X = int32_t(uint32_t(std::llround(x * 65536.0))), Y = int32_t(uint32_t(std::llround(y * 65536.0)));
+    int32_t c = int32_t(uint32_t(X) + 0x3e80000u) >> 16;
+    if (c < 0) c = int32_t(uint32_t(c) + (0x11237u - uint32_t(c)) / 0x11238u * 0x11238u);
+    c /= 100;
+    int32_t r = int32_t(0x3e80000u - uint32_t(Y));
+    if (r < 0) r = int32_t(uint32_t(r) + (0x270fffffu - uint32_t(r)) / 0x27100000u * 0x27100000u);
+    return df2GridColumn(c) + std::to_string(r / 0x640000 + 1);
 }
 } // namespace
 
@@ -5234,10 +5270,8 @@ void Game::drawDf2CommandMap(const Screen& s) {
             for (double gx = std::ceil((px - halfW) / 100) * 100; gx <= px + halfW; gx += 100) {
                 const float sx = toMap(gx, py).first;
                 hud_.rect(sx, y0, k, y1 - y0, kDf2Amber);
-                const int i = int(std::floor(gx / 100)) + 10;
-                std::string lab;
-                if (i >= 0 && i < 26) lab = std::string(1, char('A' + i));
-                else if (i >= 26) lab = std::string(1, char('@' + i / 26)) + char('A' + i % 26);
+                // Column letters (0x4261e0): negative indices wrap by 702.
+                const std::string lab = df2GridColumn(int(std::floor(gx / 100)) + 10);
                 hud_.text(sx + 50 / mPerPx - hud_.textWidth(lab, kt) / 2, y0 + k, lab, kHudWhite, kt);
             }
             for (double gy = std::floor((py + halfH) / 100) * 100; gy >= py - halfH; gy -= 100) {
@@ -5248,15 +5282,20 @@ void Game::drawDf2CommandMap(const Screen& s) {
             }
         }
         const float blip = 6.f * k;
-        auto teamColour = [](int side) {
-            return side == 1 ? rgb(0x10, 0x40, 0xff) : side == 2 ? rgb(0xff, 0, 0) : side == 3 ? rgb(0xff, 0xff, 0) : side == 4 ? rgb(0xff, 0xff, 0xff) : rgb(0, 0xff, 0);
+        auto teamColour = [](int side) { return df2BlipColour(false, side); };
+        // People (item kind 3) by df2BlipColour's person rule.
+        auto shapeColour = [&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
+            return df2BlipColour(d.world ? d.world->person : it && it->type == "person", d.side);
         };
         // Blips at double size, a black pass at +-1 pixel first (flag 0x1000);
         // each is recorded for picking (0x4226c0, within the clip +- 8 px).
         // The selected one blinks (flag 0x4000, 0x4229e5 / 0x422a1f): while
         // (frame + 8) & 0x20, its outline is its colour halved and the colour
-        // itself | 0x808080.
-        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead, Df2Sel id) {
+        // itself | 0x808080. With Names (flag 0x20, 0x427904) a non-empty
+        // name (+0x54) is drawn in every pass at (x + size, y), in that
+        // pass's colour.
+        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead, Df2Sel id, const std::string& name = {}) {
             if (x > x0 - 8 * k && x < x1 + 8 * k && y > y0 - 8 * k && y < y1 + 8 * k) m.picks.push_back({(x - ox) / k, (y - oy) / k, id});
             Color outline = rgb(1, 1, 1);
             if (id.kind && id == m.sel && ((ticks_ + 8) & 0x20)) {
@@ -5264,9 +5303,29 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 outline = rgb((ch(col.r) >> 1) & 0x7f, (ch(col.g) >> 1) & 0x7f, (ch(col.b) >> 1) & 0x7f);
                 col = rgb(ch(col.r) | 0x80, ch(col.g) | 0x80, ch(col.b) | 0x80);
             }
-            for (auto [dx, dy] : {std::pair{-k, 0.f}, {k, 0.f}, {0.f, -k}, {0.f, k}})
+            const bool named = m.toggles[1] && !name.empty();
+            for (auto [dx, dy] : {std::pair{0.f, -k}, {k, 0.f}, {0.f, k}, {-k, 0.f}}) {
                 drawMapMarker(s, x + dx, y + dy, type, outline, heading, dead, blip);
+                if (named) hud_.text(x + dx + blip, y + dy, name, outline, kt);
+            }
             drawMapMarker(s, x, y, type, col, heading, dead, blip);
+            if (named) hud_.text(x + blip, y, name, col, kt);
+        };
+        // A mission object's name (+0x54, GOG Df2.exe 0x403790): PeopleNames
+        // STRNAME%03i of record +4 when non-zero (15 characters), then for
+        // item 6005 WPNames STRWPNAME%03i of record +0x58 (cut to 15).
+        auto missionName = [&](const MissionObject& mo) {
+            std::string n;
+            char key[24];
+            if (mo.raw[1] != 0) {
+                std::snprintf(key, sizeof key, "STRNAME%03d", int(mo.raw[1]));
+                if (const std::string* t = wpnText_.find("PeopleNames", key)) n = t->substr(0, 15);
+            }
+            if (mo.type == 6005) {
+                std::snprintf(key, sizeof key, "STRWPNAME%03d", int(mo.raw[0x58 / 4]));
+                if (const std::string* t = wpnText_.find("WPNames", key)) n = t->substr(0, 15);
+            }
+            return n;
         };
         // The mission route (0x4224c0, not in multiplayer modes), 0xff8000,
         // first four black (0x010101) copies at x +- 1 / y +- 1 (flag 0x1000).
@@ -5284,7 +5343,8 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 if (o.missionGroup != 3 || !o.person || o.removed) continue;
                 if (o_.gpsIcons == 1 && !o.mapMarker) continue;
                 const Vec3 at = world_.nearest(o.pos, player_.feet);
-                blipAt(mx + (at.x - c.x) / mPerPx, my + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead, Df2Sel{2, int(i)});
+                blipAt(mx + (at.x - c.x) / mPerPx, my + (at.z - c.z) / mPerPx, 5, df2BlipColour(true, o.side), o.heading, o.dead, Df2Sel{2, int(i)},
+                       o.missionIndex >= 0 ? missionName(mission_.objects[size_t(o.missionIndex)]) : std::string());
             }
         forDf2Shapes([&](const Df2Shape& d) {
             const ItemDef* it = items_.byMissionType(d.mission->type);
@@ -5299,13 +5359,8 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 bx = mx + (at.x - c.x) / mPerPx;
                 by = my + (at.z - c.z) / mPerPx;
             } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
-            blipAt(bx, by, d.shape, teamColour(d.side), 0, false, id);
+            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, missionName(*d.mission));
         });
-        if (m.toggles[1] && m.toggles[3])
-            for (const auto& rp : route_) {
-                auto [bx, by] = toMap(rp.x, rp.y);
-                hud_.text(bx + blip, by - 4 * k, rp.name, kDf2Amber, kt);
-            }
         // Player waypoints (pool loop 0x421e48, Waypoints filter): shape 3
         // (diamond) in team 0's green 0x00ff00; names (+0x54) in the blip
         // colour at x + size with Names; the HUD waypoint blinks (0x421e60).
@@ -5315,10 +5370,9 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 const Df2Sel id{4, int(i)};
                 if (!w.used || (df2HudWpIs(id) && !(ticks_ & 16))) continue;
                 auto [bx, by] = toMap(w.x, w.y);
-                blipAt(bx, by, 3, teamColour(0), 0, false, id);
-                if (m.toggles[1]) hud_.text(bx + blip, by - 4 * k, w.name.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : w.name, teamColour(0), kt);
+                blipAt(bx, by, 3, teamColour(0), 0, false, id, w.name);
             }
-        blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, teamColour(0), player_.yaw, false, Df2Sel{1, 0});
+        blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, Df2Sel{1, 0}, o_.soldierName);
         hud_.unclip();
         // Buttons (width 152 virtual): Gridlines, Names, People, Waypoints,
         // Vehicles, Buildings; the icon buttons and + / -.
