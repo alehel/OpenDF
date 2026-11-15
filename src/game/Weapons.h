@@ -250,10 +250,13 @@ public:
     // camera is there and alive and the view is on.
     bool cameraSteered() const { return camera_ >= 0 && camView_ && modeIndex() == 0x30; }
     void turnCamera(float dyaw, float dpitch) { camYaw_ += dyaw; camPitch_ += dpitch; }
-    // DF2 mode flag 0x100 (modes 31, 48; GOG Df2.exe 0x44ea10): the
-    // first-person model only while a clip or a chambered one is left.
+    // DF2 mode flag 0x100 (modes 31, 48; GOG Df2.exe 0x44ea10) and DF1 mode
+    // flag 0x80 (+0xA4: satchel 29, grenades 33/34, claymores 37/38; GOG
+    // Df.exe 0x483f30, CD 0x44abd0): the first-person model only while a
+    // spare or a chambered one is left.
     bool viewModelShown() const {
-        return !(df2_ && (mode().df2Flags & 0x100)) || spares() > 0 || chambered();
+        const bool counted = df2_ ? (mode().df2Flags & 0x100) != 0 : (mode().flags & 0x80) != 0;
+        return !counted || spares() > 0 || chambered();
     }
 
     // Runs the weapon on 60 Hz ticks. Messages go to the HUD.
