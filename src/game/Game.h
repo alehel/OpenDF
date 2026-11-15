@@ -71,8 +71,9 @@ struct GameOptions {
     // df.cfg showgun: the view model is drawn only when set (GOG Df.exe
     // 0x407a90 -> [0x67f514], read by 0x483f30).
     bool showGun = true;
-    // df.cfg picinpic: picture-in-picture (GOG Df.exe 0x407a90 ->
-    // [0x67f510], back by 0x407980).
+    // df.cfg / df2.cfg picinpic: picture-in-picture at mission start (GOG
+    // Df.exe 0x407a90 -> [0x67f510], back by 0x407980; GOG Df2.exe 0x43c280:
+    // [0x67cd10] = [0x4f29a8]).
     bool picInPic = false;
     // Delta Force 2: the scope sensitivity [0x67ccfc] (soldier +0x5d8 +
     // 0x80, GOG Df2.exe 0x43c352), the scoped mouse turn rate (0x41eb50).

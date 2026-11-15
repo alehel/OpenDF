@@ -45,11 +45,13 @@ enum class Action {
     // Delta Force: PrintScreen (Shift+P: the table's flag 0x40, command 2,
     // GOG Df.exe 0x477d40 -> 0x473eb0, CD 0x426afc).
     PrintScreen,
-    // Delta Force: picture-in-picture (pinp, F8, id 0x1d: GOG Df.exe
-    // 0x477d40 toggles [0x67f510], CD [0x66fa50]).
+    // Picture-in-picture (pinp, F8): Delta Force id 0x1d (GOG Df.exe
+    // 0x477d40 toggles [0x67f510], CD [0x66fa50]); Delta Force 2 GOG
+    // Df2.exe 0x41f150 case 0x13 toggles [0x67cd10].
     PicInPic,
-    // GOG Df.exe: the audio-macro box (AudioMacros, A, id 0x2b; 0x477d40
-    // toggles [0x67db90]). Not in the CD build.
+    // The audio macros (AudioMacros, A): GOG Df.exe's box (id 0x2b; 0x477d40
+    // toggles [0x67db90]; not in the CD build); Delta Force 2's list (GOG
+    // Df2.exe 0x41f150 case 0x20, CD 0x41b1e0 case 0x2b).
     AudioMacros,
     // GOG Df.exe: cycleb (command 0xc0, no default key: 0x484b70(-1)) and
     // the single-player cheat commands (flags 0x100000, no key):

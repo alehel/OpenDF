@@ -251,6 +251,12 @@ private:
     // ([0xbf2b44], hideObject_).
     void df2FoNext();
     void drawDf2FoInset(const Screen& s);
+    // Delta Force 2's picture-in-picture (pinp_, [0x67cd10]; CD
+    // [0x652fc8]): in an outside view the player's own first-person view in
+    // the inset rectangle (GOG 0x456480, CD 0x44eaf0), ahead of the video
+    // camera and FO insets; it also lets the scope show there (0x455790).
+    bool pinpShown() const { return df2Hud_.on && pinp_ && outsideView() != 0; }
+    void drawDf2PinpInset(const Screen& s);
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -264,6 +270,13 @@ private:
     void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
+    // GOG Df2.exe 0x4642b0 (LAB_0046434a): the crosshair gap in 1/65536 of
+    // the mode width, 0x400 while the player mans a gun (+0x8c), else 0x140
+    // (the CD's 0x45a9e0 has 320 only).
+    int df2CrosshairGap() const { return arsenal_.df2Gog() && world_.playerMount >= 0 ? 0x400 : 0x140; }
+    // GOG Df2.exe 0x4557e0: the depth at the scope view's centre
+    // ([0x735e54]), whose pitch is lowered by the zeroing; out to the view.
+    float df2ScopeRange() const;
     // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
     // DF1 0x404640: the scope inset only for the living player, in the
     // first-person view or with picture-in-picture on ([0x67f510]).
@@ -940,6 +953,11 @@ private:
     int wheelDelta_ = 0;                  // DF1 WM_MOUSEWHEEL remainder, 120 per notch (GOG [0xd09364])
     bool jumpPressed_ = false;            // DF1: a move_jump press since the last player update (GOG Df.exe [0xc23a00] & 0x400)
     bool oldMessages_ = false;            // [0x66f974]
+    // Delta Force 2's audio macros list (audioMacros_, [0x67d3ac]; CD
+    // [0x65364c]): drawn by 0x4478f0 (CD 0x441410); while it is up the keys
+    // 1..9, 0 send macro 1..10 (0x407160: network message 0x43, nothing
+    // heard by the sender) and close it (0x421940 / CD 0x41d000).
+    void drawDf2AudioMacros(const Screen& s);
     // "End Mission? (Y/N)": DF.EXE [0x66f95c], DF2.EXE [0x65362c]. Opened by
     // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
     // Escape or Pause; Y leaves the mission. The game keeps running.
@@ -1547,6 +1565,14 @@ bool Game::loadMission(int index) {
     // GOG Df.exe 0x479e90 (from the mission loader 0x404e30 at 0x404f2c):
     // the 40-entry message ring 0xbd34b0 cleared, so the Messages box too.
     history_.clear();
+    // GOG Df2.exe 0x41ede0 (from 0x466ba0, a fresh start and a replay): the
+    // raw and wrapped chat and system rings emptied (not in the CD build).
+    if (arsenal_.df2Gog()) {
+        df2SysRaw_.clear();
+        df2ChatRaw_.clear();
+        df2Sys_.clear();
+        df2Chat_.clear();
+    }
     // DF2: the waypoint pool is cleared at mission load (0x403520); the
     // HUD waypoint and the elevation view at mission start (0x447810/0x447816).
     for (auto& w : df2Wps_) w = Df2Waypoint{};
@@ -4008,10 +4034,13 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
             return;
         }
         if (c == keyOf("STRMISC10", 'N')) { closeQuitBox(); return; }
-    } else if (audioMacros_ && !world_.df2Rules) {
-        // GOG Df.exe 0x4790a0: with the audio-macro box up, 1..9 and 0 send
-        // macro 1..10 (0x4717e0: network packet 0x43, a voice played by the
-        // receivers, 0x471760) and shut the box; nothing else is taken here.
+    } else if (audioMacros_) {
+        // With the audio macros up, 1..9 and 0 send macro 1..10 and shut
+        // them; nothing else is taken here and other keys go on to the
+        // commands (the end panel's Enter / Space are not reached). GOG
+        // Df.exe 0x4790a0 (0x4717e0: network packet 0x43, a voice played by
+        // the receivers, 0x471760); GOG Df2.exe 0x421940 (CD 0x41d000),
+        // after the End Mission box (0x407160, a network message only).
         // OpenDF has no network, so nothing is sent.
         const SDL_Keycode sym = k.keysym.sym;
         if (sym >= SDLK_0 && sym <= SDLK_9) {
@@ -4133,7 +4162,9 @@ void Game::runAction(Action act, bool reverse) {
         // pause, old messages, the box, [0x7655fc], the command map); with
         // none open it opens "End Mission? (Y/N)" (0x42e548 / 0x41b5d1).
         if (paused_) { paused_ = false; break; }
-        if (audioMacros_) { audioMacros_ = false; break; }   // GOG Df.exe: before the Messages box
+        // The audio macros close before the old messages (GOG Df.exe; GOG
+        // Df2.exe 0x41f150 case 0x11, CD 0x41b1e0).
+        if (audioMacros_) { audioMacros_ = false; break; }
         if (oldMessages_) { oldMessages_ = false; break; }
         if (quitBox_) { closeQuitBox(); break; }
         // DF2 0x41b59d: with [0x7655fc] set (F9 / F10), Escape only clears it.
@@ -4292,8 +4323,8 @@ void Game::runAction(Action act, bool reverse) {
     case Action::MapZoomIn: mapScale_ = std::max(0.25f, mapScale_ * 0.9f); break;
     case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
-    case Action::PicInPic: if (!world_.df2Rules) pinp_ = !pinp_; break;   // GOG Df.exe 0x477d40 id 0x1d
-    case Action::AudioMacros: if (!world_.df2Rules) audioMacros_ = !audioMacros_; break;   // GOG Df.exe 0x477d40 id 0x2b
+    case Action::PicInPic: pinp_ = !pinp_; break;   // GOG Df.exe 0x477d40 id 0x1d, GOG Df2.exe 0x41f150 case 0x13
+    case Action::AudioMacros: audioMacros_ = !audioMacros_; break;   // GOG Df.exe 0x477d40 id 0x2b, GOG Df2.exe 0x41f150 case 0x20
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
     case Action::PrintScreen: printScreen_ = !world_.df2Rules; break;   // GOG Df.exe 0x477d40 cmd 2 -> 0x473eb0
     case Action::CenterView: player_.pitch = 0; break;
@@ -4323,6 +4354,21 @@ float Game::rangeToAim() const {
     RayHit hit;
     const float maxRange = 2000.f;
     if (!world_.raycast(eye, eye + aimDirection() * maxRange, hit, true, -3)) return -1;   // not the player (nor his gun)
+    return hit.t * maxRange;
+}
+
+float Game::df2ScopeRange() const {
+    // The inset's camera (0x4557e0): the player's pitch less the type's
+    // elevation for the zeroing; the depth reaches what the view draws (to
+    // the corner of the drawn square), never past the "10km+" limit.
+    const Vec3 f = aimDirection();
+    const float pitch = std::asin(std::clamp(f.y, -1.f, 1.f)) - arsenal_.zeroElevation();
+    const float h = std::sqrt(f.x * f.x + f.z * f.z);
+    const Vec3 dir = h > 0 ? Vec3{f.x / h * std::cos(pitch), std::sin(pitch), f.z / h * std::cos(pitch)} : f;
+    const float maxRange = std::min(10000.f, viewDistance_ * 1.41422f);
+    const Vec3 eye = player_.eye();
+    RayHit hit;
+    if (!world_.raycast(eye, eye + dir * maxRange, hit, true, -3)) return -1;
     return hit.t * maxRange;
 }
 
@@ -5129,19 +5175,25 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    // GOG Df.exe 0x466090 looks from the player's eye (+0x24.. raised by
-    // [0xc23a18], his yaw / pitch / roll) also when picture-in-picture keeps
-    // the scope up in an outside view.
-    Mat4 scopeView = view;
-    const Vec3 pEye = player_.eye(), pDir = player_.forward();
-    const bool fromPlayer = !df2Hud_.on && outsideView() != 0;
-    if (fromPlayer) {
-        scopeView = lookDir(pEye, pDir, {0, 1, 0});
-        eyeOverride_ = &pEye;
-        dirOverride_ = &pDir;
+    // In an outside view (picture-in-picture keeps the scope up) the scope
+    // still looks from the player's eye along his aim: GOG Df.exe 0x466090
+    // (+0x24.. raised by [0xc23a18], his yaw / pitch / roll); GOG Df2.exe
+    // (0x455790) 0x4557e0 builds its camera from the player, his body left
+    // out.
+    const bool outside = outsideView() != 0;
+    const Vec3 fpEye = player_.eye(), fpDir = player_.forward();
+    const Mat4 insetView = outside ? lookDir(fpEye, fpDir, {0, 1, 0}) : view;
+    if (outside) {
+        eyeOverride_ = &fpEye;
+        dirOverride_ = &fpDir;
+        foPlayer_ = df2Hud_.on;
     }
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * scopeView : scopeView, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
-    if (fromPlayer) eyeOverride_ = dirOverride_ = nullptr;
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * insetView : insetView, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    if (outside) {
+        eyeOverride_ = nullptr;
+        dirOverride_ = nullptr;
+        foPlayer_ = false;
+    }
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
     // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
@@ -5161,7 +5213,7 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
 // ([0x79a6c0] / [0x79a6bc]), FOV 0x5a0000 (90 degrees across), into x
 // 0x2c0..0x3c0, y view top + 0x40..+0x100 of the 1024x768 frame.
 void Game::drawCameraInset(const Screen& s) {
-    if (!arsenal_.cameraView() || scopeShown() || showMap_) return;
+    if (!arsenal_.cameraView() || scopeShown() || showMap_ || pinpShown()) return;
     const int c = arsenal_.camera();
     if (c < 0 || size_t(c) >= world_.objects.size() || world_.objects[size_t(c)].removed) {
         arsenal_.clearCameraView();
@@ -5323,8 +5375,47 @@ void Game::df2FoNext() {
 // 1024x768 frame, x rounded down to 4 pixels, the target itself not drawn
 // ([0xbf2b44]); then a one-pixel 0xff8000 outline and the target's name
 // (+0x54) at (x0 + 10, y1 + 10) in frame pixels (0x4577f0 flag 0).
+// GOG Df2.exe 0x465f90 -> 0x456480 (CD 0x45c610 -> 0x44eaf0), composited by
+// 0x4559d0(.., 0): unless the scope shows, in an outside view with
+// picture-in-picture on and the player alive (+0x64 & 4), the view from the
+// player's eye ([0x79a688] above the origin) with his yaw and pitch, FOV
+// 0x5a (90 degrees across), as the main first-person view ([0xbf2b40] 0,
+// the player the camera object: his body not drawn, no weapon), in x
+// 0x2c0..0x3c0 (rounded down to 4 pixels), y view top + 0x40..+0x100;
+// outlined in [0x67d37c], no name.
+void Game::drawDf2PinpInset(const Screen& s) {
+    if (!pinpShown() || scopeShown() || showMap_ || playerDead()) return;
+    const float k = s.art();
+    const float x0 = std::floor(std::floor(s.vx(0x2c0) / k) / 4.f) * 4.f * k, x1 = std::floor(std::floor(s.vx(0x3c0) / k) / 4.f) * 4.f * k;
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const Vec3 eye = player_.eye(), fwd = player_.forward();
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    foPlayer_ = true;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    foPlayer_ = false;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float px = std::max(1.f, k);
+    hud_.rect(x0, y0, w, px, kDf2Amber);
+    hud_.rect(x1, y0, px, h + px, kDf2Amber);
+    hud_.rect(x0, y1, w, px, kDf2Amber);
+    hud_.rect(x0, y0, px, h, kDf2Amber);
+    hud_.end();
+}
+
 void Game::drawDf2FoInset(const Screen& s) {
-    if (!foOn_ || arsenal_.cameraView() || scopeShown() || showMap_) return;
+    if (!foOn_ || arsenal_.cameraView() || scopeShown() || showMap_ || pinpShown()) return;
     const WorldObject* t = nullptr;
     if (foTarget_ >= 0) {
         if (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed) { foOn_ = false; return; }
@@ -5833,16 +5924,48 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     }
     // GOG Df2.exe 0x465fde: the friendly tags (0x44fe70) before the
     // crosshair and target identification (0x4642b0).
-    if (!showMap_ && friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
+    // GOG Df2.exe 0x455be0 then copies the scope image over the frame, so
+    // tags inside the scope disc (the stencil drawZoomInset left at 1) are
+    // covered by it.
+    if (!showMap_ && friendlyTags_ && df2Hud_.on) {
+        const bool underScope = scopeShown();
+        if (underScope) {
+            hud_.end();
+            glEnable(GL_STENCIL_TEST);
+            glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            hud_.begin(int(s.w), int(s.h));
+        }
+        drawDf2FriendlyTags(s, viewProj);
+        if (underScope) {
+            hud_.end();
+            glDisable(GL_STENCIL_TEST);
+            hud_.begin(int(s.w), int(s.h));
+        }
+    }
     if (showMap_) drawCommandMap(s);
-    else if (crosshair_ && df2Hud_.on && outsideView() == 0) {   // GOG Df2.exe 0x465fde: [0x79a7fc] and mode 0
+    else if (df2Hud_.on && outsideView() == 0) {   // GOG Df2.exe 0x465fde: [0x79a7fc] and mode 0
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
-        // W*640/65536 mode pixels from the centre of the 3D rows.
-        const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
-        hud_.rect(cx - a - b, cy, b, t, kDf2Amber);
-        hud_.rect(cx + a, cy, b, t, kDf2Amber);
-        hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
-        hud_.rect(cx, cy + a, t, b, kDf2Amber);
+        // W*640/65536 mode pixels from the centre of the 3D rows. GOG
+        // Df2.exe 0x4642b0 (LAB_0046434a): the gap W*1024/65536 while the
+        // player mans a gun (+0x8c); at LAB_00464776 the laser designator
+        // (mode 0x1b) ignores the Crosshairs option ([0x67cd04]): the lines
+        // while its scope flag holds (0x44eba0), else Overlays STROVER90
+        // blinking (tick bit 0x10) centred W*0x380/65536 above the centre,
+        // in [0x67d37c] (the CD's 0x45a9e0 the same, with a literal "No Target").
+        const float a = float(s.modeW * df2CrosshairGap() / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
+        const bool designator = arsenal_.modeIndex() == 0x1b;
+        if (designator && !arsenal_.zoomed()) {
+            if (ticks_ & 0x10) {
+                const std::string nt = arsenal_.df2Gog() ? df2Text("Overlays", "STROVER90", "No Target") : std::string("No Target");
+                hud_.text(cx - hud_.textWidth(nt, s.text()) / 2, cy - float(s.modeW * 0x380 / 65536) * s.art(), nt, kDf2Amber, s.text());
+            }
+        } else if (designator || crosshair_) {
+            hud_.rect(cx - a - b, cy, b, t, kDf2Amber);
+            hud_.rect(cx + a, cy, b, t, kDf2Amber);
+            hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
+            hud_.rect(cx, cy + a, t, b, kDf2Amber);
+        }
     } else if (!df2Hud_.on && !playerDead() && outsideView() == 0) {
         // GOG Df.exe 0x402300 (nothing in an outside view, [0x6ba3ec]): with
         // the laser designator (mode 0x1b) the Crosshairs option
@@ -5877,12 +6000,15 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // range "%3im" at (500, 312.5).
     if (scopeShown() && !showMap_ && df2Hud_.on) {
         // DF2.EXE 0x44e2a0: a black ring; posts solid black from the edge to
-        // r/2, the inner ±r/2 segments half blended with 0x000080; the range
-        // "%4im" at (780, 500) in orange ("10km+", "1m-"); the zeroing "%4im"
-        // (setting × 100 m, keys X/Z 0x445ff0) at (700, 500) in
-        // yellow, not for the LAW; the laser designator's square of r/8.
+        // r/2, the inner ±r/2 segments halved (GOG Df2.exe 0x457480 / CD
+        // 0x44f940 with colour 0: pixel / 2 + 0; the 0x80 after it is an
+        // unused argument); the range "%4im" at (780, 500) in orange
+        // ("10km+", "1m-"); the zeroing "%4im" (setting × 100 m, keys X/Z
+        // 0x445ff0) at (700, 500) in yellow, not for the LAW; the laser
+        // designator's diamond (GOG 0x455be0: vertices on the axes r/8 out,
+        // 0x41e8c0(0)).
         const float zx = s.cx(160), zy = s.h * 0.5f, r = s.y(100);
-        const Color black{0.004f, 0.004f, 0.004f, 1}, navy{0, 0, 0.5f, 0.5f};
+        const Color black{0.004f, 0.004f, 0.004f, 1}, half{0.5f, 0.5f, 0.5f, 1};
         hud_.ring(zx, zy, r, t, black);
         const bool laser = arsenal_.mode().type == 10;
         if (!laser) {
@@ -5890,16 +6016,16 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             hud_.rect(zx + r / 2, zy, r / 2, t, black);
             hud_.rect(zx, zy - r, t, r / 2, black);
             hud_.rect(zx, zy + r / 2, t, r / 2, black);
-            hud_.rect(zx - r / 2, zy, r, t, navy);
-            hud_.rect(zx, zy - r / 2, t, r, navy);
+            hud_.multiply(zx - r / 2, zy, r, t, half);
+            hud_.multiply(zx, zy - r / 2, t, r, half);
         } else {
             const float d = r / 8;
-            hud_.rect(zx - d, zy - d, 2 * d, t, kDf2Amber);
-            hud_.rect(zx - d, zy + d, 2 * d, t, kDf2Amber);
-            hud_.rect(zx - d, zy - d, t, 2 * d, kDf2Amber);
-            hud_.rect(zx + d, zy - d, t, 2 * d, kDf2Amber);
+            hud_.line(zx - d, zy, zx, zy - d, t, kDf2Amber);
+            hud_.line(zx, zy - d, zx + d, zy, t, kDf2Amber);
+            hud_.line(zx + d, zy, zx, zy + d, t, kDf2Amber);
+            hud_.line(zx, zy + d, zx - d, zy, t, kDf2Amber);
         }
-        const float range = rangeToAim();
+        const float range = df2ScopeRange();
         char buf[32];
         if (laser) {
             if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
@@ -6017,6 +6143,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     if (!df2Hud_.on && gpsShown_) drawGpsInset(s);
     if (oldMessages_) drawOldMessages(s);
     if (audioMacros_ && !df2Hud_.on) drawAudioMacros(s);   // GOG 0x426c30: after the Messages box
+    if (df2Hud_.on && audioMacros_) drawDf2AudioMacros(s);   // GOG Df2.exe 0x448fd0: after 0x448e40
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
@@ -6155,8 +6282,9 @@ void Game::drawDf2Bottom(const Screen& s) {
     };
 
     // Radar (0x421510, 0x4226c0): the terrain colour map north-up in the
-    // `map` rectangle at (scale << 10) / W m a pixel (1.6 m at 640), then
-    // rad%i.pcx added over it, then the blips (size 5W/1024 pixels).
+    // `map` rectangle at (scale << 10) / W m a pixel (1.6 m at 640) and the
+    // blips (size 5W/1024 pixels), then rad%i.pcx added over them (GOG
+    // Df2.exe 0x448620: 0x4261e0 first, then 0x458750; CD 0x442020 alike).
     const float mx0 = X("map", 0), my0 = Y("map", 1), mx1 = X("map", 2), my1 = Y("map", 3);
     const float mcx = (mx0 + mx1) * 0.5f, mcy = (my0 + my1) * 0.5f;
     const float mPerPx = 1024.f / float(n) * mapScale_ / k;   // metres per window pixel
@@ -6172,13 +6300,6 @@ void Game::drawDf2Bottom(const Screen& s) {
         const float ext = terrain_.mapExtent(), hw = (mx1 - mx0) * 0.5f * mPerPx, hh = (my1 - my0) * 0.5f * mPerPx;
         hud_.imageUV(terrain_.radarTexture() ? terrain_.radarTexture() : terrain_.colorTexture(), mx0, my0, mx1 - mx0, my1 - my0, (c.x - hw) / ext, (c.z - hh) / ext, (c.x + hw) / ext,
                      (c.z + hh) / ext);
-    }
-    if (df2Hud_.rad.texture) {
-        hud_.setBlend(5);
-        const float w = float(df2Hud_.rad.width) * k, h = float(df2Hud_.rad.height) * k;
-        const float cx = (df2X(s, def.value(n, "map", 0), true) + df2X(s, def.value(n, "map", 2), true)) * 0.5f;
-        hud_.image(df2Hud_.rad.texture, std::floor(cx - w / 2), std::floor(mcy - h / 2), w, h);
-        hud_.setBlend(0);
     }
     {
         hud_.clip(mx0, my0, mx1 - mx0, my1 - my0);
@@ -6232,6 +6353,13 @@ void Game::drawDf2Bottom(const Screen& s) {
         drawMapMarker(s, mcx, mcy, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, blip);
         hud_.unclip();
     }
+    if (df2Hud_.rad.texture) {
+        hud_.setBlend(5);
+        const float w = float(df2Hud_.rad.width) * k, h = float(df2Hud_.rad.height) * k;
+        const float cx = (df2X(s, def.value(n, "map", 0), true) + df2X(s, def.value(n, "map", 2), true)) * 0.5f;
+        hud_.image(df2Hud_.rad.texture, std::floor(cx - w / 2), std::floor(mcy - h / 2), w, h);
+        hud_.setBlend(0);
+    }
     // The next waypoint (0x443850): a filled dot of radius 3 on the ring of
     // map_radius in its compass bearing.
     if (const Df2WpView p = df2CurrentWaypoint(); p.ok && !route_.empty()) {
@@ -6269,6 +6397,9 @@ void Game::drawDf2Bottom(const Screen& s) {
     case 11: showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;   // 0x447584[10] = 0x447521
     // Binoculars: red unless they are up (a *_BIN move: 104, 114, 5).
     case 12: ok = binoculars_; break;
+    // The video camera (GOG Df2.exe 0x44e390 case 0xd): not ready while
+    // cycling ([0x79a2cc]) or with no clip and nothing chambered.
+    case 13: showRounds = showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;
     default: if (kind > 12) showRounds = showChamber = clipText = true; break;
     }
     std::string name = arsenal_.modeName();
@@ -6441,7 +6572,8 @@ const uint8_t kDf2ElevRamp[256] = {
     217, 217, 218, 219, 220, 221, 222, 222, 223, 224, 225, 226, 227, 227, 228, 229, 230, 231, 232, 232, 233, 234, 235, 236, 236, 237,
     238, 239, 240, 240, 241, 242, 243, 244, 245, 245, 246, 247, 248, 249, 249, 250, 251, 252, 253, 253, 254, 255};
 // 0x4434e0 (byte table 0x443614, jump table 0x4435b4): a weapon TYPE's
-// WEAP frame, -1 none (type 9 M4/M203 has no picture: READ).
+// WEAP frame, -1 none (in the CD build type 9 M4/M203 has no picture;
+// GOG Df2.exe 0x449b50 gives types 8 and 9 frame 4).
 const signed char kDf2TypeFrame[39] = {-1, 18, 12, 12, -1, 7,  10, -1, 4,  -1, 13, 8,  3, -1, -1, 11, -1, -1, -1, 1,
                                        5,  2,  -1, 9,  6,  -1, 0,  0,  15, 16, -1, 19, 21, 20, -1, 14, 17, 0,  0};
 // 0x4a4c88: the categories (type +0x94) each Weapons slot accepts, as bits.
@@ -7549,8 +7681,9 @@ void Game::drawDf2CommandMap(const Screen& s) {
         static const char* kSlotDef[5] = {"Primary", "Secondary 1", "Secondary 2", "Sidearm", "Grenade"};
         const Color white = rgb(0xff, 0xff, 0xff);
         auto picture = [&](int type, float x, float y) {
-            if (!m.weap.texture || type < 0 || type >= 39 || kDf2TypeFrame[type] < 0) return;
-            const float fh = float(m.weap.height / 22), H = float(m.weap.height), f = float(kDf2TypeFrame[type]);
+            const int frame = type == 9 && arsenal_.df2Gog() ? 4 : type >= 0 && type < 39 ? kDf2TypeFrame[type] : -1;   // GOG 0x449b50: case 8, 9 -> 4
+            if (!m.weap.texture || frame < 0) return;
+            const float fh = float(m.weap.height / 22), H = float(m.weap.height), f = float(frame);
             hud_.setBlend(5);
             hud_.imageUV(m.weap.texture, X(x), Y(y), float(m.weap.width) * k, fh * k, 0, f * fh / H, 1, (f + 1) * fh / H);
             hud_.setBlend(0);
@@ -8242,6 +8375,25 @@ void Game::drawAudioMacros(const Screen& s) {
     }
 }
 
+// GOG Df2.exe 0x4478f0 (CD 0x441410): the panel (128, 200)-(896, 560),
+// darkened and outlined; ten lines "%i - %s" (the tenth "0 - %s") of
+// DF2GAME.BIN "Male Audio Macros" STRMAM_%02i or, for a female soldier
+// ([0x67cc14]: profile face +0x278 > 9), "Female Audio Macros"
+// STRFAM_%02i (0x4cb6d4 with its fourth character replaced), at (200,
+// 240 + 30k) in [0x67d37c].
+void Game::drawDf2AudioMacros(const Screen& s) {
+    df2Panel(s, 128, 200, 896, 560);
+    const char* section = o_.female ? "Female Audio Macros" : "Male Audio Macros";
+    for (int k = 0; k < 10; ++k) {
+        char key[16], line[160];
+        std::snprintf(key, sizeof key, "STR%cAM_%02d", o_.female ? 'F' : 'M', k + 1);
+        const std::string t = df2Text(section, key, key);
+        if (k == 9) std::snprintf(line, sizeof line, "0 - %s", t.c_str());
+        else std::snprintf(line, sizeof line, "%d - %s", k + 1, t.c_str());
+        hud_.text(s.vx(200), s.vy(float(240 + 30 * k)), line, kDf2Amber, s.text());
+    }
+}
+
 void Game::drawOldMessages(const Screen& s) {
     // 0x484d94: a darkened box (100, 100)-(924, 668), "Messages" centred at
     // (512, 120) in bright green, then the 16 latest lines from x 130, y 160,
@@ -8249,6 +8401,31 @@ void Game::drawOldMessages(const Screen& s) {
     // into a 40-deep ring), so the oldest of the 16 is at the top and the
     // newest always at y 610 (0x484e01..0x484e35), each in its message
     // colour (the ring's +0x78, 0x484e0d).
+    if (df2Hud_.on && arsenal_.df2Gog()) {
+        // GOG Df2.exe 0x448e40: the 3D view (x 0..0x400, the whole width;
+        // here the window's, as the strips the columns follow) darkened,
+        // not outlined (0x465ae0(.., 10, 0)); STROVER43 centred at (512,
+        // view top + 20) in [0x67d37c]; then entries 15..0 of both wrapped
+        // rings (0xaadb88 chat, 0xaaeeec sys), each at its HUD.DEF item's
+        // x0 + 2 and y0 + the view's top row ([0x67d3b0]) + W*120/1024 +
+        // k*(12W/640), in its own colour (+0x78).
+        const float vt = s.playY / (s.u * 0.625f);
+        hud_.multiply(0, s.playY, s.w, s.playH, {0.5f, 0.5f, 0.5f, 1});
+        const std::string t = df2Text("Overlays", "STROVER43", "Messages");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(vt + 20), t, kDf2Amber, s.text());
+        const int n = s.modeW;
+        auto history = [&](const std::deque<Df2Line>& h, const char* key) {
+            const float x = df2X(s, df2Hud_.def.value(n, key, 0) + 2, false);
+            int y = df2Hud_.def.value(n, key, 1) + n * 120 / 1024;
+            for (int k = 0; k < 16; ++k, y += n * 12 / 640) {
+                const size_t e = size_t(15 - k);
+                if (e < h.size() && !h[e].text.empty()) hud_.text(x, s.playY + float(y) * s.art(), h[e].text, h[e].colour, s.text());
+            }
+        };
+        history(df2Chat_, "chat_message");
+        history(df2Sys_, "sys_message");
+        return;
+    }
     if (df2Hud_.on) {
         // DF2.EXE 0x442850: the panel box, STROVER43 centred at (512, 120) in
         // orange, the system history's entries 15..0 (0x41cf50 pushes the
@@ -8407,7 +8584,8 @@ void Game::drawDf2TargetId(const Screen& s, float cx, float cy, float r) {
     // either side, its name centred in red ([0x67d374] = 0xff0000), drawn
     // with 0x4577f0 in screen pixels.
     if (o_.df2Attributes & 0x100) return;
-    const float aim = rangeToAim();
+    // In the scope the pick goes by the inset's own depth (0x4562ab reads [0x735e54]).
+    const float aim = r > 0 ? df2ScopeRange() : rangeToAim();
     const WorldObject* o = df2AimPick((aim < 0 ? viewDistance_ : aim) + 2.f);
     if (!o) return;
     const float t = s.px();
@@ -8416,7 +8594,7 @@ void Game::drawDf2TargetId(const Screen& s, float cx, float cy, float r) {
         // The crosshair: ticks from ±(gap + arm) to ±gap on both axes (no
         // spread or bloom: attributes & 0x1000 clear); the name W*1920/65536
         // above the top arm.
-        const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
+        const float a = float(s.modeW * df2CrosshairGap() / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
         if (o->side == kPlayerSide)
             for (int sx = -1; sx <= 1; sx += 2)
                 for (int sy = -1; sy <= 1; sy += 2)
@@ -8636,7 +8814,9 @@ void Game::drawGoals(const Screen& s) {
         // each line twice (0x402000 shadow at +1,+1 pixel); "Win Conditions:"
         // then the header's win ids as DF2WPN STRWINCOND%03i (0x804000 once
         // met), 10 lower "Lose Condiitions:" (sic) and STRLOSECOND%03i (red
-        // once hit); others white.
+        // once hit); others white. Each header only with its first
+        // condition (GOG Df2.exe 0x448b10 / CD 0x442520 draw it inside the
+        // loop at i == 0, which stops at the first zero id).
         const float ts = s.text(), sh = s.px(), top = s.playY / s.vy(1);
         float y = top + 20;
         auto line = [&](const std::string& text, Color c) {
@@ -8645,7 +8825,7 @@ void Game::drawGoals(const Screen& s) {
             hud_.text(x, s.vy(y), text, c, ts);
             y += 25;
         };
-        line(df2Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
+        if (mission_.winIds[0]) line(df2Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
         for (int i = 0; i < 4 && mission_.winIds[i]; ++i) {
             char key[24];
             std::snprintf(key, sizeof key, "STRWINCOND%03d", mission_.winIds[i]);
@@ -8653,7 +8833,7 @@ void Game::drawGoals(const Screen& s) {
             line(t ? *t : key, script_.goalDone(i + 1) ? rgb(0x80, 0x40, 0) : kHudWhite);
         }
         y += 10;
-        line(df2Text("Overlays", "STROVER52", "Lose Condiitions:"), kHudWhite);
+        if (mission_.loseIds[0]) line(df2Text("Overlays", "STROVER52", "Lose Condiitions:"), kHudWhite);
         for (int i = 0; i < 4 && mission_.loseIds[i]; ++i) {
             char key[24];
             std::snprintf(key, sizeof key, "STRLOSECOND%03d", mission_.loseIds[i]);
@@ -8750,7 +8930,7 @@ int Game::run() {
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
         gunVisible_ = o_.showGun;   // GOG 0x407a90: [0x67f514] = showgun
-        pinp_ = o_.picInPic;        // GOG 0x407a90: [0x67f510] = picinpic
+        pinp_ = o_.picInPic;        // GOG 0x407a90: [0x67f510] = picinpic; GOG Df2.exe 0x43c280
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
@@ -9050,7 +9230,7 @@ int Game::run() {
             // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004 (dead,
             // airborne, swimming, on a ladder) and an outside view.
             arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder() ||
-                                     outsideView() != 0);   // [0xbf2b40] with picture-in-picture [0x67cd10] off
+                                     (outsideView() != 0 && !pinp_));   // [0xbf2b40] with picture-in-picture [0x67cd10] off
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
@@ -9683,6 +9863,7 @@ int Game::run() {
                     drawDf2Waypoints3d(s, proj * view);
                     hud_.end();
                     drawZoomInset(s, view, fovY);
+                    drawDf2PinpInset(s);
                     drawCameraInset(s);
                     drawDf2FoInset(s);
                     glViewport(0, 0, dw, dh);
