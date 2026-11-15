@@ -40,6 +40,10 @@ public:
     // 0x200 BIN poses) and the scope in (+0x74 & 0x80): GOG Df2.exe 0x445980.
     int df2ModeFlags = 0;
     bool scoped = false;
+    // Delta Force: the current mode's raw flags +0xA4 (GOG Df.exe 0x488200:
+    // 8 SLW, 4 2HW, 0x40 KNIFE poses, 0xc the _2HW walking / running moves,
+    // 1 Jumping_2HW).
+    int df1ModeFlags = 0;
     // Eye height above the feet per stance (stand, crouch, prone) and hand
     // (two-, one-handed): the pose's origin height (.CHR contact points) plus
     // DF.EXE's eye offset (0x449913). Filled from the game data; defaults
@@ -122,6 +126,7 @@ private:
     float originY_ = 0, eyeOffset_ = 0;
     std::vector<Spawn> spawns_;
     bool sliding_ = false;
+    bool uphill_ = false;            // DF1 +0x6e & 8 (flag 0x80000): the walking moves (0x487370 -> 0x488200)
     bool reqCrouch_ = false, reqProne_ = false, reqStand_ = false;
     bool jumpArmed_ = true;          // DF1 GOG [0xc23a10]: set while the jump key is up (0x4795a0)
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)

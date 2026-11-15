@@ -1,5 +1,7 @@
 #include "Player.h"
 
+#include "Moves.h"
+
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -133,63 +135,97 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
         reqProne_ = reqCrouch_ = reqStand_ = false;
     }
 
-    // Move selection (DF.EXE 0x436fd0): prone crawls; otherwise walk (NoRun
-    // or steep uphill) or run in the standard gait, also when crouched (the
-    // crouch flag stays set, the soldier is crouched again when he stops);
-    // the *_S_* moves while the weapon's refire time runs. A move the .ANM
-    // does not list has speed 0 in DF.EXE's table (e.g. running while
-    // shooting: PLAYANIM.ANM has no Running*_S_* entries).
-    speed_ = 0;
-    if (moving_) {
+    // Move selection (GOG Df.exe 0x488200, CD 0x436fd0), by move number
+    // (the AI's perception and aim factors read it, 0x46a804 / 0x46b838).
+    // f is the weapon mode's raw flags (+0xA4); the _S_ moves while the
+    // refire time runs ([0xc23830] > 0). In order:
+    //  airborne (+0x6d & 0x20): prone 0x70 SLW (f & 8) / 0x6f 2HW (& 4) /
+    //    0x74 KNIFE (& 0x40) / 0x6e 1HW; else Jumping 0x82 / 0x83 (f & 1),
+    //    0x84 / 0x85 shooting;
+    //  sliding (+0x6e & 4): 0x82 Jumping_1HW;
+    //  moving: prone 0x78 + dir Crawling; the uphill flag 0x80000 (set by
+    //    the previous tick's physics) the walking moves, else walk (NoRun) or
+    //    run: 0x14 / 0x1c (f & 0xc) + dir, shooting 0x28 / 0x30, running
+    //    0x3c / 0x44, 0x50 / 0x58; also when crouched (the crouch flag
+    //    stays set, the soldier is crouched again when he stops);
+    //  still: standing 3 SLW (& 8), 4 SCW (the scope shown, 0x484740), 2
+    //    2HW (& 4), 7 KNIFE (& 0x40), 1 1HW (shooting 0xc / 0xd / 0xb / 0xe /
+    //    0xa); crouched 0x66 / 0x65 / 0x6a / 100; prone 0x70 / 0x6f / 0x6e.
+    // A move the .ANM does not list has speed 0 in DF.EXE's table (e.g.
+    // running while shooting: PLAYANIM.ANM has no Running*_S_* entries).
+    {
+        const int f = df1ModeFlags;
+        const bool sh = in.shooting;
         const int dir = moveDirection(in.forward, in.strafe);
-        std::string move;
-        float fallback;
-        if (stance == Stance::Prone) {
-            move = "Crawling_CR" + std::to_string(dir);
-            fallback = 0.5f;
+        int n;
+        if (!onGround_) {
+            if (stance == Stance::Prone) n = (f & 8) ? 0x70 : (f & 4) ? 0x6f : (f & 0x40) ? 0x74 : 0x6e;
+            else n = (sh ? 0x84 : 0x82) + ((f & 1) ? 1 : 0);
+        } else if (sliding_) {
+            n = 0x82;
+        } else if (moving_) {
+            if (stance == Stance::Prone) n = 0x78 + dir;
+            else {
+                const bool walk = uphill_ || in.walk;
+                const bool two = (f & 0xc) != 0;
+                n = (walk ? (sh ? 0x28 : 0x14) : (sh ? 0x50 : 0x3c)) + (two ? 8 : 0) + dir;
+            }
+        } else if (stance == Stance::Prone) {
+            n = (f & 8) ? 0x70 : (f & 4) ? 0x6f : 0x6e;
+        } else if (stance == Stance::Crouch) {
+            n = (f & 8) ? 0x66 : (f & 4) ? 0x65 : (f & 0x40) ? 0x6a : 100;
         } else {
-            move = std::string(in.walk ? "Walking" : "Running") + std::to_string(dir) + (in.shooting ? "_S" : "") +
-                   (oneHanded ? "_1HW" : "_2HW");
-            fallback = in.walk ? 1.0f : 5.0f;
+            if (sh) n = (f & 8) ? 0xc : scoped ? 0xd : (f & 4) ? 0xb : (f & 0x40) ? 0xe : 0xa;
+            else n = (f & 8) ? 3 : scoped ? 4 : (f & 4) ? 2 : (f & 0x40) ? 7 : 1;
         }
-        if (moves && !moves->empty()) {
-            const AnimMove* m = moves->find(move);
-            speed_ = m ? m->velocity : 0.f;
-        } else {
-            speed_ = fallback;
-        }
-        move_ = move;
-    } else {
-        // Standing still: the stance's pose (_S_ while the refire time runs).
-        const char* base = stance == Stance::Prone ? "Prone" : stance == Stance::Crouch ? "Crouched" : "Standing";
-        move_ = std::string(base) + (in.shooting && stance == Stance::Stand ? "_S" : "") + (oneHanded ? "_1HW" : "_2HW");
+        const char* name = moveName(n);
+        move_ = name ? name : "Null";
+    }
+    // The move's speed and direction (move table +0: Walking / Running /
+    // Crawling N go N·45°, the others 0).
+    const bool dirMove = moving_ && onGround_ && !sliding_;
+    speed_ = 0;
+    if (moves && !moves->empty()) {
+        const AnimMove* m = moves->find(move_);
+        speed_ = m ? m->velocity : 0.f;
+    } else if (dirMove) {
+        speed_ = stance == Stance::Prone ? 0.5f : (in.walk || uphill_) ? 1.0f : 5.0f;
     }
 
-    // Terrain gradient (DF.EXE 0x4332ac) for sliding and uphill walking.
-    const float h0x = world.terrain->heightAt(feet.x - 0.5f, feet.z), h1x = world.terrain->heightAt(feet.x + 0.5f, feet.z);
-    const float h0z = world.terrain->heightAt(feet.x, feet.z - 0.5f), h1z = world.terrain->heightAt(feet.x, feet.z + 0.5f);
-    const float gx = h1x - h0x, gz = h1z - h0z;
-    if (onGround_) {
-        if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) sliding_ = true;
-        else if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
+    // Terrain gradient (GOG Df.exe 0x47e5d0 from 0x487370; CD 0x4332ac) for
+    // sliding and uphill walking: only on the ground (+0x6d & 1), not
+    // airborne or in water (0x22000), and not standing on an object (+0x100,
+    // 0x4874d6), where the slide and uphill flags are kept and the move is
+    // used. A slide starts at 1.3 on either axis (the move still applies that
+    // tick) and stops under 0.7 on both (the move applies); while it lasts
+    // xy moves -gradient x 0x1999 a tick. Not sliding, uphill steeper than
+    // 0.7 along the move's direction sets 0x80000, which the next move
+    // selection turns into a walking move (0x4874f6 clears it first).
+    bool slideMove = false;
+    float gx = 0, gz = 0;
+    const float moveAngle = yaw - float(dirMove ? moveDirection(in.forward, in.strafe) : 0) * 3.14159265f / 4.f;
+    if (onGround_ && platform_ < 0) {
+        const float h0x = world.terrain->heightAt(feet.x - 0.5f, feet.z), h1x = world.terrain->heightAt(feet.x + 0.5f, feet.z);
+        const float h0z = world.terrain->heightAt(feet.x, feet.z - 0.5f), h1z = world.terrain->heightAt(feet.x, feet.z + 0.5f);
+        gx = h1x - h0x;
+        gz = h1z - h0z;
+        uphill_ = false;
+        if (sliding_) {
+            if (std::abs(gx) < kSlideStop && std::abs(gz) < kSlideStop) sliding_ = false;
+            else slideMove = true;
+        } else if (std::abs(gx) > kSlideStart || std::abs(gz) > kSlideStart) {
+            sliding_ = true;
+        } else if (std::abs(gx) > kSlideStop || std::abs(gz) > kSlideStop) {
+            if (gx * std::sin(moveAngle) - gz * std::cos(moveAngle) > kSlideStop) uphill_ = true;
+        }
     }
-    // Uphill steeper than 0.7 along the heading forces the walking moves (0x436705).
-    if (moving_ && stance != Stance::Prone && gx * flatFwd.x + gz * flatFwd.z > kSlideStop && moves) {
-        const std::string walk = "Walking" + std::to_string(moveDirection(in.forward, in.strafe)) + (oneHanded ? "_1HW" : "_2HW");
-        if (const AnimMove* w = moves->find(walk)) speed_ = std::min(speed_, w->velocity);
-    }
-    // Direction: heading + dir·45°, at the move's speed (0x43661c); in the air
-    // the take-off motion is kept (0x43678c); sliding replaces movement.
+    // Direction: heading + dir·45°, at the move's speed (0x48751c); in the
+    // air the take-off motion is kept (0x4874e1); sliding replaces movement.
     Vec3 delta;
-    if (sliding_ && onGround_) delta = Vec3{-gx, 0, -gz} * (kSlideRate * dt);
+    if (slideMove) delta = Vec3{-gx, 0, -gz} * (kSlideRate * dt);
     else if (!onGround_) delta = airDelta_ * dt;
     else {
-        Vec3 dirv{0, 0, 0};
-        if (moving_) {
-            const float a = yaw - float(moveDirection(in.forward, in.strafe)) * 3.14159265f / 4.f;
-            dirv = Vec3{std::sin(a), 0, -std::cos(a)};
-        }
-        airDelta_ = dirv * speed_;
+        airDelta_ = Vec3{std::sin(moveAngle), 0, -std::cos(moveAngle)} * speed_;
         delta = airDelta_ * dt;
     }
 
