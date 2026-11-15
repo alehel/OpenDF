@@ -180,16 +180,18 @@ void WildlifeSystem::depth(World& world, Animal& a, int32_t z, int32_t band, boo
 void WildlifeSystem::tick(World& world, AiSystem& ai, const AiSystem::PlayerView& player, bool playerSwimming) {
     std::vector<Animal> flushed;
     for (auto& a : animals_) {
-        WorldObject& o = world.objects[size_t(a.object)];
-        if (o.removed) continue;
+        if (world.objects[size_t(a.object)].removed) continue;
         if (--a.think <= 0) {
             if (a.kind == Kind::Vulture) vultureThink(world, ai, a, player);
             else if (a.kind == Kind::Penguin) penguinThink(world, ai, a);
             else if (a.kind == Kind::BirdTree) birdTreeThink(world, ai, a, player, flushed);
             else if (a.kind == Kind::Sparrow) sparrowThink(world, a);
             else fishThink(world, ai, a, player, playerSwimming);
-            if (o.removed) continue;
+            if (world.objects[size_t(a.object)].removed) continue;
         }
+        // Taken after the think: a bird tree's flush spawns sparrows, which
+        // can reallocate world.objects.
+        WorldObject& o = world.objects[size_t(a.object)];
         if (a.kind == Kind::BirdTree) continue;   // no mover; its heading is the object's
         if (a.kind == Kind::Vulture) vultureMove(world, a);
         else if (a.kind == Kind::Penguin) penguinMove(world, a);
@@ -224,14 +226,16 @@ void WildlifeSystem::tick(World& world, AiSystem& ai, const AiSystem::PlayerView
 // rest still 10) 4 m above the origin at yaws r1 << 16 + k x 0x40000000 +
 // (r2 & 0xf00) << 16 (rand: one draw thrown away, r1, then r2 for each).
 void WildlifeSystem::birdTreeThink(World& world, AiSystem& ai, Animal& a, const AiSystem::PlayerView& player, std::vector<Animal>& flushed) {
-    const WorldObject& o = world.objects[size_t(a.object)];
+    // Copies, not a reference: spawnObject below can reallocate world.objects.
+    const Vec3 pos = world.objects[size_t(a.object)].pos;
+    const int treeSide = world.objects[size_t(a.object)].side;
     a.think = 0x40;
     if (a.rest > 0) { --a.rest; return; }
     int32_t best = 0;
     auto consider = [&](Vec3 at, int side, int move, bool fired) {
-        if (side == o.side || side == 0) return;
-        const Vec3 tp = world.nearest(at, o.pos);
-        const int32_t d = approx(fix(tp.x - o.pos.x), fix(tp.z - o.pos.z), fix(tp.y - o.pos.y)) >> 16;
+        if (side == treeSide || side == 0) return;
+        const Vec3 tp = world.nearest(at, pos);
+        const int32_t d = approx(fix(tp.x - pos.x), fix(tp.z - pos.z), fix(tp.y - pos.y)) >> 16;
         if (d >= 0x50000) return;
         const int32_t inv = d == 0 ? 0x50000 : 0x50000 / d;
         const int32_t s = mul16(mul16(inv, fix(moveVisibility(move))), fired ? 0x400000 : 0x80000);
@@ -245,12 +249,12 @@ void WildlifeSystem::birdTreeThink(World& world, AiSystem& ai, Animal& a, const 
     if (best <= 0x100000) return;
     a.rest = 10;
     if (!spawnObject) return;
-    if (playSound) playSound(0x4C, o.pos);
+    if (playSound) playSound(0x4C, pos);
     rnd();
     uint32_t base = rnd() << 16;
     for (int k = 0; k < 3; ++k, base += 0x40000000u) {
         const uint32_t yaw = base + ((rnd() & 0xf00) << 16);
-        const int id = spawnObject(104051, o.pos + Vec3{0, 4.f, 0}, yawToHeading(yaw));
+        const int id = spawnObject(104051, pos + Vec3{0, 4.f, 0}, yawToHeading(yaw));
         if (id < 0) continue;
         Animal b;
         b.object = id;
