@@ -668,7 +668,9 @@ First differences from DF1:
     loop 808 (0x42c4a0, 0x401340); carg cars copy the first loco's step and
     rock ±1.4° every 32 m (0x42c440, coupling 0x45bd1f); DF2's veh0 eases its
     steer by at most 0.18° a tick (0x41efa1) and thinks every 0x20 ticks on
-    a path, 0x40 off it (GOG 0x4237c0). The BRDM (item 102023, graphic
+    a path, 0x40 off it (GOG 0x4237c0); a destroyed one stops dead where it
+    blew up (the move 0x423ac0 runs only while +0x64 & 4 is clear, the
+    think 0x423865 zeroes +0x9C and +0x3C..+0x50). The BRDM (item 102023, graphic
     number 0x7e7) has a turret gun (GOG 0x423a1e; none with AI flag 1):
     each think it takes a target through the soldiers' scan (0x417830) drawn
     against rand, with a pause of 32..95 and a yaw bias scaled by

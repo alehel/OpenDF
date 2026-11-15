@@ -178,6 +178,16 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
             v.think = std::abs(v.speed) > 0 ? 0x40 : 0x10;
         }
     }
+    if (world.df2Rules && v.kind == Kind::Veh0 && v.dead) {
+        // DF2's veh0 move (GOG Df2.exe 0x423ac0) runs only while flags & 4
+        // is clear: a destroyed one stops where it blew up (no steer, step,
+        // ramp or ground follow); the think (0x423865) has zeroed the turn
+        // +0x9C and the velocity block +0x3C..+0x50.
+        v.speed = 0;
+        o.tickVel = {0, 0, 0};
+        o.tickTurn = 0;
+        return;
+    }
     // veh0 move (0x480689): steer = heading error / 8; turn (π/4)/L·v·sin
     // steer; forward v·cos steer; a lateral term (L/2)·SIN[turn per tick
     // in 1/2048 turns] along DF's (sin yaw, cos yaw), only for indices >= 0
