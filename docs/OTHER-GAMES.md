@@ -127,7 +127,9 @@ First differences from DF1:
     horizon row taking entry (k·s) >> 16 with s = 10·fov·horizon/width per
     row (0x467700); **surfaces** only from the `char_data` .CAL (DT/GS/SW/
     RK/CT/SD → dirt/grass/snow/rock/sand, RD/MD/IE/QS → classes 8-11, GOG
-    0x470190; the TRN `type` lines are ignored,
+    0x470190; table[i] is CAL line i+1, blank and `/` lines counted, only
+    lines of exactly two tokens and numbers 1..256 stored, 0x46ac50 /
+    0x4705d0; the TRN `type` lines are ignored,
     0x465e5b), read through DF2.EXE's renumbering bug, class(o) =
     cal[remap[remap[o]]] (0x4643a0, 0x466668), copied as the player hears it;
     no .CAL or unmatched names: class 0, silent footsteps (0x4139ae; ±5 m AI
