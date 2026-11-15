@@ -53,6 +53,7 @@ approximation), **todo** = not checked yet.
 | M5 | Soldier marks | fixed | GPS option (default 1, "gpsicon") draws soldiers whose record +0x4C is set as soldier markers in side colour (red enemies, blue friendlies), an X once dead, culled to the map window (0x43d445, 0x43e434). The flag never changes at run time; footage at 173 s shows live and dead enemies this way. OpenDF shows more at once only because soldiers do not move or die yet (no AI) |
 | M6 | Compass rose | fixed | (560,315), arms 40, star with inner points 5; N white, E S W green, outlined (0x43dec0); was invented |; E S W in [0x66f94c], the lines' colour (0x43e0f2..0x43e13e), N in [0x66f930]
 | M7 | Map scale and zoom | fixed | default scale 1 = 0.625 px/m at 640 (was 0.75), zoom ×0.9 / ×1.1 within 0.25..3.6 (0x42ddbf) |
+| M9 | Controls while the map is open | fixed | the map flag [0x67db80] is read only by the frame 0x404640 (which frame is drawn, 0x48f9b0), the Escape / BigMap keys in 0x477d40 and mission init 0x429740: the soldier keeps running, turning and firing on the held keys with the map up (was: input zeroed, turning and trigger blocked). Mouse look stays off while it is up (OpenDF). DF2's command map still takes the controls |
 
 ## Panels
 
