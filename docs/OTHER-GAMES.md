@@ -191,8 +191,12 @@ First differences from DF1:
     stops it; OpenDF has no DF2 loadout yet, so nobody wears one;
   - **wind**: fixed for the mission from the BMS header (+0xE8 kph, +0xEC
     degrees it blows from; DF2.EXE 0x45d3f8), shown as `Wind: SW, 3kph` /
-    `Wind: None`. The `sp_wind` option (default/none/random) only applies in
-    multiplayer. Its physical effect, DF2's projectile drag toward the wind
+    `Wind: None`. In single player the `sp_wind` option picks it (GOG
+    Df2.exe 0x466ba0, CD 0x45d1c0): default the mission's, none 0 kph,
+    random 0x4763e0 with the first two draws of 0x41ea20 after its
+    0x10101010 seed, always 12 degrees / 18 kph (`Wind: N, 18kph`), its
+    drift vector the reverse of what the mission wind would give for that
+    direction (no half turn before the sin/cos). Its physical effect, DF2's projectile drag toward the wind
     velocity (0x44c2f0, per-ammo drag bands; DF1 has no drag), is in
     (`Arsenal::df2Drag`).
   - **heights** (DF2.EXE 0x464c30, 0x464798): the elevation PCX smoothed
