@@ -181,7 +181,7 @@ private:
     float textWidth(MenuFont& f, const std::string& s);
     // Text with {C:Name} colour codes; align 0 left, 1 centre, 2 right.
     void drawText(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align = 0);
-    // Word wrap (~0x409260): words at spaces, "~" a line break, "{...}"
+    // Word wrap (~0x409260, GOG 0x410050): words at spaces, a word starting with "~" a line break, "{...}"
     // link tags dropped; returns the number of lines.
     int drawWrapped(const std::string& fontName, float x, float y, float w, float h, const std::string& s, uint32_t color,
                     int startLine = 0);
@@ -653,12 +653,14 @@ int Frontend::drawWrapped(const std::string& fontName, float x, float y, float w
             word = e == std::string::npos ? std::string() : word.substr(e + 1);
             if (word.empty()) continue;
         }
-        if (word == "~") { newline(); continue; }
-        const float ww = textWidth(f, word + " ");
-        if (cx + ww > x + w && cx > x) newline();
+        // GOG 0x410050: a token starting with '~' breaks the line (not drawn);
+        // the word alone is tested against the right edge, the word and its
+        // space advance.
+        if (word[0] == '~') { newline(); continue; }
+        if (cx + textWidth(f, word) > x + w && cx > x) newline();
         if (cy + lh > y + h) break;
         if (line >= startLine) drawText(fontName, cx, cy, word, color);
-        cx += ww;
+        cx += textWidth(f, word + " ");
     }
     return line + 1;
 }
@@ -842,10 +844,11 @@ void Frontend::enter(Screen s) {
             if (!t.empty()) tokens.push_back(t);
             float x = 348;
             for (size_t i = 0; i < tokens.size(); ++i) {
-                if (i > 0 && tokens[i] == "~") { ++briefTotal_; continue; }
-                const float w = textWidth(f, tokens[i] + " ");
-                if (i > 0 && x + w > 558) { ++briefTotal_; x = 348; }
-                x += w;
+                // GOG 0x425a10: '~' as the first character; the word alone is
+                // tested, the word and its space advance.
+                if (i > 0 && tokens[i][0] == '~') { ++briefTotal_; continue; }
+                if (i > 0 && x + textWidth(f, tokens[i]) > 558) { ++briefTotal_; x = 348; }
+                x += textWidth(f, tokens[i] + " ");
             }
             if (MnuButton* sl = mnu_.button("but_mi_sl")) {
                 sl->sliderSize = briefTotal_ >= briefVisible_ ? briefTotal_ - briefVisible_ + 1 : 0;
@@ -1237,10 +1240,14 @@ void Frontend::drawBriefingText(const MnuButton& b) {
         ++lineNo;
     };
     for (size_t i = 0; i < tokens.size(); ++i) {
-        if (i == 0) { put(i, true); continue; }   // the first token is drawn untested (as DF.EXE)
-        if (tokens[i] == "~") { newline(); }
+        // The first token is drawn without a wrap test, and only at scroll
+        // line 0 (GOG 0x425610: 0x425470(..., scroll < 1)).
+        if (i == 0) { put(i, briefLine_ < 1); continue; }
+        // A token starting with '~' breaks the line; a word wraps when the
+        // word alone (its space not counted) passes the right edge.
+        if (tokens[i][0] == '~') { newline(); }
         else {
-            if (x + textWidth(f, tokens[i] + " ") > right) newline();
+            if (x + textWidth(f, tokens[i]) > right) newline();
             if (y + fh > bottom) break;
             put(i, lineNo >= briefLine_);
             continue;
