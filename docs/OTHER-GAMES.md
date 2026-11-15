@@ -501,8 +501,15 @@ First differences from DF1:
     regions, the 28 missions with the header +0x7C unlock rule, done marks,
     titles under the dots, CABRIEF; GOG 0x434800: only this campaign's
     regions with a done or unlocked mission and only the done or unlocked
-    dots of the current region are shown, the rest hidden and unclickable), Quick Missions (D06*, TITLE, QMBRIEF,
-    pictures), Mission Briefing (MBBRIEF; the map, GOG 0x43ce90: the
+    dots of the current region are shown, the rest hidden and unclickable;
+    the shown region kept per campaign, first the first available one with
+    missions left, a complete one making the next blink every 30 ticks,
+    GOG 0x434440 / 0x434a90 / 0x434a20 / 0x43457b, with campaign 2's blink
+    word shared with the timer as in the EXE; the Main Menu resets the
+    campaign to 1, 0x43a5c9), Quick Missions (D06*, TITLE, QMBRIEF,
+    pictures), Mission Briefing (MBBRIEF at (x + 5, y + 5) in its border,
+    scrolled by but_mb_brvsl over max(0, lines - 25), GOG 0x43d000 /
+    0x43d120; the map, GOG 0x43ce90: the
     version-15 header's terrain name with .JPG for .TRN (DFS1.JPG, 256²)
     tiled 4 × 4 into 1024² (0x46c760), drawn 1:1 at (x+1, y+1) inside the
     mm_Rect border, nothing at all without the picture; the scroll is the
@@ -798,8 +805,10 @@ First differences from DF1:
     index-2 baseline mark, tight ink boxes with y offset ymin − band − 3,
     numbered across the sheet, advance w + 2 (0x469240), alpha = palette
     red / 256 (0x4616d0)); text measure 0x4694a0, layout 0x42dc7c (both from
-    the text when user1/user2 give no positive size), wrap 0x419d50 (lines
-    'A' height + 3 apart); the button text 0x43d4c0: '&' removed by the
+    the text when user1/user2 give no positive size), wrap GOG 0x41c0e0 /
+    counter 0x41bf70 (a buffer cut at its last space or after the
+    overflowing character, spaces after a break skipped, no '~'; lines 'A'
+    height + 4 apart, the CD's 0x419d50 + 3); the button text 0x43d4c0: '&' removed by the
     set-text routine 0x42d7b0 with the key letter underlined by '_' one
     pixel lower (0x419fd0 left, 0x41a1f0 right-aligned to the box's left,
     0x41a0d0 centred at y + (h − 'A' height)/4), the plain box 0x469380
@@ -808,7 +817,12 @@ First differences from DF1:
     an image-less push button centred on x, the two stale justify locals,
     other types' box (x, y)−(x + w, y + 'A' height) without underline,
     owner draw after the default draw; character hot keys (0x42de50) and
-    hotkey1/2 (0x42dea0); the command map's scroll bars (creator 0x40c3f0
+    hotkey1/2 (GOG 0x432c50: the Windows virtual key, 13 Enter / 27 Escape
+    in GOG's DF2.MNU; CD 0x42dea0: DirectInput scancodes, 1 Escape); the
+    menu cursor CUR_TARG.TGA with hot spot (12, 12) (GOG 0x434000,
+    0x4436a0); Choose Soldier's and Main's connector lines (0x436720,
+    0x43a780; Main's help and line cleared when the hover ends, 0x43a700);
+    the command map's scroll bars (creator 0x40c3f0
     arrow placement, 0x40c7d0 outline and thumb, 0x40c710 zones, 0x40c8c0
     arrows, pages and thumb drag on the widget pass 0x40c040's hold
     counter); the prompt's Escape (table 0x41d6ac / 0x41d698 → 0x41d669);
