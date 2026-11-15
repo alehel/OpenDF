@@ -722,6 +722,7 @@ private:
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
     void drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawDf2Waypoints(const Screen& s, const Mat4& view, const Mat4& proj);
     // Delta Force 2's name of an object (+0x54): the mission record +4 as
     // DF2WPN.BIN PeopleNames STRNAME%03i, at most 15 characters (GOG
     // Df2.exe 0x403790); people only (+0xc, their AI record, is set).
@@ -6090,6 +6091,32 @@ void Game::drawDf1TargetId(const Screen& s, float cx, float cy, float r) {
     if (name && !name->empty()) hud_.text(cx - hud_.textWidth(*name, s.text()) / 2, nameY, *name, kHudRed, s.text());
 }
 
+void Game::drawDf2Waypoints(const Screen& s, const Mat4& view, const Mat4& proj) {
+    // GOG Df2.exe 0x465f90 -> 0x450070, after the frame: each of the 128
+    // placed waypoints (0xd74ce0, stride 0x114) with an item, a radar shape
+    // and a name, projected by the view camera 0xc3105c (0x4301c0) at its
+    // ground height (0x44c5b0 -> 0x46e950); when the depth is at least the
+    // near plane [0xc30fc8]: a 0xff00ff00 line (0x457090) from the point up
+    // focal / depth pixels (1 m), and the name centred (0x4577f0 mode 2)
+    // 15 pixels above its top, in green. No depth test.
+    const Vec3 eye = viewEye();
+    const float focal = proj.at(1, 1) * s.playH * 0.5f;   // window pixels
+    hud_.begin(int(s.w), int(s.h));
+    for (const auto& w : df2Wps_) {
+        if (!w.used || w.name.empty()) continue;
+        const Vec3 at = world_.nearest(Vec3{float(w.x), w.z, float(-w.y)}, eye);
+        const float vx = view.at(0, 0) * at.x + view.at(0, 1) * at.y + view.at(0, 2) * at.z + view.at(0, 3);
+        const float vy = view.at(1, 0) * at.x + view.at(1, 1) * at.y + view.at(1, 2) * at.z + view.at(1, 3);
+        const float depth = -(view.at(2, 0) * at.x + view.at(2, 1) * at.y + view.at(2, 2) * at.z + view.at(2, 3));
+        if (depth < 0.1f) continue;
+        const float px = s.w * 0.5f + vx * focal / depth, py = s.playY + s.playH * 0.5f - vy * focal / depth;
+        const float len = focal / depth, t = std::max(1.f, s.art());
+        hud_.rect(px, py - len, t, len, kHudPureGreen);
+        hud_.text(px - hud_.textWidth(w.name, s.text()) / 2, py - len - 15.f * s.art(), w.name, kHudPureGreen, s.text());
+    }
+    hud_.end();
+}
+
 void Game::drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj) {
     // GOG Df2.exe 0x465f90 -> 0x44fe70 -> 0x44fee0: unless attributes &
     // 0x400, every person this frame draws (the list 0x780d40 of 0x4501b0:
@@ -7028,6 +7055,8 @@ int Game::run() {
                     // which skips the night vision) or the picture-in-picture
                     // (0x4559d0), then the night vision (0x450550) only with
                     // the player's own camera ([0xbf2b40] == 0).
+                    glViewport(0, 0, dw, dh);
+                    drawDf2Waypoints(s, view, proj);
                     drawZoomInset(s, view, fovY);
                     drawCameraInset(s);
                     glViewport(0, 0, dw, dh);

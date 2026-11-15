@@ -609,7 +609,10 @@ First differences from DF1:
     ground point, selects it and opens the "Type in a name" prompt (16
     chars, the darkened box 0x4422b0); held left drags waypoints, mission
     ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show on the map and the HUD radar as
-    green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
+    green diamonds, the HUD waypoint blinking, and in the 3D view as a green
+    1 m post at their ground point with the name centred 15 pixels above,
+    no depth test (GOG 0x465f90 -> 0x450070, after the frame, before the
+    scope view and the night vision). "Set as my Waypoint"
     (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
     list; W returns to the list at entry 1, 0x446700; a deleted one shows NO
     WAYPOINT). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
