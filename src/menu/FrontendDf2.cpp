@@ -556,7 +556,22 @@ private:
     std::string editing_;   // button being edited (soldier name)
     std::string editText_, editBefore_;
 
-    int campaign_ = 1, region_ = -1, missionSel_ = -1;
+    int campaign_ = 1, missionSel_ = -1;   // missionSel_: [0x4c3f70]
+    // GOG Df2.exe 0x4c3f74..0x4c3f84 (static data -1, -1, -1, -1, 0): the
+    // region shown per campaign at 0x4c3f74 + c·4 and the region that
+    // blinks at 0x4c3f7c + c·4, c = 1 / 2; the blink timer 0x4c3f84 is the
+    // same word as campaign 2's blink region (so campaign 2's blink only
+    // ever toggles region 0, a campaign 1 button).
+    std::array<int, 5> campMem_{{-1, -1, -1, -1, 0}};
+    int& campRegion(int c) { return campMem_[size_t(c)]; }
+    int& campBlink(int c) { return campMem_[size_t(c) + 2]; }
+    int& campTimer() { return campMem_[4]; }
+    struct RegionStats { bool avail = false; int total = 0, complete = 0; };
+    RegionStats regionStats(int r);
+    int nextRegion(int c);
+    void blinkNext(int c);
+    void campaignInit();
+    void campaignTick();
     bool fromCampaign_ = true;
     std::vector<std::string> quick_;   // quick missions (D06*)
     int quickTop_ = 0, quickSel_ = -1;
@@ -1049,11 +1064,12 @@ void FrontendDf2::enter(Screen s) {
     case Screen::Soldier: refreshSoldier(); break;
     case Screen::Main:
         mmHover_.clear();   // 0x43a5ae
+        soldier().set(0x28, 1);   // 0x43a5c9: the Campaign page opens on campaign 1
         // NovaWorld, Multiplayer and Update are not in OpenDF.
         for (const char* n : {"but_mm_qmb", "but_mm_nwb", "but_mm_upd"})
             if (D2Button* b = btn(n)) b->drawstate = 4;
         break;
-    case Screen::Campaign: refreshCampaign(); break;
+    case Screen::Campaign: campaignInit(); break;
     case Screen::Quick: refreshQuick(); break;
     case Screen::Briefing: loadBriefing(); break;
     case Screen::Gear: refreshGear(); break;
@@ -1547,12 +1563,13 @@ void FrontendDf2::ownerDraw(D2Button& b) {
         wrapped(b.font, float(b.x), float(b.y), float(b.user1), float(b.user2), b.text,
                 b.drawstate == 4 ? df.fg[2] : b.drawstate == 2 ? df.fg[1] : df.fg[0]);
     } else if (cb == "ca_DrawRegion") {
-        if (region_ >= 0) {
-            const HudImage im = image(kRegionImage[region_]);
+        const int region = campRegion(campaign_);
+        if (region >= 0 && region < 5) {
+            const HudImage im = image(kRegionImage[region]);
             blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height));
             // Titles of the available missions under their dots (LCD10N; LCD10S selected).
             for (int i = 0; i < 28; ++i) {
-                if (kMissions[i].region != region_ || !missionOpen(i)) continue;
+                if (kMissions[i].region != region || kMissions[i].campaign != campaign_ || !missionOpen(i)) continue;
                 char name[16];
                 std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
                 const D2Button* dot = btn(name);
@@ -1686,6 +1703,68 @@ void FrontendDf2::refreshSoldier() {
     if (D2Button* b = btn("but_cs_apimg")) b->image = img;
 }
 
+// GOG Df2.exe 0x434670: a region is available when one of its missions is
+// completed or unlocked; total and completed missions.
+FrontendDf2::RegionStats FrontendDf2::regionStats(int r) {
+    RegionStats st;
+    for (int i = 0; i < 28; ++i) {
+        if (kMissions[i].region != r) continue;
+        ++st.total;
+        if (soldier().get(0x30 + 4 * size_t(i))) ++st.complete;
+        if (missionOpen(i)) st.avail = true;
+    }
+    return st;
+}
+
+// 0x434a90 / 0x434a20's search: the first available region of campaign c
+// with missions left, else -1.
+int FrontendDf2::nextRegion(int c) {
+    for (int r = 0; r < 5; ++r) {
+        const RegionStats st = regionStats(r);
+        if (st.avail && (r < 3 ? 1 : 2) == c && st.total > st.complete) return r;
+    }
+    return -1;
+}
+
+// GOG Df2.exe 0x434a20: the timer and the blink region cleared, then the
+// next region with missions left blinks, the timer at 30 (written in that
+// order, so for campaign 2 the shared word ends up as that region).
+void FrontendDf2::blinkNext(int c) {
+    campTimer() = 0;
+    campBlink(c) = -1;
+    if (const int r = nextRegion(c); r >= 0) { campTimer() = 30; campBlink(c) = r; }
+}
+
+// GOG Df2.exe 0x434440, the page's init: the campaign clamped to 1..2
+// (0x434670); with no region shown yet the first one with missions left
+// (0x434a90, none: still none); a shown region that is complete makes the
+// next such region blink (0x434a20: [0x4c3f84] = 30); a completed selected
+// mission is deselected (0x4344cb); then the buttons (0x434800).
+void FrontendDf2::campaignInit() {
+    if (soldier().get(0x28) < 1 || soldier().get(0x28) > 2) soldier().set(0x28, 1);
+    const int c = soldier().get(0x28);
+    if (campRegion(c) == -1) {
+        briefStarted_ = false;   // [0x4f39d0]
+        if (const int r = nextRegion(c); r >= 0) campRegion(c) = r;
+    } else if (campRegion(c) >= 0 && campRegion(c) < 5) {
+        const RegionStats st = regionStats(campRegion(c));
+        if (st.total == st.complete) blinkNext(c);
+    }
+    if (missionSel_ >= 0 && missionSel_ < 28 && soldier().get(0x30 + 4 * size_t(missionSel_))) missionSel_ = -1;
+    refreshCampaign();
+}
+
+// The page's tick (GOG Df2.exe 0x43457b): the timer counts down; at 0 the
+// blink region's button flips its selected flag and the timer restarts at 30.
+void FrontendDf2::campaignTick() {
+    if (campTimer() > 0) { --campTimer(); return; }
+    const int r = campBlink(soldier().get(0x28) == 2 ? 2 : 1);
+    if (r < 0 || r >= 5) return;
+    static const char* const kRegionBtn[5] = {"but_ca_anbtn", "but_ca_ugbtn", "but_ca_gabtn", "but_ca_chbtn", "but_ca_kabtn"};
+    if (D2Button* b = btn(kRegionBtn[r])) b->selected = !b->selected;
+    campTimer() = 30;
+}
+
 void FrontendDf2::refreshCampaign() {
     campaign_ = std::clamp(soldier().get(0x28), 1, 2);
     for (int c = 1; c <= 2; ++c) {
@@ -1696,33 +1775,24 @@ void FrontendDf2::refreshCampaign() {
         }
     }
     const char* regionBtn[5] = {"but_ca_anbtn", "but_ca_ugbtn", "but_ca_gabtn", "but_ca_chbtn", "but_ca_kabtn"};
-    int firstOpen = -1;
+    const int region = campRegion(campaign_);
+    // GOG Df2.exe 0x434670: a region's button picture is its "B" one when all
+    // its missions are completed.
     for (int r = 0; r < 5; ++r) {
-        bool all = true, any = false;
-        for (int i = 0; i < 28; ++i)
-            if (kMissions[i].region == r) {
-                any = true;
-                if (!soldier().get(0x30 + 4 * size_t(i))) all = false;
-            }
-        const bool mine = (r < 3 ? 1 : 2) == campaign_;
-        if (D2Button* b = btn(regionBtn[r])) b->image = std::string(kRegionButton[r]) + (all && any ? "B" : "");
-        if (mine && !all && firstOpen < 0) firstOpen = r;
+        const RegionStats st = regionStats(r);
+        if (D2Button* b = btn(regionBtn[r])) b->image = std::string(kRegionButton[r]) + (st.total == st.complete ? "B" : "");
     }
-    if (region_ < 0 || (region_ < 3 ? 1 : 2) != campaign_) region_ = firstOpen >= 0 ? firstOpen : (campaign_ == 1 ? 0 : 3);
     // GOG Df2.exe 0x434800 (CD 0x42fa30): every region and mission button
     // starts at drawstate 0, unselected. A region of this campaign is selected
-    // when it is the current one and drawn only when available (0x434670: one
-    // of its missions completed or unlocked); a mission dot is drawn only when
-    // available and in this campaign's current region. Drawstate 0 is neither
-    // drawn nor clickable.
+    // when it is the one shown (no region shown: no picture, no dots) and
+    // drawn only when available; a mission dot is drawn only when available
+    // and in this campaign's shown region. Drawstate 0 is neither drawn nor
+    // clickable.
     for (int r = 0; r < 5; ++r) {
         const bool mine = (r < 3 ? 1 : 2) == campaign_;
-        bool open = false;
-        for (int i = 0; i < 28; ++i)
-            if (kMissions[i].region == r && missionOpen(i)) open = true;
         if (D2Button* b = btn(regionBtn[r])) {
-            b->drawstate = mine && open ? 1 : 0;
-            b->selected = mine && r == region_;
+            b->drawstate = mine && regionStats(r).avail ? 1 : 0;
+            b->selected = mine && r == region;
             layout(*b);
         }
     }
@@ -1730,7 +1800,7 @@ void FrontendDf2::refreshCampaign() {
         char name[16];
         std::snprintf(name, sizeof name, "but_ca_%c%c%c%c", kMissions[i].bms[1], kMissions[i].bms[2], kMissions[i].bms[4], kMissions[i].bms[5]);
         if (D2Button* b = btn(name)) {
-            const bool shown = missionOpen(i) && kMissions[i].campaign == campaign_ && kMissions[i].region == region_;
+            const bool shown = missionOpen(i) && kMissions[i].campaign == campaign_ && kMissions[i].region == region;
             b->drawstate = shown ? 1 : 0;
             b->image = soldier().get(0x30 + 4 * size_t(i)) ? "IMAGEBTN37" : "IMAGEBTN36";
             b->selected = shown && i == missionSel_;
@@ -1985,18 +2055,48 @@ void FrontendDf2::event(D2Button& b, int ev) {
     }
     // Campaign.
     else if (cb == "ca_ChooseCampaign") {
-        soldier().set(0x28, b.user2);
-        region_ = -1;
-        missionSel_ = -1;
-        refreshCampaign();
+        // GOG Df2.exe 0x434d10: another campaign only; the selection cleared,
+        // its region (none yet: the first with missions left, 0x434a90; a
+        // complete one: the next blinks, 0x434a20).
+        if (b.user2 != soldier().get(0x28)) {
+            missionSel_ = -1;
+            soldier().set(0x28, b.user2);
+            const int c = b.user2;
+            if (c >= 1 && c <= 2) {
+                if (campRegion(c) == -1) {
+                    if (const int r = nextRegion(c); r >= 0) campRegion(c) = r;
+                } else if (campRegion(c) >= 0 && campRegion(c) < 5) {
+                    const RegionStats st = regionStats(campRegion(c));
+                    if (st.total == st.complete) blinkNext(c);
+                }
+            }
+            refreshCampaign();
+        }
     } else if (cb == "ca_ChooseRegion") {
-        region_ = b.user2;
-        missionSel_ = -1;
-        refreshCampaign();
+        // GOG Df2.exe 0x434c80: another region only; the selection cleared;
+        // choosing the blinking region stops the blink, a complete one makes
+        // the next blink (0x434a20).
+        const int c = soldier().get(0x28) == 2 ? 2 : 1;
+        if (campRegion(c) != b.user2) {
+            missionSel_ = -1;
+            campRegion(c) = b.user2;
+            if (campRegion(c) == campBlink(c)) {
+                campBlink(c) = -1;
+                campTimer() = 0;
+            } else if (campRegion(c) >= 0 && campRegion(c) < 5) {
+                const RegionStats st = regionStats(campRegion(c));
+                if (st.total == st.complete) blinkNext(c);
+            }
+            refreshCampaign();
+        }
     } else if (cb == "ca_ChooseMission") {
-        if (b.user2 != missionSel_) briefStarted_ = false;   // 0x42fea0: another mission, its voices play again
-        missionSel_ = b.user2;
-        refreshCampaign();
+        // GOG Df2.exe 0x434c50: another mission only ([0x4f39d0] = 0: its
+        // voices play again).
+        if (b.user2 != missionSel_) {
+            missionSel_ = b.user2;
+            briefStarted_ = false;
+            refreshCampaign();
+        }
     } else if (cb == "ca_MissionBriefing" && missionSel_ >= 0) {
         bms_ = kMissions[missionSel_].bms;
         fromCampaign_ = true;
@@ -2559,7 +2659,7 @@ int FrontendDf2::run() {
                     D2Button& b = mnu_.buttons[size_t(i)];
                     if (b.flash > 0) --b.flash;
                 }
-            // The next incomplete region blinks while none is chosen (0x42fc50).
+            if (screen_ == Screen::Campaign) campaignTick();   // GOG 0x43457b
             if (screen_ == Screen::Briefing) { mapTick(); voiceTick(); }   // GOG 0x43ca20 (CD 0x437820), the page's tick
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             music_.update();
