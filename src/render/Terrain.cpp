@@ -394,9 +394,9 @@ Terrain::~Terrain() { release(); }
 
 void Terrain::release() {
     GLuint texs[] = {texDisplayLut_, texColor_, texColorFar_, texElevation_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
-                     texWaterGrad_, texScene_, texRadar_, texSkyGrad_, texDepth_};
+                     texWaterGrad_, texScene_, texRadar_, texSkyGrad_, texDepth_, texMap_};
     for (GLuint t : texs) if (t) glDeleteTextures(1, &t);
-    texRadar_ = texDisplayLut_ = texElevation_ = 0;
+    texRadar_ = texDisplayLut_ = texElevation_ = texMap_ = 0;
     texColor_ = texColorFar_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
     texWaterGrad_ = texScene_ = texSkyGrad_ = texDepth_ = 0;
     sceneW_ = sceneH_ = depthW_ = depthH_ = 0;
@@ -862,6 +862,7 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     // Water (DF.EXE 0x431b3e, 0x431d04): none if water_height is 0 or the
     // palette is missing; the gradient T from water palette entries 0..15.
     IndexedImage water, waterPal;
+    std::vector<uint8_t> df1WaterGrad;   // Delta Force: the water ramp, for the map picture
     hasWater_ = false;
     if (gen2_ && desc_.waterHeight != 0) {
         // Delta Force 2 (DF2.EXE 0x465390..0x4667d0): water_map is a 256-wide
@@ -915,6 +916,31 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         texWaterGrad_ = makeTex2D(256, 1, GL_RGB8, GL_RGB, grad.data(), false, false);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         hasWater_ = true;
+        df1WaterGrad.swap(grad);
+    }
+
+    if (!gen2_) {
+        // Delta Force's command map and GPS inset picture (GOG Df.exe
+        // 0x48e070): the colour map point-sampled (each pixel the nearest
+        // texel, no filtering). With water ([0xbd5248] != 0) a cell whose
+        // elevation byte is at or below min(255, level >> 14) is drawn
+        // through the water clut [0xbf67f8] (0x47d080) by its colour's
+        // luminance (VoxPal_32 byte 3, (R + 2G + B) >> 2 after the df.cfg
+        // table): row 0 of the clut, the water ramp at
+        // (0x10000 - opacity) * lum >> 16.
+        std::vector<uint8_t> rgb = toRgb(color, gradedPalette(color.palette));
+        if (!df1WaterGrad.empty() && desc_.waterHeight != 0) {
+            const int level = std::min(255, int(desc_.waterHeight));
+            const int keep = 0x10000 - int(desc_.waterOpacity * 65536.f);
+            for (size_t i = 0; i < color.pixels.size(); ++i) {
+                if (elev.pixels[i] > level) continue;
+                const uint8_t* c = &rgb[i * 3];
+                const int lum = (display[size_t(c[0]) * 3] + 2 * display[size_t(c[1]) * 3 + 1] + display[size_t(c[2]) * 3 + 2]) >> 2;
+                const size_t k = size_t(std::clamp((keep * lum) >> 16, 0, 255)) * 3;
+                std::copy(&df1WaterGrad[k], &df1WaterGrad[k] + 3, &rgb[i * 3]);
+            }
+        }
+        texMap_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, rgb.data(), false, false);
     }
 
     if (gen2_ && !colorRgb_.empty()) {
