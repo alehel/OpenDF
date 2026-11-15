@@ -359,7 +359,9 @@ private:
             // GOG Df2.exe 0x4261e0's decorations loop: an item with S&D
             // (attrib 0x1000) is skipped once destroyed (+0x64 & 4).
             if (mo.group == 1 && w && w->item && (w->item->attrib & 0x1000) && !w->alive()) continue;
-            const int shape = w ? w->radarShape : int(int8_t(mo.raw[19] & 0xFF));
+            int shape = w ? w->radarShape : int(int8_t(mo.raw[19] & 0xFF));
+            if (!w && !shape)
+                if (const auto it = df2DefaultShape_.find(i); it != df2DefaultShape_.end()) shape = it->second;   // 0x467430
             if (!shape) continue;
             f(Df2Shape{&mo, w, shape, int(int8_t((uint32_t(mo.raw[16]) >> 24) & 0xFF))});
         }
@@ -933,6 +935,7 @@ private:
     // mission record index.
     void df2DefaultLabels();
     std::map<size_t, std::string> df2Labels_;
+    std::map<size_t, int> df2DefaultShape_;   // 0x467430's shape for a record with no world object
     bool df2SelOnPlayerTeam(Df2Sel s) const;
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
@@ -6802,27 +6805,42 @@ std::string Game::df2RecordName(size_t index) const {
 }
 
 // GOG Df2.exe 0x467430 (0x466ba0, mission load; not in the CD build): over
-// the item list (mission group 0, objects with an item), by item id (+0x20)
-// unless the item is S&D (attrib 0x1000): 0x1028 STROVER68, 0x1029
-// STROVER67, 0xfc3 STROVER19, 0xfc4 STROVER20, 0xfcb STROVER21, 0xfcc
-// STROVER22, 0x1020 STROVER60; 0xc1b / 0xc24 (the armories) STROVER66 and
-// radar shape 6 when it is 0; 0x178a..0x178c STROVER23..25, 0x17cc
-// STROVER69, 0x17cd STROVER70, each with shape 3 when 0. An S&D item gets
-// shape 6 (a building, item kind 5) or 4 when 0, and STROVER71 on side 1,
-// STROVER72 on side 2. The text is copied into the name +0x54 whole; the
-// shape is +0x6E. OpenDF keeps the command-map flag (mapMarker) in step.
+// 0xe00 records of 0x114 bytes from items[0] (0xc834e0, +0x54 at 0xc83534),
+// that is the items (0x400), spawned (0x400), decorations (0x400) and
+// markers (0x200) tables as 0x403e20 lays them out; only organics (group 3)
+// are left out. Each placed record with an item, by item id (+0x20) unless
+// the item is S&D (attrib 0x1000): 0x1028 STROVER68, 0x1029 STROVER67,
+// 0xfc3 STROVER19, 0xfc4 STROVER20, 0xfcb STROVER21, 0xfcc STROVER22,
+// 0x1020 STROVER60; 0xc1b / 0xc24 (the armories) STROVER66 and radar shape
+// 6 when it is 0; 0x178a..0x178c STROVER23..25, 0x17cc STROVER69, 0x17cd
+// STROVER70, each with shape 3 when 0. An S&D item gets shape 6 (a
+// building, item kind 5) or 4 when 0, and STROVER71 on side 1, STROVER72
+// on side 2. The text is copied into the name +0x54 whole; the shape is
+// +0x6E. Driven by the mission records, so a record with no world object
+// (a marker item without a model) gets its label and default shape too
+// (df2DefaultShape_, read by forDf2Shapes); a live object takes the shape
+// and the command-map flag (mapMarker).
 void Game::df2DefaultLabels() {
     df2Labels_.clear();
+    df2DefaultShape_.clear();
     if (!arsenal_.df2Gog()) return;
-    for (WorldObject& o : world_.objects) {
-        if (!o.item || o.missionGroup != 0 || o.missionIndex < 0 || o.removed) continue;
+    std::vector<WorldObject*> live(mission_.objects.size(), nullptr);
+    for (WorldObject& o : world_.objects)
+        if (o.missionIndex >= 0 && size_t(o.missionIndex) < live.size() && !o.removed) live[size_t(o.missionIndex)] = &o;
+    for (size_t i = 0; i < mission_.objects.size(); ++i) {
+        const MissionObject& mo = mission_.objects[i];
+        if (mo.group < 0 || mo.group > 2 || mo.omitted) continue;
+        WorldObject* w = live[i];
+        const ItemDef* item = w && w->item ? w->item : items_.byMissionType(mo.type);
+        if (!item) continue;
+        const int side = w ? w->side : int(int8_t((uint32_t(mo.raw[16]) >> 24) & 0xFF));
         const char* key = nullptr;
         int shape = 0;   // the default shape, 0 none
-        if (o.item->attrib & 0x1000) {
-            shape = o.item->type == "building" ? 6 : 4;
-            key = o.side == 1 ? "STROVER71" : o.side == 2 ? "STROVER72" : nullptr;
+        if (item->attrib & 0x1000) {
+            shape = item->type == "building" ? 6 : 4;
+            key = side == 1 ? "STROVER71" : side == 2 ? "STROVER72" : nullptr;
         } else {
-            switch (o.item->id - 100000) {
+            switch (item->id - 100000) {
             case 0x1028: key = "STROVER68"; break;
             case 0x1029: key = "STROVER67"; break;
             case 0xfc3: key = "STROVER19"; break;
@@ -6839,13 +6857,17 @@ void Game::df2DefaultLabels() {
             default: break;
             }
         }
-        if (shape && o.radarShape == 0) {
-            o.radarShape = shape;
-            o.mapMarker = true;
+        if (shape) {
+            if (w && w->radarShape == 0) {
+                w->radarShape = shape;
+                w->mapMarker = true;
+            } else if (!w && int8_t(mo.raw[19] & 0xFF) == 0) {
+                df2DefaultShape_[i] = shape;
+            }
         }
         if (key) {
             const std::string* t = gameTable_.find("Overlays", key);
-            df2Labels_[size_t(o.missionIndex)] = t ? *t : std::string();
+            df2Labels_[i] = t ? *t : std::string();
         }
     }
 }

@@ -1215,10 +1215,11 @@ First differences from DF1:
     (0x43c280 -> [0x67cdac] -> 0x44eeb0) and goes back after every run
     (0x43c6f0); the loading screen (0x465ed0: df2_wait.pcx, then the
     Loading Text lines STRLTEXT1, 4..9 in f_sml and 0xff8000 at (50, 150 +
-    20 k) of 1024 x 768) on a fresh start, none on the Space replay. Still
-    open: the default labels and radar shapes of 0x467430 (STROVER19..72;
-    items found only in multiplayer missions) and their names beside the
-    blips (0x4273b0 with Names on);
+    20 k) of 1024 x 768) on a fresh start, none on the Space replay; the
+    default labels and radar shapes of 0x467430 (STROVER19..72, GOG only)
+    over every placed record of the items, decorations and markers tables
+    (0xe00 records from 0xc834e0), with or without a world object, and
+    their names beside the blips (0x4273b0 with Names on);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key
