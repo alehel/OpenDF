@@ -7985,6 +7985,7 @@ int Game::run() {
     if (vfs_.read("DFMENU.BIN", raw)) menuText_.parse(raw);
     if (vfs_.read("DF2WPN.BIN", raw)) wpnText_.parse(raw);
     if (vfs_.read(gameBin, raw)) gameTable_.parse(raw);
+    if (vfs_.exists("DFGAME.BIN")) items_.setDisplayNames(gameTable_);   // GOG Df.exe 0x401490 -> 0x482960
     {
         // The player soldier (ITEMS.DEF "player01") names its move table.
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);

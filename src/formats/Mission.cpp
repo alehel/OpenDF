@@ -1,6 +1,9 @@
 #include "Mission.h"
 
+#include "Rtxt.h"
+
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -49,6 +52,7 @@ bool ItemDefs::parse(const std::string& text) {
         if (!open) continue;
         if (line == "end") {
             if (cur.id) {
+                cur.displayName = cur.name;
                 if (items_.empty()) firstId_ = cur.id;   // file order: the 'null' marker
                 items_[cur.id] = cur;
             }
@@ -96,6 +100,14 @@ bool ItemDefs::parse(const std::string& text) {
         }
     }
     return !items_.empty();
+}
+
+void ItemDefs::setDisplayNames(const TextTable& gameText) {
+    for (auto& [id, d] : items_) {
+        char key[32];
+        std::snprintf(key, sizeof key, "STR_ITM%04i", id - 100000);
+        if (const std::string* t = gameText.find("Item Names", key)) d.displayName = *t;
+    }
 }
 
 const ItemDef* ItemDefs::byName(const std::string& name) const {

@@ -224,6 +224,13 @@ vehicle, person, object, marker, effect), `graphic` (`.3DI`), `husk`
 (destroyed graphic), `hp A B`, `ai_function`, `move_function`, `chr_file` and
 `anim_def` (people), and vehicle handling values.
 
+After loading it DF.EXE renames every item that has a DFGAME.BIN "Item
+Names" entry `STR_ITM%04i` (id − 100000) to that text (GOG 0x401490 ->
+0x482960, CD 0x4496c0): 110 of the 306 items, e.g. hummer → "humvee",
+sandbnk3 → "bunker, sand". Nothing looks items up by name afterwards;
+OpenDF keeps the ITEMS.DEF name for its lookups and shows the new one
+(`ItemDef::displayName`).
+
 `hp A B`: A is hit points (every person has 1). B looks like a damage class:
 0 for soft things such as crates and barrels, 1 for vehicles, 2 for trees.
 OpenDF lets bullets damage class 0 only; the other classes presumably need
