@@ -114,6 +114,10 @@ struct WorldObject {
     // people: the gun manned (+0x8c, -1 none); a gun: who mans it (its
     // +0xF8, -1 nobody, -3 the player).
     int mount = -1, gunner = -1;
+    // DF2 obj+0x78: meshes already shattered (bit per mesh; GOG Df2.exe
+    // 0x414a90 breaks each once). The faces stay drawn and hit (its only
+    // other readers are the network copies 0x409610 / 0x4623d0).
+    uint32_t brokenMeshes = 0;
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
@@ -240,7 +244,9 @@ public:
     // their LOD 0 faces in the pose of their draw routine, not the boxes.
     bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true, bool rounds = false) const;
     // DF.EXE's sight line 0x45be04: <= 0 blocked, else 1 + see-through faces.
-    int sight(Vec3 a, Vec3 b, int looker, int target) const;
+    // `fog` false: no fog-distance cutoff (DF2's line of fire 0x406610,
+    // which blasts use: the terrain and 0x405e20 on decorations and items).
+    int sight(Vec3 a, Vec3 b, int looker, int target, bool fog = true) const;
 
     // The player as a target for others' rounds: body origin, heading and
     // the .CHR hit spheres of the current pose (set by the game each tick).
@@ -253,7 +259,10 @@ public:
     // People take 4 / 2 / 1 hit points within 4 / 8 / radius + 1 m, if the
     // terrain does not block the way; objects max(0, 32 - 4 d), or
     // 128 - 16 d for heavy blasts; armour is not checked.
-    std::vector<std::string> blast(Vec3 at, float radius, bool heavy);
+    // Delta Force 2 (GOG Df2.exe 0x454b60): `owner` (-1 none, -3 the
+    // player) is the victims' killer; objects (not people) on `ownerSide`
+    // are spared when there is an owner.
+    std::vector<std::string> blast(Vec3 at, float radius, bool heavy, int owner = -1, int ownerSide = 0);
     // Delta Force 2's rules (DF2.EXE): explosion damage (0x44d4a0), bullet
     // damage to objects (0x44bff0). Set by the game for DF2 missions.
     bool df2Rules = false;

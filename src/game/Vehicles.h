@@ -30,7 +30,7 @@ public:
     // at a point and heading (set by the game).
     std::function<void(Vec3 at, int shrapnel, float heading)> detonate;
     // DF2.EXE 0x415490 / 0x4572d0: the big blast (kind 5 and 200 fragments).
-    std::function<void(Vec3 at)> bigBlast;
+    std::function<void(Vec3 at, float heading)> bigBlast;
     // DF2: a positioned one-shot sound (the train horn).
     std::function<void(int id, Vec3 at)> playSound;
     // Engine / rotor loops, every frame.

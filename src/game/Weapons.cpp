@@ -839,6 +839,13 @@ void Arsenal::fire(Player& player) {
     p.pos = origin;
     p.vel = dir * (float(g.velocity) * 60.f / 62.f);
     p.lifetime = g.lifetime;
+    // GOG Df2.exe 0x451ae0 (the 0x10000000 branch, CD bit 0x1000): the
+    // delay grenade's fuse is the lifetime less (yaw >> 16) & 0x7f, the
+    // round's binary yaw (anticlockwise from east: pi/2 - OpenDF heading).
+    if (df2_ && (g.flags & 0x1000)) {
+        const uint32_t bits = uint32_t(int64_t(std::llround(double(kPi / 2 - yaw) / (2 * kPi) * 4294967296.0)));
+        p.lifetime -= int((bits >> 16) & 0x7f);
+    }
     p.power = g.power;
     p.falloff = g.falloff;
     p.flags = g.flags;
@@ -1127,9 +1134,12 @@ void Arsenal::moveProjectiles(float dt, World& world) {
         int passes = 0;
         bool resume = false;
         Vec3 resumeEnd{}, tickStart{};
-        int ignore = b.shooter;
+        // GOG Df2.exe 0x453860 (local_50): rounds with ammo flag 0x200000 (CD
+        // 0x20, the fragments) do not skip their shooter (the blast's owner).
+        const int skip = df2_ && (b.flags & 0x20) ? -1 : b.shooter;
+        int ignore = skip;
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
-            if (!resume) passes = 0, ignore = b.shooter, tickStart = b.pos;
+            if (!resume) passes = 0, ignore = skip, tickStart = b.pos;
             const Vec3 next = resume ? resumeEnd : b.pos + b.vel * kTick;
             const bool firstPass = !resume;
             const Vec3 passStart = b.pos;
@@ -1174,6 +1184,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                             im.explosive = true;
                             im.armed = !(b.age <= 8 && !(b.flags & 0x50));
                             im.flags = b.flags;
+                            im.shooter = b.shooter;
                             impacts_.push_back(im);
                             recordTracer(b, passStart, at, tickStart);
                             b.age = b.lifetime;
@@ -1181,6 +1192,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         }
                         Impact im{at, -2, -1};
                         im.flags = b.flags;
+                        im.shooter = b.shooter;
                         impacts_.push_back(im);
                         stopAt = at + u * (0x6000 / 65536.f);
                         stopped = true;
@@ -1203,6 +1215,30 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             // DF2's delay grenade (flag 0x1000, 0x44ae50): it never goes off on
             // impact; on an object's face it slides off, v -= n·(v·n)·1.07 then
             // × 0.85; on anything else it stops there.
+            // GOG Df2.exe 0x453860 case 1/2 (LAB_00453fe7): with more than 10
+            // ticks left it goes on through an intact object's 0x10000000
+            // (glass) face, shattering it, with a +-40 m noise.
+            if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object >= 0 && !world.objects[size_t(hit.object)].person &&
+                (hit.material & 0x10000000) && !world.objects[size_t(hit.object)].wrecked && b.lifetime - b.age > 10) {
+                Impact im{hit.point, hit.object, -1};
+                im.glass = true;
+                im.mesh = hit.mesh;
+                im.noise = 40.f;
+                im.flags = b.flags;
+                im.shooter = b.shooter;
+                impacts_.push_back(im);
+                const Vec3 u = normalize(next - b.pos);
+                recordTracer(b, passStart, hit.point - u * (0x2000 / 65536.f), tickStart);
+                const Vec3 from = hit.point + u * (0x4000 / 65536.f);   // 0x2000 back + 0x6000
+                if (dot(next - from, u) > 0 && ++passes < 20) {
+                    b.pos = from;
+                    resume = true;
+                    resumeEnd = next;
+                    b.tickClock += kTick;
+                    continue;
+                }
+                hitSomething = false;
+            }
             if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object != -2) {
                 const Vec3 dir = normalize(b.vel);
                 b.pos = hit.point - dir * (0x4000 / 65536.f);
@@ -1219,9 +1255,14 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 const ItemDef* it = hit.object >= 0 ? world.objects[size_t(hit.object)].item : nullptr;
                 if (it && !world.objects[size_t(hit.object)].person && it->damageClass < 0) b.vel = {0, 0, 0}, b.age = b.lifetime;
                 if (b.lifetime - b.age <= 10) {
-                    Impact im{b.pos, -1, -1};
+                    // On an object (0x453f7e) effect 0x14; on the ground or a
+                    // person (no blast there) the fuse's burst below.
+                    const bool onObject = hit.object >= 0 && !world.objects[size_t(hit.object)].person;
+                    Impact im{b.pos, onObject ? hit.object : -1, -1};
                     im.explosive = true;
                     im.flags = b.flags;
+                    im.shooter = b.shooter;
+                    im.timer = !onObject && hit.object != -1;
                     impacts_.push_back(im);
                     b.age = b.lifetime;
                 }
@@ -1238,6 +1279,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.flags = b.flags;
                 im.material = hit.material;
                 im.shooter = b.shooter;
+                im.mesh = hit.mesh;
                 impacts_.push_back(im);
                 tracer(b, im.pos);   // to the hit point (0x465273)
                 if (std::getenv("OPENDF_DEBUGHITS")) {
@@ -1308,6 +1350,17 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // whose second hp value is below 0 ('hp n -1': dish, radar,
                     // SA2, boxcars, trucks, ...) stops every round dead.
                     if (it && it->damageClass < 0) b.vel = {0, 0, 0};
+                    // GOG Df2.exe 0x453860 (0x453fe7, reached before the blast for
+                    // the LAW and impact rounds, armed or not): an intact
+                    // object's 0x10000000 (glass) face shatters (0x414a90) with a
+                    // +-40 m noise and the round flies on, no blast.
+                    if ((b.flags & 0x851) && (hit.material & 0x10000000) && !target.wrecked) {
+                        Impact& g = impacts_.back();
+                        g.explosive = false;
+                        g.glass = true;
+                        g.noise = 40.f;
+                        goesOn = !(it && it->damageClass < 0);
+                    }
                     // Penetration (0x44c2f0 -> 0x44bdd0; GOG Df2.exe 0x453860
                     // case 1/2 -> 0x4532f0): a regular round (not flags 0x1851:
                     // GOG 0x8400000 / 0x110000 / 0x10000000) on an object with
@@ -1337,7 +1390,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         else if (m & 0x80000) cost = 10, noise = 3.f;
                         else if (m & 0x04000000) cost = 2000, noise = 15.f;
                         else if (m & 0x08000000) cost = 5, noise = 3.f;
-                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, noise = 20.f;
+                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, noise = 20.f, impacts_.back().glass = true;
                         impacts_.back().noise = noise;
                         // hp2 < 0: stopped above, whatever the face.
                         goesOn = it->damageClass >= 0 && (cost == 0 || spend(b, int64_t(cost) * 65536, it->damageClass));
@@ -1434,6 +1487,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 Impact im{b.pos, -1, -1};
                 im.explosive = true;
                 im.flags = b.flags;
+                im.shooter = b.shooter;
+                im.timer = true;   // GOG Df2.exe 0x4546a8: kind 1, effect 0x14, no smoke
                 impacts_.push_back(im);
                 b.age = b.lifetime;
             }

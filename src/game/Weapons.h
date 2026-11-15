@@ -134,7 +134,12 @@ struct Impact {
     int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
     uint32_t material = 0;    // objects: the hit face's material flags (0x44f90a picks effect and sound)
     float noise = 0;          // DF2: a +-noise m AI noise at the hit (GOG Df2.exe 0x414660, flags 0), 0 none
-    int shooter = -1;         // direct hits: the projectile's shooter (-3 the player, -1 none)
+    int shooter = -1;         // the projectile's shooter (-3 the player, -1 none); explosives: the blast's owner
+    bool timer = false;       // DF2: a delay grenade's fuse ran out (GOG Df2.exe 0x4546a8: effect 0x14, no smoke)
+    // DF2: an intact object's 0x10000000 (glass) face, shattered by the
+    // round (GOG Df2.exe 0x414a90): no impact effect; `mesh` the face's mesh.
+    bool glass = false;
+    int mesh = -1;
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table
