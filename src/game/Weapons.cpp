@@ -402,38 +402,24 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     // Sanity: the M4's ammo (7) is 30 rounds at 915 m/s.
     if (!ok || guns[7].magazine != 30 || guns[7].velocity != 915) return false;
 
-    // Slots (0x447e20): 0 laser designator (type 19), 1 knife (type 2),
-    // 2 sidearm, 3-5 the primary's modes, 6 secondary, 7 body gear,
-    // 8 the radio detonator (type 21 mode 1), 9 the grenade.
-    auto typeMode = [&](int t, int k) { return t >= 0 && t < kTypeN ? rd(kTypes + uint32_t(t) * 216 + 0x84 + 4 * uint32_t(k)) : 0; };
+    // The weapon types' modes (+0x84 + 4k), for the slots (df2Slots).
+    std::vector<std::array<int, 3>> typeModes(kTypeN);
+    for (int ty = 0; ty < kTypeN; ++ty)
+        for (int k = 0; k < 3; ++k) typeModes[size_t(ty)][size_t(k)] = rd(kTypes + uint32_t(ty) * 216 + 0x84 + 4 * uint32_t(k));
+    if (!ok) return false;
     modes_ = std::move(modes);
     guns_ = std::move(guns);
     dragCurve_ = std::move(curve);
-    slots_ = {typeMode(19, 0), typeMode(2, 0), typeMode(lo.sidearm, 0), typeMode(lo.primary, 0), typeMode(lo.primary, 1),
-              typeMode(lo.primary, 2), typeMode(lo.secondary, 0), typeMode(lo.gear, 0), typeMode(21, 1), typeMode(lo.grenade, 0)};
-    for (int& s : slots_)
-        if (s < 0 || s >= int(modes_.size()) || !modes_[size_t(s)].works()) s = 0;
-    // Slot 10: T[35] mode 0 (47, the binoculars, kind 12: fires nothing).
-    if (const int b = typeMode(35, 0); b > 0 && b < int(modes_.size())) slots_[kBinocularSlot] = b;
-    // GOG Df2.exe 0x44eeb0: slots 11 / 12 = modes 0x37 / 0x38, the emplaced
-    // guns' (filled by 0x44dfc0 as refillDf2Gog's fill(55) / fill(56)).
-    if (t->ammoShift && int(modes_.size()) > 0x38) {
-        slots_[kMountSlot] = 0x37;
-        slots_[kMountGlSlot] = 0x38;
-    }
+    typeModes_ = std::move(typeModes);
+    df2Gog_ = t->ammoShift != 0;   // the GOG build (its 100-byte ammo rows)
+    df2Slots(lo);
     mount_ = -1;
     mountGl_ = false;
     camera_ = -1;
     camView_ = false;
     prevSlot_ = 3;
-    gear_ = lo.gear;
     df2_ = true;
-    df2Gog_ = t->ammoShift != 0;   // the GOG build (its 100-byte ammo rows)
-    df2Lo_ = lo;
     fromExe_ = true;
-    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips
-    // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
-    kit_ = lo.secondary == 1 ? 1 : 0;
     reloadTicks_ = 0;
     cooldown_ = 0;
     refill();
@@ -452,6 +438,46 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     impacts_.clear();
     tracers_.clear();
     return true;
+}
+
+// Slots (GOG Df2.exe 0x44eeb0, CD 0x447e20): 0 laser designator (type 19),
+// 1 knife (type 2), 2 sidearm, 3-5 the primary's modes, 6 secondary, 7 body
+// gear, 8 the radio detonator (type 21 mode 1), 9 the grenade, 10 the
+// binoculars (type 35 mode 0, 47: kind 12, fires nothing); GOG 11 / 12 the
+// emplaced guns' modes 0x37 / 0x38 (filled by 0x44dfc0 as refillDf2Gog's
+// fill(55) / fill(56)). Every mode stays in its slot, the body gear's kind-0
+// modes (Armor 43, Ghillie 44, LAR V 45) too: 0x44f160 selects any slot
+// with no kind test, 0x44d3c0 skips only slots holding 0, and firing a kind
+// without a case does nothing (0x44d8a0 default).
+void Arsenal::df2Slots(const Df2Loadout& lo) {
+    auto typeMode = [&](int ty, int k) {
+        const int m = ty >= 0 && ty < int(typeModes_.size()) ? typeModes_[size_t(ty)][size_t(k)] : 0;
+        return m > 0 && m < int(modes_.size()) ? m : 0;
+    };
+    slots_ = {typeMode(19, 0), typeMode(2, 0), typeMode(lo.sidearm, 0), typeMode(lo.primary, 0), typeMode(lo.primary, 1),
+              typeMode(lo.primary, 2), typeMode(lo.secondary, 0), typeMode(lo.gear, 0), typeMode(21, 1), typeMode(lo.grenade, 0),
+              typeMode(35, 0), 0, 0};
+    if (df2Gog_ && int(modes_.size()) > 0x38) {
+        slots_[kMountSlot] = 0x37;
+        slots_[kMountGlSlot] = 0x38;
+    }
+    gear_ = lo.gear;
+    df2Lo_ = lo;
+    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips
+    // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
+    kit_ = lo.secondary == 1 ? 1 : 0;
+}
+
+void Arsenal::rearmDf2(const Df2Loadout& lo) {
+    // Request Weapons (GOG Df2.exe 0x409610 case 0x56, CD 0x408c60):
+    // 0x44eeb0 (CD 0x447e20) rebuilds the slots and refills, then 0x44f160
+    // (CD 0x4480b0) selects the slot already held. The scope flag, the
+    // binoculars' return slot, the camera and every round in flight stay.
+    if (!df2_) return;
+    df2Slots(lo);
+    refill();
+    if (df2Gog_ && df2Mag_ == 0) df2Mag_ = modes_[size_t(slots_[3])].scope;   // 0x44eeb0's end (GOG only)
+    select(current_);
 }
 
 void Arsenal::setWind(float kph, float degrees) {
@@ -708,11 +734,13 @@ void Arsenal::reload() {
     // 0x483580) and claymores, satchels and grenades (7, 9, 11, 0x4837d0)
     // start the mode's cooldown with the load sound +0x24 unless one is
     // running, whatever the chamber holds (its end then uses a spare, see
-    // tick()); other types nothing. DF2 keeps the guns-only reload.
+    // tick()); other types nothing. DF2 the same (GOG Df2.exe 0x41f150
+    // command 0x5d -> 0x44f070 -> 0x44f0e0 / 0x44f000(0), CD 0x447fb0 ->
+    // 0x448020 / 0x447f40(0)), GOG with its video camera (kind 13) too.
     const int type = mode().type;
     if (type == 1) {
         startReload();
-    } else if (!df2_ && (type == 2 || type == 7 || type == 9 || type == 11)) {
+    } else if (type == 2 || type == 7 || type == 9 || type == 11 || (df2_ && type == 13)) {
         if (cooldown_ <= 0) {
             cooldown_ = mode().cooldown;
             sound(1);
@@ -746,11 +774,13 @@ void Arsenal::toggleZoom() {
     zoomLevel_ = zoomLevel_ ? 0 : 1;
 }
 
-void Arsenal::fire(Player& player) {
+bool Arsenal::fire(Player& player) {
     const ModeDef& md = mode();
     const GunDef& g = gun();
     chamberedRef() = 0;
-    cooldown_ = md.cooldown;
+    // DF2's radio detonator (GOG Df2.exe 0x44d8a0 case 8 -> 0x407400, CD
+    // 0x446be0 -> 0x407000) starts no cooldown: every press detonates.
+    if (!(df2_ && md.type == 8)) cooldown_ = md.cooldown;
     std::uniform_real_distribution<float> unit(0.f, 1.f);
     std::uniform_real_distribution<float> turn(0.f, 2 * kPi);
     if (md.type == 7 || md.type == 9) {
@@ -762,9 +792,15 @@ void Arsenal::fire(Player& player) {
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
         const int item = md.type == 9 ? 4020 : slots_[size_t(current_)] == 37 ? 4014 : 4040;
+        // DF2 (GOG Df2.exe 0x44d590 / 0x44d6d0, CD 0x4468e0 / 0x446a20)
+        // sends the player's object z (+0x2c, the body origin) for the
+        // host's 0.25 m surface snap, and ends with 0x44f000(0) (CD
+        // 0x447f40(0)): the cooldown and the load sound +0x24.
         events_.push_back({WeaponEvent::Place, item,
-                           player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
-        return;
+                           (df2_ ? player.origin() : player.feet) + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f,
+                           player.yaw});
+        if (df2_) sound(1);
+        return true;
     }
     if (md.type == 13) {
         // GOG Df2.exe 0x44d460, the video camera: item 4138 1 m ahead at the
@@ -777,23 +813,23 @@ void Arsenal::fire(Player& player) {
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
         events_.push_back({WeaponEvent::Place, 4138,
-                           player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
+                           player.origin() + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});   // z: +0x2c
         sound(1);
-        return;
+        return true;
     }
     if (md.type == 8) {
         // Radio detonator (0x42cef8): all the player's satchels and radio
         // claymores; no ammunition.
         chamberedRef() = 1;
         events_.push_back({WeaponEvent::Detonate});
-        return;
+        return true;
     }
     if (md.type == 10) {
         // Laser designator (0x44a6f8): "Fire Mission request, over." with
         // 0x1AE now; the request itself when the cooldown ends (0x44a764).
         chamberedRef() = 1;
         events_.push_back({WeaponEvent::LaserPressed});
-        return;
+        return true;
     }
     if (md.type == 6) {
         // Knife (0x44a598): the model pulls back 0x2000 and down 0x2000 with
@@ -805,7 +841,7 @@ void Arsenal::fire(Player& player) {
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
         stabs_.push_back(player.origin() + player.forward() * (0x8000 / 65536.f));
-        return;
+        return true;
     }
     if (md.type == 1) {
         // 0x449cbc: the gun model jumps 0x800 back and a random 0x400
@@ -880,25 +916,30 @@ void Arsenal::fire(Player& player) {
         }
         origin = player.eye() + fwd * f - right * l + up * u;
     }
-    // Delta Force 2 (DF2.EXE 0x414ad0): a muzzle under the water fires only
-    // the knife (1) and the underwater pistol (0x27) and rifle (0x28/0x29);
-    // anything else plays its gun +0x2C sound (the same field 0x447070 plays
-    // as the dry click) at the shooter and fires nothing; the caller still
-    // uses the round, kicks and starts the cooldown (0x44718a..0x44725c).
-    // GOG Df2.exe 0x416a30 also lets mode 0x31 (the delay grenade) through.
+    // Delta Force 2 (CD DF2.EXE 0x414ad0, GOG Df2.exe 0x416a30): a muzzle
+    // under the water fires only the knife (1) and the underwater pistol
+    // (0x27) and rifle (0x28/0x29), and in the GOG build the delay grenade
+    // (0x31); anything else plays its gun +0x2C sound (the same field
+    // 0x447070 plays as the dry click) at the shooter and fires nothing
+    // (GOG: the player's burst counter +0x7c cleared, see command()); the
+    // caller still uses the round, kicks and starts the cooldown
+    // (0x44718a..0x44725c; a launcher or grenade with its load sound,
+    // GOG 0x44dbf0 / 0x44d940 -> 0x44f000(0)).
     if (underwaterRule && waterLevel != 0 && origin.y < waterLevel) {
         const int m = slots_[size_t(current_)];
         if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29 && !(df2Gog_ && m == 0x31)) {
             if (g.sounds[3] > 0) sounds_.push_back({g.sounds[3], player.origin(), false});
-            return;
+            if (md.type == 2 || md.type == 11) sound(1);
+            return false;
         }
     }
     // Speed: velocity · 65536 / 62 per tick (0x44d450).
     Projectile p;
     p.pos = origin;
     p.vel = dir * (float(g.velocity) * 60.f / 62.f);
-    // GOG Df2.exe 0x451ae0: ammo 0x21 (the delay grenade) fired from under
-    // the water leaves at 1/8 speed (each 16.16 component >> 3).
+    // GOG Df2.exe 0x451ae0 (not in CD 0x44a6a0): ammo 0x21 (the delay
+    // grenade's) fired from under the water leaves at 1/8 speed (each 16.16
+    // component >> 3).
     if (df2_ && df2Gog_ && md.gun == 0x21 && waterLevel != 0 && origin.y < waterLevel) {
         const auto eighth = [](float v) { return float(int32_t(int64_t(v * kTick * 65536.f)) >> 3) / (65536.f * kTick); };
         p.vel = Vec3{eighth(p.vel.x), eighth(p.vel.y), eighth(p.vel.z)};
@@ -985,8 +1026,11 @@ void Arsenal::fire(Player& player) {
         flashMeshes_ = fm;
         flashTimer_ = kTick;   // shows for about one frame
     }
-    // A launcher loads its next round at once, with the load sound (0x44a290).
-    if (md.type == 2) sound(1);
+    // A launcher loads its next round at once, with the load sound
+    // (0x44a290); DF2's grenades too (GOG Df2.exe 0x44d940 -> 0x44f000(0),
+    // CD 0x446be0 -> 0x447f40(0)).
+    if (md.type == 2 || (df2_ && md.type == 11)) sound(1);
+    return true;
 }
 
 void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
@@ -1067,9 +1111,11 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 chamberedRef() = 1;
                 if (!infiniteAmmo_) --sparesRef();   // 0x483654 / 0x4838a4: not with [0x67dbc9] & 1
             }
-        } else if (sparesRef() > 0 && !chambered()) {
-            // DF2.EXE 0x4463c0: the next grenade, launcher round or charge
-            // from the clips.
+        } else if ((md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11 || md.type == 13) && sparesRef() > 0) {
+            // GOG Df2.exe 0x44cc20 (CD 0x446340): the next grenade, launcher
+            // round or charge (GOG: or camera, kind 13) from the clips, the
+            // chamber not looked at (as DF1), so a reload-key cooldown on a
+            // loaded one costs a clip; other kinds nothing.
             chamberedRef() = 1;
             --sparesRef();
         }
@@ -1097,8 +1143,22 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             fire(player);   // the detonator and the designator need no round
         } else if (md.type == 1 || md.type == 2 || md.type == 11) {
             if (chambered()) {
-                if (followUp) { --burstLeft_; followUp_ = true; fire(player); followUp_ = false; }
-                else { fire(player); if (md.burst) burstLeft_ = 2; }   // 0x46af90 / 0x414ad0: three rounds in all
+                // A burst's rounds are counted in the shot (0x46af90 /
+                // 0x414ad0 / GOG 0x416a30: three rounds in all), which DF2's
+                // under-water rule leaves before: no burst is started, a
+                // follow-up's count is kept (CD) or the counter cleared (GOG
+                // 0x416a30: the player's +0x7c = 0).
+                if (followUp) {
+                    followUp_ = true;
+                    const bool fired = fire(player);
+                    followUp_ = false;
+                    if (fired) --burstLeft_;
+                    else if (df2Gog_) burstLeft_ = 0;
+                } else if (fire(player) && md.burst) {
+                    burstLeft_ = 2;
+                } else if (df2Gog_) {
+                    burstLeft_ = 0;
+                }
             } else {
                 // Dry fire: the click +0x2C at the player and the burst
                 // counter cleared (guns 0x449dd8 / 0x4470ae, launchers

@@ -2276,6 +2276,8 @@ void Game::weaponEvent(const WeaponEvent& e) {
         break;
     }
     case WeaponEvent::Detonate:
+        // DF2: the click, 2D sound 0x7c, first (GOG Df2.exe 0x407400, CD 0x407000).
+        if (world_.df2Rules) sound_.play2D(0x7c);
         // 0x447db4: every satchel and radio claymore of the player, at once.
         for (auto& c : charges_)
             if ((c.item == 4020 || c.item == 4040) && !c.mission && !world_.objects[size_t(c.object)].removed) world_.objects[size_t(c.object)].hp = 0;
@@ -7061,14 +7063,9 @@ void Game::df2RequestWeapons() {
     df2Loadout_.gear = m.request[2];
     df2Loadout_.sidearm = m.request[3];
     df2Loadout_.grenade = m.request[4];
-    std::vector<std::string> hudGuns;
-    for (int i = 0; i < 57; ++i) {
-        char key[16];
-        std::snprintf(key, sizeof key, "HG%03d", i);
-        const std::string* t = gameTable_.find("HudGuns", key);
-        hudGuns.push_back(t ? *t : std::string());
-    }
-    if (arsenal_.initDf2(hudGuns, df2Exe_, &items_, df2Loadout_)) setDf2Wind();
+    // 0x44eeb0 + 0x44f160(held slot): the scope flag, the binoculars'
+    // return slot and the rounds in flight stay (Arsenal::rearmDf2).
+    arsenal_.rearmDf2(df2Loadout_);
     pushMessage(df2Text("Client", "STRCLI10", "Weapons Updated"));
     sound_.play2D(0x164);
     const int cur[5] = {df2Loadout_.primary, df2Loadout_.secondary, df2Loadout_.gear, df2Loadout_.sidearm, df2Loadout_.grenade};

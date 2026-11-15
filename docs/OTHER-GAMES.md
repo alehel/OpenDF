@@ -290,7 +290,10 @@ First differences from DF1:
     for both: in water a tick moves the whole per-frame step, on land half,
     so swimming is 2v·cos(pitch) and v·sin(pitch) (AUDIT X9). DF2 only:
     shots from a muzzle under the water fire just the knife and the
-    underwater pistol/rifle, others play their +0x2C sound (0x414ad0); the
+    underwater pistol/rifle, others play their +0x2C sound (0x414ad0), for
+    the AI soldiers too; GOG (0x416a30) also lets the delay grenade (mode
+    0x31) through, at 1/8 speed (0x451ae0, ammo 0x21), and a blocked
+    player shot ends his burst (+0x7c = 0); the
     animation events 0x10/0x11/0x17 play DEATH_WATER/UW_IDLE/UW_SWIM
     (0x43f480). The AI swims too (both games, every person runs the same
     move): falling in sets the swim flag with effect 4 and sound 0x8A at the
@@ -454,7 +457,17 @@ First differences from DF1:
     4-6 accuracy 3 and 180 grains, M203 12 rounds, grenade and M203 flight
     1000 ticks), told apart by the M4's ammo row; slots per
     0x447e20 (laser, knife, sidearm, primary ×3, secondary, gear, detonator,
-    grenade), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
+    grenade; every non-zero mode kept, the body gear's kind-0 Armor /
+    Ghillie / LAR V too, which key 7 and cycling stop on and which fire
+    nothing), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
+    the reload key on launchers, claymores, satchels, grenades (GOG: and the
+    camera) starts the mode's cooldown with the load sound (0x44f070 /
+    0x44f000, CD 0x447fb0), whose end takes a clip whatever the chamber
+    holds (0x44cc20, CD 0x446340); grenades, satchels and claymores end
+    their throw / placement with the same cooldown and load sound, and
+    place at the player's object z (+0x2c); the radio detonator clicks (2D
+    sound 0x7c, 0x407400) and starts no cooldown; the scope zeroing is the
+    soldier's (+0x5c4 -> [0x67cdac], 0x43c280, stored back by 0x43c6f0);
     GOG's Df2.exe 1.06.15 (0x4758f0, told apart by the M4's ammo record) has
     the tables at 0x4DC5E0 / 0x4DA4F8 / 0x4D95B8 / 0x4DDA60, 39 ammo records
     of 100 bytes (+0x0C the clips Extra Ammo adds, later fields 4 on, flags
@@ -921,7 +934,10 @@ First differences from DF1:
     accepted only while the player overlaps a type-6 volume (+0x64 &
     0x1000000, an armory: 0x45a6e0), else nothing happens; accepted, the
     loadout is applied with each slot's full magazines and the ammunition
-    pools refilled as at the start (0x458190, 0x456f10). INFERRED: single
+    pools refilled as at the start (0x458190, 0x456f10); the client then
+    rebuilds the slots (GOG 0x44eeb0) and selects the held slot again
+    (0x44f160), keeping the scope flag, the binoculars' return slot and
+    every round in flight (GOG 0x409610 case 0x56). INFERRED: single
     player delivers its own request message. OPENDF_REARM accepts anywhere
     (testing). + / − zoom every frame while held, route lines with the black
     ±1 px outline, the Mission tab's CMAP_SETTINGS title. Not done: the
