@@ -2164,7 +2164,7 @@ void Game::tickEffects() {
 // A destroyed Delta Force gnrc object goes off (GOG Df.exe 0x4533f0 with
 // flag 4 -> 0x453270, CD 0x47ee6c -> 0x47ecf0): the item's sound, then
 // 0x460a30(owner 0, origin + 1 m, scale n << 14): effect 3 with +0x7c =
-// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a +-200 m noise;
+// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a +-200 noise box in raw 16.16 units (200/65536 m, 0x45fcf0);
 // a Smoke Generator at origin + 0.5 m (0x447610); then flags |= 8, the husk.
 // The blast is queued in DF.EXE and so meets the husk; here the husk goes
 // first. The table's n: 1001 1, 1002 3, 1039 4, 1040 1, 1041 3, 1042 3,
@@ -2185,7 +2185,7 @@ void Game::gnrcExplode(int index) {
     effectScale_ = n / 4.f;
     explode(at, 1, false, 10.f, false);   // surface 1: effect 3, no smoke generator
     effectScale_ = 0;
-    ai_.noise(at, 200.f, 0, 0);
+    ai_.noise(at, 200.f / 65536.f, 0, 0);   // 0x45fcf0 adds the 200 raw: +-200/65536 m
     smokeGens_.push_back({smoke, 0, 0});
 }
 
@@ -2223,7 +2223,7 @@ bool Game::df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const {
 
 // Delta Force's touch (GOG Df.exe 0x488f00 case 0xfd6, CD 0x437f60) does
 // the same: 0x446fb0(toucher, the mine's origin, 0 fragments) -> 0x4606b0
-// (effect 3, blast type 1, sound 0x32, +-200 m noise), a Smoke Generator
+// (effect 3, blast type 1, sound 0x32, +-200 raw-unit noise box), a Smoke Generator
 // at +0.5 m (0x447610), hp and +0x76 = 0, flags |= 4; the mine stays drawn.
 // A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
 // its hp is above 0, the common blast at the mine with no fragments (owned
@@ -2240,7 +2240,7 @@ void Game::mineContact(int index) {
     if (world_.df2Rules) df2Blast(o.pos, 0, o.heading);
     else {
         explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
-        ai_.noise(o.pos, 200.f, 0, 0);
+        ai_.noise(o.pos, 200.f / 65536.f, 0, 0);   // 0x4606b0 -> 0x45fcf0: 200 raw units
     }
     smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
 }
@@ -2450,8 +2450,18 @@ void Game::tickDf1Lights() {
     for (auto& l : lights_) {
         WorldObject& o = world_.objects[size_t(l.object)];
         if (l.dead) continue;
-        // 0x4519a0: dead (+0x6c & 4) or hp below 1, the light stops for good.
-        if (o.removed || o.wrecked || o.hp <= 0) { l.dead = true; continue; }
+        if (o.removed) { l.dead = true; continue; }
+        // 0x4519a0, at its think: hp below 1 -> flags |= 0x10c, the turn
+        // stopped and 0x446fb0(killer, origin + 1 m, 0 fragments) -> 0x4606b0:
+        // effect 3, blast type 1, sound 0x32 and a +-200 (raw units, 0x45fcf0)
+        // noise box (0x451b7c); the light stops for good.
+        if (l.wait < 1 && o.hp <= 0) {
+            l.dead = true;
+            const Vec3 at = o.pos + Vec3{0, 1.f, 0};
+            explode(at, 1);
+            ai_.noise(at, 200.f / 65536.f, 0, 0);
+            continue;
+        }
         if (l.wait < 1) {
             l.wait = 0x10;
             if (!l.init) {
@@ -6554,11 +6564,11 @@ int Game::run() {
                 if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "mine") {
                     // GOG Df.exe 0x453220 (a round or blast, hp <= 0, flag 4
                     // clear): flags |= 4 and 0x446fb0(killer, origin, 0) ->
-                    // 0x4606b0: effect 3, blast type 1, sound 0x32, +-200 m
+                    // 0x4606b0: effect 3, blast type 1, sound 0x32, +-200 raw
                     // noise, no fragments; no smoke, the mine stays drawn.
                     const Vec3 at = world_.objects[size_t(i)].pos;
                     explode(at, 1);
-                    ai_.noise(at, 200.f, 0, 0);
+                    ai_.noise(at, 200.f / 65536.f, 0, 0);   // 0x45fcf0: 200 raw units
                     continue;
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
