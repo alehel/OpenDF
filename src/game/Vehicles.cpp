@@ -224,9 +224,11 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     }
     // veh0 move (0x480689): steer = heading error / 8; turn (π/4)/L·v·sin
     // steer; forward v·cos steer; a lateral term (L/2)·SIN[turn per tick
-    // in 1/2048 turns] along DF's (sin yaw, cos yaw), only for indices >= 0
-    // (DF.EXE reads before its sine table otherwise: 0 or garbage, taken as
-    // 0); all with the new yaw and the speed before this tick's ramp.
+    // in 1/2048 turns] along DF's (sin yaw, cos yaw); all with the new yaw
+    // and the speed before this tick's ramp. GOG Df.exe indexes its sine
+    // table unsigned (0x42a078: shr 0x15), so clockwise turns get the term
+    // too, with its sign; the CD (0x4806e4) read before its table for
+    // negative indices, taken as 0 (still so for Delta Force 2 here).
     float steer = wrapAngle(v.targetHeading - o.heading) / 8.f;
     if (world.df2Rules && v.kind == Kind::Veh0) {
         // DF2.EXE's veh0 (0x41efa1): the steer eases toward (target − heading) / 2
@@ -243,7 +245,7 @@ void VehicleSystem::drive(World& world, AiSystem& ai, Vehicle& v, float teamSpee
     o.pos = o.pos + fwd * (v.speed * std::cos(steer) / kTicks);
     {
         const int idx = int(std::floor(-dyaw * 2048.f / (2 * kPi)));   // DF yaw grows anticlockwise
-        if (idx >= 0) {
+        if (idx >= 0 || !world.df2Rules) {
             const float lat = std::sin(float(idx) * 2 * kPi / 2048.f) * axle * 0.5f / 64.f;
             o.pos.x += lat * std::cos(o.heading);   // DF (sin θ, cos θ) with θ = π/2 − heading
             o.pos.z -= lat * std::sin(o.heading);
