@@ -60,7 +60,14 @@ public:
     // df.cfg dialog_volume (0..255, default 200; 0x66fa5c); 0 plays no speech.
     void setDialogVolume(int v) { dialogVolume_ = v; }
     int dialogVolume() const { return dialogVolume_; }
+    bool dialogEnabled() const { return dialogVolume_ > 0; }   // Df2.exe 0x467950
     void stopAll();
+    // Delta Force 2's mission sound start-up (GOG Df2.exe 0x4679c0) keeps
+    // mixer slots 10-15 for the loops; the mission end (0x467bc0) frees them.
+    void reserveLoopVoices(bool on) {
+        if (audio_)
+            for (int s = 10; s < 16; ++s) audio_->setReserved(s, on);
+    }
 private:
     int dialogVolume_ = 200;
 public:

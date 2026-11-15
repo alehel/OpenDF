@@ -400,6 +400,26 @@ First differences from DF1:
     samples by pitch × the clip's rate field (0x4a0092) and convert WAVs
     with the canonical 44-byte header (0x4711a0: rate field (rate·16) /
     22050 << 24, size +0x28, data +0x2c; 16-bit by the whole word).
+    GOG Df2.exe's sound start 0x47b3c0: per layer the variant pick, then the
+    definition's pitch random, then the variant's; no range test before the
+    pick, so a layer out of range still steps its counters and starts at
+    volume 0 (0x47b9a0, 0x47b602); a definition with flag 1 skips layers
+    with flag 0x20 (0x47b3a0). NEW.PWF, when present, overrides DF2.PWF per
+    flag-1 record with its own samples (0x4679c0). The mixer has 16 slots
+    taken in index order (0x4aafc0: a free one, else the first quieter
+    playing one not already pending), slots 10-15 reserved for the loops
+    during a mission (0x47c320 from 0x4679c0, cleared by 0x47c160); a loop
+    starts 0..255 samples past sample 1 from a mixer seed (0xd1cface0, rol
+    11 + seed + 1, 0x4996d9) and every repeat restarts at sample 1 with the
+    fraction dropped. Loop emitters are refreshed once a 60 Hz tick
+    (0x464d51 -> 0x4683f0, acting every 8th call). Footstep events are
+    silent for an airborne body (0x445750: +0x64 & 0x2000), decorations
+    think every 8 ticks (0x446550, markers 64), and with dialog volume 0 a
+    radio line shows no subtitle either (0x467950). The music stream queues
+    while fewer than 13 blocks wait behind the playing one (0x4ab2c2,
+    0x4766c0), a new stream volume re-gains the waiting blocks only
+    (0x47bb70 -> 0x4ab372), and each script tick starts with empty data and
+    return stacks (0x496271 / 0x496276).
   - **weapons** read from the user's DF2.EXE (0x46b230 and its in-place
     conversions): 57 modes (0x4C7238, 92 bytes: kind = DF1's fire type, ammo,
     first-person item, offsets, muzzle vertex, cooldown, zoom, flags 0x1
@@ -729,8 +749,12 @@ First differences from DF1:
     (−1 forever), drawn in slot order; at the end back to the Main Menu.
     Teletype boxes play a random TTY_CLK1..9 on channel 2 each tick while
     typing (0x43d110 calls 0x43d000 while unfinished; DF2.EXE does it per
-    drawn frame); menu sounds use their channels (mnu_tran 1, btn_slct 3,
-    btn_roll 4: a new sound cuts the old). Screen changes: no fade is drawn
+    drawn frame); menu sounds ignore their channel and overlap, each at its
+    MNU [SOUNDS] volume (the line's 4th field, clamped 0..255; GOG Df2.exe
+    0x4342d0 -> 0x4758b0 -> 0x442e40), not scaled by the SFX slider (the
+    soldier's +0x5b8 goes to 0x67cd20, which nothing reads). While the music
+    is on, the menu loop forces Var1 to the screen's value every frame
+    before the stream update (GOG 0x468b3f..0x468b4d, 0x442f60). Screen changes: no fade is drawn
     (the hooks 0x468c00/40/70 call an empty table); input is ignored for 12
     ticks after entering a screen; only the Main Menu and the Mission
     Briefing wait 12 more ticks after a click before switching (0x4356a0,
