@@ -345,10 +345,10 @@ void setM4(GLuint p, const char* n, const Mat4& m) { glUniformMatrix4fv(glGetUni
 Terrain::~Terrain() { release(); }
 
 void Terrain::release() {
-    GLuint texs[] = {texDisplayLut_, texColor_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
+    GLuint texs[] = {texDisplayLut_, texColor_, texElevation_, texHeight_, texDetailIdx_, texDetailColor_, texDetailShade_, texSkyPal_, texClouds_, texWater_,
                      texWaterGrad_, texScene_, texRadar_, texSkyGrad_, texDepth_};
     for (GLuint t : texs) if (t) glDeleteTextures(1, &t);
-    texRadar_ = texDisplayLut_ = 0;
+    texRadar_ = texDisplayLut_ = texElevation_ = 0;
     texColor_ = texHeight_ = texDetailIdx_ = texDetailColor_ = texDetailShade_ = texSkyPal_ = texClouds_ = texWater_ = 0;
     texWaterGrad_ = texScene_ = texSkyGrad_ = texDepth_ = 0;
     sceneW_ = sceneH_ = depthW_ = depthH_ = 0;
@@ -478,8 +478,20 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         }
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, rgb.data(), true, true);
         colorRgb_ = rgb;
-    } else
+    } else {
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, gradedPalette(color.palette)).data(), true, true);
+        // Delta Force's elevation picture (F11 mapelevation, [0xc23a30]): the
+        // 32-bit ramp GOG Df.exe 0x48df90 builds at 0x67d740, green =
+        // TRN grade of (0, T[h], 0), red and blue 0, with T the EXE's table at
+        // 0x4cebe0 (copied to 0x50342c by 0x401c60), which is exactly
+        // round(255 (h / 255)^0.8); 0x48e070 reads it by each cell's
+        // elevation byte.
+        uint8_t ramp[256];
+        for (int i = 0; i < 256; ++i) ramp[i] = uint8_t(std::lround(255.0 * std::pow(i / 255.0, 0.8)));
+        std::vector<uint8_t> elevRgb(size_t(size_) * size_t(size_) * 3, 0);
+        for (size_t i = 0; i < elev.pixels.size(); ++i) elevRgb[i * 3 + 1] = trnGrade(Rgb{0, ramp[elev.pixels[i]], 0}).g;
+        texElevation_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, elevRgb.data(), false, false);
+    }
     {
         uint8_t byIndex[256];
         for (int i = 0; i < 256; ++i) {

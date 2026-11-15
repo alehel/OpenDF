@@ -193,6 +193,9 @@ private:
     void drawTopBar(const Screen& s);
     void drawBottomBar(const Screen& s);
     void drawCommandMap(const Screen& s);
+    void drawGpsInset(const Screen& s);
+    void drawDf1Map(const Screen& s, float x0, float y0, float x1, float y1, bool full);
+    void trackMapPositions();
     void drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead, float radius = -1);
     void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
@@ -563,6 +566,18 @@ private:
     Df2Sel df2HudWp_;
     bool df2Elevation_ = false;   // [0x765600]: the radars' elevation picture (D, F9 / F10)
     bool df2KeyFlag_ = false;     // [0x7655fc]: set by F9 / F10, read only by Escape (0x41b59d)
+    // Delta Force: the GPS inset (F10 mapterrain, [0xc23a2c]) and the
+    // elevation picture of both maps (F11 mapelevation, [0xc23a30]), both
+    // cleared at mission init (GOG Df.exe 0x4829f0); the map key lines
+    // under the inset ([0xcc0710], 0x48dd80).
+    bool gpsShown_ = false, gpsElevation_ = false;
+    int mapKeyLines_ = 0;
+    // Each world object's position in the continuous mission space (the
+    // world keeps x/z inside the repeating tile): the map places markers at
+    // the true offset from the player (GOG Df.exe 0x48f5d0, obj+0x24/+0x28),
+    // so each frame's step is added up (OpenDF bookkeeping).
+    struct MapTrack { double x, y; Vec3 last; };
+    std::vector<MapTrack> mapTrack_;
     Df2Loadout df2Loadout_;       // the player's weapon types (controller +0xb6..+0xba)
     struct Df2Map {
         bool loaded = false;
@@ -977,6 +992,15 @@ bool Game::loadMission(int index) {
                 !campText_.text()[m - 1].empty())
                 missionName_ = campText_.text()[m - 1];
         }
+        // GOG Df.exe 0x48dd80: one line for each nonzero header key id that
+        // has a "Map Keys" entry.
+        mapKeyLines_ = 0;
+        if (mission_.version < 0x0F)
+            for (int id : mission_.mapKeyIds) {
+                char key[16];
+                std::snprintf(key, sizeof key, "MKEY%03d", id);
+                if (id != 0 && campText_.find("Map Keys", key)) ++mapKeyLines_;
+            }
     }
     buildRoute();
     // Powerups (attrib 0x20: ammo and medical crates) are removed at the start
@@ -1144,6 +1168,8 @@ bool Game::loadMission(int index) {
     for (auto& w : df2Wps_) w = Df2Waypoint{};
     df2HudWp_ = Df2Sel{};
     df2Elevation_ = df2KeyFlag_ = false;
+    gpsShown_ = gpsElevation_ = false;
+    mapTrack_.clear();
     df2Map_.sel = df2Map_.drag = Df2Sel{};
     df2Map_.prompt = false;
     df2Map_.entered = false;
@@ -2908,6 +2934,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         if (df2Hud_.on && df2KeyFlag_) { df2KeyFlag_ = false; break; }
         if (briefingShown_) { briefingShown_ = false; break; }
         if (helpShown_) { helpShown_ = false; break; }
+        // GOG Df.exe 0x477d40: the GPS inset ([0xc23a2c]) closes before the
+        // command map ([0x67db80]).
+        if (!df2Hud_.on && gpsShown_ && !showGoals_) { gpsShown_ = false; break; }
         if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
         quitBox_ = true;
         // (OpenDF) the box frees the mouse; N / Escape take it back.
@@ -2943,11 +2972,25 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // else the flag toggled. 0x41be2e (mapelevation, F10): elevation on ->
     // the flag toggled (elevation stays on), else the flag set and elevation
     // on. The map's D button keeps its picture until the tab is entered again.
+    // Delta Force (GOG Df.exe 0x477d40 commands 0x16a / 0x16b, F10 / F11):
+    // mapterrain with the elevation picture on turns it off and shows the
+    // inset, else toggles the inset; mapelevation with it off turns it on
+    // and shows the inset, else toggles the inset.
     case Action::MapTerrain:
+        if (!df2Hud_.on) {
+            if (gpsElevation_) { gpsElevation_ = false; gpsShown_ = true; }
+            else gpsShown_ = !gpsShown_;
+            break;
+        }
         if (df2Elevation_) { df2Elevation_ = false; df2KeyFlag_ = true; }
         else df2KeyFlag_ = !df2KeyFlag_;
         break;
     case Action::MapElevation:
+        if (!df2Hud_.on) {
+            if (!gpsElevation_) { gpsElevation_ = true; gpsShown_ = true; }
+            else gpsShown_ = !gpsShown_;
+            break;
+        }
         if (df2Elevation_) df2KeyFlag_ = !df2KeyFlag_;
         else { df2KeyFlag_ = true; df2Elevation_ = true; }
         break;
@@ -3874,38 +3917,96 @@ void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, f
     }
 }
 
+void Game::trackMapPositions() {
+    if (mapTrack_.size() > world_.objects.size()) mapTrack_.clear();
+    const double ext = terrain_.mapExtent();
+    auto unwrap = [&](double wrapped, double mission) {
+        double d = std::fmod(wrapped - mission, ext);
+        if (d > ext / 2) d -= ext;
+        else if (d < -ext / 2) d += ext;
+        return mission + d;
+    };
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        const WorldObject& o = world_.objects[i];
+        if (i >= mapTrack_.size()) {
+            // A mission object starts at its record's position; one spawned
+            // later where it is seen from the player.
+            if (o.missionIndex >= 0) {
+                mapTrack_.push_back({unwrap(o.pos.x, o.missionX), unwrap(-o.pos.z, o.missionY), o.pos});
+            } else {
+                const Vec3 d = world_.nearest(o.pos, player_.feet) - player_.feet;
+                mapTrack_.push_back({player_.missionX() + d.x, player_.missionY() - d.z, o.pos});
+            }
+            continue;
+        }
+        MapTrack& m = mapTrack_[i];
+        const Vec3 d = world_.nearest(o.pos, m.last) - m.last;
+        m.x += d.x;
+        m.y -= d.z;
+        m.last = o.pos;
+    }
+}
+
 void Game::drawCommandMap(const Screen& s) {
-    // DF.EXE 0x43cfc8: the terrain colour map over the whole 3D view, centred
-    // on the player, north up. Scale [0x933540] (default 1) is world metres
+    // GOG Df.exe 0x48f9b0 -> 0x48e070(x 0..0x400, the 3D view's rows, grid 1,
+    // border 0, double 1); CD 0x43cfc8.
+    drawDf1Map(s, 0, s.playY, s.w, s.playY + s.playH, true);
+}
+
+void Game::drawGpsInset(const Screen& s) {
+    // GOG Df.exe 0x48e010 (CD 0x43cf6c) while [0xc23a2c] is set:
+    // 0x48e070(32, 16, 350, 340, grid 0, border 1, double 0) in 1024x768
+    // units from the 3D view's top ([0x67dba0]); the bottom grows by 25 for
+    // each map key line ([0xcc0710] * 0x19). Left-anchored in wider windows
+    // (OpenDF).
+    const float k = s.vy(1);
+    const float y1 = std::min(s.playY + s.playH, s.playY + (340.f + 25.f * float(mapKeyLines_)) * k);
+    drawDf1Map(s, 32.f * k, s.playY + 16.f * k, 350.f * k, y1, false);
+}
+
+void Game::drawDf1Map(const Screen& s, float x0, float y0, float x1, float y1, bool full) {
+    // GOG Df.exe 0x48e070 (CD 0x43cfc8): the terrain colour map, centred on
+    // the player, north up. Scale [0xc23a28] (default 1) is world metres
     // per pixel x 1024 / W, i.e. 0.625 / scale pixels per metre at 640.
-    const float x0 = 0, y0 = s.playY, w = s.w, h = s.playH, t = s.px();
+    // [0xc23a30] (F11) draws the elevation ramp (0x48df90) instead.
+    const float w = x1 - x0, h = y1 - y0, t = s.px();
+    if (w <= 0 || h <= 0) return;
+    trackMapPositions();
     const float pxPerM = s.u * 0.625f / mapScale_;
     const float ext = terrain_.mapExtent();
     const float halfW = w / pxPerM * 0.5f, halfH = h / pxPerM * 0.5f;
     const Vec3 c = player_.feet;
     const float u0 = (c.x - halfW) / ext, u1 = (c.x + halfW) / ext;
     const float v0 = (c.z - halfH) / ext, v1 = (c.z + halfH) / ext;
-    hud_.imageUV(terrain_.colorTexture(), x0, y0, w, h, u0, v0, u1, v1);
+    const GLuint picture = gpsElevation_ && terrain_.elevationTexture() ? terrain_.elevationTexture() : terrain_.colorTexture();
+    hud_.imageUV(picture, x0, y0, w, h, u0, v0, u1, v1);
 
+    const float midX = x0 + w / 2, midY = y0 + h / 2;
     const double mx = player_.missionX(), my = player_.missionY();
     auto toScreen = [&](double x, double y) {
-        return std::pair<float, float>{x0 + w / 2 + float(x - mx) * pxPerM, y0 + h / 2 + float(my - y) * pxPerM};
+        return std::pair<float, float>{midX + float(x - mx) * pxPerM, midY + float(my - y) * pxPerM};
     };
+    // Markers are drawn within the map's rectangle (0x473ca0 .. 0x473c70),
+    // 5 units of 1024 across, doubled on the command map ([0xcc0730]).
+    hud_.clip(x0, y0, w, h);
+    const float markR = s.vy(full ? 10.f : 5.f);
 
-    // Grid (0x43e16c / 0x43e258): 100 m, one pixel, bright green; labels
-    // white with a black outline: columns centred at the top, rows at the left.
-    const float sq = float(kGridSquare) * pxPerM, ts = s.text();
-    for (double gx = std::ceil((mx - halfW) / kGridSquare) * kGridSquare; gx <= mx + halfW; gx += kGridSquare) {
-        const float sx = toScreen(gx, my).first;
-        hud_.rect(sx, y0, t, h, kHudBright);
-        const std::string label = gridColumn(gx + kGridSquare / 2);
-        outlinedText(sx + sq * 0.5f - hud_.textWidth(label, ts) / 2, y0 + t, label, kHudWhite, ts, kHudBlack);
-    }
-    for (double gy = std::floor((my + halfH) / kGridSquare) * kGridSquare; gy >= my - halfH; gy -= kGridSquare) {
-        const float sy = toScreen(mx, gy).second;
-        hud_.rect(x0, sy, w, t, kHudBright);
-        outlinedText(x0 + 2 * t, sy + sq * 0.5f - s.y(4), std::to_string(gridRow(gy - kGridSquare / 2)), kHudWhite, ts,
-                     kHudBlack);
+    if (full) {
+        // Grid (0x43e16c / 0x43e258): 100 m, one pixel, bright green; labels
+        // white with a black outline: columns centred at the top, rows at the left.
+        const float sq = float(kGridSquare) * pxPerM, ts = s.text();
+        for (double gx = std::ceil((mx - halfW) / kGridSquare) * kGridSquare; gx <= mx + halfW; gx += kGridSquare) {
+            const float sx = toScreen(gx, my).first;
+            hud_.rect(sx, y0, t, h, kHudBright);
+            const std::string label = gridColumn(gx + kGridSquare / 2);
+            outlinedText(sx + sq * 0.5f - hud_.textWidth(label, ts) / 2, y0 + t, label, kHudWhite, ts, kHudBlack);
+        }
+        for (double gy = std::floor((my + halfH) / kGridSquare) * kGridSquare; gy >= my - halfH; gy -= kGridSquare) {
+            const float sy = toScreen(mx, gy).second;
+            hud_.rect(x0, sy, w, t, kHudBright);
+            outlinedText(x0 + 2 * t, sy + sq * 0.5f - s.y(4), std::to_string(gridRow(gy - kGridSquare / 2)), kHudWhite, ts,
+                         kHudBlack);
+        }
     }
 
     // Route lines between the player's waypoints (0x43e340), bright green.
@@ -3933,6 +4034,17 @@ void Game::drawCommandMap(const Screen& s) {
     std::vector<const WorldObject*> live(mission_.objects.size(), nullptr);
     for (const auto& o : world_.objects)
         if (o.missionIndex >= 0 && size_t(o.missionIndex) < live.size()) live[size_t(o.missionIndex)] = &o;
+    // 0x48f5d0 places each at its true offset from the player (no wrap) and
+    // skips it when either offset is more than the half width plus a pixel
+    // step ([0xcc0728], the horizontal half width for both axes).
+    const double reach = double(halfW) + 1.0 / double(pxPerM);
+    auto place = [&](double x, double y, float& sx, float& sy) {
+        if (std::abs(x - mx) > reach || std::abs(y - my) > reach) return false;
+        const auto p = toScreen(x, y);
+        sx = p.first;
+        sy = p.second;
+        return true;
+    };
     for (size_t i = 0; i < mission_.objects.size(); ++i) {
         const MissionObject& o = mission_.objects[i];
         const int type = o.raw[19] & 0xFF;
@@ -3941,39 +4053,51 @@ void Game::drawCommandMap(const Screen& s) {
         if (wo && wo->removed && !wo->carried) continue;
         if (o.group == 2 && &o == current && !(ticks_ & 16)) continue;
         float sx, sy;
-        if (wo) {
-            const Vec3 at = world_.nearest(wo->pos, c);
-            sx = x0 + w / 2 + (at.x - c.x) * pxPerM;
-            sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
-        } else {
-            const auto p = toScreen(o.x, o.y);
-            sx = p.first;
-            sy = p.second;
-        }
-        if (sx < x0 - 20 || sx > x0 + w + 20 || sy < y0 - 20 || sy > y0 + h + 20) continue;
+        const MapTrack* tr = wo ? &mapTrack_[size_t(wo - world_.objects.data())] : nullptr;
+        if (!place(tr ? tr->x : o.x, tr ? tr->y : o.y, sx, sy)) continue;
         drawMapMarker(s, sx, sy, type, sideColour((uint32_t(o.raw[16]) >> 24) & 0xFF), wo ? wo->heading : 0,
-                      wo && wo->dead);
+                      wo && wo->dead, markR);
     }
     // Soldiers by the GPS option (0x43d445): 0 none, 1 (default) those whose
     // record +0x4C is set, 2 all; drawn as soldier markers, an X once dead.
     if (o_.gpsIcons > 0)
-        for (const auto& o : world_.objects) {
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const WorldObject& o = world_.objects[i];
             if (o.missionGroup != 3 || !o.person || o.removed) continue;
             if (o_.gpsIcons == 1 && !o.mapMarker) continue;
-            Vec3 at = world_.nearest(o.pos, c);
-            const float sx = x0 + w / 2 + (at.x - c.x) * pxPerM, sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
-            drawMapMarker(s, sx, sy, 5, sideColour(o.side), o.heading, o.dead);
+            float sx, sy;
+            if (!place(mapTrack_[i].x, mapTrack_[i].y, sx, sy)) continue;
+            drawMapMarker(s, sx, sy, 5, sideColour(o.side), o.heading, o.dead, markR);
         }
     // The player: a soldier marker in the team colour (side 1, blue).
-    drawMapMarker(s, x0 + w / 2, y0 + h / 2, 5, kHudBlue, player_.yaw, false);
+    drawMapMarker(s, midX, midY, 5, kHudBlue, player_.yaw, false, markR);
+    hud_.unclip();
 
-    // Compass rose (0x43dec0): centre (560, 315), arms 40, inner points 5;
-    // the main cross, a small X, and a four-pointed star (0x42529c lines in
-    // [0x66f94c]); N in [0x66f930] (white), E S W in [0x66f94c], the lines'
-    // own colour (0x43e0c7 / 0x43e0f2 / 0x43e118 / 0x43e13e, through 0x43ddf4
-    // with flag 2), black-outlined.
+    if (!full) {
+        // The inset's north arrow (0x48e070, flag 0): in 1024x768 units from
+        // its right edge x1 and top y0, lines (x1-50, y0+20) to (x1-50,
+        // y0+70), (x1-40, y0+40) and (x1-60, y0+40), "N" centred at (x1-70,
+        // y0+20), all in [0x67db5c] (bright green); then a one-pixel border
+        // round the rectangle in the same colour.
+        const float k = s.vy(1), ax = x1 - 50 * k, ay = y0 + 20 * k, ts = s.text();
+        hud_.line(ax, ay, ax, ay + 50 * k, t, kHudBright);
+        hud_.line(ax, ay, ax + 10 * k, ay + 20 * k, t, kHudBright);
+        hud_.line(ax, ay, ax - 10 * k, ay + 20 * k, t, kHudBright);
+        hud_.text(x1 - 70 * k - hud_.textWidth("N", ts) / 2, ay, "N", kHudBright, ts);
+        hud_.rect(x0, y0, w, t, kHudBright);
+        hud_.rect(x0, y1 - t, w, t, kHudBright);
+        hud_.rect(x0, y0, t, h, kHudBright);
+        hud_.rect(x1 - t, y0, t, h, kHudBright);
+        return;
+    }
+
+    // Compass rose (0x43dec0, GOG 0x48f040): centre (560, 315), arms 40,
+    // inner points 5; the main cross, a small X, and a four-pointed star
+    // (0x42529c lines in [0x66f94c]); N in [0x66f930] (white), E S W in
+    // [0x66f94c], the lines' own colour (0x43e0c7 / 0x43e0f2 / 0x43e118 /
+    // 0x43e13e, through 0x43ddf4 with flag 2), black-outlined.
     {
-        const float rx = s.rx(560), ry = s.y(315), a = s.y(40), i = s.y(5);
+        const float rx = s.rx(560), ry = s.y(315), a = s.y(40), i = s.y(5), ts = s.text();
         hud_.line(rx - a, ry, rx + a, ry, t, kHudBright);
         hud_.line(rx, ry - a, rx, ry + a, t, kHudBright);
         hud_.line(rx - i, ry - i, rx + i, ry + i, t, kHudBright);
@@ -4150,6 +4274,9 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         if (w > 0) hud_.rect(s.vx(512.f - float(w)), top, s.vx(512.f + float(w)) - s.vx(512.f - float(w)), s.vy(10), c);
         hud_.text(s.vx(512) - hud_.textWidth("Breath", s.text()) / 2, top + s.vy(20), "Breath", c, s.text());
     }
+    // GOG Df.exe 0x426c30 -> 0x48e010: the GPS inset, every frame (the map
+    // frame 0x48f9b0 runs this pass too), before the overlays.
+    if (!df2Hud_.on && gpsShown_) drawGpsInset(s);
     if (oldMessages_) drawOldMessages(s);
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
@@ -6602,6 +6729,7 @@ int Game::run() {
                 // DF1: the carrier's move (0x4365c6 -> 0x436a0c) copies its
                 // origin +0x24..+0x2c into the carried item every tick.
                 if (carried_ >= 0 && world_.objects[size_t(carried_)].carried) world_.objects[size_t(carried_)].pos = player_.origin();
+                trackMapPositions();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
                 else tickDf1Lights();
                 // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
@@ -6936,6 +7064,9 @@ int Game::run() {
             // (0x45cc06 -> 0x443bd0). So the map's text is F_SML640 /
             // F_LG640 at any display mode.
             useHudMode(df2Hud_.on && showMap_ ? 640 : s.modeW);
+            // GOG Df.exe 0x404640, every frame: with the player dead the map
+            // flag [0x67db80] is cleared and the normal view drawn.
+            if (!df2Hud_.on && showMap_ && playerDead()) showMap_ = false;
             // The 3D view: rows letterbox/8 .. 1 - letterbox/8 of the height
             // (0x404650); Delta Force 2: the rows between its strips, DHT_h ..
             // H - DHB_h (DF2.EXE 0x45cb40).

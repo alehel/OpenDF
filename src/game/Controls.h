@@ -22,8 +22,9 @@ enum class Action {
     Binoculars, Pause, OldMessages, ShowFriendly, LetterBox, Drop, Briefing, Help,
     // Delta Force 2: scope zeroing (X / Z) and night vision (N).
     ScopeInc, ScopeDec, NightVision,
-    // Delta Force 2: the map's elevation view (F9 mapterrain / F10
-    // mapelevation, actions 362 / 363).
+    // mapterrain / mapelevation (actions 362 / 363): Delta Force's GPS inset
+    // and elevation picture (F10 / F11); Delta Force 2's map elevation view
+    // (F9 / F10).
     MapTerrain, MapElevation,
     // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
     VCam,

@@ -67,6 +67,9 @@ public:
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
     GLuint colorTexture() const { return texColor_; }
+    // Delta Force: the command map's elevation picture (GOG Df.exe 0x48df90
+    // ramp by elevation byte, nearest texel); 0 for Delta Force 2 terrains.
+    GLuint elevationTexture() const { return texElevation_; }
     // Delta Force 2's radar picture (DF2.EXE 0x421510): the level-0 colour
     // map, nearest texel, cells at or under the water level averaged 50/50
     // with the water colour; 0 when not a DF2 terrain.
@@ -130,7 +133,7 @@ private:
     Rgb waterColor_{0, 0, 0};      // DF2: graded water palette entry 255 (under-water tint, radar)
     bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha
 
-    GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0;
+    GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0, texElevation_ = 0;
     std::vector<uint8_t> colorRgb_;   // DF2: the colour map as drawn (for the radar)
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
     GLuint texDisplayLut_ = 0;   // Delta Force: the df.cfg gamma table (filters 128)
