@@ -901,6 +901,11 @@ private:
     std::string df2SelName(Df2Sel s) const;
     int df2SelItem(Df2Sel s) const;
     std::string df2RecordName(size_t index) const;
+    // GOG Df2.exe 0x467430 (from 0x466ba0 at mission load): default labels
+    // (+0x54) and radar shapes (+0x6E) of item-list objects; the labels by
+    // mission record index.
+    void df2DefaultLabels();
+    std::map<size_t, std::string> df2Labels_;
     bool df2SelOnPlayerTeam(Df2Sel s) const;
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
@@ -1320,6 +1325,7 @@ bool Game::loadMission(int index) {
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
             world_.df2Gog = arsenal_.df2Gog();
+            df2DefaultLabels();
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
             setDf2Wind();
@@ -6715,7 +6721,57 @@ std::string Game::df2RecordName(size_t index) const {
         std::snprintf(key, sizeof key, "STRWPNAME%03d", mo.raw[0x58 / 4]);
         if (const std::string* n = wpnText_.find("WPNames", key)) name = n->substr(0, 15);
     }
+    if (const auto it = df2Labels_.find(index); it != df2Labels_.end()) name = it->second;   // GOG Df2.exe 0x467430
     return name;
+}
+
+// GOG Df2.exe 0x467430 (0x466ba0, mission load; not in the CD build): over
+// the item list (mission group 0, objects with an item), by item id (+0x20)
+// unless the item is S&D (attrib 0x1000): 0x1028 STROVER68, 0x1029
+// STROVER67, 0xfc3 STROVER19, 0xfc4 STROVER20, 0xfcb STROVER21, 0xfcc
+// STROVER22, 0x1020 STROVER60; 0xc1b / 0xc24 (the armories) STROVER66 and
+// radar shape 6 when it is 0; 0x178a..0x178c STROVER23..25, 0x17cc
+// STROVER69, 0x17cd STROVER70, each with shape 3 when 0. An S&D item gets
+// shape 6 (a building, item kind 5) or 4 when 0, and STROVER71 on side 1,
+// STROVER72 on side 2. The text is copied into the name +0x54 whole; the
+// shape is +0x6E. OpenDF keeps the command-map flag (mapMarker) in step.
+void Game::df2DefaultLabels() {
+    df2Labels_.clear();
+    if (!arsenal_.df2Gog()) return;
+    for (WorldObject& o : world_.objects) {
+        if (!o.item || o.missionGroup != 0 || o.missionIndex < 0 || o.removed) continue;
+        const char* key = nullptr;
+        int shape = 0;   // the default shape, 0 none
+        if (o.item->attrib & 0x1000) {
+            shape = o.item->type == "building" ? 6 : 4;
+            key = o.side == 1 ? "STROVER71" : o.side == 2 ? "STROVER72" : nullptr;
+        } else {
+            switch (o.item->id - 100000) {
+            case 0x1028: key = "STROVER68"; break;
+            case 0x1029: key = "STROVER67"; break;
+            case 0xfc3: key = "STROVER19"; break;
+            case 0xfc4: key = "STROVER20"; break;
+            case 0xfcb: key = "STROVER21"; break;
+            case 0xfcc: key = "STROVER22"; break;
+            case 0x1020: key = "STROVER60"; break;
+            case 0xc1b: case 0xc24: key = "STROVER66"; shape = 6; break;
+            case 0x178a: key = "STROVER23"; shape = 3; break;
+            case 0x178b: key = "STROVER24"; shape = 3; break;
+            case 0x178c: key = "STROVER25"; shape = 3; break;
+            case 0x17cc: key = "STROVER69"; shape = 3; break;
+            case 0x17cd: key = "STROVER70"; shape = 3; break;
+            default: break;
+            }
+        }
+        if (shape && o.radarShape == 0) {
+            o.radarShape = shape;
+            o.mapMarker = true;
+        }
+        if (key) {
+            const std::string* t = gameTable_.find("Overlays", key);
+            df2Labels_[size_t(o.missionIndex)] = t ? *t : std::string();
+        }
+    }
 }
 
 // The selection's name, object +0x54 as is: the info panels (GOG Df2.exe
@@ -7585,22 +7641,6 @@ void Game::drawDf2CommandMap(const Screen& s) {
             drawMapMarker(s, x, y, type, col, heading, dead, blip);
             if (named) hud_.text(x + blip, y, name, col, kt);
         };
-        // A mission object's name (+0x54, GOG Df2.exe 0x403790): PeopleNames
-        // STRNAME%03i of record +4 when non-zero (15 characters), then for
-        // item 6005 WPNames STRWPNAME%03i of record +0x58 (cut to 15).
-        auto missionName = [&](const MissionObject& mo) {
-            std::string n;
-            char key[24];
-            if (mo.raw[1] != 0) {
-                std::snprintf(key, sizeof key, "STRNAME%03d", int(mo.raw[1]));
-                if (const std::string* t = wpnText_.find("PeopleNames", key)) n = t->substr(0, 15);
-            }
-            if (mo.type == 6005) {
-                std::snprintf(key, sizeof key, "STRWPNAME%03d", int(mo.raw[0x58 / 4]));
-                if (const std::string* t = wpnText_.find("WPNames", key)) n = t->substr(0, 15);
-            }
-            return n;
-        };
         if (m.toggles[2] && o_.gpsIcons > 0)
             for (size_t i = 0; i < world_.objects.size(); ++i) {
                 const WorldObject& o = world_.objects[i];
@@ -7610,7 +7650,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 df2ObjectPos(o, ox, oy);
                 auto [gx, gy] = toMap(ox, oy);
                 blipAt(gx, gy, 5, df2BlipColour(true, o.side), o.heading, o.dead, Df2Sel{2, int(i)},
-                       o.missionIndex >= 0 ? missionName(mission_.objects[size_t(o.missionIndex)]) : std::string());
+                       o.missionIndex >= 0 ? df2RecordName(size_t(o.missionIndex)) : std::string());
             }
         forDf2Shapes([&](const Df2Shape& d) {
             const ItemDef* it = items_.byMissionType(d.mission->type);
@@ -7632,7 +7672,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 df2ObjectPos(*d.world, ox, oy);
                 std::tie(bx, by) = toMap(ox, oy);
             } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
-            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, missionName(*d.mission), hidden);
+            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, df2RecordName(size_t(id.index)), hidden);   // with 0x467430's labels
         });
         // The mission route (0x4271b0 with Waypoints, not in multiplayer
         // modes), after the objects' shapes (0x4261e0): 0xff8000, first four
@@ -8547,32 +8587,36 @@ void Game::drawOldMessages(const Screen& s) {
     // newest always at y 610 (0x484e01..0x484e35), each in its message
     // colour (the ring's +0x78, 0x484e0d).
     if (df2Hud_.on && arsenal_.df2Gog()) {
-        // GOG Df2.exe 0x448e40: the 3D view (x 0..0x400, the whole width;
-        // here the window's, as the strips the columns follow) darkened,
-        // not outlined (0x465ae0(.., 10, 0)); STROVER43 centred at (512,
-        // view top + 20) in [0x67d37c]; then entries 15..0 of both wrapped
-        // rings (0xaadb88 chat, 0xaaeeec sys), each at its HUD.DEF item's
-        // x0 + 2 and y0 + the view's top row ([0x67d3b0]) + W*120/1024 +
-        // k*(12W/640), in its own colour (+0x78).
-        const float vt = s.playY / (s.u * 0.625f);
-        hud_.multiply(0, s.playY, s.w, s.playH, {0.5f, 0.5f, 0.5f, 1});
+        // GOG Df2.exe 0x448e40: the 3D view (rows DHT_h .. H - DHB_h, kept
+        // in 768 space by 0x466510 as [0x67d3bc] / [0x67d3c0]) halved over
+        // x 0..1024 without a border (0x465ae0's last argument 0; OpenDF:
+        // the window's width, as the strips), STROVER43 centred at (512,
+        // top + 20); then the 16 latest wrapped lines of both histories,
+        // entry 15 at the top: chat at (chat_message.x + 2, ...) and system
+        // at (sys_message.x + 2, ...), y = DHT_h ([0x67d3b0]) + the box's y
+        // + W*120/1024 + k * (W*12/640), in mode pixels, own colours.
+        const int n = s.modeW, modeH = n * 3 / 4;
+        const int top768 = df2Hud_.top.height * 768 / modeH;
+        const int bot768 = (modeH - df2Hud_.bottom.height) * 768 / modeH;
+        const float y0 = s.vy(float(top768)), y1 = s.vy(float(bot768));
+        hud_.multiply(0, y0, s.w, y1 - y0, {0.5f, 0.5f, 0.5f, 1});
         const std::string t = df2Text("Overlays", "STROVER43", "Messages");
-        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(vt + 20), t, kDf2Amber, s.text());
-        const int n = s.modeW;
-        auto history = [&](const std::deque<Df2Line>& h, const char* key) {
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(float(top768 + 20)), t, kDf2Amber, s.text());
+        const int base = df2Hud_.top.height + n * 120 / 1024, step = n * 12 / 640;
+        auto column = [&](const std::deque<Df2Line>& h, const char* key) {
             const float x = df2X(s, df2Hud_.def.value(n, key, 0) + 2, false);
-            int y = df2Hud_.def.value(n, key, 1) + n * 120 / 1024;
-            for (int k = 0; k < 16; ++k, y += n * 12 / 640) {
+            for (int k = 0; k < 16; ++k) {
                 const size_t e = size_t(15 - k);
-                if (e < h.size() && !h[e].text.empty()) hud_.text(x, s.playY + float(y) * s.art(), h[e].text, h[e].colour, s.text());
+                if (e < h.size() && !h[e].text.empty())
+                    hud_.text(x, df2Y(s, base + df2Hud_.def.value(n, key, 1) + k * step, false), h[e].text, h[e].colour, s.text());
             }
         };
-        history(df2Chat_, "chat_message");
-        history(df2Sys_, "sys_message");
+        column(df2Chat_, "chat_message");
+        column(df2Sys_, "sys_message");
         return;
     }
     if (df2Hud_.on) {
-        // DF2.EXE 0x442850: the panel box, STROVER43 centred at (512, 120) in
+        // DF2.EXE 0x442850 (the CD build): the panel box, STROVER43 centred at (512, 120) in
         // orange, the system history's entries 15..0 (0x41cf50 pushes the
         // newest into entry 0) at x 130, y 160 + 30k, each in its own colour:
         // bottom-anchored, the newest at y 610.
