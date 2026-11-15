@@ -36,6 +36,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 
@@ -359,6 +360,9 @@ private:
             if (mo.group == 3) continue;
             const WorldObject* w = live[i];
             if (w && w->removed) continue;
+            // GOG Df2.exe 0x4261e0's decorations loop: an item with S&D
+            // (attrib 0x1000) is skipped once destroyed (+0x64 & 4).
+            if (mo.group == 1 && w && w->item && (w->item->attrib & 0x1000) && !w->alive()) continue;
             const int shape = w ? w->radarShape : int(int8_t(mo.raw[19] & 0xFF));
             if (!shape) continue;
             f(Df2Shape{&mo, w, shape, int(int8_t((uint32_t(mo.raw[16]) >> 24) & 0xFF))});
@@ -830,6 +834,11 @@ private:
         int mouseX = 0, mouseY = 0;   // in the 640x480 screen
         int lastX = 0, lastY = 0;     // the mouse the frame before (waypoint drag)
         bool panning = false, leftHeld = false;
+        // The buttons held (bit 1 left, 2 right, 4 middle): GOG Df2.exe
+        // 0x40c1e0 ORs every held button into [0xc0478c] (0x477de3 / 0x477e1a
+        // / 0x477e3d), and the tabs (0x40d860), rows (0x40d790) and widgets
+        // (0x40cae0) test only that it is not 0.
+        int held = 0;
         bool dragHeld = false;        // [0xc08858]: the left button was held on an earlier map frame
         Df2Sel sel;                   // [0xbcb424]
         Df2Sel drag;                  // 0xbd055c: the waypoint being dragged
@@ -888,9 +897,9 @@ private:
     void df2Select(Df2Sel s) { df2Map_.sel = s; }
     bool df2SelValid(Df2Sel s) const;
     bool df2SelPos(Df2Sel s, double& x, double& y, float* z = nullptr) const;
+    void df2ObjectPos(const WorldObject& o, double& x, double& y) const;
     std::string df2SelName(Df2Sel s) const;
     int df2SelItem(Df2Sel s) const;
-    std::string df2MissionName(size_t index) const;
     std::string df2RecordName(size_t index) const;
     bool df2SelOnPlayerTeam(Df2Sel s) const;
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
@@ -1590,6 +1599,7 @@ bool Game::loadMission(int index) {
     df2Map_.sel = df2Map_.drag = Df2Sel{};
     df2Map_.prompt = false;
     df2Map_.entered = false;
+    df2Map_.panX = df2Map_.panZ = 0;   // 0x40c550 (0x46735d): [0xc08868] / [0xc0886c], any tab
     // The mission-start events (flag 2), visited once after the start
     // removals: GOG Df.exe 0x404e30 -> 0x42eb60, then the team totals
     // 0x44a110; GOG Df2.exe 0x41aeb0 (single player sets [0x67cd34]).
@@ -4314,6 +4324,24 @@ void Game::runAction(Action act, bool reverse) {
             SDL_SetRelativeMouseMode(showMap_ ? SDL_FALSE : SDL_TRUE);
             SDL_ShowCursor(SDL_DISABLE);
         }
+        if (df2Hud_.on) {
+            // GOG Df2.exe 0x4673b0 ends with 0x479b80: the queued mouse
+            // messages are taken, then SetCursorPos(the client centre), so the
+            // map's pointer starts at (320, 240) of its 640x480 screen and the
+            // view does not turn on close (the look reads the offset from the
+            // centre). The buttons' held state is the real one in GOG (a
+            // release while the map was shut is not missed).
+            if (captured_) {
+                int ww = 0, wh = 0;
+                SDL_GetWindowSize(win_, &ww, &wh);
+                SDL_WarpMouseInWindow(win_, ww / 2, wh / 2);
+            }
+            SDL_FlushEvent(SDL_MOUSEMOTION);
+            df2Map_.mouseX = df2Map_.lastX = 320;
+            df2Map_.mouseY = df2Map_.lastY = 240;
+            df2Map_.held = 0;
+            df2Map_.leftHeld = df2Map_.panning = false;
+        }
         break;
     case Action::MissionGoals:
         showGoals_ = !showGoals_;
@@ -5675,16 +5703,16 @@ void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, f
         hud_.line(x - r, y - r, x + r, y - r, t, c); hud_.line(x + r, y - r, x + r, y + r, t, c);
         hud_.line(x + r, y + r, x - r, y + r, t, c); hud_.line(x - r, y + r, x - r, y - r, t, c);
         break;
-    case 7:                                                                   // circle with X
+    case 7: {                                                                 // circle with X
+        // The circle, then the X to the square's corners (+-r): GOG Df.exe
+        // 0x48f5d0 -> 0x474730; GOG Df2.exe 0x4273b0 case 7 -> 0x4586f0, as
+        // a dead soldier's.
+        const float d = r;
         hud_.ring(x, y, r, t, c);
-        if (!df2Hud_.on) {   // GOG Df.exe 0x48f5d0 -> 0x474730: the X to the square's corners
-            hud_.line(x - r, y - r, x + r, y + r, t, c);
-            hud_.line(x - r, y + r, x + r, y - r, t, c);
-            break;
-        }
-        hud_.line(x - r * 0.7f, y - r * 0.7f, x + r * 0.7f, y + r * 0.7f, t, c);
-        hud_.line(x - r * 0.7f, y + r * 0.7f, x + r * 0.7f, y - r * 0.7f, t, c);
+        hud_.line(x - d, y - d, x + d, y + d, t, c);
+        hud_.line(x - d, y + d, x + d, y - d, t, c);
         break;
+    }
     case 8:                                                                   // triangle pointing east
         hud_.line(x - r, y - r, x + r, y, t, c); hud_.line(x + r, y, x - r, y + r, t, c);
         hud_.line(x - r, y + r, x - r, y - r, t, c);
@@ -6325,9 +6353,10 @@ void Game::drawDf2Bottom(const Screen& s) {
             for (const auto& o : world_.objects) {
                 if (o.missionGroup != 3 || !o.person || o.removed) continue;
                 if (o_.gpsIcons == 1 && !o.mapMarker) continue;
-                const Vec3 at = world_.nearest(o.pos, c);
-                drawMapMarker(s, mcx + (at.x - c.x) / mPerPx, mcy + (at.z - c.z) / mPerPx, 5, df2BlipColour(true, o.side), o.heading, o.dead,
-                              blip);
+                double ox = 0, oy = 0;
+                df2ObjectPos(o, ox, oy);
+                auto [bx, by] = toRadar(ox, oy);
+                drawMapMarker(s, bx, by, 5, df2BlipColour(true, o.side), o.heading, o.dead, blip);
             }
         // Objects with a radar shape (obj+0x6E, 0x421d2f): at their live
         // positions; the current waypoint blinks.
@@ -6336,9 +6365,9 @@ void Game::drawDf2Bottom(const Screen& s) {
             if (d.mission == current && !(ticks_ & 16)) return;
             float bx, by;
             if (d.world) {
-                const Vec3 at = world_.nearest(d.world->pos, c);
-                bx = mcx + (at.x - c.x) / mPerPx;
-                by = mcy + (at.z - c.z) / mPerPx;
+                double ox = 0, oy = 0;
+                df2ObjectPos(*d.world, ox, oy);
+                std::tie(bx, by) = toRadar(ox, oy);
             } else std::tie(bx, by) = toRadar(d.mission->x, d.mission->y);
             drawMapMarker(s, bx, by, d.shape, shapeColour(d), 0, false, blip);
         });
@@ -6572,10 +6601,12 @@ const uint8_t kDf2ElevRamp[256] = {
     217, 217, 218, 219, 220, 221, 222, 222, 223, 224, 225, 226, 227, 227, 228, 229, 230, 231, 232, 232, 233, 234, 235, 236, 236, 237,
     238, 239, 240, 240, 241, 242, 243, 244, 245, 245, 246, 247, 248, 249, 249, 250, 251, 252, 253, 253, 254, 255};
 // 0x4434e0 (byte table 0x443614, jump table 0x4435b4): a weapon TYPE's
-// WEAP frame, -1 none (in the CD build type 9 M4/M203 has no picture;
-// GOG Df2.exe 0x449b50 gives types 8 and 9 frame 4).
+// WEAP frame, -1 none (type 9 M4/M203 has no picture in the CD build: READ;
+// GOG Df2.exe 0x449b50 gives it frame 4 as type 8, byte table 0x449c84[9] =
+// 5 -> 0x449b8a, see kDf2Type9FrameGog).
 const signed char kDf2TypeFrame[39] = {-1, 18, 12, 12, -1, 7,  10, -1, 4,  -1, 13, 8,  3, -1, -1, 11, -1, -1, -1, 1,
                                        5,  2,  -1, 9,  6,  -1, 0,  0,  15, 16, -1, 19, 21, 20, -1, 14, 17, 0,  0};
+const int kDf2Type9FrameGog = 4;
 // 0x4a4c88: the categories (type +0x94) each Weapons slot accepts, as bits.
 const int kDf2SlotMask[5] = {8, 0x10, 0x30, 4, 0x40};
 // A grid column's letters (GOG Df2.exe 0x427a60 / 0x4261e0): a negative
@@ -6622,22 +6653,17 @@ bool Game::df2SelPos(Df2Sel s, double& x, double& y, float* z) const {
         y = player_.missionY();
         if (z) *z = player_.feet.y;
     } else if (s.kind == 2) {
-        // The copy nearest the player on the repeating map (as drawn), in
-        // absolute mission metres like the player's own (objects +0x24/+0x28
-        // are absolute 16.16 mission coordinates: GOG Df2.exe 0x44ebd0, grid
-        // reference 0x427a60), not in the player's wrapped frame.
-        const Vec3 at = world_.nearest(world_.objects[size_t(s.index)].pos, player_.feet);
-        x = at.x + (player_.missionX() - double(player_.feet.x));
-        y = -at.z + (player_.missionY() + double(player_.feet.z));
-        if (z) *z = at.y;
+        // Absolute mission metres (objects +0x24/+0x28 are absolute 16.16
+        // mission coordinates: GOG Df2.exe 0x44ebd0, grid reference 0x427a60).
+        const WorldObject& o = world_.objects[size_t(s.index)];
+        df2ObjectPos(o, x, y);
+        if (z) *z = o.pos.y;
     } else if (s.kind == 3) {
         const MissionObject& mo = mission_.objects[size_t(s.index)];
         for (const auto& o : world_.objects)
             if (o.missionIndex == s.index) {
-                const Vec3 at = world_.nearest(o.pos, player_.feet);
-                x = at.x + (player_.missionX() - double(player_.feet.x));
-                y = -at.z + (player_.missionY() + double(player_.feet.z));
-                if (z) *z = at.y;
+                df2ObjectPos(o, x, y);
+                if (z) *z = o.pos.y;
                 return true;
             }
         x = mo.x;
@@ -6652,18 +6678,30 @@ bool Game::df2SelPos(Df2Sel s, double& x, double& y, float* z) const {
     return true;
 }
 
-std::string Game::df2MissionName(size_t index) const {
-    const MissionObject& mo = mission_.objects[index];
-    for (const auto& rp : route_)
-        if (rp.object == &mo) return rp.name;
-    return df2RecordName(index);
-}
-
 // The object name +0x54 as GOG Df2.exe 0x403790 (CD 0x403590) fills it from
 // the mission record: PeopleNames STRNAME%03i of record +4 when that is not 0,
 // then, for item 6005 (0x1775) only, WPNames STRWPNAME%03i of record +0x58;
 // each cut to 15 characters. No display path reads the ITEMS.DEF name, so an
-// object with neither stays empty (the command map shows CMAP_ITEM_UNKNOWN).
+// object with neither stays empty (the command map's lists show
+// CMAP_ITEM_UNKNOWN for it, 0x40d520; its info panels a blank line).
+// An object's absolute mission position (+0x24 / +0x28): GOG Df2.exe never
+// wraps it, and the radar / command map (0x4273b0) and the info panels
+// (0x40ecb0, 0x40f430, 0x40f4f0) place it from there, so an object more than
+// half a wrap period away shows where it really is. OpenDF's world keeps x / z
+// inside the repeating tile, so the per-tick sum of its steps (mapTrack_) is
+// used; the copy nearest the player before the first tick.
+void Game::df2ObjectPos(const WorldObject& o, double& x, double& y) const {
+    const size_t i = size_t(&o - world_.objects.data());
+    if (i < mapTrack_.size()) {
+        x = mapTrack_[i].x;
+        y = mapTrack_[i].y;
+        return;
+    }
+    const Vec3 at = world_.nearest(o.pos, player_.feet);
+    x = at.x + (player_.missionX() - double(player_.feet.x));
+    y = -at.z + (player_.missionY() + double(player_.feet.z));
+}
+
 std::string Game::df2RecordName(size_t index) const {
     if (index >= mission_.objects.size()) return {};
     const MissionObject& mo = mission_.objects[index];
@@ -6680,14 +6718,15 @@ std::string Game::df2RecordName(size_t index) const {
     return name;
 }
 
+// The selection's name, object +0x54 as is: the info panels (GOG Df2.exe
+// 0x40ecb0, 0x40f260, 0x40f430, 0x40f4f0) and the HUD waypoint line
+// (0x4492d0) copy it with no fallback.
 std::string Game::df2SelName(Df2Sel s) const {
-    std::string n;
-    if (!df2SelValid(s)) return n;
-    if (s.kind == 1) n = o_.soldierName;
-    else if (s.kind == 2) n = df2PersonName(world_.objects[size_t(s.index)]);
-    else if (s.kind == 3) n = df2MissionName(size_t(s.index));
-    else n = df2Wps_[size_t(s.index)].name;
-    return n.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : n;
+    if (!df2SelValid(s)) return {};
+    if (s.kind == 1) return o_.soldierName;
+    if (s.kind == 2) return df2PersonName(world_.objects[size_t(s.index)]);
+    if (s.kind == 3) return df2RecordName(size_t(s.index));
+    return df2Wps_[size_t(s.index)].name;
 }
 
 int Game::df2SelItem(Df2Sel s) const {
@@ -6710,26 +6749,23 @@ bool Game::df2SelOnPlayerTeam(Df2Sel s) const {
     return o.person && o.side == kPlayerSide && o.missionGroup == 3;
 }
 
-// The action buttons for the selection (0x40dd50), the first at (688, 696),
-// each next 32 higher. Codes: 1 Bozo Filter, 2 Send Message to (both no-ops,
-// 0x4015e0), 3 Set as my Waypoint (0x411630), 4 Delete (0x411680), 5 Rename
-// (0x411700). Set Voice Channel / Send to... / Make Permanent need voice or
-// network players (multiplayer only).
+// The action buttons for the selection (GOG Df2.exe 0x40e800; CD 0x40dd50
+// also had Send Message to, which GOG dropped), the first at (688, 696),
+// each next 32 higher; none while the VON tab is open ([0xc03720] == 1).
+// Codes: 1 Bozo Filter (a no-op, 0x4017c0), 3 Set as my Waypoint, 4 Delete,
+// 5 Rename. Set Voice Channel / Send to... / Make Permanent need voice or
+// network players (multiplayer only). A mission object gets Set as my
+// Waypoint for class kind 7 or item 0x1775 (6005); no ITEMS.DEF type makes
+// kind 7 (READ), so 6005 alone, plus 0xfc3 / 0xfc4 (4035 / 4036).
 std::vector<std::pair<std::string, int>> Game::df2ActionButtons() const {
     std::vector<std::pair<std::string, int>> b;
     const Df2Sel s = df2Map_.sel;
-    if (!df2SelValid(s)) return b;
+    if (!df2SelValid(s) || df2Map_.tab == 1) return b;
     const std::string setWay = df2Text("Cmap", "CMAP_BTN_SETWAY", "Set as my Waypoint");
-    if (s.kind == 1) {   // +0x64 bit 0: a player
-        b.push_back({df2Text("Cmap", "CMAP_BTN_BOZO", "Bozo Filter"), 1});
-        b.push_back({df2Text("Cmap", "CMAP_BTN_SENDMESSAGE", "Send Message to"), 2});
-    }
+    if (s.kind == 1) b.push_back({df2Text("Cmap", "CMAP_BTN_BOZO", "Bozo Filter"), 1});   // +0x64 bit 0: a player
     if (df2SelOnPlayerTeam(s)) b.push_back({setWay, 3});
     const int item = df2SelItem(s);
-    if (s.kind == 3) {
-        const ItemDef* it = items_.byMissionType(uint32_t(item));
-        if ((it && it->type == "marker") || item == 6005 || item == 4035 || item == 4036) b.push_back({setWay, 3});
-    }
+    if (s.kind == 3 && (item == 6005 || item == 4035 || item == 4036)) b.push_back({setWay, 3});
     if (s.kind == 4) {
         b.push_back({df2Text("Cmap", "CMAP_BTN_DELETE", "Delete"), 4});
         b.push_back({df2Text("Cmap", "CMAP_BTN_RENAME", "Rename"), 5});
@@ -6753,7 +6789,7 @@ void Game::df2Action(int code) {
         m.promptText.clear();
         SDL_StartTextInput();
         break;
-    default: break;   // Bozo Filter, Send Message to: no-ops (0x4015e0)
+    default: break;   // Bozo Filter: a no-op
     }
 }
 
@@ -6775,17 +6811,39 @@ void Game::df2SetWaypoint(Df2Sel s) {
     df2HudWp_ = s;
 }
 
-// NextWaypoint (action 32, 0x446700(+1)): only the mission list; the current
-// waypoint not in it -> from index 0, so the next is entry 1.
+// NextWaypoint (GOG Df2.exe 0x41f150 case 0x16 -> 0x44d280(+1), or (-1)
+// with Shift, bit 31 of the queued action; CD 0x446700): nothing with fewer
+// than two entries ([0x79a80c] < 2, so a custom HUD waypoint stays); the
+// route cleared when no entry has an item (+4); the current waypoint not in
+// the list counts as index 0; then the next (previous) entry that has an
+// item, wrapping, becomes the HUD waypoint [0x79a810].
 void Game::df2NextWaypoint(int dir) {
-    if (route_.empty()) return;
-    if (df2HudWp_.kind != 0) {
-        df2HudWp_ = Df2Sel{};
-        routeIndex_ = 1 % int(route_.size());
+    const int n = int(route_.size());
+    if (n < 2) return;
+    auto exists = [&](int i) { const MissionObject* o = route_[size_t(i)].object; return o && !o->omitted; };
+    bool any = false;
+    for (int i = 0; i < n && !any; ++i) any = exists(i);
+    if (!any) {
+        route_.clear();
+        routeIndex_ = 0;
         return;
     }
-    const int n = int(route_.size());
-    routeIndex_ = (routeIndex_ + (dir < 0 ? n - 1 : 1)) % n;
+    const int cur = df2HudWp_.kind == 0 ? routeIndex_ : 0;
+    int found = -1;
+    if (dir >= 0) {
+        for (int i = cur + 1; i < n && found < 0; ++i)
+            if (exists(i)) found = i;
+        for (int i = 0; i <= cur && found < 0; ++i)
+            if (exists(i)) found = i;
+    } else {
+        for (int i = cur - 1; i >= 0 && found < 0; --i)
+            if (exists(i)) found = i;
+        for (int i = n - 1; i >= cur && found < 0; --i)
+            if (exists(i)) found = i;
+    }
+    if (found < 0) return;
+    df2HudWp_ = Df2Sel{};
+    routeIndex_ = found;
 }
 
 // GOG Df.exe NextWaypoint 0x484c80 / PrevWaypoint 0x484d00: nothing with
@@ -7043,7 +7101,7 @@ void Game::df2MapFrame() {
             m.barWidget = w;
             m.barAnchorY = my;
             m.barCount = 0;
-        } else if (w && m.leftHeld) {
+        } else if (w && m.held) {
             const BarSpec& sp = bars[size_t(w / 8)];
             int& pos = *sp.pos;
             const int page = sp.page, zone = w % 8;
@@ -7069,16 +7127,18 @@ void Game::df2MapFrame() {
                     if (pos < 0) pos = 0;
                 }
             }
-        } else if (!m.leftHeld) {
+        } else if (!m.held) {
             m.barCount = 0;
         }
     } else {
         m.barWidget = 0;
     }
-    if (m.tab == 0 && m.leftHeld) {
+    if (m.tab == 0 && m.held) {
         auto in = [&](float vx, float vy, float w) { return m.mouseX >= V(vx) && m.mouseX < V(vx) + w && m.mouseY >= V(vy) && m.mouseY < V(vy) + 16; };
         if (in(608, 668, V(32))) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);   // + (0x4000 min)
         if (in(608, 700, V(32))) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);    // - (0x39999 max)
+    }
+    if (m.tab == 0 && m.leftHeld) {
         // Held (0x40d558..0x40d5cd): the drag target moves by the world delta
         // of the mouse (+0x24 x, +0x28 y; the height +0x2c stays).
         // Not on the press frame: GOG Df2.exe 0x40dd70 only picks and
@@ -7287,7 +7347,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
         const float x0 = V(vx), y0 = V(vy), x1 = x0 + V(vw);
         const float bh = m.end1.texture ? float(m.end1.height) / 4.f : 16.f;
         const bool hover = float(m.mouseX) >= x0 && float(m.mouseX) <= x1 && float(m.mouseY) >= y0 && float(m.mouseY) <= y0 + bh;
-        const int f = hover ? (m.leftHeld ? 2 : 1) : 0;
+        const int f = hover ? (m.held ? 2 : 1) : 0;
         frame(m.end1, f, x0, y0);
         for (float x = x0 + 8; x < x1 - 8; x += 8) frame(m.midl, f, x, y0);
         frame(m.end2, f, x1 - 8, y0);
@@ -7315,6 +7375,11 @@ void Game::drawDf2CommandMap(const Screen& s) {
     // one, "[" right-aligned at x0 and "]" at x1 in red. `extra` draws a
     // page's own columns of an entry's row.
     using ListEntry = std::pair<Df2Sel, std::string>;
+    // A list row's name: +0x54, CMAP_ITEM_UNKNOWN when empty (0x40d520).
+    auto rowName = [&](Df2Sel e) {
+        const std::string n = df2SelName(e);
+        return n.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : n;
+    };
     auto list = [&](const std::vector<ListEntry>& all, int skip, int slots, const std::function<void(size_t, float, Color)>& extra) {
         m.rows.clear();
         for (size_t i = size_t(std::max(0, skip)); i < all.size() && m.rows.size() < 32; ++i) {
@@ -7417,7 +7482,9 @@ void Game::drawDf2CommandMap(const Screen& s) {
         }
         const char* kindKey = nullptr;
         const char* kindDef = nullptr;
-        if (sel.kind == 4 || item == 6005 || (it && it->type == "marker")) { kindKey = "CMAP_ITEM_WAYPOINT"; kindDef = "Waypoint"; }   // 0x40e800
+        // GOG Df2.exe 0x40ebf0: kind 7 (no ITEMS.DEF type makes it), 0x1775
+        // or 0x17c9; other markers (kind 4) get no panel.
+        if (sel.kind == 4 || item == 6005) { kindKey = "CMAP_ITEM_WAYPOINT"; kindDef = "Waypoint"; }   // 0x40f260
         else if (it && it->type == "building") { kindKey = "CMAP_ITEM_BUILDING"; kindDef = "Building"; }                   // 0x40e9d0
         else if (it && it->type == "vehicle") { kindKey = "CMAP_ITEM_VEHICLE"; kindDef = "Vehicle"; }                      // 0x40ea90
         if (!kindKey) return;   // enemy soldiers, items: nothing
@@ -7455,6 +7522,12 @@ void Game::drawDf2CommandMap(const Screen& s) {
         }
         auto toMap = [&](double x, double y) { return std::pair<float, float>{mx + float(x - px) / mPerPx, my - float(y - py) / mPerPx}; };
         // Grid (0x40e...): 100 m lines in orange, labels white at the cell middle.
+        // A label (0x426f10): four passes in [0x67d364] = 0x010101 at y - 1,
+        // y + 1, x - 1, x + 1, then white ([0x67d360]).
+        auto outlined = [&](float tx, float ty, const std::string& t) {
+            for (auto [dx, dy] : {std::pair{0.f, -k}, {0.f, k}, {-k, 0.f}, {k, 0.f}}) hud_.text(tx + dx, ty + dy, t, rgb(1, 1, 1), kt);
+            hud_.text(tx, ty, t, kHudWhite, kt);
+        };
         if (m.toggles[0]) {
             const double halfW = (x1 - x0) * 0.5 * mPerPx, halfH = (y1 - y0) * 0.5 * mPerPx;
             for (double gx = std::ceil((px - halfW) / 100) * 100; gx <= px + halfW; gx += 100) {
@@ -7462,13 +7535,17 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 hud_.rect(sx, y0, k, y1 - y0, kDf2Amber);
                 // Column letters (0x4261e0): negative indices wrap by 702.
                 const std::string lab = df2GridColumn(int(std::floor(gx / 100)) + 10);
-                hud_.text(sx + 50 / mPerPx - hud_.textWidth(lab, kt) / 2, y0 + k, lab, kHudWhite, kt);
+                // 0x426fd0: only while x0 <= lx - 16 and lx + 16 <= x1.
+                const float lx = sx + 50 / mPerPx;
+                if (x0 <= lx - 16 * k && lx + 16 * k <= x1) outlined(lx - hud_.textWidth(lab, kt) / 2, y0 + k, lab);
             }
             for (double gy = std::floor((py + halfH) / 100) * 100; gy >= py - halfH; gy -= 100) {
                 const float sy = toMap(px, gy).second;
                 hud_.rect(x0, sy, x1 - x0, k, kDf2Amber);
                 const int row = ((10 - int(std::floor((gy - 100) / 100))) % 100 + 100) % 100;
-                hud_.text(x0 + 2 * k, sy + 50 / mPerPx - 4 * k, std::to_string(row), kHudWhite, kt);
+                // 0x4270c0: only while y0 <= ly - 5 and ly + 5 <= y1.
+                const float ly = sy + 50 / mPerPx;
+                if (y0 <= ly - 5 * k && ly + 5 * k <= y1) outlined(x0 + 2 * k, ly - 4 * k, std::to_string(row));
             }
         }
         const float blip = 6.f * k;
@@ -7485,7 +7562,14 @@ void Game::drawDf2CommandMap(const Screen& s) {
         // itself | 0x808080. With Names (flag 0x20, 0x427904) a non-empty
         // name (+0x54) is drawn in every pass at (x + size, y), in that
         // pass's colour.
-        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead, Df2Sel id, const std::string& name = {}) {
+        // The selected object as last drawn (0x4273b0 keeps its shape in
+        // [0xa6de48]): drawn again after everything (flag 0x4000), also on
+        // the frames the HUD-waypoint blink skips it.
+        struct SelBlip { float x, y; int type; Color col; float heading; bool dead; std::string name; };
+        std::optional<SelBlip> selBlip;
+        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead, Df2Sel id, const std::string& name = {}, bool hidden = false) {
+            if (id.kind && id == m.sel && !selBlip) selBlip = SelBlip{x, y, type, col, heading, dead, name};
+            if (hidden) return;
             if (x > x0 - 8 * k && x < x1 + 8 * k && y > y0 - 8 * k && y < y1 + 8 * k) m.picks.push_back({(x - ox) / k, (y - oy) / k, id});
             Color outline = rgb(1, 1, 1);
             if (id.kind && id == m.sel && ((ticks_ + 8) & 0x20)) {
@@ -7517,8 +7601,42 @@ void Game::drawDf2CommandMap(const Screen& s) {
             }
             return n;
         };
-        // The mission route (0x4224c0, not in multiplayer modes), 0xff8000,
-        // first four black (0x010101) copies at x +- 1 / y +- 1 (flag 0x1000).
+        if (m.toggles[2] && o_.gpsIcons > 0)
+            for (size_t i = 0; i < world_.objects.size(); ++i) {
+                const WorldObject& o = world_.objects[i];
+                if (o.missionGroup != 3 || !o.person || o.removed) continue;
+                if (o_.gpsIcons == 1 && !o.mapMarker) continue;
+                double ox = 0, oy = 0;
+                df2ObjectPos(o, ox, oy);
+                auto [gx, gy] = toMap(ox, oy);
+                blipAt(gx, gy, 5, df2BlipColour(true, o.side), o.heading, o.dead, Df2Sel{2, int(i)},
+                       o.missionIndex >= 0 ? missionName(mission_.objects[size_t(o.missionIndex)]) : std::string());
+            }
+        forDf2Shapes([&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
+            const std::string kind = it ? it->type : std::string();
+            // GOG Df2.exe 0x4273b0: kinds 5 (building) and 2 (decoration) need
+            // Buildings, 1 (vehicle) Vehicles, kind 7 (none) and the items
+            // 0x1775, 0x178a..0x178c, 0x17c9, 0x17cc, 0x17cd Waypoints; other
+            // markers (kind 4) are not filtered. (0xfc3 / 0xfc4 / 0x1020 need
+            // flag 0x10, always set here.)
+            const uint32_t t = d.mission->type;
+            const bool wpItem = t == 6005 || t == 6026 || t == 6027 || t == 6028 || t == 6089 || t == 6092 || t == 6093;
+            if (((kind == "building" || kind == "decoration") && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (wpItem && !m.toggles[3])) return;
+            const Df2Sel id{3, int(d.mission - mission_.objects.data())};
+            // The HUD waypoint blinks (0x421dc0): drawn while frame & 0x10.
+            const bool hidden = df2HudWpIs(id) && !(ticks_ & 16);
+            float bx, by;
+            if (d.world) {
+                double ox = 0, oy = 0;
+                df2ObjectPos(*d.world, ox, oy);
+                std::tie(bx, by) = toMap(ox, oy);
+            } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
+            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, missionName(*d.mission), hidden);
+        });
+        // The mission route (0x4271b0 with Waypoints, not in multiplayer
+        // modes), after the objects' shapes (0x4261e0): 0xff8000, first four
+        // black (0x010101) copies at x +- 1 / y +- 1 (flag 0x1000).
         if (m.toggles[3])
             for (size_t i = 0; i + 1 < route_.size(); ++i) {
                 auto [ax, ay] = toMap(route_[i].x, route_[i].y);
@@ -7527,30 +7645,6 @@ void Game::drawDf2CommandMap(const Screen& s) {
                     hud_.line(ax + dx, ay + dy, bx + dx, by + dy, k, rgb(1, 1, 1));
                 hud_.line(ax, ay, bx, by, k, kDf2Amber);
             }
-        if (m.toggles[2] && o_.gpsIcons > 0)
-            for (size_t i = 0; i < world_.objects.size(); ++i) {
-                const WorldObject& o = world_.objects[i];
-                if (o.missionGroup != 3 || !o.person || o.removed) continue;
-                if (o_.gpsIcons == 1 && !o.mapMarker) continue;
-                const Vec3 at = world_.nearest(o.pos, player_.feet);
-                blipAt(mx + (at.x - c.x) / mPerPx, my + (at.z - c.z) / mPerPx, 5, df2BlipColour(true, o.side), o.heading, o.dead, Df2Sel{2, int(i)},
-                       o.missionIndex >= 0 ? missionName(mission_.objects[size_t(o.missionIndex)]) : std::string());
-            }
-        forDf2Shapes([&](const Df2Shape& d) {
-            const ItemDef* it = items_.byMissionType(d.mission->type);
-            const std::string kind = it ? it->type : std::string();
-            if ((kind == "building" && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (kind == "marker" && !m.toggles[3])) return;
-            const Df2Sel id{3, int(d.mission - mission_.objects.data())};
-            // The HUD waypoint blinks (0x421dc0): drawn while frame & 0x10.
-            if (df2HudWpIs(id) && !(ticks_ & 16)) return;
-            float bx, by;
-            if (d.world) {
-                const Vec3 at = world_.nearest(d.world->pos, player_.feet);
-                bx = mx + (at.x - c.x) / mPerPx;
-                by = my + (at.z - c.z) / mPerPx;
-            } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
-            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, missionName(*d.mission));
-        });
         // Player waypoints (pool loop 0x421e48, Waypoints filter): shape 3
         // (diamond) in team 0's green 0x00ff00; names (+0x54) in the blip
         // colour at x + size with Names; the HUD waypoint blinks (0x421e60).
@@ -7558,12 +7652,31 @@ void Game::drawDf2CommandMap(const Screen& s) {
             for (size_t i = 0; i < df2Wps_.size(); ++i) {
                 const Df2Waypoint& w = df2Wps_[i];
                 const Df2Sel id{4, int(i)};
-                if (!w.used || (df2HudWpIs(id) && !(ticks_ & 16))) continue;
+                if (!w.used) continue;
                 auto [bx, by] = toMap(w.x, w.y);
-                blipAt(bx, by, 3, teamColour(0), 0, false, id, w.name);
+                blipAt(bx, by, 3, teamColour(0), 0, false, id, w.name, df2HudWpIs(id) && !(ticks_ & 16));
             }
-        blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, Df2Sel{1, 0}, o_.soldierName);
+        // The player: an organics object, so hidden with People off (0x4273b0
+        // returns without flag 4; the map passes People as 4, 0x40e11a).
+        if (m.toggles[2])
+            blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, Df2Sel{1, 0},
+                   o_.soldierName);
+        // 0x4261e0 with flag 0x4000: the selection again with its last shape
+        // (players of another team excluded: multiplayer).
+        if (selBlip && df2SelValid(m.sel))
+            blipAt(selBlip->x, selBlip->y, selBlip->type, selBlip->col, selBlip->heading, selBlip->dead, m.sel, selBlip->name);
         hud_.unclip();
+        // Gridlines (0x4261e0's tail, after the clip is reset by 0x458040):
+        // the north arrow in [0x67d37c] = 0xff8000, virtual (590, 220) down
+        // to (590, 270) and to (600, 240) / (580, 240) (0x456c10), and "N"
+        // (0x4c36d0) f_sml centred at (570, 220) (0x4577a0 mode 2).
+        if (m.toggles[0]) {
+            const float ax = X(V(590)), ay = Y(V(220));
+            hud_.line(ax, ay, X(V(590)), Y(V(270)), k, kDf2Amber);
+            hud_.line(ax, ay, X(V(600)), Y(V(240)), k, kDf2Amber);
+            hud_.line(ax, ay, X(V(580)), Y(V(240)), k, kDf2Amber);
+            hud_.text(X(V(570)) - hud_.textWidth("N", kt) / 2, Y(V(220)), "N", kDf2Amber, kt);
+        }
         // Buttons (width 152 virtual): Gridlines, Names, People, Waypoints,
         // Vehicles, Buildings; the icon buttons and + / -.
         static const char* kLabels[6] = {"Gridlines", "Names", "People", "Waypoints", "Vehicles", "Buildings"};
@@ -7605,7 +7718,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
             hud_.text(X(V(heads[i].x)) - hud_.textWidth(t, kt) / 2, Y(V(heads[i].y)), t, cHead, kt);
         }
         scrollBar(608, 216, 672, m.scrollPlayers, 16);
-        list({{Df2Sel{1, 0}, df2SelName(Df2Sel{1, 0})}}, m.scrollPlayers, 16, noExtra);
+        list({{Df2Sel{1, 0}, rowName(Df2Sel{1, 0})}}, m.scrollPlayers, 16, noExtra);
         infoPanel();
         actionButtons();
     } else if (m.tab == 3) {
@@ -7635,16 +7748,19 @@ void Game::drawDf2CommandMap(const Screen& s) {
         const std::string planNone = df2Text("Cmap", "CMAP_PLANNONE", "None");
         // The player's row first (INFERRED: the player is the first object of
         // its team in mission group 3 in the shipped missions).
-        std::vector<ListEntry> entries{{Df2Sel{1, 0}, df2SelName(Df2Sel{1, 0})}};
+        std::vector<ListEntry> entries{{Df2Sel{1, 0}, rowName(Df2Sel{1, 0})}};
         std::vector<std::pair<std::string, std::string>> cols{{df2TypeName(df2Loadout_.primary), planNone}};
         for (size_t i = 0; i < world_.objects.size(); ++i) {
             // Teammates: no code writes a mission soldier's controller bytes
             // +0xb6..+0xba (writers: the network 0x408eca / 0x40a071 /
             // 0x40a60b and the local player's join copy 0x454273), so the
             // weapon column shows type 0, "None".
-            if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)}) || !world_.objects[i].alive()) continue;
+            // 0x40d520 has no health test (organics +0xc is not cleared by
+            // death: writers 0x403790, 0x409610, 0x4146f0), so dead teammates
+            // stay listed; removed objects go.
+            if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)})) continue;
             const int ord = std::clamp(ai_.order(int(i)), 0, 3);
-            entries.push_back({Df2Sel{2, int(i)}, df2SelName(Df2Sel{2, int(i)})});
+            entries.push_back({Df2Sel{2, int(i)}, rowName(Df2Sel{2, int(i)})});
             cols.push_back({df2TypeName(0), df2Text("TeamOrders", kShortKey[ord], kShortDef[ord])});
         }
         list(entries, m.scrollTeam, 14, [&](size_t e, float y0, Color c) {
@@ -7681,9 +7797,9 @@ void Game::drawDf2CommandMap(const Screen& s) {
         static const char* kSlotDef[5] = {"Primary", "Secondary 1", "Secondary 2", "Sidearm", "Grenade"};
         const Color white = rgb(0xff, 0xff, 0xff);
         auto picture = [&](int type, float x, float y) {
-            const int frame = type == 9 && arsenal_.df2Gog() ? 4 : type >= 0 && type < 39 ? kDf2TypeFrame[type] : -1;   // GOG 0x449b50: case 8, 9 -> 4
-            if (!m.weap.texture || frame < 0) return;
-            const float fh = float(m.weap.height / 22), H = float(m.weap.height), f = float(frame);
+            const int fr = type == 9 && arsenal_.df2Gog() ? kDf2Type9FrameGog : type >= 0 && type < 39 ? kDf2TypeFrame[type] : -1;
+            if (!m.weap.texture || fr < 0) return;
+            const float fh = float(m.weap.height / 22), H = float(m.weap.height), f = float(fr);
             hud_.setBlend(5);
             hud_.imageUV(m.weap.texture, X(x), Y(y), float(m.weap.width) * k, fh * k, 0, f * fh / H, 1, (f + 1) * fh / H);
             hud_.setBlend(0);
@@ -7799,23 +7915,47 @@ void Game::drawDf2CommandMap(const Screen& s) {
     if (cur.texture) {
         const float hx = wcur ? 6.f : m.panning && overMap ? 10.f : overMap ? 12.f : 0.f;
         const float hy = wcur ? 6.f : m.panning && overMap ? 10.f : overMap ? 11.f : 0.f;
-        hud_.image(cur.texture, X(float(m.mouseX) - hx), Y(float(m.mouseY) - hy), float(cur.width) * k, float(cur.height) * k,
-                   wcur ? Color{1, 1, 1, 1} : Color{0, 1, 0, 1});
+        // 0x40ccf0: kept inside the 640x480 surface, the low edge first.
+        float cx = std::max(0.f, float(m.mouseX) - hx), cy = std::max(0.f, float(m.mouseY) - hy);
+        if (cx + float(cur.width) > 640.f) cx = 640.f - float(cur.width);
+        if (cy + float(cur.height) > 480.f) cy = 480.f - float(cur.height);
+        hud_.image(cur.texture, X(cx), Y(cy), float(cur.width) * k, float(cur.height) * k, wcur ? Color{1, 1, 1, 1} : Color{0, 1, 0, 1});
+    }
+    // 0x40bda0 ends with the Game Paused box (0x449200) while [0xc249e4] is
+    // set: the panel 0x465ae0(310, 330, 714, 438) (x ends rounded down to 4
+    // pixels) and Overlays STROVER7 centred at (512, 380) in 0x00ff00.
+    if (paused_) {
+        const float bx0 = X(float(int(V(310)) & ~3)), by0 = Y(V(330)), bx1 = X(float(int(V(714)) & ~3)), by1 = Y(V(438));
+        hud_.multiply(bx0, by0, bx1 - bx0, by1 - by0, {0.5f, 0.5f, 0.5f, 1});
+        hud_.rect(bx0, by0, bx1 - bx0, k, kDf2Amber);
+        hud_.rect(bx0, by1 - k, bx1 - bx0, k, kDf2Amber);
+        hud_.rect(bx0, by0, k, by1 - by0, kDf2Amber);
+        hud_.rect(bx1 - k, by0, k, by1 - by0, kDf2Amber);
+        const std::string t = df2Text("Overlays", "STROVER7", "Game Paused");
+        hud_.text(X(V(512)) - hud_.textWidth(t, kt) / 2, Y(V(380)), t, kHudPureGreen, kt);
     }
 }
 
 void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
     Df2Map& m = df2Map_;
     auto V = [](float v) { return std::floor(v * 0.625f); };
-    if (button == 3) { m.panning = down; return; }   // right drag pans
+    // Right drag pans (0x40ddff, bit 2); left alone picks on the map
+    // (0x40def6, bit 1); any button works the tabs, rows and widgets.
+    if (button == 3) m.panning = down;
     if (button == 1) m.leftHeld = down;
-    if (!down || button != 1) return;
+    const int bit = button == 1 ? 1 : button == 3 ? 2 : 4;
+    m.held = down ? (m.held | bit) : (m.held & ~bit);
+    if (!down) return;
     auto in = [&](float vx, float vy, float w) { return x >= V(vx) && x < V(vx) + w && y >= V(vy) && y < V(vy) + 16; };
     // Tabs (0x40d860): the text rectangles x0..x1, y 80..96, edges included.
     if (y >= 80 && y <= 96) {
         const auto tabs = df2MapTabs();
         for (int i = 0; i < 6; ++i)
-            if (x >= tabs[size_t(i)].x0 && x <= tabs[size_t(i)].x1) { df2MapEnter(i); return; }
+            if (x >= tabs[size_t(i)].x0 && x <= tabs[size_t(i)].x1) {
+                // 0x40d800: only a different tab leaves / clears / enters.
+                if (i != m.tab) df2MapEnter(i);
+                return;
+            }
     }
     // The action buttons of the selection (Map, VON, Players, Team; group 2).
     if (m.tab <= 3) {
@@ -7876,15 +8016,20 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
     if (in(528, 700, 16)) { m.dButton = !m.dButton; df2Elevation_ = m.dButton; return; }   // D (0x411280)
     if (in(568, 668, 16)) { m.panX = m.panZ = 0; return; }                                 // >< re-centres
     if (in(568, 700, 16)) { m.contours = !m.contours; return; }                            // {{{ (0x411220)
-    // The map (0x40d2d0): strictly inside (48, 200)-(640, 656).
-    if (x > V(48) && x < V(640) && y > V(200) && y < V(656)) {
-        const double step = 1024.0 / 640.0 * mapScale_;
-        const double cx = (V(48) + V(640)) / 2.0, cy = (V(200) + V(656)) / 2.0;
+    // The map (0x40d2d0): strictly inside (48, 200)-(640, 656), left only.
+    if (button == 1 && x > V(48) && x < V(640) && y > V(200) && y < V(656)) {
         if (m.wTool) {
-            // 0x422ea0 (the radar transform inverted), then 0x445e70(x, y,
-            // "WP", player): the first free pool slot (none of 128 free:
-            // nothing, select(0)); then the name prompt, and W goes off.
-            const double wx = player_.missionX() + m.panX + (double(x) - cx) * step, wy = player_.missionY() - m.panZ + (cy - double(y)) * step;
+            // GOG Df2.exe 0x427ba0 (the radar transform inverted): from the
+            // integer centre pixel ([0xa69e10] = (30 + 400) >> 1, [0xa69e14]
+            // = (125 + 410) >> 1, stored by 0x4261e0), the offset times the
+            // 16.16 step (0x4261e0's (scale << 10) / 640) cut to whole metres
+            // (& 0xffff0000), plus the map centre; then 0x445e70(x, y, "WP",
+            // player): the first free pool slot (none of 128 free: nothing,
+            // select(0)); then the name prompt, and W goes off.
+            const int cx = (int(V(48)) + int(V(640))) >> 1, cy = (int(V(200)) + int(V(656))) >> 1;
+            const int64_t step = (int64_t(std::llround(double(mapScale_) * 65536.0)) << 10) / 640;
+            auto metres = [](int64_t v) { return double(int32_t(uint32_t(v) & 0xffff0000u)) / 65536.0; };
+            const double wx = player_.missionX() + m.panX + metres(int64_t(x - cx) * step), wy = player_.missionY() - m.panZ + metres(int64_t(cy - y) * step);
             Df2Sel made;
             for (size_t i = 0; i < df2Wps_.size(); ++i)
                 if (!df2Wps_[i].used) {
