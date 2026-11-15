@@ -872,7 +872,10 @@ First differences from DF1:
     acquisition; script properties 16-19 set or clear them and 2/3/4/14/15
     can clear; night lowers perception 0.15; alert soldiers no longer turn
     while idle; silent soldiers never radio; DF1's water probe only with the
-    avoid-water bit; any order holds position. Enemies fire through DF2's
+    avoid-water bit; any order holds position; no shot while a friend (the
+    player included) is within 1 m (0x41e880) of the ray from 0.75 m up
+    along the aim, between 1/256 m and the target distance (0x417650,
+    0x401cd7). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
     vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed
