@@ -683,6 +683,7 @@ private:
         binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
     }
     bool paused_ = false;                 // [0xc70ac4] (0x42df53)
+    bool jumpPressed_ = false;            // DF1: a move_jump press since the last player update (GOG Df.exe [0xc23a00] & 0x400)
     bool oldMessages_ = false;            // [0x66f974]
     // "End Mission? (Y/N)": DF.EXE [0x66f95c], DF2.EXE [0x65362c]. Opened by
     // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
@@ -1267,9 +1268,21 @@ void Game::runInputScript(float dt) {
             k.keysym.scancode = sc;
             k.keysym.sym = SDL_GetKeyFromScancode(sc);
             if (held(SDL_SCANCODE_LSHIFT)) k.keysym.mod = KMOD_LSHIFT;
+            if (held(SDL_SCANCODE_LCTRL)) k.keysym.mod = SDL_Keymod(k.keysym.mod | KMOD_LCTRL);
             handleKey(k);
         } else if (c.op == "hold") {
-            inputHeld_.push_back(c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc);
+            const SDL_Scancode h = c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc;
+            // A held key is pressed first (its key-down event), as on a keyboard.
+            if (h != SDL_SCANCODE_UNKNOWN && !held(h)) {
+                SDL_KeyboardEvent k{};
+                k.type = SDL_KEYDOWN;
+                k.keysym.scancode = h;
+                k.keysym.sym = SDL_GetKeyFromScancode(h);
+                if (held(SDL_SCANCODE_LSHIFT) || h == SDL_SCANCODE_LSHIFT) k.keysym.mod = KMOD_LSHIFT;
+                if (held(SDL_SCANCODE_LCTRL) || h == SDL_SCANCODE_LCTRL) k.keysym.mod = SDL_Keymod(k.keysym.mod | KMOD_LCTRL);
+                handleKey(k);
+            }
+            inputHeld_.push_back(h);
         } else if (c.op == "release") {
             const SDL_Scancode r = c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc;
             inputHeld_.erase(std::remove(inputHeld_.begin(), inputHeld_.end(), r), inputHeld_.end());
@@ -2892,7 +2905,18 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    const Action act = controls_.actionFor(k.keysym.scancode);
+    Action act = controls_.actionFor(k.keysym.scancode);
+    // GOG Df.exe 0x479380 (CD 0x42ea10): with Shift or Ctrl down (the key
+    // event's 0x1000000 / 0x4000000 bits, [0xd093c0] / [0xd093c1] in
+    // 0x498a70) a press entry fires only if it asks for that modifier (+0x2a
+    // & 0x40 Shift, +0x2b & 1 Ctrl) or its key is Shift / Ctrl itself; the
+    // others are passed over (none of OpenDF's DF1 actions asks for one:
+    // PrintScreen and debug_hud are not done). The held entries (+0x2a & 4:
+    // map zoom here) are not in that search.
+    if (!world_.df2Rules && (k.keysym.mod & (KMOD_SHIFT | KMOD_CTRL)) && act != Action::MapZoomIn && act != Action::MapZoomOut) {
+        const SDL_Scancode sc = k.keysym.scancode;
+        if (sc != SDL_SCANCODE_LSHIFT && sc != SDL_SCANCODE_RSHIFT && sc != SDL_SCANCODE_LCTRL && sc != SDL_SCANCODE_RCTRL) act = Action::Count;
+    }
     // While paused, the game's commands (flag 0x10000) are ignored (0x42d9e3).
     if (paused_ && act != Action::Pause && act != Action::Escape) return;
     switch (act) {
@@ -2998,6 +3022,9 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
     case Action::CenterView: player_.pitch = 0; break;
+    // DF1: move_jump is a press command (GOG Df.exe 0x477d40 cmd 0x90:
+    // [0xc23a00] |= 0x400 for one poll); DF2 polls it held.
+    case Action::Jump: if (!world_.df2Rules) jumpPressed_ = true; break;
     default: break;
     }
 }
@@ -6430,6 +6457,8 @@ int Game::run() {
             in.strafe = float(down(Action::SlideRight)) - float(down(Action::SlideLeft));
             in.walk = down(Action::NoRun);
             in.jump = down(Action::Jump);
+            in.jumpPress = jumpPressed_;
+            jumpPressed_ = false;
             in.up = down(Action::Jump);
             in.down = down(Action::Crouch) && player_.fly;
             if (o_.walkForward) in.forward = 1;
@@ -6458,7 +6487,7 @@ int Game::run() {
             // key bits [0x93351c] & 0x41e clear [0x93367c]); the scope flag
             // stays, DF.EXE only hides the scope while the keys are down
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
-            const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
+            const bool moveKeys = in.forward != 0 || in.strafe != 0 || (arsenal_.df2() ? in.jump : in.jumpPress);   // DF1 0x400: the press
             arsenal_.setMoveKeys(moveKeys);
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {

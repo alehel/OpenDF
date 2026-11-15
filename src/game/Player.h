@@ -20,6 +20,7 @@ enum class Stance { Stand, Crouch, Prone };
 struct PlayerInput {
     float forward = 0, strafe = 0;   // -1..1
     bool walk = false, jump = false;
+    bool jumpPress = false;          // DF1: the move_jump press this frame (GOG Df.exe [0xc23a00] & 0x400, 0x477d40)
     bool shooting = false;           // the weapon's refire time is running (DF.EXE [0x93334c] > 0)
     bool up = false, down = false;   // fly mode only
     bool dead = false;               // the player is dead (+0x64 & 4): DF2's 0x4145a0 lets go of a gun

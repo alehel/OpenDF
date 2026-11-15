@@ -118,16 +118,17 @@ void Player::update(float dt, const PlayerInput& in, World& world) {
     // move_jump is a press command in GOG (key table 0x4fb2fc flag 1, CD 5)
     // re-armed by [0xc23a10] while the jump key is up (0x4795a0), so holding
     // it jumps once; prone, it stands the soldier up instead. Either way the
-    // press is used up: the 0x400 bit is a one-poll event (0x479750 clears
-    // [0xc23a00] via cmd 0xa3 each poll), so the press that stands the
-    // soldier up from prone cannot also jump on the next frame.
+    // press is used up: the 0x400 bit is a one-poll event (0x477d40 sets it
+    // from the key press, 0x479750 clears [0xc23a00] via cmd 0xa3 each
+    // poll), so a press made in the air, sliding, or the press that stands
+    // the soldier up from prone is lost, even if the key is held on. Only a
+    // jump uses up the re-arm [0xc23a10] (0x488200); standing up does not.
     if (!in.jump) jumpArmed_ = true;
     bool jumpNow = false;
     if (onGround_ && !sliding_) {
-        if (in.jump && jumpArmed_) {
+        if (in.jumpPress) {
             if (stance == Stance::Prone) stance = Stance::Stand;
-            else jumpNow = true;
-            jumpArmed_ = false;
+            else if (jumpArmed_) { jumpNow = true; jumpArmed_ = false; }
         }
         if (reqProne_) stance = stance == Stance::Prone ? Stance::Stand : Stance::Prone;
         if (reqCrouch_) stance = stance == Stance::Crouch ? Stance::Stand : Stance::Crouch;
