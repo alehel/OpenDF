@@ -933,6 +933,7 @@ bool Game::loadMission(int index) {
                 const std::string* t = gameTable_.find("HudGuns", key);
                 hudGuns.push_back(t ? *t : std::string());
             }
+            arsenal_.clearMagnification();   // GOG Df2.exe 0x44e7f0
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;

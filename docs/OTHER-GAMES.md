@@ -476,8 +476,8 @@ First differences from DF1:
     0x44e0a0), the laser square; the scope view's FOV 28.125 / mag degrees
     in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), mag for slots 3-5
     the kept magnification [0x79a698] (E / Shift+E step it 2..scope with
-    wraparound while scoped, 0x44c7e0; it starts as the slot-3 scope,
-    0x44eeb0; clamped by 0x44e6a0; shown as "%2ix" at (700, 480) in
+    wraparound while scoped, 0x44c7e0; cleared at mission start, 0x44e7f0,
+    then the slot-3 scope, 0x44eeb0; clamped by 0x44e6a0; shown as "%2ix" at (700, 480) in
     yellow), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
     DF1's 28 / mag whole degrees;

@@ -292,6 +292,10 @@ public:
         return df2Mag_;
     }
     int df2Magnification() const { return df2Mag_; }
+    // GOG Df2.exe 0x44e7f0 (mission start) clears [0x79a2c0..0x79aaa0],
+    // the magnification with it, before 0x44eeb0; Request Weapons (0x44eeb0
+    // alone) keeps it.
+    void clearMagnification() { df2Mag_ = 0; }
     // GOG Df2.exe 0x44c7e0 (command scopemag, E; Shift+E steps down): only
     // while the scope shows (0x455790) and the mode has a scope: +d, past
     // the scope back to 2, under 2 to the scope.
@@ -386,7 +390,7 @@ private:
     Df2Loadout df2Lo_;
     void refillDf2Gog();
     int gear_ = 0, zero_ = 0;
-    mutable int df2Mag_ = 0;   // GOG Df2.exe [0x79a698], kept between missions
+    mutable int df2Mag_ = 0;   // GOG Df2.exe [0x79a698]
     struct DragPoint { int64_t x, y, slope; };
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick
