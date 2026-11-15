@@ -9711,11 +9711,13 @@ int Game::run() {
                 trackMapPositions();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
                 else tickDf1Lights();
-                // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick,
-                // spawning around the player object's origin +0x24..+0x2c
-                // whatever the camera (GOG Df2.exe 0x464d8b..0x464d9e ->
-                // 0x476170; the CD build used the last frame's eye).
-                weather_.setCamera(player_.origin());
+                // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
+                // GOG Df2.exe spawns them around the player object's origin
+                // +0x24..+0x2c whatever the camera (0x464d8b..0x464d9e ->
+                // 0x476170); the CD's 0x46baa0 takes no arguments and reads
+                // DAT_004ee264..6c, which the draw path sets: the last
+                // frame's eye (set after drawWorld below).
+                if (arsenal_.df2Gog()) weather_.setCamera(player_.origin());
                 weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
                               [this](Vec3 at) { spawnEffect(17, at); });
                 // DF2 fall damage (0x43f600, GOG 0x4458f0, single player): n =
@@ -10180,6 +10182,9 @@ int Game::run() {
                 // DF2 draws only the command map while it is open (0x45c610).
                 if (df2Hud_.on) gunInWorld_ = &s;
                 if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead() && outsideView() == 0);
+                // The CD DF2.EXE's weather centre: the last rendered frame's
+                // camera (0x46b780's end, DAT_004ee264..6c).
+                if (arsenal_.df2() && !arsenal_.df2Gog()) weather_.setCamera(viewEye());
                 gunInWorld_ = nullptr;
                 if (df2Hud_.on && showMap_) {
                     glViewport(0, 0, dw, dh);
