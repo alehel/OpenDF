@@ -384,6 +384,10 @@ private:
         bool smoke = false; float drift = 0, rise = 0, roll = 0;
         // DF2's landed canopy (`para` 0x42c570): heading, tipping 0..90°.
         bool canopy = false; float heading = 0, pitch = 0;
+        // Delta Force's `gdeb` debris pieces (GOG Df.exe 0x453530): velocity
+        // in m a tick (OpenDF axes) and the binary angles yaw +0x30, pitch
+        // +0x34 and roll +0x38.
+        bool debris = false; Vec3 dvel{0, 0, 0}; uint32_t yaw = 0, dpitch = 0, droll = 0;
         // DF2's dust clouds (move `smk2` 0x42aaa0, item 107051 SMKT_H): 16.16
         // velocity per tick (DF2 axes x east, y north, z up), size +0x84,
         // growth shift +0xb4, cap +0xb8, alpha +0xac and its step +0xb0, roll
@@ -502,6 +506,9 @@ private:
     void gnrcExplode(int index);   // Delta Force: a destroyed gnrc object goes off (0x453270)
     float effectScale_ = 0;        // > 0: the next spawnEffect's scale (effect +0x7c set by its caller)
     void spawnPuff(Vec3 at);
+    // Delta Force's wooden crates and furniture (`wdsm`, `wdmd`) and cacti
+    // (`cact`) at hp <= 0: puffs, `gdeb` debris pieces and a sound.
+    void woodDebris(int index);
     void tickEffects();
     // Delta Force 2's rain and snow (BMS flag 0x78 bit 3, 0x46ba90).
     Weather weather_;
@@ -2066,6 +2073,77 @@ void Game::spawnPuff(Vec3 at) {
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());
 }
 
+// GOG Df.exe wdsm 0x453810 -> 0x44ed40, wdmd 0x4538a0 -> 0x44efc0, cact
+// 0x4534a0 -> 0x44df90 (each ai handler at hp <= 0 with flag 4 clear, then
+// flags |= 0xc, the husk). Puffs are 0x42a440 (spawnPuff); every piece is
+// a `gdeb` object (0x45d970) at a random offset with velocity v (16.16 m
+// a tick) and yaw rand << 16 (its +0x7c, rand & 0x7fff + 0x20000, is not
+// drawn); the random numbers are 0x477860's 16 bits.
+//   wdsm: a puff at z + 0.5 m; 6 pieces, wooddebris1 (104069) when bit 8 of
+//     the draw is set, else wooddebris2 (104070), x +-0x2000, y +-0x1000,
+//     z + 1 m, vx, vy +-0x800, vz 0x600 + 0..0xfff; sound 0x139.
+//   wdmd: 10 puffs at z + 0.5 m, y then x + (r << 2) - 0x20000; 32 pieces,
+//     x, y + ((r & 0x7fff) << 2) - 0x10000, z + 1 m + 0..0xffff, vx, vy
+//     +-0x1000, vz 0x800 + 0..0x1fff; sound 0x13A.
+//   cact: 8 puffs at z + 1 m, + 0.75 m each; 48 pieces, one of 104058..62
+//     by (r * 5) >> 16, at z + 1 m + k/8 m, x +-0x2000, y +-0x1000, vx, vy
+//     +-0x800, vz 0x800 + 0..0x1fff; sound 0x130.
+// (wdsm / wdmd then make the items stacked on them fall, 0x44fcb0: items
+// whose +0x72 matches, within the flat radius and above; not done here.)
+// The pieces are effects here, not objects: rounds do not hit them.
+void Game::woodDebris(int index) {
+    const WorldObject& o = world_.objects[size_t(index)];
+    const std::string& f = o.item->aiFunction;
+    auto r = [this]() { return int32_t(std::uniform_int_distribution<int>(0, 0xffff)(effectRng_)); };
+    auto m = [](int32_t v) { return float(v) / 65536.f; };
+    // DF (x east, y north, z up) offsets and velocities to OpenDF axes.
+    auto piece = [&](int id, int32_t dx, int32_t dy, float z, int32_t vx, int32_t vy, int32_t vz) {
+        const uint32_t yaw = uint32_t(r()) << 16;
+        r();   // +0x7c
+        const ItemDef* it = items_.byId(100000 + id);
+        const GpuModel* g = it && !it->graphic.empty() ? models_.get(vfs_, it->graphic) : nullptr;
+        if (!g || g->lods.empty()) return;
+        Effect e{g, Vec3{o.pos.x + m(dx), z, o.pos.z - m(dy)}, 1.f, 0, 1 << 30, 1, 1};
+        e.debris = true;
+        e.dvel = {m(vx), m(vz), -m(vy)};
+        e.yaw = yaw;
+        effects_.push_back(e);
+        if (effects_.size() > 0x400) effects_.erase(effects_.begin());
+    };
+    if (f == "wdsm") {
+        spawnPuff(o.pos + Vec3{0, 0.5f, 0});
+        for (int k = 0; k < 6; ++k) {
+            const int id = (r() & 0x100) ? 4069 : 4070;
+            const int32_t dx = (r() & 0x3fff) - 0x2000, dy = (r() & 0x1fff) - 0x1000;
+            const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0xfff) + 0x600;
+            piece(id, dx, dy, o.pos.y + 1.f, vx, vy, vz);
+        }
+        playSound(0x139, o.pos);
+    } else if (f == "wdmd") {
+        for (int k = 0; k < 10; ++k) {
+            const int32_t dy = ((r() & 0xffff) << 2) - 0x20000, dx = ((r() & 0xffff) << 2) - 0x20000;
+            spawnPuff(o.pos + Vec3{m(dx), 0.5f, -m(dy)});
+        }
+        for (int k = 0; k < 32; ++k) {
+            const int id = (r() & 0x100) ? 4069 : 4070;
+            const int32_t dx = ((r() & 0x7fff) << 2) - 0x10000, dy = ((r() & 0x7fff) << 2) - 0x10000;
+            const float z = o.pos.y + m((r() & 0xffff) + 0x8000) + 0.5f;
+            const int32_t vx = (r() & 0x1fff) - 0x1000, vy = (r() & 0x1fff) - 0x1000, vz = (r() & 0x1fff) + 0x800;
+            piece(id, dx, dy, z, vx, vy, vz);
+        }
+        playSound(0x13A, o.pos);
+    } else if (f == "cact") {
+        for (int k = 0; k < 8; ++k) spawnPuff(o.pos + Vec3{0, 1.f + 0.75f * float(k), 0});
+        for (int k = 0; k < 48; ++k) {
+            const int id = 4058 + ((r() * 5) >> 16);
+            const int32_t dx = (r() & 0x3fff) - 0x2000, dy = (r() & 0x1fff) - 0x1000;
+            const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0x1fff) + 0x800;
+            piece(id, dx, dy, o.pos.y + 1.f + float(k) / 8.f, vx, vy, vz);
+        }
+        playSound(0x130, o.pos);
+    }
+}
+
 // Per 60 Hz tick: effects age; smoke puffs move (0x480bfc): x += v, north
 // += v/4, up += w; scale grows 1/128 up to 2.0; roll one step; then w +=
 // 0x20 and v += 8 (16.16 per tick). Generators emit their puffs; barrels
@@ -2135,6 +2213,19 @@ void Game::tickEffects() {
             if (e.spin > 0x400000) e.spin = std::max(0x400000, e.spin - 0x100000);
             else if (e.spin < -0x400000) e.spin = std::min(-0x400000, e.spin + 0x100000);
             else e.spin = e.spin < 0 ? -0x400000 : 0x400000;
+            continue;
+        }
+        if (e.debris) {
+            // gdeb (GOG Df.exe 0x453530): position += velocity; the yaw's top
+            // byte +1, the pitch's high word + 0x380, the roll's top byte +7;
+            // while the ground (0x47df40) is below it, vz -= 0x134; at or
+            // above it the piece is deleted (0x45da30).
+            e.pos = e.pos + e.dvel;
+            e.yaw += 1u << 24;
+            e.dpitch += 0x380u << 16;
+            e.droll += 7u << 24;
+            if (terrain_.heightAt(e.pos.x, e.pos.z) < e.pos.y) e.dvel.y -= 0x134 / 65536.f;
+            else e.age = e.life;
             continue;
         }
         if (!e.smoke) continue;
@@ -3387,6 +3478,17 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             WorldObject body;
             body.heading = e.heading;
             body.pitch = e.pitch;
+            models_.draw(*e.model, 0, body.matrix(at));
+            continue;
+        }
+        if (e.debris) {
+            // An ordinary object (items list), drawn by its three angles and
+            // unscaled (the object draw does not read +0x7c).
+            const float turn = 2 * kPi / 4294967296.f;
+            WorldObject body;
+            body.heading = kPi * 0.5f - float(e.yaw) * turn;
+            body.pitch = float(e.dpitch) * turn;
+            body.roll = float(e.droll) * turn;
             models_.draw(*e.model, 0, body.matrix(at));
             continue;
         }
@@ -6582,6 +6684,10 @@ int Game::run() {
                     explode(at, 1);
                     ai_.noise(at, kDf1BlastNoise, 0, 0);
                     continue;
+                }
+                if (mission_.version < 0x0F && world_.objects[size_t(i)].item) {
+                    const std::string& f = world_.objects[size_t(i)].item->aiFunction;
+                    if (f == "wdsm" || f == "wdmd" || f == "cact") woodDebris(i);
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
