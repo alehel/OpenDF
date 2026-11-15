@@ -785,7 +785,8 @@ void Frontend::enter(Screen s) {
             if (a == std::string::npos && c == std::string::npos) break;
             bool include = true;
             size_t tagEnd;
-            if (c != std::string::npos && (a == std::string::npos || c < a)) {
+            const bool isCv = c != std::string::npos && (a == std::string::npos || c < a);
+            if (isCv) {
                 a = c;
                 tagEnd = briefing_.find('}', c);
                 if (tagEnd == std::string::npos) break;
@@ -801,7 +802,10 @@ void Frontend::enter(Screen s) {
             size_t e = tagEnd;
             while (e < briefing_.size() && briefing_[e] != ' ') ++e;
             const std::string* more = include ? campText_.find(sec, briefing_.substr(tagEnd, e - tagEnd)) : nullptr;
-            briefing_.replace(a, e - a, more ? *more : "");
+            // GOG 0x414520: after a {CV:n} key the space is dropped when a '{'
+            // follows it ({ADD} keeps its space).
+            const size_t cut = isCv && e + 1 < briefing_.size() && briefing_[e] == ' ' && briefing_[e + 1] == '{' ? e + 1 : e;
+            briefing_.replace(a, cut - a, more ? *more : "");
         }
         briefLine_ = 0;
         caption_.clear();

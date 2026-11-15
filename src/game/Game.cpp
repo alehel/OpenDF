@@ -1002,20 +1002,24 @@ bool Game::loadMission(int index) {
         const std::string* t = campText_.find(sec, key);
         briefing_ = t ? *t : "UNABLE TO FIND MISSION BRIEFING";
         // {ADD}<key> appends another key; {CV:n}<key> / {CV:!n}<key> append it
-        // only if campaign flag n is set / clear (0x412620 / 0x4125c8).
+        // only if campaign flag n is set / clear (0x412620 / 0x4125c8). The
+        // flags are the profile's (GOG 0x42adc0 -> 0x414520: profile +0x70 +
+        // camp * 0x44), i.e. savedCampaignFlags(); the live word is only
+        // loaded from them by the script load further down.
         for (int guard = 0; guard < 64; ++guard) {
             size_t a = briefing_.find("{ADD}"), c = briefing_.find("{CV:");
             if (a == std::string::npos && c == std::string::npos) break;
             bool include = true;
             size_t tagEnd;
-            if (c != std::string::npos && (a == std::string::npos || c < a)) {
+            const bool isCv = c != std::string::npos && (a == std::string::npos || c < a);
+            if (isCv) {
                 a = c;
                 tagEnd = briefing_.find('}', c);
                 if (tagEnd == std::string::npos) break;
                 std::string cond = briefing_.substr(c + 4, tagEnd - c - 4);
                 const bool neg = !cond.empty() && cond[0] == '!';
                 const int flag = std::atoi(cond.c_str() + (neg ? 1 : 0));
-                const bool set = flag >= 0 && flag < 32 && (campaignFlags() >> flag & 1);
+                const bool set = flag >= 0 && flag < 32 && (savedCampaignFlags() >> flag & 1);
                 include = neg ? !set : set;
                 ++tagEnd;
             } else {
@@ -1024,7 +1028,10 @@ bool Game::loadMission(int index) {
             size_t e = tagEnd;
             while (e < briefing_.size() && !std::isspace(static_cast<unsigned char>(briefing_[e]))) ++e;
             const std::string* more = include ? campText_.find(sec, briefing_.substr(tagEnd, e - tagEnd)) : nullptr;
-            briefing_.replace(a, e - a, more ? *more : "");
+            // GOG 0x414520: after a {CV:n} key the space is dropped when a '{'
+            // follows it ({ADD} keeps its space).
+            const size_t cut = isCv && e + 1 < briefing_.size() && briefing_[e] == ' ' && briefing_[e + 1] == '{' ? e + 1 : e;
+            briefing_.replace(a, cut - a, more ? *more : "");
         }
         briefStart_ = briefLast_ = 1;
         briefPage_ = 0;
