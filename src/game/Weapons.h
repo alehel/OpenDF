@@ -156,6 +156,11 @@ public:
     // DF2.EXE: slot 10 holds T[35] mode 0 = 47, the binoculars (0x447e20);
     // only the binoculars command reaches it (0x41b6e3). Empty in DF1.
     static constexpr int kBinocularSlot = 10;
+    // GOG Df2.exe: slots 11 and 12 hold the emplaced guns' modes 0x37 (the
+    // .50 cal) and 0x38 (the grenade launcher, item 4080) (0x44eeb0); only
+    // manning a gun selects them (0x44c840's end), 0x44f160 refuses them
+    // otherwise. Empty in DF1 and on the CD.
+    static constexpr int kMountSlot = 11, kMountGlSlot = 12;
 
     // `gameText`: DFGAME.BIN strings (mode names); `exe`: the original
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
@@ -203,7 +208,7 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
-    void cycle();                 // 0x44b81c: next slot with a mode, wrapping
+    void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
     void reload();                // 0x44a004
     void toggleZoom();
     // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10
@@ -311,7 +316,12 @@ private:
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick
     bool fromExe_ = false;
-    std::array<int, kSlots + 1> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars
+    std::array<int, kSlots + 3> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars, [11]/[12] GOG's emplaced guns
+    // GOG Df2.exe: the player's manned gun (+0x8c; World::playerMount, -1
+    // none) and whether its item is 4080 (+0x20 == 0xff0), as of this update.
+    int mount_ = -1;
+    bool mountGl_ = false;
+    void mountTick();
     int prevSlot_ = 3;   // DF2 [0x76553c]: the slot the binoculars came from
     int current_ = 3;
     int kit_ = 1;

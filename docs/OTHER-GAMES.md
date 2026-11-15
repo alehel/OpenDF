@@ -283,8 +283,15 @@ First differences from DF1:
     angles (0x44dd50 -> 0x416e90), and the gun's "ewpn" pose (0x450c60)
     turns meshes 1 and 2 about hardpoint 1 by the gunner's heading less
     the gun's and his pitch. A destroyed gun lets go (0x4467d0's end).
-    Not done: the gun's own weapon (HUD slots 11 / 12, 0x44c840 /
-    0x44f160) and the multiplayer mount 0x4183d0. Only TKH_G21 places
+    The gun's own weapon: slots 11 / 12 hold modes 0x37 (.50 cal, ammo
+    36, 200 rounds, cooldown 6, full auto) and 0x38 (ammo 37, 40 rounds,
+    cooldown 16) (0x44eeb0); after each weapon tick (0x44c840's end) a
+    manned gun selects 12 for item 4080 (glaunch), else 11, and none
+    held returns to slot 3; 0x44f160 refuses 11 / 12 without a gun
+    (a weapon key switches away for one tick), 0x44d3c0 does not cycle
+    off them, and the rounds leave the mounted eye (0x44dd50 ->
+    0x416e90). Not done: the HUD's name and icon for modes 55 / 56
+    and the multiplayer mount 0x4183d0. Only TKH_G21 places
     guns (two 50Cal_K); walking into one there seats the player.
     READ quirks kept: the sum of a mesh is
     cleared only when a point reaches the mesh box, so a mesh no point
