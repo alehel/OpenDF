@@ -653,8 +653,21 @@ void Arsenal::cycleBack() {
 }
 
 void Arsenal::reload() {
-    if (mode().type != 1) return;   // only guns have magazines (0x44a860)
-    startReload();
+    // The reload command (GOG Df.exe 0xbe -> 0x483bd0, table 0x483ba4; CD
+    // 0x44a88c, table 0x44a860): guns (1) start the reload; launchers (2,
+    // 0x483580) and claymores, satchels and grenades (7, 9, 11, 0x4837d0)
+    // start the mode's cooldown with the load sound +0x24 unless one is
+    // running, whatever the chamber holds (its end then uses a spare, see
+    // tick()); other types nothing. DF2 keeps the guns-only reload.
+    const int type = mode().type;
+    if (type == 1) {
+        startReload();
+    } else if (!df2_ && (type == 2 || type == 7 || type == 9 || type == 11)) {
+        if (cooldown_ <= 0) {
+            cooldown_ = mode().cooldown;
+            sound(1);
+        }
+    }
 }
 
 void Arsenal::sound(int field, int gunIndex) {
@@ -951,9 +964,19 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             chamberedRef() = 1;
         } else if (md.type == 6) {
             chamberedRef() = 1;   // 0x44a6c4 / DF2 0x4462d0: the knife is ready again
+        } else if (!df2_) {
+            // GOG Df.exe 0x483b70 (table 0x483b44; CD 0x44a318 / 0x44a548):
+            // launchers (2, 0x483610) and claymores, satchels and grenades
+            // (7, 9, 11, 0x483860) take the next one from the spares without
+            // looking at the chamber, so a reload-key cooldown on a loaded
+            // weapon costs a spare; other types nothing.
+            if ((md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11) && sparesRef() > 0) {
+                chamberedRef() = 1;
+                --sparesRef();
+            }
         } else if (sparesRef() > 0 && !chambered()) {
-            // 0x44a318 / 0x44a548 (DF2 0x4463c0): the next grenade, launcher
-            // round or charge from the spares (DF2's "clips").
+            // DF2.EXE 0x4463c0: the next grenade, launcher round or charge
+            // from the clips.
             chamberedRef() = 1;
             --sparesRef();
         }
