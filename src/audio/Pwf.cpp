@@ -77,20 +77,33 @@ bool Pwf::load(std::vector<uint8_t> file, std::string* error) {
                 l.next = r.u16(lo + 2);
                 l.range = float(r.i32(lo + 4));
                 l.flags = r.u32(lo + 8);
+                // Every variant the record counts is kept, so the count is the
+                // file's (u16 at +0) as GOG Df.exe 0x49d5a0 and GOG Df2.exe
+                // 0x47b3c0 pick by it; one with no readable record or no
+                // such sample has sample -1 and plays nothing.
                 for (uint32_t vi = 0; vi < nv; ++vi) {
                     const size_t vo = r.u32(lo + 0x10 + vi * 4);
-                    if (!r.ok(vo, 28)) continue;
                     SoundVariant v;
-                    v.sample = int(r.u32(vo));
-                    v.pitchBase = r.i32(vo + 4) / 65536.f;
-                    v.pitchRand = r.i32(vo + 8) / 65536.f;
-                    v.gain = r.i32(vo + 12);
-                    v.cap = r.i32(vo + 16);
-                    if (v.sample >= 0 && v.sample < int(samples_.size())) l.variants.push_back(v);
+                    v.sample = -1;
+                    if (r.ok(vo, 28)) {
+                        v.sample = int(r.u32(vo));
+                        v.pitchBase = r.i32(vo + 4) / 65536.f;
+                        v.pitchRand = r.i32(vo + 8) / 65536.f;
+                        v.gain = r.i32(vo + 12);
+                        v.cap = r.i32(vo + 16);
+                        if (v.sample < 0 || v.sample >= int(samples_.size())) v.sample = -1;
+                    }
+                    l.variants.push_back(v);
                 }
                 d.layers.push_back(std::move(l));
             }
-            defs_[upper(d.name)] = std::move(d);
+            // A name defined twice keeps its first record: the bank lookup
+            // is a linear strcmp that stops at the first match (GOG Df2.exe
+            // 0x47b300 = CD 0x4704a0). DF2.PWF holds 8 such names
+            // (GS_M16_SHOT, EXPLO_WATER, SATCHEL_SET, ...). Layers with no
+            // variants are kept (EXPLO_WATER's first copy plays nothing).
+            const std::string key = upper(d.name);
+            defs_.try_emplace(key, std::move(d));
         }
     }
     return true;

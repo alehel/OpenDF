@@ -11,10 +11,12 @@
 #include "../formats/Rtxt.h"
 #include "../render/Gl.h"
 #include "../render/Hud.h"
+#include "../render/Window.h"
 #include "Mnu.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -23,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 
 namespace df {
@@ -36,11 +39,11 @@ Color argb(uint32_t c) {
 }
 
 // A soldier profile (playerNN.ply, 0xA90 bytes, DF.EXE 0x40f40c / 0x40f630):
-// "PLY" + version 0x1A, name +0x04, flags +0x24 (bit 0 in use), campaign
+// "PLY" + version 0x1A (GOG Df.exe 0x1B, 0x409180), name +0x04, flags +0x24 (bit 0 in use), campaign
 // +0x28, per campaign c mission-done flags +0x30 + c*0x44 + 4i and campaign
 // flags +0x70 + c*0x44, selected mission +0x470 + 4c, face +0x640, campaign
 // kills +0x664, sidearm/primary/secondary item +0x680/+0x684/+0x688, list
-// indices +0x694/+0x698/+0x69C.
+// indices +0x694/+0x698/+0x69C, key bindings +0x6a0 (12 bytes, 44 rows; GOG 46).
 struct Profile {
     std::array<uint8_t, kProfileSize> d{};
     int32_t get(int off) const { int32_t v; std::memcpy(&v, &d[size_t(off)], 4); return v; }
@@ -57,10 +60,11 @@ struct Profile {
         std::string u = upperCase(n).substr(0, 15);
         std::memcpy(&d[4], u.data(), u.size());
     }
-    void defaults() {
-        // 0x40ee14: .45, M4/M203, Double ammo; +0x68C = 8.
+    void defaults(bool gog) {
+        // 0x40ee14: .45, M4/M203, Double ammo; +0x68C = 8. GOG Df.exe writes
+        // version 0x1B (0x409060).
         d.fill(0);
-        d[0] = 'P'; d[1] = 'L'; d[2] = 'Y'; d[3] = 0x1A;
+        d[0] = 'P'; d[1] = 'L'; d[2] = 'Y'; d[3] = gog ? 0x1B : 0x1A;
         set(0x28, 1);
         set(0x680, 6);
         set(0x684, 9);
@@ -77,6 +81,10 @@ struct Glyph { int x = 0, y = 0, w = 0, h = 0; };
 struct MenuFont {
     HudImage tex;
     std::array<Glyph, 256> glyphs{};
+    // A code the cutter gave no glyph is measured and drawn as glyph 0 (GOG
+    // 0x44bee0 at 0x44bf07, 0x44bf30, 0x44c190: glyph byte +5 set by 0x44b9a0).
+    std::array<bool, 256> defined{};
+    const Glyph& glyph(unsigned char c) const { return defined[c] ? glyphs[c] : glyphs[0]; }
     int height = 0;
     bool ok = false;
 };
@@ -172,25 +180,46 @@ private:
     bool loadData();
     void loadProfiles();
     void saveProfile(int i);
+    // The CD's 44 key rows and profile version 0x1A, or the GOG Df.exe's 46
+    // and 0x1B (its defaults from DFDK.KEY, 0x407040).
+    bool gogProfile_ = false;
+    bool printScreen_ = false;   // Shift+P: write the next drawn frame (0x473eb0)
+    int keyRows_ = kKeyRowsCd;
+    std::array<std::array<uint32_t, 3>, kKeyRowsGog> keyDefaults_{};
+    void loadKeyDefaults();
     Profile& prof() { return profiles_[size_t(cur_)]; }
 
     HudImage file(const std::string& pcx, bool transparent = false);
+    // A menu PCX as a texture sampled GL_NEAREST: DF.EXE copies every pixel
+    // at integer positions (0x40ec30, 0x40e900), so no cell of a 4-state
+    // strip blends into its neighbour when the window is scaled.
+    HudImage loadArt(const std::string& pcx, bool blackTransparent, bool index0Transparent = false);
+    // The same, keyed on palette index 0 and cached as "<PCX>#k".
+    HudImage keyed(const std::string& pcx);
     HudImage image(const std::string& name, bool transparent = false);
     MenuFont& font(const std::string& name);
     float textWidth(MenuFont& f, const std::string& s);
     // Text with {C:Name} colour codes; align 0 left, 1 centre, 2 right.
     void drawText(const std::string& fontName, float x, float y, const std::string& s, uint32_t color, int align = 0);
-    // Word wrap (~0x409260): words at spaces, "~" a line break, "{...}"
+    // Word wrap (~0x409260, GOG 0x410050): words at spaces, a word starting with "~" a line break, "{...}"
     // link tags dropped; returns the number of lines.
     int drawWrapped(const std::string& fontName, float x, float y, float w, float h, const std::string& s, uint32_t color,
                     int startLine = 0);
     void blit(const HudImage& im, float x, float y, float sx, float sy, float sw, float sh, bool translucent);
     void blitHalf(const HudImage& im, float x, float y, float w, float h);   // 50 % blend (0x407cd8)
-    // The teletype engine (0x418568 start, 0x418408 tick, 0x4184d4 draw):
-    // `rate` characters per 16 ms tick; while typing every draw plays a
-    // random Ttclick1..9 at fx*192/255; the text is word-wrapped in its rect
-    // in the font's own colour. ensureTty restarts it when the text changes.
-    struct Tty { bool active = false; std::string text; size_t count = 0; float x = 0, y = 0, w = 0, h = 0; std::string font; int rate = 1; };
+    // The teletype engine (0x418568 start, 0x418408 tick, 0x4184d4 draw;
+    // GOG 0x413460, 0x4132f0, 0x4133c0): `rate` steps per 16 ms tick, each
+    // one more character; `done` is set by the step after the last
+    // character (count > length, then count = length), and every draw until
+    // then plays a random Ttclick1..9 at fx*192/255; the text is
+    // word-wrapped in its rect in the font's own colour. ensureTty restarts
+    // it when the text changes.
+    struct Tty { bool active = false; std::string text; size_t count = 0; float x = 0, y = 0, w = 0, h = 0; std::string font; int rate = 1; bool done = false; };
+    static void ttyStep(size_t& count, bool& done, size_t length) {
+        if (done) return;
+        if (++count > length) { done = true; count = length; }
+    }
+    void ttyClick();
     Tty ttyHelp_, ttyNsLeft_, ttyNsRight_, ttyNsHelp_, ttyCamp_, ttyDebf_, ttyLo_;
     int helpRow_ = -1;
     void ensureTty(Tty& t, const std::string& text, float x, float y, float w, float h, const char* font, int rate);
@@ -210,6 +239,8 @@ private:
     void captureTo(GLuint& tex);
     void drawCaptured(GLuint tex, float x, float y, float w, float h);
     void drawWipe();
+    void pushTestEvents(const char* events);
+    void commitEdit();
 
     void enter(Screen s);
     void setMenu(const std::string& name);
@@ -227,6 +258,7 @@ private:
     // Screens.
     void refreshSoldier();
     void refreshCampaign();
+    void refreshOverviewTitle();
     void refreshOptions();
     bool missionAvailable(int camp, int mis);
     uint32_t missionHeader(int camp, int mis, int offset);
@@ -247,17 +279,19 @@ private:
     // was closed or the test screenshot was taken during it; `frame`
     // counts presented frames for --screenshot/--frames.
     bool playIntro(int& frame, bool& shotTaken);
-    bool introLeadSkip_ = false;   // a left click or an unread key during the intro (0x418b50, 0x489dc4)
+    bool introLeadSkip_ = false;   // CD: a left click (0x418b50) or a key still queued after the intro (0x489dc4)
     void writeScreenshot(int dw, int dh);
+    void writeMenuShot(const std::filesystem::path& path, int dw, int dh);
     DfConfig cfg_;              // df.cfg (written at exit, 0x40dc88 from 0x4016c7)
     std::string dragging_;      // the slider being dragged (0x4c1b64)
     void refreshSettings();
     void refreshMacros();
     // Keyboard Remap (0x422c10 init, 0x422d3c update, 0x423048 draw).
-    std::array<std::array<uint32_t, 2>, 44> kbWork_{}, kbRevert_{};
+    std::array<std::array<uint32_t, 2>, kKeyRowsGog> kbWork_{}, kbRevert_{};
     int kbScroll_ = 0, kbSel_ = -1, kbMode_ = 0, kbCapture_ = 0, kbTimer_ = -1, kbLastSlider_ = -1;
     std::string kbMsg_;
     size_t kbShown_ = 0;
+    bool kbDone_ = true;
     void refreshKeys();
     void kbMessage(const char* key, int ticks);
     void kbCaptured(int type, uint32_t code);
@@ -291,7 +325,11 @@ private:
 
     Screen screen_ = Start, next_ = Start;
     std::string menu_;
-    std::string hover_, pressed_;
+    std::string hover_;
+    // The buttons' runtime bits (GOG attrib +4 bit 0 pressed, +5 bit 0 hovered).
+    std::set<std::string> pressedBits_, hoverBits_;
+    enum PtrEvent { PtrLeave, PtrEnter, PtrPress, PtrRelease };
+    void pointer(MnuButton& b, PtrEvent ev, bool link = false);
     int mouseX_ = 0, mouseY_ = 0;
     std::string editing_, editBackup_;
     int editMax_ = 16, editMode_ = 0;   // 1 delete-recreate, 2 rename
@@ -310,15 +348,17 @@ private:
     bool markerOn_ = false;
     std::vector<BriefLink> links_;
     size_t captionShown_ = 0;
+    bool captionDone_ = true;   // the caption teletype's done flag (no caption: never started)
     void loadBriefingMap();
     void centreMap(int x, int y);
     void clickLink();
     void drawBriefingText(const MnuButton& b);
     void drawBriefingMap(const MnuButton& b);
-    void menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip = nullptr);
+    void menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip = nullptr, bool solid = false);
     int briefLine_ = 0, briefTotal_ = 0, briefVisible_ = 0;
     int loTab_ = 0, loSel_[3] = {0, 0, 0};
     MissionOutcome outcome_;
+    bool debfWon_ = false;   // GOG 0x4e6cfc
     bool missionPlayed_ = false;   // a mission has ended this run (the mixer hook is off since)
     int quitCode_ = 0;
     uint32_t options_ = 0;   // df.cfg attributes (Enemy AI 0x80, Player Health 0x100, ...)
@@ -332,7 +372,7 @@ bool Frontend::openWindow() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height,
-                            SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
+                            windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE));
     if (!win_) return false;
     ctx_ = SDL_GL_CreateContext(win_);
     const char* missing = nullptr;
@@ -372,23 +412,81 @@ bool Frontend::loadData() {
     return mnu_.parse(mnuSource_, menuText_);
 }
 
+void Frontend::loadKeyDefaults() {
+    // The GOG Df.exe (and an unknown build on its tables); without the
+    // executable, a DFDK.KEY in the archives says the same.
+    gogProfile_ = false;
+    if (const auto exe = findGameExe(o_.gameDir); !exe.empty()) {
+        ExeImage img;
+        std::string err;
+        gogProfile_ = img.load(exe, &err) && img.build() == ExeBuild::Df1Gog;
+    } else {
+        gogProfile_ = vfs_.exists("DFDK.KEY");
+    }
+    keyRows_ = gogProfile_ ? kKeyRowsGog : kKeyRowsCd;
+    for (int i = 0; i < kKeyRowsGog; ++i) keyDefaults_[size_t(i)] = {kKeyRows[i].vk, kKeyRows[i].mouse, 0};
+    if (!gogProfile_) return;
+    // GOG 0x407040: DFDK.KEY [KEYS] "KEY=index,vk,mouse,joy" over the table
+    // at 0x4e7ddc (12-byte rows, zero in the EXE's DGROUP, so a row the file
+    // does not list stays 0).
+    std::vector<uint8_t> raw;
+    if (!vfs_.read("DFDK.KEY", raw)) return;
+    keyDefaults_ = {};
+    std::istringstream in(std::string(raw.begin(), raw.end()));
+    std::string line;
+    bool keys = false;
+    while (std::getline(in, line)) {
+        if (const size_t c = line.find(';'); c != std::string::npos) line.resize(c);
+        while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+        size_t b = 0;
+        while (b < line.size() && std::isspace(static_cast<unsigned char>(line[b]))) ++b;
+        line.erase(0, b);
+        if (line.empty()) continue;
+        if (line[0] == '[') { keys = upperCase(line).compare(0, 6, "[KEYS]") == 0; continue; }
+        if (!keys || upperCase(line).compare(0, 4, "KEY=") != 0) continue;
+        int idx = -1;
+        unsigned vk = 0, mouse = 0, joy = 0;
+        if (std::sscanf(line.c_str() + 4, "%d , %u , %u , %u", &idx, &vk, &mouse, &joy) >= 1 && idx >= 0 && idx < kKeyRowsGog)
+            keyDefaults_[size_t(idx)] = {vk, mouse, joy};
+    }
+}
+
 void Frontend::loadProfiles() {
-    // 0x40f40c: nine files; an absent or unused one is zeroed with defaults;
-    // with no soldier at all slot 0 becomes "BLACKHAWK" (NSDELETEME).
-    bool any = false;
+    // 0x40f40c (GOG 0x408e30): nine files. An absent or unreadable one is
+    // zeroed with defaults and not counted; a "PLY" file whose slot is not
+    // in use (+0x24 bit 0) is reset to defaults with GroupMainMenu NSEMPTY
+    // copied as it is to +4, and counted like one in use. With none counted
+    // slot 0 becomes NSDELETEME ("BLACKHAWK"), in use.
+    loadKeyDefaults();
+    const std::string* emptyName = menuText_.find("GroupMainMenu", "NSEMPTY");
+    int files = 0;
     for (int i = 0; i < 9; ++i) {
         Profile& p = profiles_[size_t(i)];
         char name[32];
         std::snprintf(name, sizeof name, "player%02d.ply", i + 1);
         std::ifstream f(o_.gameDir / name, std::ios::binary);
         std::array<uint8_t, kProfileSize> buf{};
+        // CD 0x40f630: "PLY" and version 0x1A or later. GOG 0x409060: any
+        // "PLY"; one older than 0x1B gets rows 44-45 of the defaults
+        // (0x4e7fec) at +0x8b0 and becomes 0x1B.
         if (f && f.read(reinterpret_cast<char*>(buf.data()), kProfileSize) && buf[0] == 'P' && buf[1] == 'L' && buf[2] == 'Y' &&
-            buf[3] >= 0x1A) {
+            (gogProfile_ || buf[3] >= 0x1A)) {
             p.d = buf;
+            // GOG Df.exe 0x409060: a profile older than 0x1B gets the 24
+            // bytes at 0x4e7ddc row 44 (0x4e7fec: rows 44 and 45 as DFDK.KEY
+            // gave them, 0x407040 runs first) at +0x8b0, and version 0x1B.
+            if (gogProfile_ && p.d[3] < 0x1B)
+                for (int r = kKeyRowsCd; r < kKeyRowsGog; ++r)
+                    for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * r + 4 * k, int32_t(keyDefaults_[size_t(r)][size_t(k)]));
+            if (gogProfile_) p.d[3] = 0x1B;
+            if (!p.valid()) {
+                profileDefaults(p);
+                p.setStr(4, 16, emptyName ? *emptyName : "New Operative");
+            }
+            ++files;
         } else {
             profileDefaults(p);
         }
-        if (!p.valid()) { profileDefaults(p); p.setName("New Operative"); }
         // Profiles written by OpenDF before it kept the message macros have
         // all ten empty; they get DF.EXE's defaults (DF.EXE never writes that).
         bool noMacros = true;
@@ -398,21 +496,20 @@ void Frontend::loadProfiles() {
             profileDefaults(fresh);
             std::memcpy(&p.d[0x4b0], &fresh.d[0x4b0], 400);
         }
-        // Likewise key bindings (all 44 empty: never written by DF.EXE).
+        // Likewise key bindings (all empty: never written by DF.EXE).
         bool noKeys = true;
-        for (int m = 0; m < 44; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
+        for (int m = 0; m < kKeyRowsCd; ++m) noKeys = noKeys && p.get(0x6a0 + 12 * m) == 0 && p.get(0x6a4 + 12 * m) == 0;
         if (noKeys) {
             Profile fresh;
             profileDefaults(fresh);
-            std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], 44 * 12);
+            std::memcpy(&p.d[0x6a0], &fresh.d[0x6a0], size_t(keyRows_) * 12);
         }
-        any = any || p.valid();
         std::memset(&p.d[0x14], 0, 16);
         std::memcpy(&p.d[0x14], name, std::strlen(name));
     }
-    if (!any) {
+    if (files == 0) {
         const std::string* n = menuText_.find("GroupMainMenu", "NSDELETEME");
-        profiles_[0].setName(n ? *n : "BLACKHAWK");
+        profiles_[0].setStr(4, 16, n ? *n : "BLACKHAWK");
         profiles_[0].set(0x24, 1);
     }
     cur_ = 0;
@@ -421,8 +518,11 @@ void Frontend::loadProfiles() {
 }
 
 void Frontend::saveProfile(int i) {
+    // GOG 0x409180 (CD 0x40f718): every slot is written, unused ones too (the
+    // save-all loop 0x408b90 / CD 0x40f17c), so a deleted soldier stays deleted.
+    // The header is set on every write: "PLY" + 0x1B (GOG) / 0x1A (CD).
     Profile& p = profiles_[size_t(i)];
-    if (!p.valid()) return;
+    p.d[0] = 'P'; p.d[1] = 'L'; p.d[2] = 'Y'; p.d[3] = gogProfile_ ? 0x1B : 0x1A;
     char name[32];
     std::snprintf(name, sizeof name, "player%02d.ply", i + 1);
     std::ofstream f(o_.gameDir / name, std::ios::binary);
@@ -432,9 +532,29 @@ void Frontend::saveProfile(int i) {
 HudImage Frontend::file(const std::string& pcx, bool transparent) {
     const std::string key = upperCase(pcx) + (transparent ? "#t" : "");
     if (auto it = images_.find(key); it != images_.end()) return it->second;
-    HudImage im = hud().loadImage(vfs_, upperCase(pcx), transparent);
+    HudImage im = loadArt(upperCase(pcx), transparent);
     images_[key] = im;
     return im;
+}
+
+HudImage Frontend::loadArt(const std::string& pcx, bool blackTransparent, bool index0Transparent) {
+    HudImage im = hud().loadImage(vfs_, pcx, blackTransparent, index0Transparent);
+    if (im.texture) {
+        // The HUD caches the bound texture: restore the binding afterwards.
+        GLint prev = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+        glBindTexture(GL_TEXTURE_2D, im.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, GLuint(prev));
+    }
+    return im;
+}
+
+HudImage Frontend::keyed(const std::string& pcx) {
+    const std::string key = upperCase(pcx) + "#k";
+    if (auto it = images_.find(key); it != images_.end()) return it->second;
+    return images_[key] = loadArt(upperCase(pcx), false, true);
 }
 
 HudImage Frontend::image(const std::string& name, bool transparent) {
@@ -452,39 +572,50 @@ MenuFont& Frontend::font(const std::string& name) {
     if (fi == mnu_.fonts.end() || !vfs_.read(upperCase(fi->second.file), data) || !decodePcx(data, img)) return f;
     const int W = img.width, H = img.height;
     auto px = [&](int x, int y) { return img.pixels[size_t(y) * size_t(W) + size_t(x)]; };
-    std::vector<int> lines;
-    for (int y = 0; y < H; ++y) {
-        bool full = true;
-        for (int x = 0; x < W && full; ++x) full = px(x, y) == 1;
-        if (full) lines.push_back(y);
-    }
+    // The menu fonts are loaded with flags 3 (0x40624c): bit 2 cuts the
+    // glyphs (0x4422f0), zeroing the width markers 3 and 2 (0x442231,
+    // 0x442249); bit 1 sets the font's blend flag (0x44263c), so a glyph
+    // pixel is not drawn solid but blended (0x442aa6): a = palette red of
+    // its index >> 1, dst += (colour - dst) * a >> 7 per channel. The sheets
+    // are anti-aliased grey ramps (index 9 white .. 22 dark grey), so the
+    // alpha is a / 128; index 0 is skipped.
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v == 0 || v == 2 || v == 3) continue;
+        const int a = img.palette[v].r >> 1;
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = uint8_t((a * 255 + 64) / 128);
     }
-    // Bands repeat every `period` rows (the first separator line's y): band
-    // k is above the separator at period * (k + 1); band 0 starts at the top.
-    const int period = lines.empty() ? 0 : lines[0];
-    for (int band = 0; period > 0 && band < 16 && period * (band + 1) <= H; ++band) {
-        const int y0 = band == 0 ? 0 : period * band + 1, y1 = period * (band + 1);
-        if (y1 <= y0) continue;
-        if (!f.height) f.height = period - 1;
+    // Glyph bands (0x44bac0): band k scans down from its start row for the
+    // first row whose column-0 pixel is 1 (or the image end); the band is
+    // the rows in between (0x44b9a0 stores its height and start row) and
+    // the next starts two rows below that separator (0x44bb0d). 16 bands at
+    // most, 16 codes each.
+    for (int band = 0, y0 = 0; band < 16 && y0 < H; ++band) {
+        int y1 = y0;
+        while (y1 < H && px(0, y1) != 1) ++y1;
         int code = band * 16;
-        for (int x = 0; x < W && code < band * 16 + 16;) {
-            auto ink = [&](int cx) {
-                for (int y = y0; y < y1; ++y) {
-                    const uint8_t v = px(cx, y);
-                    if (v >= 8 || v == 3 || v == 4) return true;
-                }
-                return false;
-            };
+        auto ink = [&](int cx) {
+            for (int y = y0; y < y1; ++y) {
+                const uint8_t v = px(cx, y);
+                if (v >= 8 || v == 3 || v == 4) return true;
+            }
+            return false;
+        };
+        for (int x = 0; y1 > y0 && x < W && code < band * 16 + 16;) {
             if (!ink(x)) { ++x; continue; }
             const int start = x;
             while (x < W && ink(x)) ++x;
+            f.defined[size_t(code)] = true;
             f.glyphs[size_t(code++)] = {start, y0, x - start, y1 - y0};
         }
+        if (y1 >= H) break;
+        y0 = y1 + 2;
     }
+    // The line height everywhere is the byte at table + 0x20c: the height
+    // of glyph 'A' (band 4, entry 1).
+    f.height = f.glyphs['A'].h;
     f.tex = hud().makeImage(W, H, rgba);
     f.ok = f.height > 0;
     return f;
@@ -493,9 +624,9 @@ MenuFont& Frontend::font(const std::string& name) {
 float Frontend::textWidth(MenuFont& f, const std::string& s) {
     float w = 0;
     for (size_t i = 0; i < s.size(); ++i) {
-        if (static_cast<unsigned char>(s[i]) == 0xA0) { w += float(f.glyphs[' '].w + 1); continue; }
+        if (static_cast<unsigned char>(s[i]) == 0xA0) { w += float(f.glyph(' ').w + 1); continue; }
         if (s[i] == '{') { const size_t e = s.find('}', i); if (e != std::string::npos) { i = e; continue; } }
-        w += float(f.glyphs[static_cast<unsigned char>(s[i])].w + 1);
+        w += float(f.glyph(static_cast<unsigned char>(s[i])).w + 1);
     }
     return w;
 }
@@ -553,16 +684,14 @@ void Frontend::drawWipe() {
     drawCaptured(startTex_, 0, 0, 640, 480);
     if (wipeStep_ > 0) {
         drawCaptured(endTex_, 0, 0, float(128 * wipeStep_), 480);
-        // The bar: 50 %, black skipped (0x4083f8).
-        const HudImage bar = image("ImageLightBarRt");
+        // The bar: 50 %, black pixels skipped (0x4083f8; GOG 0x40f1e0).
+        const HudImage bar = image("ImageLightBarRt", true);
         if (bar.texture)
             hud().imageUV(bar.texture, offX_ + float(128 * (wipeStep_ - 1) + 44) * scale_, offY_, 84 * scale_, 480 * scale_, 0, 0, 84.f / float(bar.width),
                           480.f / float(bar.height), {1, 1, 1, 0.5f});
     }
     // df_bkg2 keyed (palette index 0) over everything.
-    const std::string key = "DF_BKG2.PCX#k";
-    if (!images_.count(key)) images_[key] = hud().loadImage(vfs_, "DF_BKG2.PCX", false, true);
-    blit(images_[key], 0, 0, 0, 0, 640, 480, false);
+    blit(keyed("DF_BKG2.PCX"), 0, 0, 0, 0, 640, 480, false);
 }
 
 void Frontend::blitHalf(const HudImage& im, float x, float y, float w, float h) {
@@ -574,21 +703,25 @@ void Frontend::blitHalf(const HudImage& im, float x, float y, float w, float h) 
 
 void Frontend::ensureTty(Tty& t, const std::string& text, float x, float y, float w, float h, const char* font, int rate) {
     if (t.active && t.text == text) return;
-    t = {true, text.substr(0, 0x3FE), 0, x, y, w, h, font, rate};
+    t = {true, text.substr(0, 0x3FE), 0, x, y, w, h, font, rate, false};
+}
+
+void Frontend::ttyClick() {
+    // GOG 0x413230: Ttclick<rand % 9 + 1> at fx * 192 / 255.
+    char n[16];
+    std::snprintf(n, sizeof n, "TTCLICK%d.WAV", 1 + std::rand() % 9);
+    sound(n, 192);
 }
 
 void Frontend::tickTtys() {
     for (Tty* t : {&ttyHelp_, &ttyNsLeft_, &ttyNsRight_, &ttyNsHelp_, &ttyCamp_, &ttyDebf_, &ttyLo_})
-        if (t->active) t->count = std::min(t->text.size(), t->count + size_t(t->rate));
+        if (t->active)
+            for (int k = 0; k < t->rate; ++k) ttyStep(t->count, t->done, t->text.size());
 }
 
 void Frontend::drawTty(Tty& t) {
     if (!t.active) return;
-    if (t.count < t.text.size()) {
-        char n[16];
-        std::snprintf(n, sizeof n, "TTCLICK%d.WAV", 1 + std::rand() % 9);
-        sound(n, 192);
-    }
+    if (!t.done) ttyClick();
     drawWrapped(t.font, t.x, t.y, t.w, t.h, t.text.substr(0, t.count), 0xFF00FF00);
 }
 
@@ -600,7 +733,8 @@ void Frontend::drawText(const std::string& fontName, float x, float y, const std
     MenuFont& f = font(fontName);
     if (!f.ok) return;
     const float w = textWidth(f, s);
-    if (align == 1) x -= w / 2;
+    // Centred: x - (w >> 1) (GOG 0x411be0, 0x410510, SAR at 0x44c0f8 / 0x44c428).
+    if (align == 1) x -= float(int(w) >> 1);
     else if (align == 2) x -= w;
     Color c = argb(color);
     for (size_t i = 0; i < s.size(); ++i) {
@@ -614,7 +748,7 @@ void Frontend::drawText(const std::string& fontName, float x, float y, const std
                 continue;
             }
         }
-        const Glyph& g = f.glyphs[static_cast<unsigned char>(s[i])];
+        const Glyph& g = f.glyph(static_cast<unsigned char>(s[i]));
         if (g.w > 0 && s[i] != ' ')
             hud().imageUV(f.tex.texture, offX_ + x * scale_, offY_ + y * scale_, float(g.w) * scale_, float(g.h) * scale_,
                          float(g.x) / float(f.tex.width), float(g.y) / float(f.tex.height), float(g.x + g.w) / float(f.tex.width),
@@ -639,12 +773,14 @@ int Frontend::drawWrapped(const std::string& fontName, float x, float y, float w
             word = e == std::string::npos ? std::string() : word.substr(e + 1);
             if (word.empty()) continue;
         }
-        if (word == "~") { newline(); continue; }
-        const float ww = textWidth(f, word + " ");
-        if (cx + ww > x + w && cx > x) newline();
+        // GOG 0x410050: a token starting with '~' breaks the line (not drawn);
+        // the word alone is tested against the right edge, the word and its
+        // space advance.
+        if (word[0] == '~') { newline(); continue; }
+        if (cx + textWidth(f, word) > x + w && cx > x) newline();
         if (cy + lh > y + h) break;
         if (line >= startLine) drawText(fontName, cx, cy, word, color);
-        cx += ww;
+        cx += textWidth(f, word + " ");
     }
     return line + 1;
 }
@@ -661,7 +797,8 @@ void Frontend::sound(const char* wav, int volume) {
 void Frontend::setMenu(const std::string& name) {
     menu_ = upperCase(name);
     hover_.clear();
-    pressed_.clear();
+    pressedBits_.clear();
+    hoverBits_.clear();
     editing_.clear();
     // Fresh drawstates from the file.
     Mnu fresh;
@@ -684,7 +821,7 @@ void Frontend::enter(Screen s) {
     if (screen_ == Macros && s != Macros) saveProfile(cur_);   // Macros exit hook 0x420ed4
     if (screen_ == Keyboard && s != Keyboard) {
         // 0x423118: any exit stores the working copy and saves the profile.
-        for (int i = 0; i < 44; ++i) { prof().set(0x6a0 + 12 * i, int32_t(kbWork_[size_t(i)][0])); prof().set(0x6a4 + 12 * i, int32_t(kbWork_[size_t(i)][1])); }
+        for (int i = 0; i < keyRows_; ++i) { prof().set(0x6a0 + 12 * i, int32_t(kbWork_[size_t(i)][0])); prof().set(0x6a4 + 12 * i, int32_t(kbWork_[size_t(i)][1])); }
         kbCapture_ = 0;
         kbSel_ = -1;
         saveProfile(cur_);
@@ -729,7 +866,7 @@ void Frontend::enter(Screen s) {
         // 0x422c10: working copy and revert snapshot from the profile; mode
         // ASSIGN KEY (DELETE KEY enabled); "Please select a key ..." (no music var).
         setMenu("KBDMenu");
-        for (int i = 0; i < 44; ++i) kbWork_[size_t(i)] = {uint32_t(prof().get(0x6a0 + 12 * i)), uint32_t(prof().get(0x6a4 + 12 * i))};
+        for (int i = 0; i < keyRows_; ++i) kbWork_[size_t(i)] = {uint32_t(prof().get(0x6a0 + 12 * i)), uint32_t(prof().get(0x6a4 + 12 * i))};
         kbRevert_ = kbWork_;
         kbSel_ = -1;
         kbCapture_ = 0;
@@ -769,7 +906,8 @@ void Frontend::enter(Screen s) {
             if (a == std::string::npos && c == std::string::npos) break;
             bool include = true;
             size_t tagEnd;
-            if (c != std::string::npos && (a == std::string::npos || c < a)) {
+            const bool isCv = c != std::string::npos && (a == std::string::npos || c < a);
+            if (isCv) {
                 a = c;
                 tagEnd = briefing_.find('}', c);
                 if (tagEnd == std::string::npos) break;
@@ -785,11 +923,15 @@ void Frontend::enter(Screen s) {
             size_t e = tagEnd;
             while (e < briefing_.size() && briefing_[e] != ' ') ++e;
             const std::string* more = include ? campText_.find(sec, briefing_.substr(tagEnd, e - tagEnd)) : nullptr;
-            briefing_.replace(a, e - a, more ? *more : "");
+            // GOG 0x414520: after a {CV:n} key the space is dropped when a '{'
+            // follows it ({ADD} keeps its space).
+            const size_t cut = isCv && e + 1 < briefing_.size() && briefing_[e] == ' ' && briefing_[e + 1] == '{' ? e + 1 : e;
+            briefing_.replace(a, cut - a, more ? *more : "");
         }
         briefLine_ = 0;
         caption_.clear();
         captionShown_ = 0;
+        captionDone_ = true;
         {
             // 0x41e670: every {...} group is cut out; it links the word that
             // follows (index = spaces copied so far).
@@ -828,10 +970,11 @@ void Frontend::enter(Screen s) {
             if (!t.empty()) tokens.push_back(t);
             float x = 348;
             for (size_t i = 0; i < tokens.size(); ++i) {
-                if (i > 0 && tokens[i] == "~") { ++briefTotal_; continue; }
-                const float w = textWidth(f, tokens[i] + " ");
-                if (i > 0 && x + w > 558) { ++briefTotal_; x = 348; }
-                x += w;
+                // GOG 0x425a10: '~' as the first character; the word alone is
+                // tested, the word and its space advance.
+                if (i > 0 && tokens[i][0] == '~') { ++briefTotal_; continue; }
+                if (i > 0 && x + textWidth(f, tokens[i]) > 558) { ++briefTotal_; x = 348; }
+                x += textWidth(f, tokens[i] + " ");
             }
             if (MnuButton* sl = mnu_.button("but_mi_sl")) {
                 sl->sliderSize = briefTotal_ >= briefVisible_ ? briefTotal_ - briefVisible_ + 1 : 0;
@@ -851,6 +994,11 @@ void Frontend::enter(Screen s) {
         break;
     case Debrief:
         setMenu("DebfMenu");
+        // GOG 0x41f320: "won" is the profile's mission-done flag (after the
+        // post-mission update), so a lost replay of a finished mission still
+        // debriefs as a win; Var02 = 0 then, else 1.
+        debfWon_ = prof().get(0x30 + camp_ * 0x44 + 4 * mis_) != 0;
+        musicVar(2, debfWon_ ? 0 : 1);
         saveProfile(cur_);
         break;
     case End:
@@ -891,18 +1039,34 @@ void Frontend::drawButton(MnuButton& b) {
     if (b.attrib & 0x20) ownerDraw(b);
     if (!b.image.empty() && b.type == 1) {
         const HudImage im = image(b.image);
-        if (b.attrib & 0x800) blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), !(b.attrib & 0x1000));
-        else {
+        // GOG 0x40f660: 0x800 a single image, blended (0x40ec30) or, with
+        // 0x1000, copied with palette index 0 skipped (0x40e900, call at
+        // 0x40f6af): the scroll tracks (VSLD_243 ...) show the page through.
+        if (b.attrib & 0x800) {
+            if (b.attrib & 0x1000) {
+                const auto mi = mnu_.images.find(upperCase(b.image));
+                if (mi != mnu_.images.end()) blit(keyed(mi->second), float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), false);
+            } else {
+                blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), true);
+            }
+        } else {
             const float ch = float(im.height) / 4.f;
             const int cell = std::clamp(b.drawstate - 1, 0, 3);
             blit(im, float(b.x), float(b.y), 0, ch * float(cell), float(im.width), ch, true);
         }
     } else if (!b.image.empty() && (b.type == 2 || b.type == 3) && !(b.attrib & 2) && b.drawstate != 4) {
-        // Knob at x + pos * width / size, or y + pos * height / size (0x40886c).
+        // Knob at x + pos * width / size, or y + pos * height / size (0x40886c),
+        // drawn by 0x40e780 (0x40f75a, 0x40f78f, 0x40f7fe, 0x40f833), which
+        // skips palette index 0: SLIDER.PCX's red index-0 column stays clear.
         const HudImage im = image(b.image);
-        const float f = b.sliderSize > 0 ? float(b.sliderPos) / float(b.sliderSize) : 0.f;
-        if (b.type == 2) blit(im, float(b.x) + f * float(b.width), float(b.y), 0, 0, float(im.width), float(im.height), false);
-        else blit(im, float(b.x), float(b.y) + f * float(b.height), 0, 0, float(im.width), float(im.height), false);
+        const auto mi = mnu_.images.find(upperCase(b.image));
+        const HudImage knob = mi == mnu_.images.end() ? HudImage{} : keyed(mi->second);
+        // GOG 0x40f660 (0x40f715 / 0x40f7b9): offset = pos / (size / length)
+        // in doubles, truncated (0x49bae6 chops).
+        const int len = b.type == 2 ? b.width : b.height;
+        const int off = b.sliderSize > 0 && len > 0 ? int(double(b.sliderPos) / (double(b.sliderSize) / double(len))) : 0;
+        if (b.type == 2) blit(knob, float(b.x + off), float(b.y), 0, 0, float(im.width), float(im.height), false);
+        else blit(knob, float(b.x), float(b.y + off), 0, 0, float(im.width), float(im.height), false);
     } else if (!b.image.empty() && b.type == 6 && !(b.attrib & 0x20)) {
         const HudImage im = image(b.image);
         blit(im, float(b.x), float(b.y), 0, 0, float(im.width), float(im.height), false);
@@ -912,21 +1076,24 @@ void Frontend::drawButton(MnuButton& b) {
         const MnuFont mf = fit == mnu_.fonts.end() ? MnuFont{} : fit->second;
         uint32_t c = mf.fg[0];
         if (b.drawstate == 4) c = mf.fg[2];
-        else if (b.drawstate == 2 || hover_ == b.name) c = mf.fg[1];
+        else if (hoverBits_.count(b.name)) c = mf.fg[1];   // the hover bit (GOG 0x40f660, +5 & 1)
         float ax = float(b.x), ay = float(b.y);
         int align = (b.attrib & 0x08) ? 0 : (b.attrib & 0x10) ? 2 : 1;
         if (b.attrib & 0x80) {
             int w = b.width, h = b.height;
             if (!b.image.empty()) { const HudImage im = image(b.image); w = im.width; h = im.height / 4; }
-            ax = (b.attrib & 0x08) ? float(b.x + 6) : (b.attrib & 0x10) ? float(b.x + w - 6) : float(b.x) + float(w) / 2;
-            ay += float(h - font(b.font).height) / 2;
+            // Integer halves (GOG 0x40f660: x + (w >> 1), y + ((h - font height) >> 1)).
+            ax = (b.attrib & 0x08) ? float(b.x + 6) : (b.attrib & 0x10) ? float(b.x + w - 6) : float(b.x + (w >> 1));
+            ay += float((h - font(b.font).height) >> 1);
         }
         std::string t = b.text;
-        if (editing_ == b.name && (ticks_ & 0x20)) t += '_';
+        // The edit cursor: bit 0x20 of the 120 Hz clock (GOG 0x40f660,
+        // [0x491014] from the timer 0x4906a0); 16 ms menu ticks x 1.92.
+        if (editing_ == b.name && ((ticks_ * 48 / 25) & 0x20)) t += '_';
         drawText(b.font, ax, ay, t, c, align);
         if (b.hot && b.hotPos >= 0 && editing_ != b.name) {
             MenuFont& f = font(b.font);
-            float x0 = ax - (align == 1 ? textWidth(f, b.text) / 2 : align == 2 ? textWidth(f, b.text) : 0);
+            float x0 = ax - (align == 1 ? float(int(textWidth(f, b.text)) >> 1) : align == 2 ? textWidth(f, b.text) : 0);
             drawText(b.font, x0 + textWidth(f, b.text.substr(0, size_t(b.hotPos))), ay + 1, "_", c);
         }
     }
@@ -951,9 +1118,53 @@ void Frontend::drawMenu() {
     if (!m->background.empty()) blit(image(m->background), 0, 0, 0, 0, 640, 480, false);
     for (const auto& bn : m->buttons)
         if (MnuButton* b = mnu_.button(bn)) drawButton(*b);
-    // The cursor (0x408df8): ImageCursor1 centred on the mouse.
-    const HudImage cur = image("ImageCursor1", true);
+    // The cursor (0x408df8): ImageCursor1 centred on the mouse; pixels of
+    // palette index 0 are skipped (0x408f14: cmpb $0, (%edx)), so the blue
+    // (0,0,255) of CURSOR1.PCX's index 0 never shows.
+    const auto ci = mnu_.images.find("IMAGECURSOR1");
+    const std::string cpcx = ci == mnu_.images.end() ? std::string() : upperCase(ci->second);
+    const HudImage cur = cpcx.empty() ? HudImage{} : keyed(cpcx);
     blit(cur, float(mouseX_ - cur.width / 2), float(mouseY_ - cur.height / 2), 0, 0, float(cur.width), float(cur.height), false);
+}
+
+void Frontend::pointer(MnuButton& b, PtrEvent ev, bool link) {
+    // GOG 0x40dd20 -> 0x40def0 (types 1 and 6). Sliders (0x40e0a0, 0x40e1a0)
+    // ignore hover and are pressed and dragged by the caller.
+    if (b.type == 2 || b.type == 3) return;
+    if ((b.attrib & 2) || b.drawstate == 0 || b.drawstate == 4) return;
+    const bool hovered = hoverBits_.count(b.name) != 0;
+    switch (ev) {
+    case PtrPress:
+        // click9 (not for the linked button, not with attrib 0x400), pressed,
+        // hover bit cleared, cb(1).
+        if (!link && !(b.attrib & 0x400)) sound("CLICK9.WAV");
+        pressedBits_.insert(b.name);
+        hoverBits_.erase(b.name);
+        event(b, 1);
+        break;
+    case PtrRelease:
+        hoverBits_.erase(b.name);
+        if (pressedBits_.erase(b.name)) event(b, 2);
+        break;
+    case PtrEnter:
+        // grass5 at fx/2 when it was not hovered (the linked one too).
+        if (!hovered && !(b.attrib & 0x400)) sound("GRASS5.WAV", 128);
+        hoverBits_.insert(b.name);
+        event(b, 6);
+        break;
+    case PtrLeave:
+        if (hoverBits_.erase(b.name)) event(b, 7);
+        break;
+    }
+    // LAB_0040df6c: after every event the button under the mouse is hovered
+    // and gets cb(6) (a held button shows its lit cell); then the same event
+    // goes to the linked button (+0x10, "NULL" for none).
+    if (hit(mouseX_, mouseY_) == &b) {
+        hoverBits_.insert(b.name);
+        event(b, 6);
+    }
+    if (!link)
+        if (MnuButton* l = mnu_.button(b.link)) pointer(*l, ev, true);
 }
 
 void Frontend::standard(MnuButton& b, int ev, const std::function<void()>& action) {
@@ -983,11 +1194,16 @@ uint32_t Frontend::missionHeader(int camp, int mis, int offset) {
 }
 
 void Frontend::refreshSoldier() {
-    // Row labels: the soldier's name or "New Operative"; the current row pushed.
+    // Row labels (0x40ed60, GOG 0x4086d0): the soldier's name, or for a slot
+    // not in use GroupMainMenu NSEMPTY as it is ("New Operative"); the
+    // current row pushed.
+    const std::string* emptyName = menuText_.find("GroupMainMenu", "NSEMPTY");
     for (int i = 0; i < 9; ++i) {
         char n[32];
         std::snprintf(n, sizeof n, "but_ns_%dtxt", i + 1);
-        if (MnuButton* b = mnu_.button(n)) b->text = profiles_[size_t(i)].name();
+        const Profile& p = profiles_[size_t(i)];
+        if (MnuButton* b = mnu_.button(n); b && b->name != editing_)   // (not the field being typed in)
+            b->text = p.valid() ? p.name() : emptyName ? *emptyName : "New Operative";
         for (const char* suffix : {"", "l"}) {
             std::snprintf(n, sizeof n, "but_ns_%d%s", i + 1, suffix);
             if (MnuButton* b = mnu_.button(n)) b->drawstate = i == cur_ ? 3 : 1;
@@ -995,8 +1211,10 @@ void Frontend::refreshSoldier() {
     }
     const bool valid = prof().valid();
     if (MnuButton* b = mnu_.button("but_ns_actxt")) b->drawstate = valid ? 1 : 4;
-    for (const char* n : {"but_ns_plt", "but_ns_prt", "but_ns_ed", "but_ns_de"})
-        if (MnuButton* b = mnu_.button(n)) b->drawstate = valid && !deleting_ ? 1 : 0;
+    // GOG 0x408d00: the face arrows follow the slot; CHANGE NAME and DELETE
+    // SOLDIER are never hidden (only their connector y is read, 0x40a032).
+    for (const char* n : {"but_ns_plt", "but_ns_prt"})
+        if (MnuButton* b = mnu_.button(n)) b->drawstate = valid ? 1 : 0;
     for (const char* n : {"but_ns_dey", "but_ns_den"})
         if (MnuButton* b = mnu_.button(n)) b->drawstate = deleting_ ? 1 : 0;
 }
@@ -1019,11 +1237,9 @@ void Frontend::refreshOptions() {
 void Frontend::profileDefaults(Profile& p) {
     // 0x40ee14 loadout etc., then the message macros DEFAULTMACRO1..10 from
     // DFMENU.BIN "Macros" into +0x4b0, 40 bytes each (0x40f6ac).
-    p.defaults();
-    for (int i = 0; i < 44; ++i) {   // key bindings from 0x4dd190
-        p.set(0x6a0 + 12 * i, int32_t(kKeyRows[i].vk));
-        p.set(0x6a4 + 12 * i, int32_t(kKeyRows[i].mouse));
-    }
+    p.defaults(gogProfile_);
+    for (int i = 0; i < keyRows_; ++i)   // key bindings from 0x4dd190 (GOG 0x4e7ddc, 0x408e30 copies 46 rows)
+        for (int k = 0; k < 3; ++k) p.set(0x6a0 + 12 * i + 4 * k, int32_t(keyDefaults_[size_t(i)][size_t(k)]));
     for (int i = 0; i < 10; ++i) {
         char k[32];
         std::snprintf(k, sizeof k, "DEFAULTMACRO%d", i + 1);
@@ -1034,7 +1250,9 @@ void Frontend::profileDefaults(Profile& p) {
 void Frontend::loadBriefingMap() {
     // 0x440bdc: records of all four groups with map type +0x4C, not hidden
     // (+0x0C bits 0x10/0x40), at most 200; map point (x>>18)+512, 512-(y>>18).
-    // The view starts on the first group-3 "Briefing Map Center" (6038).
+    // The view starts on the "Briefing Map Center" (6038) of group 2 (count
+    // at +0xA0), last match wins, for untyped or visible typed records
+    // (GOG Df.exe 0x44a400, LAB_0044a7a9).
     mapItems_.clear();
     markerOn_ = false;
     mapCenter_[0] = mapCenter_[1] = 512;
@@ -1044,19 +1262,17 @@ void Frontend::loadBriefingMap() {
     if (vfs_.read(n, d) && d.size() >= 0x10C && std::memcmp(d.data(), "BMS", 3) == 0 && d[3] >= 0x0D) {
         auto i32 = [&](size_t o) { int32_t v = 0; if (o + 4 <= d.size()) std::memcpy(&v, &d[o], 4); return v; };
         size_t o = 0x10C;
-        bool centre = false;
         for (int g = 0; g < 4; ++g) {
             const int count = i32(0x98 + 4 * size_t(g));
             for (int k = 0; k < count && o + 0x60 <= d.size(); ++k, o += 0x60) {
                 const int mx = (i32(o + 0x10) >> 18) + 512, my = 512 - (i32(o + 0x14) >> 18);
-                if (g == 3 && !centre && i32(o) == 6038) { centre = true; mapCenter_[0] = mx; mapCenter_[1] = my; }
+                if (g == 2 && i32(o) == 6038 && (d[o + 0x4C] == 0 || !(d[o + 0x0C] & 0x50))) { mapCenter_[0] = mx; mapCenter_[1] = my; }
                 if (d[o + 0x4C] && !(d[o + 0x0C] & 0x50) && mapItems_.size() < 200)
                     mapItems_.push_back({d[o + 0x4C], mx, my, d[o + 0x43]});
             }
         }
     }
-    centreMap(mapCenter_[0], mapCenter_[1]);
-}
+    centreMap(mapCenter_[0], mapCenter_[1]);}
 
 void Frontend::centreMap(int x, int y) {
     // 0x411df0: origin = point - 128 clamped to 0..768, set at once (view,
@@ -1067,7 +1283,7 @@ void Frontend::centreMap(int x, int y) {
     if (MnuButton* v = mnu_.button("but_mi_vscrsl")) v->sliderPos = mapTgt_[1];
 }
 
-void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip) {
+void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, const float* clip, bool solid) {
     // A 1-px line in 640x480 space; clipped to [clip] (Liang-Barsky) if given.
     if (clip) {
         float t0 = 0, t1 = 1;
@@ -1083,10 +1299,22 @@ void Frontend::menuLine(float x0, float y0, float x1, float y1, uint32_t color, 
         x0 = ax; y0 = ay; x1 = bx; y1 = by;
     }
     // DF.EXE's pixel op (0x409964): colour/2 plus half the background's
-    // blue; the alpha byte is ignored.
+    // blue; the alpha byte is ignored. `solid` lines plot through 0x410730
+    // instead, which stores the colour as it is.
     Color c = argb(color);
     c.a = 1;
-    hud().setBlend(3);
+    // GOG 0x410a30 / 0x410e50 plot both end pixels (for x <= x1): the quad
+    // runs half a pixel past each end centre along the major axis.
+    {
+        const float dx = x1 - x0, dy = y1 - y0, major = std::max(std::fabs(dx), std::fabs(dy));
+        if (major > 0) {
+            const float ex = dx * 0.5f / major, ey = dy * 0.5f / major;
+            x0 -= ex; y0 -= ey; x1 += ex; y1 += ey;
+        } else {
+            x0 -= 0.5f; x1 += 0.5f;   // a single pixel
+        }
+    }
+    hud().setBlend(solid ? 0 : 3);
     hud().line(offX_ + (x0 + 0.5f) * scale_, offY_ + (y0 + 0.5f) * scale_, offX_ + (x1 + 0.5f) * scale_, offY_ + (y1 + 0.5f) * scale_,
                scale_, c);
     hud().setBlend(0);
@@ -1122,22 +1350,21 @@ void Frontend::drawBriefingMap(const MnuButton& b) {
     menuLine(bx + 255, by + 255, bx, by + 255, green);
     menuLine(bx, by + 255, bx, by, green);
     const float clip[4] = {bx, by, bx + 255, by + 255};
-    // Route: items of type 1 or 3 joined in order, clipped to the window.
+    // Route: items of type 1 or 3 joined in order, clipped to the window,
+    // drawn solid (0x414fbb -> 0x411210, plotting with 0x410730).
     bool have = false;
     float px = 0, py = 0;
     for (const MapItem& it : mapItems_) {
         if (it.type != 1 && it.type != 3) continue;
         const float sx = bx + float(it.x - ox), sy = by + float(it.y - oy);
-        if (have) menuLine(px, py, sx, sy, route, clip);
+        if (have) menuLine(px, py, sx, sy, route, clip, true);
         px = sx; py = sy; have = true;
     }
     auto inside = [](int x, int y, int x0, int y0, int x1, int y1) { return x >= x0 && x <= x1 && y >= y0 && y <= y1; };
     auto icon = [&](const char* sheet, int frame, float x, float y) {
         // Colour-keyed on palette index 0 (0x407b28).
         const std::string pcx = mnu_.images.count(upperCase(sheet)) ? upperCase(mnu_.images[upperCase(sheet)]) : std::string();
-        const std::string key = pcx + "#k";
-        if (!images_.count(key)) images_[key] = hud().loadImage(vfs_, pcx, false, true);
-        const HudImage im = images_[key];
+        const HudImage im = pcx.empty() ? HudImage{} : keyed(pcx);
         blit(im, x, y, 0, float(frame * 6), 8, 6, false);
     };
     // Side icons (8x6 frames type-1 of Green/Blue/RedIcons), culled only.
@@ -1157,11 +1384,12 @@ void Frontend::drawBriefingMap(const MnuButton& b) {
             drawText("LCD10", sx + 4, sy - 6, std::to_string(number), 0xFFAAFFAA);
         if (inside(it.x - 4, it.y - 4, ox + 4, oy + 4, ox + 247, oy + 247)) icon("ImageYellowIcons", it.type - 1, sx - 4, sy - 4);
     }
-    // The link marker: a crosshair across the window.
+    // The link marker: a crosshair across the window, solid and clipped only
+    // to the screen (0x41519b, 0x4151ca -> 0x410e50, plotting with 0x410730).
     if (markerOn_ && inside(marker_[0], marker_[1], ox, oy, ox + 254, oy + 254)) {
         const float mx = bx + float(marker_[0] - ox), my = by + float(marker_[1] - oy);
-        menuLine(mx, by, mx, by + 255, route);
-        menuLine(bx, my, bx + 255, my, route);
+        menuLine(mx, by, mx, by + 255, route, nullptr, true);
+        menuLine(bx, my, bx + 255, my, route, nullptr, true);
     }
 }
 
@@ -1208,10 +1436,14 @@ void Frontend::drawBriefingText(const MnuButton& b) {
         ++lineNo;
     };
     for (size_t i = 0; i < tokens.size(); ++i) {
-        if (i == 0) { put(i, true); continue; }   // the first token is drawn untested (as DF.EXE)
-        if (tokens[i] == "~") { newline(); }
+        // The first token is drawn without a wrap test, and only at scroll
+        // line 0 (GOG 0x425610: 0x425470(..., scroll < 1)).
+        if (i == 0) { put(i, briefLine_ < 1); continue; }
+        // A token starting with '~' breaks the line; a word wraps when the
+        // word alone (its space not counted) passes the right edge.
+        if (tokens[i][0] == '~') { newline(); }
         else {
-            if (x + textWidth(f, tokens[i] + " ") > right) newline();
+            if (x + textWidth(f, tokens[i]) > right) newline();
             if (y + fh > bottom) break;
             put(i, lineNo >= briefLine_);
             continue;
@@ -1244,6 +1476,7 @@ void Frontend::clickLink() {
     sound("BEEP1.WAV", 64);
     if (caption_.size() > 1022) caption_.resize(1022);
     captionShown_ = 0;
+    captionDone_ = false;
 }
 
 void Frontend::loadCredits() {
@@ -1329,7 +1562,7 @@ void Frontend::refreshKeys() {
     // 0x4227bc: rows scroll .. scroll+10: label, then "key or Mouse n".
     auto t = [&](const char* k) { const std::string* x = menuText_.find("GroupMainMenu", k); return x ? *x : std::string(k); };
     for (int r = 0; r < 11; ++r) {
-        const int i = std::clamp(kbScroll_ + r, 0, 43);
+        const int i = std::clamp(kbScroll_ + r, 0, keyRows_ - 1);
         char n[32];
         std::snprintf(n, sizeof n, "but_kbd_%d", r + 1);
         if (MnuButton* b = mnu_.button(n)) { b->text = t(kKeyRows[i].label); b->attrib |= 0x40; }
@@ -1349,6 +1582,7 @@ void Frontend::kbMessage(const char* key, int ticks) {
     const std::string* x = menuText_.find("GroupMainMenu", key);
     kbMsg_ = x ? *x : key;
     kbShown_ = 0;
+    kbDone_ = false;
     kbTimer_ = ticks;
 }
 
@@ -1360,10 +1594,10 @@ void Frontend::kbCaptured(int type, uint32_t code) {
                vk == 0x08 || vk == 0x09 || vk == 0x21 || vk == 0x22 || vk == 0xBB || vk == 0xBD || vk == 0xBC || vk == 0xBE ||
                vk == 0xBA || vk == 0xDB || vk == 0xDD;
     };
-    const int i = std::clamp(kbScroll_ + kbSel_, 0, 43);
+    const int i = std::clamp(kbScroll_ + kbSel_, 0, keyRows_ - 1);
     if (kbCapture_ == 1 && type == 1) {
         if (allowed(code)) {
-            for (int j = 0; j < 44; ++j)   // unbound elsewhere (0x422764)
+            for (int j = 0; j < keyRows_; ++j)   // unbound elsewhere (0x422764, GOG 0x4217a0)
                 if (j != i && kbWork_[size_t(j)][0] == code) kbWork_[size_t(j)][0] = 0;
             kbWork_[size_t(i)][0] = code;
             kbMessage("KBDACCEPTEDKEY", 120);
@@ -1371,7 +1605,7 @@ void Frontend::kbCaptured(int type, uint32_t code) {
             kbMessage("KBDRESERVEDKEY", 180);
         }
     } else if (kbCapture_ == 2 && type == 2) {
-        for (int j = 0; j < 44; ++j)
+        for (int j = 0; j < keyRows_; ++j)
             if (j != i && kbWork_[size_t(j)][1] == code) kbWork_[size_t(j)][1] = 0;
         kbWork_[size_t(i)][1] = code;
         kbMessage("KBDACCEPTEDKEY", 120);
@@ -1440,6 +1674,20 @@ void Frontend::refreshCampaign() {
             b->drawstate = i == camp_ ? 3 : 1;
         }
     }
+    refreshOverviewTitle();
+}
+
+void Frontend::refreshOverviewTitle() {
+    // GOG 0x40aa10 (0x4d0d40 is always set): "%s {C:TrueGreen}%s" with
+    // CAOVERVIEW and the selected mission's 'Mission Names' STR_VC<c>M<m>
+    // (empty if missing) into but_ca_ovrtxt.
+    MnuButton* o = mnu_.button("but_ca_ovrtxt");
+    if (!o) return;
+    char key[32];
+    std::snprintf(key, sizeof key, "STR_VC%02dM%02d", camp_ + 1, mis_ + 1);
+    const std::string* nm = campText_.find("Mission Names", key);
+    const std::string* ov = menuText_.find("GroupMainMenu", "CAOVERVIEW");
+    o->text = (ov ? *ov : std::string("CAOVERVIEW")) + " {C:TrueGreen}" + (nm ? *nm : std::string());
 }
 
 void Frontend::acceptMission() {
@@ -1483,14 +1731,30 @@ void Frontend::event(MnuButton& b, int ev) {
     // Choose Soldier.
     if (cb == "MNU_NS_NAMEBUTTON1") {
         const int row = std::atoi(b.name.c_str() + 7) - 1;   // BUT_NS_<n>[L]
-        if (row < 0 || row > 8 || !editing_.empty()) return;
-        if (ev == 6 && row != cur_) b.drawstate = 2;
-        else if (ev == 7 && row != cur_) b.drawstate = 1;
+        if (row < 0 || row > 8) return;
+        // GOG 0x4094d0. Hover lights the row's pair (but_ns_<n>, but_ns_<n>l)
+        // unless it is the selected row or the delete question is up.
+        auto pair = [&](int st) {
+            char n[32];
+            for (const char* suffix : {"", "l"}) {
+                std::snprintf(n, sizeof n, "but_ns_%d%s", row + 1, suffix);
+                if (MnuButton* x = mnu_.button(n)) x->drawstate = st;
+            }
+        };
+        // Pushed on press (GOG also restarts that soldier's record teletypes here,
+        // 0x408800; OpenDF restarts them when the selection changes).
+        if (ev == 1) b.drawstate = 3;
+        else if (ev == 6 && !deleting_ && row != cur_) pair(2);
+        else if (ev == 7 && !deleting_ && row != cur_) pair(1);
         else if (ev == 2) {
-            cur_ = row;
+            // 0x409330 acts only on another row (a click elsewhere committed a
+            // running edit first, 0x40dd80); then 0x408d00 ends the delete
+            // question either way.
+            const bool other = row != cur_;
+            if (other) cur_ = row;
             deleting_ = false;
             refreshSoldier();
-            if (!prof().valid()) {
+            if (other && !prof().valid()) {
                 char n[32];
                 std::snprintf(n, sizeof n, "but_ns_%dtxt", row + 1);
                 editMode_ = 0;
@@ -1505,17 +1769,28 @@ void Frontend::event(MnuButton& b, int ev) {
             for (int i = 0; i < 9; ++i) saveProfile(i);
             next_ = Main;
         });
+    // CHANGE NAME (GOG 0x4099e0), DELETE SOLDIER (0x409940), and the delete
+    // question's YES (0x4096f0) / NO (0x409870): pushed on press with no
+    // menubtn1; the first two light on any hover, YES / NO only from normal.
+    auto nsButton = [&](bool anyHover, const std::function<void()>& action) {
+        if (ev == 1) b.drawstate = 3;
+        else if (ev == 2) { b.drawstate = 1; action(); }
+        else if (ev == 6 && (anyHover || b.drawstate == 1)) b.drawstate = 2;
+        else if (ev == 7 && (anyHover || b.drawstate == 2)) b.drawstate = 1;
+    };
     if (cb == "MNU_NS_EDIT")
-        return standard(b, ev, [this] {
+        return nsButton(true, [this] {
+            deleting_ = false;   // 0x408d00
+            refreshSoldier();
             char n[32];
             std::snprintf(n, sizeof n, "but_ns_%dtxt", cur_ + 1);
             editMode_ = 2;
             if (MnuButton* t = mnu_.button(n)) startEdit(*t, 16);
         });
-    if (cb == "MNU_NS_DELETE") return standard(b, ev, [this] { deleting_ = true; refreshSoldier(); });
-    if (cb == "MNU_NS_DELETENO") return standard(b, ev, [this] { deleting_ = false; refreshSoldier(); });
+    if (cb == "MNU_NS_DELETE") return nsButton(true, [this] { deleting_ = true; refreshSoldier(); });
+    if (cb == "MNU_NS_DELETENO") return nsButton(false, [this] { deleting_ = false; refreshSoldier(); });
     if (cb == "MNU_NS_DELETEYES")
-        return standard(b, ev, [this] {
+        return nsButton(false, [this] {
             deleting_ = false;
             refreshSoldier();
             char n[32];
@@ -1530,12 +1805,14 @@ void Frontend::event(MnuButton& b, int ev) {
         });
     // Campaign.
     if (cb == "MNU_CAMP_SELECT") {
-        if (ev == 1) {
-            sound("MENUBTN1.WAV");
+        // GOG 0x40b770: press (campaigns below 6) selects, no sound of its
+        // own (the framework's click9); hover lights a normal button.
+        if (ev == 1 && b.userid < 6) {
             camp_ = b.userid;
             prof().set(0x28, camp_);
             refreshCampaign();
-        }
+        } else if (ev == 6 && b.drawstate == 1) b.drawstate = 2;
+        else if (ev == 7 && b.drawstate == 2) b.drawstate = 1;
         return;
     }
     if (cb == "MNU_CAMP_ACCEPT") return standard(b, ev, [this] { acceptMission(); });
@@ -1549,6 +1826,7 @@ void Frontend::event(MnuButton& b, int ev) {
             lastMapClick_ = ticks_;
             mis_ = i;
             prof().set(0x470 + 4 * camp_, i);
+            refreshOverviewTitle();   // 0x40b353
             sound("BEEP2.WAV");
             return;
         }
@@ -1608,13 +1886,17 @@ void Frontend::event(MnuButton& b, int ev) {
     }
     // Change Gear.
     if (cb == "MNU_LO_WEAPON") {
-        if (ev == 1) {
-            for (const char* n : {"but_lo_w1", "but_lo_w2", "but_lo_w3"})
-                if (MnuButton* t = mnu_.button(n)) t->drawstate = 1;
+        // GOG 0x4264d0: a press on another tab: the old one (but_lo_w<tab+1>)
+        // normal, this one pushed, the page refreshed (0x425c40); no sound of
+        // its own. Hover lights a normal tab.
+        if (ev == 1 && b.userid != loTab_) {
+            char n[32];
+            std::snprintf(n, sizeof n, "but_lo_w%d", loTab_ + 1);
+            if (MnuButton* t = mnu_.button(n)) t->drawstate = 1;
             b.drawstate = 3;
             loTab_ = std::clamp(b.userid, 0, 2);
-            sound("MENUBTN1.WAV");
-        }
+        } else if (ev == 6 && b.drawstate == 1) b.drawstate = 2;
+        else if (ev == 7 && b.drawstate == 2) b.drawstate = 1;
         return;
     }
     if (cb == "MNU_LO_LEFT" || cb == "MNU_LO_RIGHT")
@@ -1739,7 +2021,7 @@ void Frontend::event(MnuButton& b, int ev) {
             if (kbMode_ == 0) { kbCapture_ = 1; kbMessage("KBDASSIGNKEYTXT", -1); }
             else if (kbMode_ == 1) { kbCapture_ = 2; kbMessage("KBDASSIGNMOUSETXT", -1); }
             else {
-                const int i = std::clamp(kbScroll_ + b.userid, 0, 43);
+                const int i = std::clamp(kbScroll_ + b.userid, 0, keyRows_ - 1);
                 kbWork_[size_t(i)] = {0, 0};
                 refreshKeys();
                 b.drawstate = 1;
@@ -1764,7 +2046,7 @@ void Frontend::event(MnuButton& b, int ev) {
         if (ev == 1) { b.drawstate = 3; sound("CLICK9.WAV", 128); }
         else if (ev == 2) {
             b.drawstate = 1;
-            kbScroll_ = std::clamp(kbScroll_ + (upperCase(b.name) == "BUT_KBD_UP" ? -1 : 1), 0, 33);
+            kbScroll_ = std::clamp(kbScroll_ + (upperCase(b.name) == "BUT_KBD_UP" ? -1 : 1), 0, keyRows_ - 11);
             if (MnuButton* sl = mnu_.button("but_kbd_sl")) sl->sliderPos = kbScroll_;
             refreshKeys();
         } else if (ev == 6) b.drawstate = 2;
@@ -1774,7 +2056,7 @@ void Frontend::event(MnuButton& b, int ev) {
     if (cb == "MNU_KBD_DEFAULT" || cb == "MNU_KBD_REVERT")
         return standard(b, ev, [this, cb] {
             // 0x423490 / 0x423528.
-            if (cb == "MNU_KBD_DEFAULT") for (int i = 0; i < 44; ++i) kbWork_[size_t(i)] = {kKeyRows[i].vk, kKeyRows[i].mouse};
+            if (cb == "MNU_KBD_DEFAULT") for (int i = 0; i < keyRows_; ++i) kbWork_[size_t(i)] = {keyDefaults_[size_t(i)][0], keyDefaults_[size_t(i)][1]};
             else kbWork_ = kbRevert_;
             refreshKeys();
             kbMessage(cb == "MNU_KBD_DEFAULT" ? "KBDDEFAULTSETTINGSTXT" : "KBDREVERTSETTINGSTXT", 180);
@@ -1876,7 +2158,9 @@ void Frontend::ownerDraw(MnuButton& b) {
             ensureTty(ttyNsHelp_, t("NSDELETEDIALOG"), 68, 340, 310, 52, "LCD10", 2);
             drawTty(ttyNsHelp_);
         } else if (!editing_.empty()) {
-            ensureTty(ttyNsHelp_, t(editMode_ == 1 ? "NSCREATEHELP" : "NSDELETEHELP"), 68, 340, 310, 52, "LCD10", 2);
+            // An empty slot's new soldier: NSCREATEHELP (GOG 0x409330 -> 0x408b10);
+            // Delete -> Yes and Change Name: NSDELETEHELP (0x409803, 0x409aca -> 0x408a20).
+            ensureTty(ttyNsHelp_, t(editMode_ == 0 ? "NSCREATEHELP" : "NSDELETEHELP"), 68, 340, 310, 52, "LCD10", 2);
             drawTty(ttyNsHelp_);
         } else if (prof().valid()) {
             int done = 0;
@@ -1906,7 +2190,10 @@ void Frontend::ownerDraw(MnuButton& b) {
             const bool done = prof().get(0x30 + camp_ * 0x44 + 4 * i) != 0;
             const bool hov = std::abs(mouseX_ - b.x - dx) <= 10 && std::abs(mouseY_ - b.y - dy) <= 10;
             const char* dot = done ? "ImageCampMapFinsDot" : i == mis_ ? "ImageCampMapSeltDot" : hov ? "ImageCampMapPassDot" : "ImageCampMapRegDot";
-            blit(image(dot), float(b.x + dx - 5), float(b.y + dy - 5), 0, 0, 11, 11, false);
+            // Colour-keyed on palette index 0 (GOG Df.exe 0x40a620 -> 0x40e900),
+            // so the round dot's corners show the map.
+            const auto pit = mnu_.images.find(upperCase(dot));
+            blit(pit == mnu_.images.end() ? HudImage{} : keyed(pit->second), float(b.x + dx - 5), float(b.y + dy - 5), 0, 0, 11, 11, false);
             char key[32];
             std::snprintf(key, sizeof key, "STR_VC%02dM%02d", camp_ + 1, i + 1);
             const std::string* nm = campText_.find("Mission Names", key);
@@ -1940,7 +2227,7 @@ void Frontend::ownerDraw(MnuButton& b) {
     if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
     if (cb == "MNU_MIS_SCROLLBAR" && b.type == 3) { briefLine_ = std::max(0, b.sliderPos); return; }   // 0x412b10
     if (cb == "MNU_KBD_SCROLLBAR" && b.type == 3) {
-        kbScroll_ = std::clamp(b.sliderPos, 0, 33);
+        kbScroll_ = std::clamp(b.sliderPos, 0, keyRows_ - 11);   // DF.MNU's slider: 33 (CD), 35 (GOG 0..0x23 at 0x422766)
         if (kbScroll_ != kbLastSlider_) { kbLastSlider_ = kbScroll_; refreshKeys(); }
         return;
     }
@@ -1959,11 +2246,7 @@ void Frontend::ownerDraw(MnuButton& b) {
         // Caption teletype (0x4184d4): Ttclick1..9 at fx*192/255 on every
         // draw until all is shown; word-wrapped LCD10 at +8 in w-16 x h-16.
         blit(image(b.image), float(b.x), float(b.y), 0, 0, 256, 56, false);
-        if (captionShown_ < caption_.size()) {
-            char t[16];
-            std::snprintf(t, sizeof t, "TTCLICK%d.WAV", 1 + std::rand() % 9);
-            sound(t, 192);
-        }
+        if (!captionDone_) ttyClick();
         drawWrapped("LCD10", float(b.x + 8), float(b.y + 8), 240, 40, caption_.substr(0, captionShown_), green);
         return;
     }
@@ -2008,10 +2291,41 @@ void Frontend::ownerDraw(MnuButton& b) {
 }
 
 void Frontend::textInput(const char* t) {
+    // GOG 0x40d9e0, editing: a character typed without Ctrl clicks (0x413230,
+    // also when the field is full; CD 0x418350 the same) and is appended,
+    // upper-cased by GOG (0x49bf20); the CD DF.EXE's edit branch (0x406bf8,
+    // LAB_00406ea0) stores it as typed.
     MnuButton* b = mnu_.button(editing_);
-    if (!b) return;
-    for (const char* p = t; *p; ++p)
-        if (int(b->text.size()) + 1 < editMax_ && *p >= 32 && *p < 127) b->text += *p;
+    if (!b || (SDL_GetModState() & KMOD_CTRL)) return;
+    for (const char* p = t; *p; ++p) {
+        if (*p < 32 || *p >= 127) continue;
+        ttyClick();
+        const char c = gogProfile_ ? char(std::toupper(static_cast<unsigned char>(*p))) : *p;
+        if (int(b->text.size()) + 1 < editMax_) b->text += c;
+    }
+}
+
+void Frontend::commitEdit() {
+    // GOG 0x40d970: the edit ends and its callback gets 4, from Enter or from
+    // a click elsewhere (0x40dd80).
+    MnuButton* b = mnu_.button(editing_);
+    if (!b) { editing_.clear(); return; }
+    editing_.clear();
+    SDL_StopTextInput();
+    if (b->callback != "MNU_NS_TEXT") { event(*b, 4); return; }
+    // mnu_ns_text (0x410074): empty keeps the old name; else the
+    // upper-cased name, slot in use, saved at once.
+    if (!b->text.empty()) {
+        if (editMode_ == 1) profileDefaults(prof());
+        prof().setName(b->text);
+        prof().set(0x24, prof().get(0x24) | 1);
+        saveProfile(cur_);
+    } else if (editMode_ == 1) {
+        profileDefaults(prof());
+        prof().setName("New Operative");
+    }
+    b->text = prof().name();
+    refreshSoldier();
 }
 
 void Frontend::key(const SDL_KeyboardEvent& k) {
@@ -2019,30 +2333,16 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
     if (!editing_.empty()) {
         MnuButton* b = mnu_.button(editing_);
         if (!b) { editing_.clear(); return; }
-        if (sym == SDLK_BACKSPACE && !b->text.empty()) b->text.pop_back();
-        else if (b->callback != "MNU_NS_TEXT" && (sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE)) {
-            // Framework (0x406bf8): Enter -> cb(4), Esc -> text restored, cb(5).
-            const bool commit = sym != SDLK_ESCAPE;
-            if (!commit) b->text = editBackup_;
+        // GOG 0x40d9e0: Backspace, Enter and Esc click (0x413230) too.
+        if (sym == SDLK_BACKSPACE || sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE) ttyClick();
+        if (sym == SDLK_BACKSPACE) { if (!b->text.empty()) b->text.pop_back(); }
+        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) commitEdit();   // GOG 0x40d9e0 -> 0x40d970
+        else if (b->callback != "MNU_NS_TEXT" && sym == SDLK_ESCAPE) {
+            // Framework (0x406bf8): Esc -> text restored, cb(5).
+            b->text = editBackup_;
             editing_.clear();
             SDL_StopTextInput();
-            event(*b, commit ? 4 : 5);
-        } else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
-            // mnu_ns_text (0x410074): empty keeps the old name; else the
-            // upper-cased name, slot in use, saved at once.
-            if (!b->text.empty()) {
-                if (editMode_ == 1) profileDefaults(prof());
-                prof().setName(b->text);
-                prof().set(0x24, prof().get(0x24) | 1);
-                saveProfile(cur_);
-            } else if (editMode_ == 1) {
-                profileDefaults(prof());
-                prof().setName("New Operative");
-            }
-            b->text = prof().name();
-            editing_.clear();
-            SDL_StopTextInput();
-            refreshSoldier();
+            event(*b, 5);
         } else if (sym == SDLK_ESCAPE) {
             b->text = editBackup_;
             editing_.clear();
@@ -2051,6 +2351,9 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
         return;
     }
     if (screen_ == Start) { if (leadFade_ < 0) { sound("BUMP1.WAV"); leadFade_ = 10; } return; }
+    // GOG 0x40d9e0 (CD the same): 'P' with the key word's high half 0x100
+    // (Shift alone) saves the screen (0x473eb0), besides any hot key.
+    if (sym == SDLK_p && (k.keysym.mod & KMOD_SHIFT) && !(k.keysym.mod & (KMOD_CTRL | KMOD_ALT))) printScreen_ = true;
     const MnuMenu* m = mnu_.menu(menu_);
     if (!m) return;
     auto fire = [&](const std::string& name) {
@@ -2059,17 +2362,36 @@ void Frontend::key(const SDL_KeyboardEvent& k) {
         event(*b, 1);
         event(*b, 2);
     };
+    // GOG 0x40d9e0 -> 0x40c6f0: the hot key is the key's character (WM_CHAR,
+    // 0x498b00) upper-cased against button +0x7c, the first match in list
+    // order. A key without a character (arrows, Shift, Ctrl, F-keys...) keeps
+    // character 0 (0x498a70) and so matches the first button with no hot key
+    // (a GOG quirk: on Choose Soldier an arrow selects slot 1). Then Enter,
+    // Esc and the arrows by key code.
+    const SDL_Keymod mod = SDL_GetModState();
+    const bool kp = sym == SDLK_KP_ENTER || sym == SDLK_KP_DIVIDE || sym == SDLK_KP_MULTIPLY || sym == SDLK_KP_MINUS || sym == SDLK_KP_PLUS ||
+                    ((mod & KMOD_NUM) && ((sym >= SDLK_KP_1 && sym <= SDLK_KP_0) || sym == SDLK_KP_PERIOD));
+    // A key has a character when its keycode is one (not a scancode-mask
+    // key such as an arrow or F-key): letters of any layout (ø, æ, dead
+    // keys) give a WM_CHAR, which matches no hot key; Delete gives none.
+    const bool hasChar = (!(sym & SDLK_SCANCODE_MASK) && sym != SDLK_DELETE) || kp;
+    // (Alt and the system keys are left out: WM_SYSKEYDOWN.)
+    const bool sys = sym == SDLK_LALT || sym == SDLK_RALT || sym == SDLK_LGUI || sym == SDLK_RGUI;
+    if (!hasChar && !sys) {
+        for (const auto& bn : m->buttons)
+            if (MnuButton* b = mnu_.button(bn); b && b->hot == 0) { fire(bn); break; }
+    } else if (sym >= 32 && sym < 127 && !(mod & KMOD_CTRL)) {
+        // Ctrl+letter gives a control character: no hot key.
+        const char c = char(std::toupper(int(sym)));
+        for (const auto& bn : m->buttons)
+            if (MnuButton* b = mnu_.button(bn); b && b->hot == c) { fire(bn); break; }
+    }
     if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) return fire(m->accept);
     if (sym == SDLK_ESCAPE) return fire(m->back);
     if (sym == SDLK_UP) return fire(m->up);
     if (sym == SDLK_DOWN) return fire(m->down);
     if (sym == SDLK_LEFT) return fire(m->left);
     if (sym == SDLK_RIGHT) return fire(m->right);
-    if (sym >= 32 && sym < 127) {
-        const char c = char(std::toupper(int(sym)));
-        for (const auto& bn : m->buttons)
-            if (MnuButton* b = mnu_.button(bn); b && b->hot == c) return fire(bn);
-    }
 }
 
 void Frontend::writeScreenshot(int dw, int dh) {
@@ -2079,6 +2401,24 @@ void Frontend::writeScreenshot(int dw, int dh) {
     std::ofstream f(o_.screenshot, std::ios::binary);
     f << "P6\n" << dw << " " << dh << "\n255\n";
     for (int y = dh - 1; y >= 0; --y) f.write(reinterpret_cast<const char*>(&px[size_t(y) * size_t(dw) * 3]), dw * 3);
+}
+
+void Frontend::writeMenuShot(const std::filesystem::path& path, int dw, int dh) {
+    // 0x473eb0 / CD 0x426afc save the 640x480 menu screen. OpenDF samples
+    // its scaled frame at the menu pixels' centres.
+    std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+    constexpr int W = 640, H = 480;
+    std::vector<uint8_t> rgb(size_t(W) * H * 3);
+    for (int y = 0; y < H; ++y) {
+        const int sy = std::clamp(int(offY_ + (float(y) + 0.5f) * scale_), 0, dh - 1);
+        for (int x = 0; x < W; ++x) {
+            const int sx = std::clamp(int(offX_ + (float(x) + 0.5f) * scale_), 0, dw - 1);
+            std::memcpy(&rgb[(size_t(y) * W + size_t(x)) * 3], &px[(size_t(dh - 1 - sy) * size_t(dw) + size_t(sx)) * 3], 3);
+        }
+    }
+    writePcx24(path, W, H, rgb.data());
 }
 
 bool Frontend::playIntro(int& frame, bool& shotTaken) {
@@ -2114,19 +2454,27 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
     const bool fixed = !o_.screenshot.empty();
     const Uint64 freq = SDL_GetPerformanceFrequency(), c0 = SDL_GetPerformanceCounter();
     int64_t virt = 0, heard = 0;
+    // The time the window was not active: the clock stands still then (GOG
+    // timer 0x4906a0 counts only while the app is active, [0xcc0884]).
+    Uint64 inactiveSince = 0, inactiveTotal = 0;
+    bool active = true;
     // DF.EXE's clock (0x485f98, 0x486014): 120 ticks a second.
-    auto now = [&]() { return fixed ? virt : int64_t(double(SDL_GetPerformanceCounter() - c0) * 120.0 / double(freq)); };
+    auto now = [&]() {
+        if (fixed) return virt;
+        const Uint64 c = active ? SDL_GetPerformanceCounter() : inactiveSince;
+        return int64_t(double(c - c0 - inactiveTotal) * 120.0 / double(freq));
+    };
     auto hear = [&]() {   // OPENDF_AUDIODUMP: the sound up to the clock
         const int64_t t = now();
         if (t > heard) { audio_.advance(double(t - heard) / 120.0); heard = t; }
     };
     int keys = 0;   // 0x489e2c: the key queue starts empty
     // Testing: OPENDF_INTROKEY=N presses a key after N shown frames (with
-    // --screenshot), OPENDF_INTROCLICK=N clicks the left button.
+    // --screenshot), OPENDF_INTROCLICK=N presses the left button.
     const int testKey = fixed && std::getenv("OPENDF_INTROKEY") ? std::atoi(std::getenv("OPENDF_INTROKEY")) : -1;
     const int testClick = fixed && std::getenv("OPENDF_INTROCLICK") ? std::atoi(std::getenv("OPENDF_INTROCLICK")) : -1;
     int shown = 0;
-    bool quit = false, active = true;
+    bool quit = false;
     const int period = std::max(1, v.framePeriod());
     int64_t target = now();   // 0x487069
     int late = 0;             // 0x486a7c
@@ -2135,22 +2483,41 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
         // repeats too) go into the key queue (0x485a3a); a left click goes
         // to the Start Screen's mouse hook, registered before the intro
         // (0x418b91 -> 0x418b50), which marks DF_LEAD as done (0x4d9120).
+        // The GOG Df.exe's player (0x49ae00) swaps the mouse hook [0xd0936c]
+        // for its own (0x49ae4b -> 0x49ade0) while the video plays and
+        // restores it after (0x49aea5), so the Start Screen's hook never
+        // sees the click. 0x49ade0 ends the video (-3, no key taken) on mouse
+        // code 2 or >= 8 from 0x497a40: any press (double clicks pass as the
+        // raw 0x203 / 0x206 / 0x209), any release but the left one (code 4),
+        // a wheel notch (0x100 / 0x200). Motion (1) does not.
         SDL_Event e;
+        bool mouseEnd = false;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) ++keys;
+            else if (gogProfile_ && (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEWHEEL ||
+                                     (e.type == SDL_MOUSEBUTTONUP && e.button.button != SDL_BUTTON_LEFT)))
+                mouseEnd = true;
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) introLeadSkip_ = true;
             else if (e.type == SDL_WINDOWEVENT && !fixed) {
                 // WM_SETFOCUS / WM_KILLFOCUS (0x48580b, 0x485c64): no frames
                 // while the window is not active (0x490015).
-                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) active = true;
-                if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) active = false;
+                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED && !active) {
+                    active = true;
+                    inactiveTotal += SDL_GetPerformanceCounter() - inactiveSince;
+                }
+                if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST && active) {
+                    active = false;
+                    inactiveSince = SDL_GetPerformanceCounter();
+                }
             }
         }
         if (shown == testKey) ++keys;
-        if (shown == testClick) introLeadSkip_ = true;
+        if (shown == testClick) (gogProfile_ ? mouseEnd : introLeadSkip_) = true;
         if (quit) break;                   // 0x490024: the quit flag
         if (keys > 0) { --keys; break; }   // 0x48ffcc: one key from the queue skips
+        if (mouseEnd) break;               // GOG 0x49ae88: [0xd09970] set by 0x49ade0
         hear();
         if (!active) { SDL_Delay(10); continue; }
         // 0x486c15: the end, or an invalid chunk (0x49000b; INTRO.KDV ends
@@ -2215,7 +2582,9 @@ bool Frontend::playIntro(int& frame, bool& shotTaken) {
 int Frontend::run() {
     if (!loadData()) { std::fprintf(stderr, "cannot read DF.MNU\n"); return 1; }
     loadProfiles();
-    // df.cfg: read at start (0x454e10), written at exit (0x40dc88).
+    // df.cfg: read at start (0x454e10), written at exit (0x40dc88); the
+    // GOG Df.exe's key set and defaults (0x407120, 0x407360).
+    if (gogProfile_) cfg_ = DfConfig::df1Gog();
     cfg_.load(o_.gameDir / "df.cfg");
     options_ = uint32_t(cfg_.get("attributes"));
     gpsIcons_ = std::clamp(cfg_.get("gpsicon"), 0, 2);
@@ -2265,6 +2634,7 @@ int Frontend::run() {
     while (screen_ != Quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win_, e)) continue;
             if (e.type == SDL_QUIT) { next_ = Quit; break; }
             if (e.type == SDL_TEXTINPUT && !editing_.empty()) textInput(e.text.text);
             if (screen_ == Keyboard && kbCapture_ != 0) {
@@ -2281,6 +2651,10 @@ int Frontend::run() {
                 SDL_GetWindowSize(win_, &ww, &wh);
                 SDL_GL_GetDrawableSize(win_, &dw, &dh);
                 const float px = float(mx) * float(dw) / float(std::max(1, ww)), py = float(my) * float(dh) / float(std::max(1, wh));
+                // The window may have changed size since the last frame (fullscreen).
+                scale_ = std::min(float(dw) / 640.f, float(dh) / 480.f);
+                offX_ = (float(dw) - 640.f * scale_) / 2;
+                offY_ = (float(dh) - 480.f * scale_) / 2;
                 mouseX_ = int((px - offX_) / scale_);
                 mouseY_ = int((py - offY_) / scale_);
                 if (screen_ == Start) {
@@ -2303,37 +2677,34 @@ int Frontend::run() {
                     continue;
                 }
                 MnuButton* b = hit(mouseX_, mouseY_);
+                if (!editing_.empty()) {
+                    // GOG 0x40dd80: while a text field is edited, moves reach no
+                    // button (no hover); a press or release off the button hovered
+                    // when the edit began commits it first, as Enter does.
+                    if (e.type == SDL_MOUSEMOTION) continue;
+                    if (!b || b->name != hover_) commitEdit();
+                }
                 if (b && (b->type == 2 || b->type == 3) && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && !(b->attrib & 2) && b->drawstate != 4) {
                     sound("CLICK9.WAV");
                     dragging_ = b->name;
                     dragTo(*b);
                     continue;
                 }
+                // GOG 0x40dd80: off the last button (or onto another) it gets
+                // a leave and a release; then the event goes to the button
+                // under the mouse (moves are hover-enters, every move).
                 const std::string name = b ? b->name : std::string();
                 if (name != hover_) {
-                    // Hover out (7), and a release if it was pressed (0x407050).
                     if (MnuButton* old = mnu_.button(hover_)) {
-                        event(*old, 7);
-                        if (pressed_ == hover_) { pressed_.clear(); event(*old, 2); }
+                        pointer(*old, PtrLeave);
+                        pointer(*old, PtrRelease);
                     }
                     hover_ = name;
-                    if (b && b->drawstate != 4 && !(b->attrib & 2)) {
-                        if (!(b->attrib & 0x400)) sound("GRASS5.WAV", 128);
-                        event(*b, 6);
-                    }
                 }
-                if (b && b->drawstate != 4 && !(b->attrib & 2)) {
-                    if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                        if (!(b->attrib & 0x400)) sound("CLICK9.WAV");
-                        pressed_ = name;
-                        event(*b, 1);
-                        if (MnuButton* l = mnu_.button(b->link)) event(*l, 1);
-                    } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && pressed_ == name) {
-                        pressed_.clear();
-                        event(*b, 2);
-                        if (MnuButton* l = mnu_.button(b->link)) event(*l, 2);
-                        if (hit(mouseX_, mouseY_) == b) event(*b, 6);
-                    }
+                if (b) {
+                    if (e.type == SDL_MOUSEMOTION) pointer(*b, PtrEnter);
+                    else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) pointer(*b, PtrPress);
+                    else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) pointer(*b, PtrRelease);
                 }
             }
         }
@@ -2341,8 +2712,11 @@ int Frontend::run() {
         const Uint64 now = SDL_GetPerformanceCounter();
         clock += double(now - last) / double(SDL_GetPerformanceFrequency());
         last = now;
+        static const char* testEvents = std::getenv("OPENDF_FEEVENTS");   // testing
+        if (testEvents && !o_.screenshot.empty()) clock = 0.016 * 4;
         for (; clock >= 0.016; clock -= 0.016) {
             ++ticks_;
+            if (testEvents) pushTestEvents(testEvents);
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
             ++screenTicks_;
             static const int leadTicks = std::getenv("OPENDF_LEADTICKS") ? std::atoi(std::getenv("OPENDF_LEADTICKS")) : 600;   // testing
@@ -2353,10 +2727,12 @@ int Frontend::run() {
             }
             if (screen_ == End && endTicks_ >= 0 && --endTicks_ < 0) next_ = Quit;
             if (screen_ == Credits && next_ == Credits) tickCredits();
-            if (screen_ == Briefing && captionShown_ < caption_.size()) ++captionShown_;
+            if (screen_ == Briefing) ttyStep(captionShown_, captionDone_, caption_.size());
             if (transitionDone()) tickTtys();
             if (screen_ == Keyboard) {
-                if (transitionDone()) kbShown_ = std::min(kbMsg_.size(), kbShown_ + 2);   // 2 per tick (0x422dbd + 0x422e38)
+                // GOG 0x421d90 (CD 0x422d3c): one teletype step per update,
+                // after the wipe; while waiting for a key every update.
+                if (kbCapture_ || transitionDone()) ttyStep(kbShown_, kbDone_, kbMsg_.size());
                 if (kbTimer_ > 0 && --kbTimer_ == 0) kbMessage(kbMode_ == 0 ? "KBDKEYMOD" : kbMode_ == 1 ? "KBDMOUSEMOD" : "KBDDELETEMOD", -1);
             }   // 1 character per tick (0x418408)
         }
@@ -2377,19 +2753,36 @@ int Frontend::run() {
                 g.sidearm = sidearmName(prof().get(0x680));
                 g.soldierName = prof().name();
                 g.female = prof().get(0x640) >= 8;
+                {
+                    // 0x407a90: the face table 0x4d0490 (+0x00 of each 0x84 record).
+                    static const int kFaceVariant[13] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 0, 0};
+                    const int face = prof().get(0x640);
+                    g.faceVariant = face >= 0 && face < 13 ? kFaceVariant[face] : 0;
+                }
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;
+                g.showGun = cfg_.get("showgun") != 0;
+                g.picInPic = cfg_.get("picinpic") != 0;
                 g.flipMouse = cfg_.get("flipmouse") != 0;
-                g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
-                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
-                // 0x41cca0: the profile's 44 bindings over the game table;
+                // 0x407a90 passes df.cfg's values on unclamped (0x406640
+                // stores atoi's result as it is). The +-2^20 bound is
+                // OpenDF's guard against overflow: the dialog gain and the
+                // gamma table already saturate far inside it.
+                constexpr int kRaw = 1 << 20;
+                g.mouseScale = cfg_.get("mousescale");
+                g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), -kRaw, kRaw);
+                g.displayGamma = std::clamp(cfg_.get("gamma"), -kRaw, kRaw);
+                g.letterbox = std::clamp(cfg_.get("window_size"), 1, 2);   // 0x407a90, 0x404ba0
+                // 0x41cca0 (GOG 0x41ce20): the profile's 44 (GOG 46: +0x8b0
+                // PrevWaypoint, +0x8bc server; row 28 named AudioMacros)
+                // bindings over the game table;
                 // mouse 1/2/3 -> mask 1/2/0x10; Fire also sets attack_2.
                 g.bindings.clear();
-                for (int i = 0; i < 44; ++i) {
+                for (int i = 0; i < keyRows_; ++i) {
                     const uint32_t vk = uint32_t(prof().get(0x6a0 + 12 * i)) & 0xFFFF, m = uint32_t(prof().get(0x6a4 + 12 * i));
                     const uint32_t mask = m == 1 ? 1 : m == 2 ? 2 : m == 3 ? 0x10 : 0;
-                    g.bindings.push_back({kKeyRows[i].game, vk | mask << 16});
+                    g.bindings.push_back({i == 28 && keyRows_ == kKeyRowsGog ? "AudioMacros" : kKeyRows[i].game, vk | mask << 16});
                     if (i == 8) g.bindings.push_back({"attack_2", vk | mask << 16});
                 }
                 uint32_t flags = uint32_t(prof().get(0x70 + camp_ * 0x44));
@@ -2398,18 +2791,39 @@ int Frontend::run() {
                 runGame(vfs_, g, &outcome_, &flags);
                 missionPlayed_ = true;
                 audio_.setDfMixer(true, false);
-                if (outcome_.quit) break;
-                // 0x40e5d4: a win marks the mission done, kills add up; the
-                // flags are kept only on a win.
+                // GOG 0x401e70 -> 0x407980: the mission's option words go back
+                // to the settings (df.cfg); of them OpenDF's missions change
+                // only the crosshair, gun and picture-in-picture toggles.
+                if (outcome_.played) {
+                    cfg_.set("crosshairs", outcome_.crosshairs ? 1 : 0);
+                    cfg_.set("showgun", outcome_.showGun ? 1 : 0);
+                    cfg_.set("picinpic", outcome_.picInPic ? 1 : 0);
+                }
+                if (outcome_.letterbox) cfg_.set("window_size", outcome_.letterbox);   // 0x407980: back to df.cfg
+                if (outcome_.quit) {
+                    // GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 / 0x407980:
+                    // an attempt won and then replayed with Space was recorded
+                    // at once, so it stays recorded when the window is closed.
+                    if (outcome_.earlierWin) {
+                        prof().set(0x70 + camp_ * 0x44, int32_t(flags));
+                        prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
+                        prof().set(0x664, prof().get(0x664) + outcome_.earlierKills);
+                    }
+                    break;
+                }
+                // 0x40e5d4 (GOG Df.exe 0x407de0): only a win records
+                // anything, the mission done and its kills (+0x664; the two
+                // other stats it adds, +0x678 and +0x674, are not kept yet);
+                // the flags are kept only on a win. Attempts won and then
+                // replayed with Space were recorded the same way.
                 prof().set(0x70 + camp_ * 0x44, int32_t(flags));
-                if (outcome_.won) prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
-                prof().set(0x664, prof().get(0x664) + outcome_.kills);
+                if (outcome_.won || outcome_.earlierWin) prof().set(0x30 + camp_ * 0x44 + 4 * mis_, 1);
+                prof().set(0x664, prof().get(0x664) + (outcome_.won ? outcome_.kills : 0) + outcome_.earlierKills);
                 if (!openWindow()) return 1;
                 // Post Menu (0x41e480): music_start, then Var00=1 (single
-                // player); Debf init: Var02 = 0 won / 1 lost (0x423f18).
+                // player); Debf init sets Var02 (GOG 0x41f320).
                 music_.start();
                 musicVar(0, 1);
-                musicVar(2, outcome_.won ? 0 : 1);
                 enter(Debrief);
                 next_ = Debrief;
             } else if (next_ == Quit) {
@@ -2417,6 +2831,14 @@ int Frontend::run() {
             } else {
                 enter(next_);
             }
+        }
+        // GOG 0x40fa90 draws the page only while its window has the focus and
+        // is not iconic; the logic, teletypes and music go on. OpenDF skips
+        // the draw while minimised and keeps drawing an unfocused window (an
+        // OpenDF amenity: a window behind another still shows the menu).
+        if (o_.screenshot.empty() && (SDL_GetWindowFlags(win_) & SDL_WINDOW_MINIMIZED)) {
+            SDL_Delay(10);
+            continue;
         }
         // Draw: DF.EXE's 640x480 screen, scaled to the window height, centred.
         int dw, dh;
@@ -2441,10 +2863,10 @@ int Frontend::run() {
         }
         drawMenu();
         if (screen_ == Credits)
-            // 0x41a3a8: after the buttons, each live text at its point, flags
-            // 4 centred (1 left, 2 right).
+            // 0x41a3a8 (GOG 0x4242f0): after the buttons, each live text at
+            // its point: flags & 1 left, else & 2 right, else centred.
             for (const CreditText& t : creditSlots_)
-                if (t.active) drawText(t.font, float(t.x), float(t.y), t.text, t.color, (t.flags & 4) ? 1 : (t.flags & 2) ? 2 : 0);
+                if (t.active) drawText(t.font, float(t.x), float(t.y), t.text, t.color, (t.flags & 1) ? 0 : (t.flags & 2) ? 2 : 1);
         if (screen_ == Keyboard) {
             // 0x423048: frame (459,274)-(590,387) and the teletyped message.
             const uint32_t g = 0xFF00FF00;
@@ -2452,7 +2874,12 @@ int Frontend::run() {
             menuLine(590, 274, 590, 387, g);
             menuLine(590, 387, 459, 387, g);
             menuLine(459, 387, 459, 274, g);
-            drawWrapped("LCD10", 467, 282, 116, 98, kbMsg_.substr(0, kbShown_), g);
+            // The message through the teletype draw (GOG 0x4220a0 -> 0x4133c0,
+            // after the wipe): it clicks until done.
+            if (transitionDone()) {
+                if (!kbDone_) ttyClick();
+                drawWrapped("LCD10", 467, 282, 116, 98, kbMsg_.substr(0, kbShown_), g);
+            }
         }
         if (screen_ == Options1 || screen_ == Options3 || screen_ == Macros || screen_ == Keyboard) {
             // The settings pages' separator under the tab strip: a green line
@@ -2492,12 +2919,31 @@ int Frontend::run() {
             auto t = [&](const char* k) { const std::string* s = menuText_.find("GroupMainMenu", k); return s ? *s : std::string(k); };
             char sec[32], key[32];
             std::snprintf(sec, sizeof sec, "Briefing%d", mis_ + 1);
-            std::snprintf(key, sizeof key, outcome_.won ? "Win%d" : "Lose%d", mis_ + 1);
+            std::snprintf(key, sizeof key, debfWon_ ? "Win%d" : "Lose%d", mis_ + 1);
             const std::string* body = campText_.find(sec, key);
             std::string text = t("DEBFMISSIONSTATS");
-            if (outcome_.won) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
+            if (debfWon_) text += " ~ " + t("DEBFKILLS") + " : " + std::to_string(outcome_.kills) + " ~ ~ ";
             else text += " ~ ~ ";
             text += body ? *body : "Unable to find mission debriefing text";
+            // One left-to-right, non-recursive {ADD}<key> pass into the 0x1000
+            // buffer (GOG Df.exe 0x41ef80): the key runs to the next space or
+            // the end, that space is dropped, and [Briefing<m>]/<key> (or
+            // "Unable to find '<key>'") is inserted in its place.
+            std::string out;
+            for (size_t i = 0; i < text.size();) {
+                if (text.compare(i, 5, "{ADD}") == 0) {
+                    size_t e = i + 5;
+                    while (e < text.size() && text[e] != ' ') ++e;
+                    const std::string k = text.substr(i + 5, e - i - 5);
+                    const std::string* add = campText_.find(sec, k);
+                    out += add ? *add : "Unable to find '" + k + "'";
+                    i = e < text.size() ? e + 1 : e;
+                } else {
+                    out += text[i++];
+                }
+            }
+            if (out.size() > 0xFFF) out.resize(0xFFF);
+            text = std::move(out);
             if (transitionDone()) {   // teletyped once from init, 1 char/tick (0x4240c3)
                 ensureTty(ttyDebf_, text, 86, 104, 468, 272, "AVA10B", 1);
                 drawTty(ttyDebf_);
@@ -2507,6 +2953,12 @@ int Frontend::run() {
         hud().end();
         captureTo(lastTex_);
         haveLast_ = true;
+        if (printScreen_) {
+            // Shift+P (GOG 0x40d9e0 -> 0x473eb0, CD 0x426afc): the first free
+            // sshotNNN.pcx / screenNN.pcx of the 640x480 screen.
+            printScreen_ = false;
+            if (const auto path = freeScreenshotPath(o_.gameDir, gogProfile_); !path.empty()) writeMenuShot(path, dw, dh);
+        }
         if (!o_.screenshot.empty() && ++frame >= o_.frames) {
             writeScreenshot(dw, dh);
             break;
@@ -2520,6 +2972,55 @@ int Frontend::run() {
     music_.stop();
     closeWindow();
     return quitCode_;
+}
+
+void Frontend::pushTestEvents(const char* ev) {
+    // Testing: OPENDF_FEEVENTS="TICK OP ARGS; ..." pushes real SDL events at
+    // menu tick TICK (OP m = move to x y, c = left click at x y, r = right
+    // click, k = key by SDL name, t = text input) in 640x480 coordinates.
+    std::istringstream all(ev);
+    std::string item;
+    while (std::getline(all, item, ';')) {
+        std::istringstream in(item);
+        int at = 0;
+        std::string op;
+        if (!(in >> at >> op) || at != ticks_) continue;
+        if (op == "m" || op == "c" || op == "r") {
+            float x = 0, y = 0;
+            in >> x >> y;
+            int ww, wh, dw, dh;
+            SDL_GetWindowSize(win_, &ww, &wh);
+            SDL_GL_GetDrawableSize(win_, &dw, &dh);
+            const int wx = int((offX_ + x * scale_) * float(ww) / float(std::max(1, dw)));
+            const int wy = int((offY_ + y * scale_) * float(wh) / float(std::max(1, dh)));
+            SDL_Event m{};
+            m.type = SDL_MOUSEMOTION;
+            m.motion.x = wx;
+            m.motion.y = wy;
+            SDL_PushEvent(&m);
+            if (op != "m")
+                for (Uint32 t : {Uint32(SDL_MOUSEBUTTONDOWN), Uint32(SDL_MOUSEBUTTONUP)}) {
+                    SDL_Event b{};
+                    b.type = t;
+                    b.button.button = op == "c" ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+                    b.button.x = wx;
+                    b.button.y = wy;
+                    SDL_PushEvent(&b);
+                }
+        } else if (op == "k") {
+            std::string name;
+            std::getline(in >> std::ws, name);
+            SDL_Event k{};
+            k.type = SDL_KEYDOWN;
+            k.key.keysym.scancode = SDL_GetScancodeFromName(name.c_str());
+            k.key.keysym.sym = SDL_GetKeyFromScancode(k.key.keysym.scancode);
+            SDL_PushEvent(&k);
+        } else if (op == "t") {
+            std::string text;
+            std::getline(in >> std::ws, text);
+            if (!editing_.empty()) textInput(text.c_str());   // straight in (a pushed SDL_TEXTINPUT is not portable)
+        }
+    }
 }
 
 int runFrontend(Vfs& vfs, const FrontendOptions& options) {

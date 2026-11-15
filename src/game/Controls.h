@@ -22,9 +22,45 @@ enum class Action {
     Binoculars, Pause, OldMessages, ShowFriendly, LetterBox, Drop, Briefing, Help,
     // Delta Force 2: scope zeroing (X / Z) and night vision (N).
     ScopeInc, ScopeDec, NightVision,
-    // Delta Force 2: the map's elevation view (F9 mapterrain / F10
-    // mapelevation, actions 362 / 363).
+    // mapterrain / mapelevation (actions 362 / 363): Delta Force's GPS inset
+    // and elevation picture (F10 / F11); Delta Force 2's map elevation view
+    // (F9 / F10).
     MapTerrain, MapElevation,
+    // GOG Df2.exe: the video camera's inset (VCam, F12, id 0x34).
+    VCam,
+    // GOG Df.exe: the HUD waypoint one back (PrevWaypoint, command 0x2f, E;
+    // 0x484d00; the EXE table 0x4fb2fc, overwritten from the profile +0x8b0).
+    PrevWaypoint,
+    // Delta Force: the outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193:
+    // F2 1stPerson, F5 3rdPersonp, F6 3rdPersonw, F7 3rdPersonl) and the
+    // held camera keys (0x19a..0x19f: L ; P . [ ]).
+    FirstPerson, ThirdPersonP, ThirdPersonW, ThirdPersonL,
+    CameraLeft, CameraRight, CameraUp, CameraDown, CameraZoomIn, CameraZoomOut,
+    // GOG Df2.exe: the scope magnification (scopemag, E; Shift+E down).
+    ScopeMag,
+    // The FO camera inset and its next team-mate: Delta Force fo (F9, id
+    // 0x1e) / tab (Tab, id 0x1f) (GOG Df.exe 0x477d40); GOG Df2.exe's
+    // Forward Observer fo (F11) / tab (Tab).
+    FoCamera, FoNext,
+    // Delta Force: PrintScreen (Shift+P: the table's flag 0x40, command 2,
+    // GOG Df.exe 0x477d40 -> 0x473eb0, CD 0x426afc).
+    PrintScreen,
+    // Picture-in-picture (pinp, F8): Delta Force id 0x1d (GOG Df.exe
+    // 0x477d40 toggles [0x67f510], CD [0x66fa50]); Delta Force 2 GOG
+    // Df2.exe 0x41f150 case 0x13 toggles [0x67cd10].
+    PicInPic,
+    // The audio macros (AudioMacros, A): GOG Df.exe's box (id 0x2b; 0x477d40
+    // toggles [0x67db90]; not in the CD build); Delta Force 2's list (GOG
+    // Df2.exe 0x41f150 case 0x20, CD 0x41b1e0 case 0x2b).
+    AudioMacros,
+    // GOG Df.exe: cycleb (command 0xc0, no default key: 0x484b70(-1)) and
+    // the single-player cheat commands (flags 0x100000, no key):
+    // hitmewithyourbestshot 0x78 (refill), takeittothelimit 0x79 (infinite
+    // ammunition), raindropskeepfallinonmyhead 0x7c (8 fire missions).
+    CycleBack, CheatRefill, CheatInfiniteAmmo, CheatFireMissions,
+    // GOG Df2.exe hudcolor (0x41f150 case 10, no default key): the HUD
+    // colour index [0x67cd08] steps 0..5.
+    HudColor,
     Count
 };
 
@@ -37,14 +73,32 @@ public:
     bool initDf2(const ExeImage& exe);
     bool fromExe() const { return fromExe_; }
 
-    // The action bound to a key press, or Action::Count.
+    // The action bound to a key press, or Action::Count (PrintScreen, which
+    // asks for Shift, never: shiftActionFor).
     Action actionFor(SDL_Scancode key) const;
+    // Delta Force: with Shift down, a press entry fires only if its table
+    // flags ask for Shift (+0x26 & 0x40, GOG Df.exe 0x479380): of OpenDF's
+    // actions only PrintScreen does.
+    Action shiftActionFor(SDL_Scancode key) const;
     // Whether an action's key or mouse button is held.
     bool down(Action a, const Uint8* keys, Uint32 mouseButtons) const;
     std::string describe(Action a) const;
     // Overwrites one game-table entry by DF.EXE name (key = VK | mouse mask
     // << 16; 0 unbinds), as 0x41cbfc does with the profile's bindings.
     void set(const std::string& name, uint32_t key);
+    // Delta Force 2's one-shot dispatch, in its table's order (records with
+    // flag 4, the held commands, are polled instead). A key press (GOG
+    // Df2.exe 0x421be0): the first record with that key whose flags pass
+    // the modifier test (0x40 needs Shift, 0x100 Ctrl; otherwise with
+    // Shift or Ctrl down, unless the key is one of them, it needs 0x200);
+    // Action::Count when none does or it is not an OpenDF action. Then,
+    // as before, a held record bound to the key (OpenDF takes some of
+    // them on the press). df2Table() is false when GOG's table was not read.
+    bool df2Table() const { return !df2Recs_.empty(); }
+    Action df2KeyAction(SDL_Scancode key, bool shift, bool ctrl) const;
+    // A mouse button (0x420e10: 1 left, 2 right, 0x10 middle): the first
+    // one-shot record whose mouse mask is exactly that.
+    Action df2MouseAction(int mask) const;
     // Windows virtual-key codes <-> SDL scancodes (the keys DF.EXE knows).
     static SDL_Scancode fromVirtualKey(uint32_t vk);
     static uint32_t toVirtualKey(SDL_Scancode sc);
@@ -52,6 +106,8 @@ public:
 private:
     struct Binding { SDL_Scancode key = SDL_SCANCODE_UNKNOWN; int mouse = 0; };
     Binding bind_[int(Action::Count)];
+    struct Df2Rec { std::string name; Action action; Binding bind; uint16_t flags; };
+    std::vector<Df2Rec> df2Recs_;   // GOG Df2.exe 0x4b1710 order, flags +0x2a
     bool fromExe_ = false;
 };
 

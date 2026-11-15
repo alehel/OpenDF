@@ -23,15 +23,27 @@ float octagonal(Vec3 a, Vec3 b) {
 
 float len3(Vec3 v) { return std::sqrt(dot(v, v)); }
 
+// 0x41e880 of |dx|, |dy|, |dz| in 16.16: max + 11/32 mid + 1/4 min, with
+// the EXE's 32-bit wrap (done unsigned) and arithmetic shifts.
+int32_t approx16(Vec3 v) {
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    int32_t a = std::abs(fx(v.x)), b = std::abs(fx(v.z)), c = std::abs(fx(v.y));
+    if (a < b) std::swap(a, b);
+    if (a < c) std::swap(a, c);
+    if (b < c) std::swap(b, c);
+    const int32_t mid = int32_t(uint32_t(b) * 11u) >> 5;
+    return int32_t(uint32_t(a) + uint32_t(mid) + uint32_t(c >> 2));
+}
+
 } // namespace
 
-void AiSystem::init(World& world, const Mission& mission) {
+void AiSystem::init(World& world, const Mission& mission, const std::vector<int>& firstThink) {
     mission_ = &mission;
     people_.clear();
     noise_.clear();
     teamAlert_.fill(0);
     spotted_.fill(0);
-    engaging_.fill(false);
+    engaging_.fill(0);   // GOG Df2.exe 0x41b620 clears 0xab3a00 at load
     reached_.clear();
     teamSpeed_.fill(0);
     ticks_ = 0;
@@ -75,11 +87,15 @@ void AiSystem::init(World& world, const Mission& mission) {
         p.waypoint = rec[0x4A];
         p.flank = rec[0x4B] ? float(rec[0x4B]) : 45.f;
         p.homeHeading = o.heading;
-        // Staggered first thinks: counter % 60, the counter +11 per person.
-        p.think = 1 + stagger % 60;
+        // Staggered first thinks: counter % 60, the counter +11 per person;
+        // Delta Force's counter runs over every loaded record (firstThink).
+        if (size_t(o.missionIndex) < firstThink.size()) p.think = 1 + firstThink[size_t(o.missionIndex)];
+        else p.think = 1 + stagger % 60;
         stagger += 11;
         p.lastHp = o.hp;
-        if (p.alert == 2 && o.team >= 0 && o.team < 64) teamAlert_[size_t(o.team)] = 2;
+        // An alert byte of 2 from the record does not alert the team: the
+        // team word is written only by GOG Df.exe 0x44a3e0 (Df2.exe 0x4045c0),
+        // never at load (0x449710 / 0x403790).
         o.weaponMode = p.weapon;
         people_.push_back(p);
         world.requestMove(o, idleMove(world, p));
@@ -135,9 +151,8 @@ bool AiSystem::targetAlive(const World& world, const Person& p, const PlayerView
 }
 
 
-void AiSystem::shotFired(Vec3 at, float range, int side, int object) {
-    // 0x46c228: a box of +-r at the shot (up to 200), flags 2 = a gunshot.
-    if (noise_.size() < 200) noise_.push_back({at, range, side, 2});
+void AiSystem::markFired(int object) {
+    // obj+0x6d |= 0x40 (GOG 0x4631ef): x6 visibility until 0x445c80 clears it.
     if (object == -3) playerFired_ = true;
     else if (Person* p = byObject(object)) p->fired = true;
 }
@@ -162,11 +177,23 @@ void AiSystem::bark(World& world, const Person& p, SoundSystem& sound, int slot)
 // the target's move visibility, x6 if it fired lately; the best score x
 // perception (>> 2 when relaxed) against a random draw.
 float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float heading, int side, float half, const PlayerView& player,
-                           int& bestId, Vec3& bestPos, bool everyone) const {
+                           int& bestId, Vec3& bestPos, bool everyone, float* nearPlayer, Vec3 bodyAt, bool coverMe,
+                           int* deadFriendAlert) const {
     float best = 0;
     bestId = -1;
     struct { float heading; int side; } self{heading, side};
-    auto consider = [&](int id, Vec3 at, int side, int move, bool fired) {
+    // DF2's dead-friend check, inside the scan (GOG Df2.exe 0x417830): for
+    // every dead person of the scanner's own side (not with ai flag 0x200,
+    // whose same-side people are targets) while the alert read at the scan's
+    // start is not 2: the sight line between the body origins 1..2 and
+    // max + 11/32 min of |dx|, |dy| (0x41e880(|dx|, |dy|, 0), no wrap)
+    // under 50 m alert the scanner (the caller adds the team alert and bark
+    // 1, which the EXE queues once per body). No break: every body is
+    // checked against the start-of-scan alert.
+    if (df2 && deadFriendAlert && !everyone && selfId >= 0) deadFriendScan(world, selfId, side, *deadFriendAlert);
+    // DF2's person scan (0x417830; Vehicles' scans pass no dead-friend alert).
+    const bool org = df2 && deadFriendAlert;
+    auto consider = [&](int id, Vec3 at, int side, int move, bool fired, bool targetsPlayer) {
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "scan %d side %d cand %d side %d\n", selfId, self.side, id, side);
         // DF2 ai flag 0x200: everyone is a target, own side and side 0 too.
         if (!everyone && (side == 0 || side == self.side)) return;
@@ -174,8 +201,39 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
         float diff = headingTo(eye, tp) - self.heading;
         diff -= std::floor(diff / (2 * kPi) + 0.5f) * 2 * kPi;
         if (std::abs(diff) > half) return;
-        const float d = len3(tp - eye);
-        if (d >= 1000.f || d < 0.01f) return;
+        // GOG Df2.exe 0x417830: for the player-controlled candidate (flags
+        // & 1) in the field of view, before the 1000 m and sight tests, the
+        // least of max + 11/32 mid + 1/4 min (0x41e880) of |dx|, |dy|, |dz|
+        // between the body origins, in whole metres.
+        if (nearPlayer && id == -3) {
+            auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+            int32_t a = std::abs(fx(tp.x - bodyAt.x)), b = std::abs(fx(tp.z - bodyAt.z)), c = std::abs(fx(tp.y - bodyAt.y));
+            if (a < b) std::swap(a, b);
+            if (a < c) std::swap(a, c);
+            if (b < c) std::swap(b, c);
+            // 32-bit wrap as the EXE's imul / add (past ~2979 m on the middle
+            // axis the sum goes negative there too), done unsigned to avoid UB;
+            // then arithmetic shifts (sar) as 0x41e880 and 0x417830's >> 0x10.
+            const int32_t mid = int32_t(uint32_t(b) * 11u) >> 5;
+            const int32_t sum = int32_t(uint32_t(a) + uint32_t(mid) + uint32_t(c >> 2));
+            const float m = float(sum >> 16);
+            if (m < *nearPlayer) *nearPlayer = m;
+        }
+        // DF2's person scan (GOG Df2.exe 0x417830): the distance is the
+        // whole metres of 0x41e880(|dx|, |dy|, |dz|) between the body
+        // origins (the +1 m eye only for the sight line), 100 / d as 16.16
+        // (100 at 0), under 1000.
+        float d, inv;
+        if (org) {
+            const int32_t m = approx16(tp - bodyAt) >> 16;
+            if (m >= 1000) return;
+            d = float(m);
+            inv = float(m == 0 ? 0x640000 : 0x640000 / m) / 65536.f;
+        } else {
+            d = len3(tp - eye);
+            if (d >= 1000.f || d < 0.01f) return;
+            inv = 100.f / d;
+        }
         if (std::getenv("OPENDF_DEBUGAI2")) std::fprintf(stderr, "  in fov, d %.1f\n", d);
         // Visible: 1 or 2, i.e. at most one see-through face (0x46a804).
         if (const int r = sightLine(world, eye, tp, selfId, id); r < 1 || r > 2) return;
@@ -184,17 +242,196 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
         // DF2's ghillie suit (0x415a69): the player in it (kit 32), crouched
         // or prone (visibility <= 0.5) and not firing lately: unseen beyond
         // 50 m, half as visible within.
+        // (0x417830 tests the candidate's ai+0xb8, set for the player only
+        // outside multiplayer; the cut-off is whole metres d < 0x33.)
         if (df2 && id == -3 && playerGear == 32 && vis <= 0.5f && !fired) {
-            if (d > 50.f) return;
+            if (org ? d >= 51.f : d > 50.f) return;
             vis *= 0.5f;
         }
-        float score = (half - std::abs(diff)) / half * (100.f / d) * vis * (fired ? 6.f : 1.f);
+        float score = (half - std::abs(diff)) / half * inv * vis * (fired ? 6.f : 1.f);
+        // DF2 "cover me" (GOG Df2.exe 0x417830, after the x6 term): with the
+        // scanner's order (+0xbb) 2, a candidate whose AI target is the
+        // player scores twice.
+        if (coverMe && targetsPlayer) score *= 2.f;
         if (score > best) best = score, bestId = id, bestPos = tp;
+    };
+    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, false);
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& o = world.objects[i];
+        if (!o.person || !o.alive() || int(i) == selfId) continue;
+        const Person* q = nullptr;
+        for (const auto& x : people_)
+            if (x.object == int(i)) q = &x;
+        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired, q && q->target == -3);
+    }
+    return best;
+}
+
+// The searchlight's scan (DF2.EXE 0x425c70 over the 256 soldier slots):
+// skip side 0, the light's own side (+0x68, mission byte 0x43; GOG Df2.exe
+// 0x42aa10 compares the slot's +0x68 with the light's) and the dead; the target's yaw from the
+// light's current heading and its pitch from the light's pitch must both be
+// within 0x10/256 turn (22.5 degrees); distance under 1000 m; the sight line
+// 0x406180 gives 1..2. score = (100 / d) · (16 - |dyaw|) / 16 (dyaw in 1/256
+// turns) · move visibility (move table +0x10, 0x425df3..0x425e05) · 6 if
+// it fired (+0x64 & 0x4000, set at 0x44a9dc; 0x425e09..0x425e1f) · 2
+// unless +0x64 & 1, the player-controlled slot (0x447833; 0x425e5e).
+// Returns the best score, 0 if none.
+float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
+                          int& bestId, Vec3& bestPos) const {
+    float best = 0;
+    bestId = -1;
+    auto consider = [&](int id, Vec3 pos, int tside, int move, bool fired, bool isPlayer) {
+        if (tside == 0 || tside == side) return;
+        const Vec3 tp = world.nearest(pos, at);
+        const Vec3 d = tp - at;
+        const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
+        const uint32_t ty = uint32_t(int64_t(std::llround(double(std::atan2(-d.z, d.x)) / (2 * kPi) * 4294967296.0)));
+        const int32_t tpi = int32_t(int64_t(std::llround(double(std::atan2(d.y, horiz)) / (2 * kPi) * 4294967296.0)));
+        const int dyaw = std::abs(int32_t(ty - yaw)) >> 24, dpitch = std::abs(int32_t(uint32_t(tpi) - uint32_t(pitch))) >> 24;
+        if (dyaw > 0x10 || dpitch > 0x10) return;
+        // Whole metres of 0x41e880(|dx|, |dy|, |dz|) from the light's
+        // origin, 100 / d as 16.16 (100 at 0), under 1000 (GOG 0x42aa10).
+        const int32_t dist = approx16(d) >> 16;
+        if (dist >= 1000) return;
+        if (const int r = world.sight(at, tp, self, id); r < 1 || r > 2) return;
+        float score = float(dist == 0 ? 0x640000 : 0x640000 / dist) / 65536.f * float(16 - dyaw) / 16.f * moveVisibility(move) * (fired ? 6.f : 1.f) * (isPlayer ? 1.f : 2.f);
+        if (score > best) best = score, bestId = id, bestPos = tp;
+    };
+    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, true);
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& o = world.objects[i];
+        if (!o.person || !o.alive() || int(i) == self) continue;
+        const Person* q = nullptr;
+        for (const auto& x : people_)
+            if (x.object == int(i)) q = &x;
+        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired, false);
+    }
+    return best;
+}
+
+// GOG Df.exe 0x44f540 (CD 0x47b074): over the 256 people slots, skipping
+// the empty, those of the light's side (+0x70) or side 0 and the dead. In
+// DF's axes (x east, y north, z up, 16.16): the yaw atan(dx, dy) less the
+// light's yaw and the pitch atan(isqrt(whole-metre dx^2 + dy^2), dz) less
+// its pitch, each folded to 0..128 in 1/256 turns, at most 0x10; the length
+// max + 11/32 mid + 1/4 min (0x477670) in whole metres under 1000; the
+// sight line from the light's origin (0x42e2b0) 1..2. Score (16.16): 100 /
+// metres (100 at 0) x (16 - dyaw) / 16 x move visibility x 6 if it fired
+// (+0x6d & 0x40) x 2 unless the player's slot (+0x6c & 1), the best kept
+// when strictly higher. The invisibility cheat (0x67dbc9 & 8) is not
+// modelled. Returns the score as a fraction (0x10000 = 1).
+float AiSystem::lightScanDf1(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int side, const PlayerView& player,
+                             int& bestId) const {
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    auto ang = [](double y, double x) { return uint32_t(int64_t(std::llround(std::atan2(y, x) / (2 * kPi) * 4294967296.0))); };
+    auto fold = [](uint32_t a) { uint32_t v = a >> 24; return v > 0x7f ? 0x100 - v : v; };
+    int64_t best = 0;
+    bestId = -1;
+    auto consider = [&](int id, Vec3 pos, int tside, int move, bool fired, bool isPlayer) {
+        if (tside == 0 || tside == side) return;
+        const Vec3 tp = world.nearest(pos, at);
+        const int32_t dx = fx(tp.x - at.x), dy = fx(at.z - tp.z), dz = fx(tp.y - at.y);
+        const uint32_t dyaw = fold(ang(dy, dx) - yaw);
+        if (dyaw > 0x10) return;
+        const int64_t hx = dx >> 16, hy = dy >> 16;
+        const int64_t horiz = dfIsqrt(uint32_t(hx * hx + hy * hy));   // 0x477620
+        if (fold(ang(dz, double(horiz << 16)) - uint32_t(pitch)) > 0x10) return;
+        int32_t a = std::abs(dx), b = std::abs(dy), c = std::abs(dz);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        const int32_t d = (a + (b * 11 >> 5) + (c >> 2)) >> 16;
+        const int64_t inv = d == 0 ? 0x640000 : 0x640000 / d;
+        if (d >= 1000) return;
+        if (const int r = world.sight(at, tp, self, id); r < 1 || r > 2) return;
+        int64_t s = inv * int64_t((int32_t(16 - dyaw) * 0x10000) >> 4) >> 16;
+        s = s * int64_t(std::lround(double(moveVisibility(move)) * 65536.0)) >> 16;
+        s = s * (fired ? 0x60000 : 0x10000) >> 16;
+        if (!isPlayer) s *= 2;
+        if (s > best) best = s, bestId = id;
+    };
+    if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_, true);
+    for (size_t i = 0; i < world.objects.size(); ++i) {
+        const WorldObject& o = world.objects[i];
+        if (!o.person || !o.alive() || int(i) == self) continue;
+        const Person* q = nullptr;
+        for (const auto& x : people_)
+            if (x.object == int(i)) q = &x;
+        consider(int(i), o.pos, o.side, o.moveNumber, q && q->fired, false);
+    }
+    return float(best) / 65536.f;
+}
+
+// The scan's dead-friend check, both games (GOG Df.exe 0x45e280 same-side
+// branch; GOG Df2.exe 0x417830, not with ai flag 0x200): while the alert
+// read at the scan's start is not 2, every dead person of the scanner's side
+// with the sight line between the body origins 1..2 (0x42e2b0) and max +
+// 11/32 min of |dx|, |dy| (0x477670(|dx|, |dy|, 0) / 0x41e880, no wrap)
+// under 50 m sets the alert to 2 (the caller adds the team alert and bark 1,
+// which the EXEs queue once per body). No break: every body is checked
+// against the start-of-scan alert.
+void AiSystem::deadFriendScan(const World& world, int selfId, int side, int& alert) const {
+    if (alert == 2) return;
+    const WorldObject& me = world.objects[size_t(selfId)];
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    for (size_t qi = 0; qi < world.objects.size(); ++qi) {
+        const WorldObject& q = world.objects[qi];
+        if (int(qi) == selfId || !q.person || !q.dead || q.removed || q.side != side) continue;
+        int32_t a = std::abs(fx(q.pos.x - me.pos.x)), b = std::abs(fx(q.pos.z - me.pos.z));
+        if (a < b) std::swap(a, b);
+        if (a + int32_t(uint32_t(b) * 11u >> 5) >= 0x320000) continue;
+        if (const int r = sightLine(world, me.pos, q.pos, selfId, int(qi)); r < 1 || r > 2) continue;
+        alert = 2;
+    }
+}
+
+// Delta Force's target scan in its own fixed point (GOG Df.exe 0x45e280).
+// Over people of another side (side 0 never), alive; in DF's axes (x east,
+// y north, z up, 16.16) from the soldier's origin: the yaw 0x477770(dx, dy)
+// less the soldier's (+0x30), >> 24 and folded to 0..128, at most the half
+// field of view (fov >> 9 | 1, 1/256 turns); d = max + 11/32 mid + 1/4 min
+// (0x477670) >> 16 whole metres under 1000, 0x640000 / d (0x640000 at 0);
+// the sight line from 1 m above the origin (0x45e4a5) 1..2. Score: that x
+// ((half - u) << 16) / half x the move visibility x 6 if it fired, each
+// product >> 16, x2 when hard for side 2, the best kept when strictly
+// higher. The invisibility cheat (0x67dbc9 & 8) is not modelled.
+int64_t AiSystem::bestTargetDf1(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const {
+    const WorldObject& self = world.objects[size_t(p.object)];
+    const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
+    const uint32_t half = uint32_t((int(p.fov * 65536.f / 360.f) >> 9) | 1);
+    // DF yaw, anticlockwise from east: OpenDF heading = pi/2 - yaw.
+    const uint32_t yaw = uint32_t(int64_t(std::llround(double(kPi * 0.5f - self.heading) / (2 * kPi) * 4294967296.0)));
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    int64_t best = 0;
+    bestId = -1;
+    auto consider = [&](int id, Vec3 at, int side, int move, bool fired) {
+        if (side == 0 || side == self.side) return;
+        const Vec3 tp = world.nearest(at, self.pos);
+        const int32_t dx = fx(tp.x - self.pos.x), dy = fx(self.pos.z - tp.z), dz = fx(tp.y - self.pos.y);
+        const uint32_t ang = uint32_t(int64_t(std::llround(std::atan2(double(dy), double(dx)) / (2 * kPi) * 4294967296.0)));
+        uint32_t u = (ang - yaw) >> 24;
+        if (u > 0x7f) u = 0x100 - u;
+        if (u > half) return;
+        int32_t a = std::abs(dx), b = std::abs(dy), c = std::abs(dz);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        // 32-bit wrap as the EXE's imul / add, done unsigned; then sar.
+        const int32_t d = int32_t(uint32_t(a) + uint32_t(int32_t(uint32_t(b) * 11u) >> 5) + uint32_t(c >> 2)) >> 16;
+        const int64_t inv = d == 0 ? 0x640000 : 0x640000 / d;
+        if (d >= 1000) return;
+        if (const int r = sightLine(world, eye, tp, p.object, id); r < 1 || r > 2) return;
+        int64_t s = int32_t(inv * int64_t(int32_t(((half - u) * 0x10000u) / half)) >> 16);
+        s = int32_t(s * int64_t(std::lround(double(moveVisibility(move)) * 65536.0)) >> 16);
+        s = int32_t(s * (fired ? 0x60000 : 0x10000) >> 16);
+        if (hard && self.side == 2) s = int32_t(uint32_t(s) * 2u);
+        if (s > best) best = s, bestId = id, bestPos = tp;
     };
     if (player.alive) consider(-3, player.origin, player.side, player.moveNumber, playerFired_);
     for (size_t i = 0; i < world.objects.size(); ++i) {
         const WorldObject& o = world.objects[i];
-        if (!o.person || !o.alive() || int(i) == selfId) continue;
+        if (!o.person || !o.alive() || int(i) == p.object) continue;
         const Person* q = nullptr;
         for (const auto& x : people_)
             if (x.object == int(i)) q = &x;
@@ -203,68 +440,155 @@ float AiSystem::bestTarget(const World& world, int selfId, Vec3 eye, float headi
     return best;
 }
 
-// The searchlight's scan (DF2.EXE 0x425c70 over the 256 soldier slots):
-// skip team 0, the light's own team and the dead; the target's yaw from the
-// light's current heading and its pitch from the light's pitch must both be
-// within 0x10/256 turn (22.5 degrees); distance under 1000 m; the sight line
-// 0x406180 gives 1..2. score = (100 / d) · (16 - |dyaw|) / 16 (dyaw in 1/256
-// turns) · move visibility (move table +0x10, 0x425df3..0x425e05) · 6 if
-// it fired (+0x64 & 0x4000, set at 0x44a9dc; 0x425e09..0x425e1f) · 2
-// unless +0x64 & 1, the player-controlled slot (0x447833; 0x425e5e).
-// Returns the best score, 0 if none.
-float AiSystem::lightScan(const World& world, int self, Vec3 at, uint32_t yaw, int32_t pitch, int team, const PlayerView& player,
-                          int& bestId, Vec3& bestPos) const {
-    float best = 0;
-    bestId = -1;
-    auto consider = [&](int id, Vec3 pos, int tteam, int move, bool fired, bool isPlayer) {
-        if (tteam == 0 || tteam == team) return;
+// GOG Df.exe 0x44fba0 (from the btre think 0x451e70): over the people list
+// (the player included), every living one of a side other than the tree's
+// and not 0: d = max + 11/32 mid + 1/4 min of |dx|, |dy|, |dz| (0x477670)
+// in whole metres; (0x50000 / d, 0x50000 at 0) x move visibility (move
+// table +0x10) x 0x40 if it fired lately (+0x6d & 0x40), else x 8, each
+// product >> 16; the highest. The invisibility cheat (0x67dbc9 & 8) is not
+// modelled.
+int32_t AiSystem::birdScoreDf1(const World& world, Vec3 at, int side, const PlayerView& player) const {
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    int32_t best = 0;
+    auto consider = [&](Vec3 pos, int pside, int move, bool fired) {
+        if (pside == side || pside == 0) return;
         const Vec3 tp = world.nearest(pos, at);
-        const Vec3 d = tp - at;
-        const float horiz = std::sqrt(d.x * d.x + d.z * d.z);
-        const uint32_t ty = uint32_t(int64_t(std::llround(double(std::atan2(-d.z, d.x)) / (2 * kPi) * 4294967296.0)));
-        const int32_t tpi = int32_t(int64_t(std::llround(double(std::atan2(d.y, horiz)) / (2 * kPi) * 4294967296.0)));
-        const int dyaw = std::abs(int32_t(ty - yaw)) >> 24, dpitch = std::abs(int32_t(uint32_t(tpi) - uint32_t(pitch))) >> 24;
-        if (dyaw > 0x10 || dpitch > 0x10) return;
-        const float dist = len3(d);
-        if (dist >= 1000.f || dist < 0.01f) return;
-        if (const int r = world.sight(at, tp, self, id); r < 1 || r > 2) return;
-        float score = (100.f / dist) * float(16 - dyaw) / 16.f * moveVisibility(move) * (fired ? 6.f : 1.f) * (isPlayer ? 1.f : 2.f);
-        if (score > best) best = score, bestId = id, bestPos = tp;
+        int32_t a = std::abs(fx(tp.x - at.x)), b = std::abs(fx(tp.z - at.z)), c = std::abs(fx(tp.y - at.y));
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        const int32_t d = int32_t(uint32_t(a) + uint32_t(int32_t(uint32_t(b) * 11u) >> 5) + uint32_t(c >> 2)) >> 16;
+        if (d >= 0x50000) return;
+        const int64_t q = d == 0 ? 0x50000 : 0x50000 / d;
+        int64_t s = q * int64_t(std::lround(double(moveVisibility(move)) * 65536.0)) >> 16;
+        s = s * (fired ? 0x400000 : 0x80000) >> 16;
+        if (s > best) best = int32_t(s);
     };
-    if (player.alive) consider(-3, player.origin, player.team, player.moveNumber, playerFired_, true);
+    if (player.alive) consider(player.origin, player.side, player.moveNumber, playerFired_);
     for (size_t i = 0; i < world.objects.size(); ++i) {
         const WorldObject& o = world.objects[i];
-        if (!o.person || !o.alive() || int(i) == self) continue;
+        if (!o.person || !o.alive()) continue;
         const Person* q = nullptr;
         for (const auto& x : people_)
             if (x.object == int(i)) q = &x;
-        consider(int(i), o.pos, o.team, o.moveNumber, q && q->fired, false);
+        consider(o.pos, o.side, o.moveNumber, q && q->fired);
     }
     return best;
 }
 
-bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
+float AiSystem::scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer,
+                          bool* deadFriend) const {
     const WorldObject& self = world.objects[size_t(p.object)];
     const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     const float half = float((int(p.fov * 65536.f / 360.f) >> 9) | 1) / 256.f * 2 * kPi;   // 1/256 turns
+    bestId = -1;
+    bestPos = Vec3{0, 0, 0};
+    // DF2 (GOG Df2.exe 0x417830): nothing with ai flag 1, nor for a side-0
+    // soldier without flag 0x200.
+    if (df2 && ((p.flags & 1) || (self.side == 0 && !(p.flags & 0x200)))) return 0;
+    int alert = p.alert;
+    if (!df2) {
+        // GOG Df.exe 0x45e280: bodies and targets in one pass; the best x
+        // perception (+0x74, 16.16) >> 16, then >> 2 when the alert read
+        // after the loop is 0, so a body found here lifts the quarter.
+        deadFriendScan(world, p.object, self.side, alert);
+        const int64_t best = bestTargetDf1(world, p, player, bestId, bestPos);
+        if (deadFriend) *deadFriend = alert != p.alert;
+        int32_t s = int32_t(best * int64_t(std::lround(double(p.perception) * 65536.0)) >> 16);
+        if (alert == 0) s >>= 2;
+        return float(s) / 65536.f;
+    }
+    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200),
+                                  nearPlayer, self.pos, df2 && p.order == 2, df2 ? &alert : nullptr);
+    if (deadFriend) *deadFriend = alert != p.alert;
+    float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
+    // Only when relaxed (0x46a896); DF2 reads the alert after the loop, so
+    // a body found in this scan already lifts the quarter (GOG Df2.exe 0x417830).
+    if (alert == 0) score *= 0.25f;
+    return score;
+}
+
+// DF2: the scan found a body of the soldier's own side (GOG Df2.exe
+// 0x417830): alert, the team alerted, bark 1.
+void AiSystem::deadFriendAlert(World& world, Person& p, SoundSystem& sound) {
+    p.alert = 2;
+    alertTeam(world.objects[size_t(p.object)].team);
+    bark(world, p, sound, 1);
+}
+
+// Delta Force 2's team share (GOG Df2.exe 0x414350), from org1's radio
+// (0x401a69 with a target, 0x401d6b alert without one). Only with alert 2
+// and a target (a dead one kept with 0x40 too). Mates: AI people of the same
+// side, alive, not deaf (0x1000), |dx|, |dy| <= 50 m and dx^2 + dy^2 <= 2500
+// (16.16, no wrap). On the same target: without 0x40 a sender who saw it
+// more recently gives his unseen time and last known position (3 when he
+// was 0x1f0 ticks fresher); with 0x40 the mate learns it is dead (|= 0x40,
+// 2). A mate without a target takes it with alert 2 and the team alerted:
+// without 0x40 if the sender's unseen time is under the mate's give-up (1),
+// with 0x40 always, the 0x40 too (2). The mate's state is not touched. The
+// result is the last mate's.
+int AiSystem::teamShare(World& world, Person& p) {
+    if (p.alert != 2 || p.target == -1) return 0;
+    const WorldObject& o = world.objects[size_t(p.object)];
+    auto fx = [](float m) { return int64_t(std::llround(double(m) * 65536.0)); };
+    int result = 0;
+    for (auto& q : people_) {
+        if (&q == &p || (q.flags & 0x1000)) continue;
+        const WorldObject& qo = world.objects[size_t(q.object)];
+        if (!qo.alive() || qo.side != o.side) continue;
+        const int64_t dx = std::abs(fx(qo.pos.x - o.pos.x)), dz = std::abs(fx(qo.pos.z - o.pos.z));
+        if (dx > 0x320000 || dz > 0x320000 || (dx * dx >> 16) + (dz * dz >> 16) > 0x9c40000) continue;
+        if (q.target == p.target) {
+            if (!(p.flags & 0x40)) {
+                if (p.unseen < q.unseen) {
+                    if (q.unseen - p.unseen > 0x1f0) result = 3;
+                    q.unseen = p.unseen;
+                    q.lastKnown = p.lastKnown;
+                }
+            } else if (!(q.flags & 0x40)) {
+                result = 2;
+                q.flags |= 0x40;
+            }
+        } else if (q.target == -1) {
+            if (!(p.flags & 0x40)) {
+                if (p.unseen >= q.giveUpTicks) continue;
+                result = 1;
+            } else {
+                result = 2;
+                q.flags |= 0x40;
+            }
+            q.alert = 2;
+            alertTeam(qo.team);
+            q.target = p.target;
+            q.lastKnown = p.lastKnown;
+        }
+    }
+    return result;
+}
+
+bool AiSystem::scan(World& world, Person& p, const PlayerView& player, SoundSystem& sound) {
+    const WorldObject& self = world.objects[size_t(p.object)];
+    const Vec3 eye = self.pos + Vec3{0, 1.f, 0};
     int bestId = -1;
     Vec3 bestPos{0, 0, 0};
-    // DF2: ai flag 1 blocks acquisition entirely.
-    if (df2 && (p.flags & 1)) return false;
-    const float best = bestTarget(world, p.object, eye, self.heading, self.side, half, player, bestId, bestPos, df2 && (p.flags & 0x200));
-    float score = best * p.perception * ((hard && self.side == 2) ? 2.f : 1.f);
-    if (p.alert == 0) score *= 0.25f;   // only when relaxed (0x46a896)
+    float nearPlayer = 1024.f;   // GOG Df2.exe 0x417830: local_10 = 0x400
+    bool deadFriend = false;
+    const float score = scanScore(world, p, player, bestId, bestPos, &nearPlayer, &deadFriend);
+    if (deadFriend) deadFriendAlert(world, p, sound);
+    // DF2 +0xAC: stored whenever the scan returns a candidate, before the
+    // random draw (GOG Df2.exe 0x401de5 alert / 0x401efe relaxed); read for
+    // the scan interval at 0x401d92 / 0x401ea5.
+    if (df2 && bestId != -1) p.nearestPlayer = nearPlayer;
     if (bestId == -1 || float(rnd()) >= score * 65536.f) return false;
     if (std::getenv("OPENDF_DEBUGAI"))
         std::fprintf(stderr, "ai %d (team %d) spots %d at %.0f m, score %.3f\n", p.object, self.team, bestId, len3(bestPos - eye), score);
     p.target = bestId;
-    p.lastKnown = bestPos;
-    // DF2 +0xAC: the player's distance at this scan (the scan interval).
-    if (df2 && bestId == -3) p.nearestPlayer = len3(bestPos - eye);
-    p.unseen = 0;
-    p.seen = 0;
-    p.flags |= 0x80;
     p.flags &= ~0x40u;
+    // GOG Df.exe 0x45bc5e / 0x45bdb5, GOG Df2.exe 0x401e05 (alert) /
+    // 0x401f43 (relaxed): only the target (+0x44) is stored and 0x40
+    // cleared; the seen flag 0x80, the last known position (+0x48) and the
+    // unseen / seen times are left to the has-target sight check
+    // (0x45b64e..0x45b72b).
     return true;
 }
 
@@ -273,9 +597,12 @@ bool AiSystem::scan(World& world, Person& p, const PlayerView& player) {
 // last point's heading.
 void AiSystem::patrol(World& world, Person& p) {
     WorldObject& o = world.objects[size_t(p.object)];
-    if (!mission_ || p.path <= 0 || p.path >= int(mission_->paths.size())) { p.pathMode = 0; return; }
+    if (!mission_ || p.path < 0 || p.path >= int(mission_->paths.size())) { p.pathMode = 0; return; }
     const MissionPath& path = mission_->paths[size_t(p.path)];
-    if (path.points.empty()) { p.pathMode = 0; return; }
+    // Path 0 (every shipped mission leaves it empty; "follow path 0" halts a
+    // team) or an empty path: no point, so path mode ends (GOG Df.exe 0x45c6a0
+    // returns 0, 0x45b400 clears ai+0xa4 and thinks again in 16).
+    if (p.path == 0 || path.points.empty()) { p.pathMode = 0; p.think = 16; return; }
     p.waypoint = std::clamp(p.waypoint, 0, int(path.points.size()) - 1);
     const MissionObject* wp = mission_->inGroup(2, path.points[size_t(p.waypoint)]);
     if (!wp) { p.pathMode = 0; return; }
@@ -298,6 +625,13 @@ void AiSystem::patrol(World& world, Person& p) {
                 p.think = 16;
                 return;
             }
+        }
+        // GOG Df.exe 0x45b400: the next point is looked up again (0x45c6a0)
+        // and the heading set toward it before the 8-tick think. (Delta Force
+        // 2's person walker is not located in Df2.exe yet: left as it was.)
+        if (const MissionObject* nx = df2 ? nullptr : mission_->inGroup(2, path.points[size_t(p.waypoint)])) {
+            const Vec3 nat{std::fmod(std::fmod(nx->x, ext) + ext, ext), 0, std::fmod(std::fmod(-nx->y, ext) + ext, ext)};
+            o.heading = headingTo(o.pos, world.nearest(nat, o.pos));
         }
         world.requestMove(o, walkMove(world, p));
         p.think = 8;
@@ -337,20 +671,32 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         // At the target's own origin while it is in sight (flag 0x80:
         // 0x46b963 / 0x415e11), else at the last known position with errMul 5;
         // from the body origin, the horizontal distance in whole metres
-        // (isqrt((dx >> 16)^2 + (dy >> 16)^2) << 16, 0x46b8a4 / 0x415eb4).
+        // (isqrt((dx >> 16)^2 + (dy >> 16)^2) << 16, 0x46b8a4 / 0x415eb4; the
+        // isqrt rounds, GOG 0x477620 / 0x41e830).
         // Error x errMul: 16 - seconds of sight, down to the target move's aim
         // factor.
         const Vec3 at = (p.flags & 0x80) ? targetPos(world, p, player) : p.lastKnown;
         const Vec3 aim = world.nearest(at, o.pos) - o.pos;
         yaw = std::atan2(aim.x, -aim.z);
-        const float flat = std::floor(std::sqrt(std::floor(aim.x) * std::floor(aim.x) + std::floor(aim.z) * std::floor(aim.z)));
+        const float flat = dfFlatRange(aim.x, aim.z);   // GOG Df.exe 0x477620 / Df2.exe 0x41e830 (dfIsqrt)
         pitch = std::atan2(aim.y, flat);
         int move = 2;
         if (p.target == -3) move = player.moveNumber;
         else if (p.target >= 0) move = world.objects[size_t(p.target)].moveNumber;
         const float f = moveAimFactor(move);
-        const float seen = std::min(float(p.seen), (16.f - f) * 62.f);
-        const float errMul = (p.flags & 0x80) ? std::max(f, 16.f - seen / 62.f) : 5.f;
+        float errMul;
+        if (df2) {
+            // GOG Df2.exe 0x417e20: the cap (16 - (aim >> 16)) * 0x3e is
+            // written back to ai->seen, and the multiplier is the integer
+            // 16 - seen / 0x3e (whole steps every 62 ticks).
+            if (p.flags & 0x80) {
+                p.seen = std::min(p.seen, (16 - int(f)) * 0x3e);
+                errMul = float(16 - p.seen / 0x3e);
+            } else errMul = 5.f;
+        } else {
+            const float seen = std::min(float(p.seen), (16.f - f) * 62.f);
+            errMul = (p.flags & 0x80) ? std::max(f, 16.f - seen / 62.f) : 5.f;
+        }
         const float unit = float(int(65536.f * 100.f / p.accuracy) * 30 >> 16);
         const float spread = unit * errMul * 65536.f * turnUnit / ((hard && o.side == 2) ? 4.f : 1.f);
         yaw += r1 * spread;
@@ -359,6 +705,22 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         // (+0x30 / +0x34; DF2 0x415f85).
         o.heading = yaw;
         o.aimPitch = pitch;
+    }
+    // DF2's under-water rule holds for every shooter (CD 0x414ad0, GOG
+    // Df2.exe 0x416a30 from the soldier's 0x416f60): a muzzle under the
+    // water fires only modes (+0xA8) 1, 0x27, 0x28, 0x29 (GOG also 0x31);
+    // anything else plays its ammo's fourth sound at the soldier and fires
+    // nothing, before the gun's spread draws and the burst count (only the
+    // player's burst is cleared there, so a follow-up's is kept and it comes
+    // again). The caller's think goes on as for a round.
+    if (shots.underwaterRule && shots.waterLevel != 0 && muzzle.y < shots.waterLevel) {
+        const int m = o.weaponMode;
+        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29 && !(shots.df2Gog() && m == 0x31)) {
+            if (const int id = shots.gunAt(md.gun).sounds[3]; id > 0) sound.play(id, o.pos);
+            if (followUp) ++p.burstLeft;
+            p.think = std::max(1, md.cooldown);
+            return;
+        }
     }
     // The gun's own spread, per round (0x46af90 / 0x414ad0).
     {
@@ -391,10 +753,32 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
     for (const auto& bg : burstGuns)
         if (bg[0] == p.weapon) { soundGun = bg[1]; silentRound = followUp; }
     const int id = shots.gunAt(soundGun).sounds[0];
-    if (id > 0 && !silentRound) {
-        sound.play(id, muzzle);
-        shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object);
+    if (df2) {
+        // DF2 (GOG Df2.exe 0x451ae0): the sound and its noise box (0x414660)
+        // for any round with a sound; the shooter counts as firing for every
+        // round not from suppressed ammo (CD flag 0x80), sound or not (below).
+        if (id > 0 && !silentRound) {
+            sound.play(id, muzzle);
+            noise(muzzle, sound.range(id) * 0.5f, o.side, 2);
+        }
+    } else {
+        // GOG Df.exe's round 0x462f20 with the gun 0x45ea00 picks (a burst's
+        // follow-ups the next gun, silent): its sound, the noise only when
+        // that sound's range is not 0 (0x4630d6), and the shooter marked as
+        // having fired (+0x6d |= 0x40) unless the gun has flag 0x80 (the
+        // silenced guns 4, 5, 6, 17; 0x463119).
+        int roundGun = md.gun;
+        for (const auto& bg : burstGuns)
+            if (bg[0] == p.weapon) roundGun = bg[1] + (followUp ? 1 : 0);
+        if (id > 0 && !silentRound) {
+            sound.play(id, muzzle);
+            if (const float range = sound.range(id); range > 0) noise(muzzle, range * 0.5f, o.side, 2);
+        }
+        if (!(shots.gunAt(roundGun).flags & 0x80)) markFired(p.object);
     }
+    // DF2 (GOG Df2.exe 0x451ae0): the shooter counts as firing for every
+    // round not from suppressed ammo (CD flag 0x80), sound or not.
+    if (shots.df2() && !(g.flags & 0x80)) markFired(p.object);
     if (!followUp && md.burst) p.burstLeft = 2;
     p.think = std::max(1, md.cooldown);
 }
@@ -406,6 +790,16 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     p.scanTimer += elapsed;
     p.radioTimer += elapsed;
     p.losTimer += elapsed;
+    // GOG Df.exe 0x45b3a0, which sets every think's delay, also steps the
+    // seen / unseen times by it, target or not: with 0x80 seen += d and
+    // unseen = 0, else unseen += d and seen = 0. OpenDF applies it as the
+    // next think starts (the flag is the same then). Delta Force 2 keeps
+    // its has-target bookkeeping below.
+    if (!df2 && !p.noDelay) {
+        if (p.flags & 0x80) p.seen += elapsed, p.unseen = 0;
+        else p.unseen += elapsed, p.seen = 0;
+    }
+    p.noDelay = false;
     p.think = 64;
     if (p.burstLeft > 0) {
         --p.burstLeft;
@@ -414,7 +808,9 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
     }
     const Vec3 eye = o.pos + Vec3{0, 1.f, 0};
 
-    if (p.target == -1) {
+    // DF2 (GOG Df2.exe 0x4018df..0x4018ec): a target kept with 0x40 (seen
+    // dead) goes through the no-target logic too.
+    if (p.target == -1 || (df2 && (p.flags & 0x40))) {
         if (p.alert != 2) {
             // Hearing (0x46c2c4; DF2 0x413620): inside any noise box -> alert,
             // face it (DF2: not with ai flag 0x1000, deaf; no bark).
@@ -426,45 +822,76 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
                     p.alert = 2;
                     alertTeam(o.team);
                     o.heading = headingTo(o.pos, c);
-                    if (!df2) bark(world, p, sound, 2);   // DF2's 0x413620 does not bark
-                    break;
+                    if (df2) {
+                        // GOG Df2.exe 0x401e76..0x401e95: once the noise
+                        // (0x415480) has made him alert, bark 2 unless
+                        // silent (+0x34 & 0x100) and think again in 16; no
+                        // scan or path this think, the move unchanged.
+                        if (!p.silent) bark(world, p, sound, 2);
+                        p.think = 16;
+                        return;
+                    }
+                    // GOG Df.exe 0x45bcca..0x45bd42: bark 2, then think
+                    // again in 0x10 and return: no scan, path or move this
+                    // think. Silent (+0x25 & 1) returns before 0x45b3a0, so
+                    // the think comes the next tick and the timers are not
+                    // advanced (the - 1 undoes the next think's delay of 1).
+                    bark(world, p, sound, 2);
+                    if (p.silent) {
+                        p.think = 1;
+                        --p.stateTimer, --p.scanTimer, --p.radioTimer, --p.losTimer;
+                        p.noDelay = true;
+                    } else {
+                        p.think = 16;
+                    }
+                    return;
                 }
             }
-            // A dead friend within 50 m in sight alerts (bark 1, ATTACK).
-            if (p.alert != 2)
-                for (size_t qi = 0; qi < world.objects.size(); ++qi)
-                    if (const auto& q = world.objects[qi]; q.person && q.dead && q.side == o.side && octagonal(q.pos, o.pos) < 50.f &&
-                        sightLine(world, o.pos, q.pos, p.object, int(qi)) >= 1 && sightLine(world, o.pos, q.pos, p.object, int(qi)) <= 2) {
-                        p.alert = 2;
-                        alertTeam(o.team);
-                        bark(world, p, sound, 1);
-                        break;
-                    }
+            // Dead friends: both games check them inside the scan
+            // (deadFriendScan; GOG Df.exe 0x45e280, Df2.exe 0x417830).
             // Scan every 0x174 ticks (relaxed) or 0xf8 (cautious).
-            // DF2: by +0xAC, the player's distance at the last successful scan:
-            // under 32 m 62 ticks, under 100 m 124, else 372.
+            // DF2: by +0xAC, the player's distance at the last scan that
+            // returned a candidate (GOG Df2.exe 0x401ea5): under 32 m 62
+            // ticks, under 100 m 124, else 372.
             const int interval = df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 372) : (p.alert == 0 ? 0x174 : 0xf8);
             if (p.scanTimer >= interval) {
                 p.scanTimer = 0;
-                if (scan(world, p, player)) {
+                if (scan(world, p, player, sound)) {
                     bark(world, p, sound, 3);
-                    spotted_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
-                    engaging_[size_t(o.team & 63)] = true;
+                    // GOG Df.exe 0x45bd90 / 0x45bda6: 0x42edd0 and 0x42ee00
+                    // (own team, target team) set the spotted and engaged bits.
+                    const int tt = (p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63;
+                    spotted_[size_t(o.team & 63)] |= 1ull << tt;
+                    engaging_[size_t(o.team & 63)] |= 1ull << tt;
                     p.alert = 2;
                     alertTeam(o.team);
+                    p.state = 2;
+                    p.stateTimer = 0;
+                    p.think = 16;   // GOG Df.exe 0x45bdcf, GOG Df2.exe 0x401f5d: 0x10
+                    return;
+                }
+            }
+        } else {
+            // DF2's team share, alert without a live target (GOG Df2.exe
+            // 0x401d4f..0x401d8c): passes a dead target's news (0x40) on.
+            if (df2 && p.radioTimer > 0x1f0 && !p.silent) {
+                p.radioTimer = (-int(rnd())) & 0x3f;
+                const int r = teamShare(world, p);
+                if (r == 1 || r == 3) bark(world, p, sound, 4);
+                else if (r == 2) bark(world, p, sound, 5);
+            }
+            if (p.scanTimer >= (df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 248) : 0xf8)) {
+                p.scanTimer = 0;
+                if (scan(world, p, player, sound)) {
+                    // The spot marks the team (GOG Df.exe 0x45bc43: 0x42edd0(own
+                    // team, target team); GOG Df2.exe 0x401e00: 0x41ac00): the
+                    // spotted bit, no engaged bit, no bark here.
+                    markSpotted(o.team & 63, (p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
                     p.state = 2;
                     p.stateTimer = 0;
                     p.think = 8;
                     return;
                 }
-            }
-        } else if (p.scanTimer >= (df2 ? (p.nearestPlayer < 32.f ? 62 : p.nearestPlayer < 100.f ? 124 : 248) : 0xf8)) {
-            p.scanTimer = 0;
-            if (scan(world, p, player)) {
-                p.state = 2;
-                p.stateTimer = 0;
-                p.think = 8;
-                return;
             }
         }
         if (p.pathMode) {
@@ -472,27 +899,30 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
             return;
         }
         if (p.alert == 2) {
-            // No target: turn toward an enemy shot (0x46c35c), else keep
-            // turning 0x800000 (0.7 degrees) per think.
-            bool heard = false;
+            // No target: turn toward the first enemy shot whose box holds
+            // him (GOG Df.exe 0x45fe30: x, y and height), then (DF1) turn
+            // 0x800000 (0.7 degrees) every think, heard or not: the yaw's
+            // high word += 0x80 (0x45bc7e..0x45bc8c), anticlockwise, so the
+            // OpenDF heading (clockwise) goes down.
             for (const auto& n : noise_)
                 if (n.side != o.side && (n.flags & 2)) {
                     const Vec3 c = world.nearest(n.at, o.pos);
-                    if (std::abs(c.x - o.pos.x) <= n.r && std::abs(c.z - o.pos.z) <= n.r) {
+                    if (std::abs(c.x - o.pos.x) <= n.r && std::abs(c.z - o.pos.z) <= n.r &&
+                        (df2 || std::abs(c.y - o.pos.y) <= n.r)) {
                         o.heading = headingTo(o.pos, c);
-                        heard = true;
                         break;
                     }
                 }
-            if (!heard && !df2) o.heading += float(0x800000) / 4294967296.f * 2 * kPi;   // DF2 no longer turns
+            if (!df2) o.heading -= float(0x800000) / 4294967296.f * 2 * kPi;   // DF2 no longer turns
         }
         world.requestMove(o, idleMove(world, p));
         return;
     }
 
     // Has a target.
-    engaging_[size_t(o.team & 63)] = true;   // 0x45c918
-    if (!targetAlive(world, p, player)) {
+    // 0x45c918 (GOG Df.exe 0x45b643: 0x42ee00(own team, target team)).
+    engaging_[size_t(o.team & 63)] |= 1ull << ((p.target == -3 ? player.team : world.objects[size_t(p.target)].team) & 63);
+    if (!df2 && !targetAlive(world, p, player)) {
         // 0x40: the target is dead; GOTONE if this soldier killed it.
         p.flags |= 0x40;
         if (p.target >= 0 && world.objects[size_t(p.target)].killer == p.object) bark(world, p, sound, 5);
@@ -516,21 +946,68 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         } else {
             p.flags &= ~0x80u;
         }
+        // Seen or not, the scan runs again with no random draw (GOG Df.exe
+        // 0x45b6b3 -> 0x45e280, switch 0x45b6bf..0x45b704; DF2 GOG Df2.exe
+        // 0x40197f -> 0x417830, 0x401987..0x4019cd): a different best target
+        // scoring over 0x4000 (0.25) is taken, seen, marked spotted, think
+        // 0x10, and its position is the last known (0x45b72b).
+        int id = -1;
+        Vec3 at{0, 0, 0};
+        bool deadFriend = false;
+        const float score = scanScore(world, p, player, id, at, nullptr, &deadFriend);
+        if (deadFriend) deadFriendAlert(world, p, sound);
+        if (id != -1 && id != p.target && score * 65536.f > float(0x4000)) {
+            p.target = id;
+            p.flags |= 0x80;
+            spotted_[size_t(o.team & 63)] |= 1ull << ((id == -3 ? player.team : world.objects[size_t(id)].team) & 63);
+            p.think = 16;
+            p.lastKnown = at;
+            p.unseen = 0;
+            if (df2 && !targetAlive(world, p, player)) p.flags |= 0x40;   // GOG Df2.exe: already dead
+            if (std::getenv("OPENDF_DEBUGAI")) std::fprintf(stderr, "ai %d switches to %d, score %.3f\n", p.object, id, score);
+        }
     }
-    if (p.flags & 0x80) p.seen += elapsed;
-    else { p.unseen += elapsed; p.seen = 0; }
+    if (df2 && (p.flags & 0x80)) {
+        // GOG Df2.exe 0x4019d5..0x401a08, while seen: a dead target gets
+        // 0x40 (bark 5 if this soldier killed it) and is kept, so the next
+        // think runs the no-target logic (0x4018ea) and the team share
+        // passes the news on; the last known position is the target's.
+        if (!targetAlive(world, p, player)) {
+            p.flags |= 0x40;
+            if (p.target >= 0 && world.objects[size_t(p.target)].killer == p.object) bark(world, p, sound, 5);
+        }
+        p.lastKnown = world.nearest(targetPos(world, p, player), o.pos);
+    }
+    // Delta Force (GOG Df.exe 0x45b993 / 0x45b9a3 -> 0x45b70c -> 0x45b72b):
+    // every has-target think with 0x80 set, sight check or not, takes the
+    // target's current position as the last known.
+    if (!df2 && (p.flags & 0x80)) p.lastKnown = world.nearest(targetPos(world, p, player), o.pos);
+    if (df2) {
+        if (p.flags & 0x80) p.seen += elapsed;
+        else { p.unseen += elapsed; p.seen = 0; }
+    }
     if (p.unseen > p.giveUpTicks) {
         p.target = -1;
         p.state = 0;
         return;
     }
-    // Radio (0x46b600) every 0x1f0 ticks: same-side people within 50 m
-    // without a target take this one (bark 4, WARN).
-    if (p.radioTimer > 0x1f0 && !(df2 && p.silent)) {   // DF2: silent soldiers never radio
+    if (df2) {
+        // GOG Df2.exe 0x401a46..0x401acc: the team share (0x414350) every
+        // 0x1f0 ticks unless silent, the timer back to (-rand) & 0x3f;
+        // bark 4 for 1 / 3, 5 for 2.
+        if (p.radioTimer > 0x1f0 && !p.silent) {
+            p.radioTimer = (-int(rnd())) & 0x3f;
+            const int r = teamShare(world, p);
+            if (r == 1 || r == 3) bark(world, p, sound, 4);
+            else if (r == 2) bark(world, p, sound, 5);
+        }
+    } else if (p.radioTimer > 0x1f0) {
+        // Radio (0x46b600) every 0x1f0 ticks: same-side people within 50 m
+        // without a target take this one (bark 4, WARN).
         p.radioTimer = 0;
         bool told = false;
         for (auto& q : people_) {
-            if (&q == &p || q.target != -1 || (df2 && (q.flags & 0x1000))) continue;   // DF2: deaf ones hear no radio
+            if (&q == &p || q.target != -1) continue;
             const WorldObject& qo = world.objects[size_t(q.object)];
             if (!qo.alive() || qo.side != o.side || octagonal(qo.pos, o.pos) > 50.f || p.unseen >= q.giveUpTicks) continue;
             q.target = p.target;
@@ -553,41 +1030,96 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         // ai+0x7c to the side of flags 4 / 8, at the walk / run move.
         p.state = 1;
         float h = headingTo(o.pos, world.nearest(p.lastKnown, o.pos));
-        const float flank = p.flank * kPi / 180.f;
-        if (p.flags & 4) h += flank;
-        else if (p.flags & 8) h -= flank;
-        // Terrain probe (0x46b34c): avoid deep water and big steps.
-        auto ok = [&](float hh) {
-            const Vec3 f{std::sin(hh), 0, -std::cos(hh)};
-            const float g0 = world.terrain->heightAt(o.pos.x, o.pos.z);
-            const Vec3 a = o.pos + f * 2.f, b = o.pos + f * 4.f;
-            const float ga = world.terrain->heightAt(a.x, a.z), gb = world.terrain->heightAt(b.x, b.z);
-            const float w = world.terrain->waterLevel();
-            // DF1 rejects water deeper than 0.75 m; DF2 only with ai flag 0x800,
-            // deeper than 0.25 m (0x4151a0).
-            if (!df2 && w != 0 && w - ga > 0.75f) return false;
-            if (df2 && (p.flags & 0x800) && w != 0 && w - ga > 0.25f) return false;
-            if (ga - g0 > 0.5f || g0 - ga > 1.f) return false;
-            if (gb - g0 > 3.f || g0 - gb > 4.f) return false;
-            return true;
-        };
         float chosen = h;
-        if (!ok(h)) {
-            const int tries = int(p.flank * 256.f / 360.f) / 4 + 8;
-            const float step = float(0x4000000) / 4294967296.f * 2 * kPi;
-            const float sgn = (rnd() & 0x8000) ? 1.f : -1.f;
-            for (int k = 1; k <= tries; ++k) {
-                if (ok(h + sgn * step * float(k))) { chosen = h + sgn * step * float(k); break; }
-                if (ok(h - sgn * step * float(k))) { chosen = h - sgn * step * float(k); break; }
+        if (!df2) {
+            // Terrain probe (GOG Df.exe 0x45edd0, CD 0x46b34c), on the
+            // heading to the target. The flank (+0x7c, 1/256 turns) side is
+            // ai flag 4 (DF minus, OpenDF's clockwise plus) or 8; with
+            // neither, rand < 0x8000 picks 4, else 8, and it stays. From
+            // h +- flank, flank/4 + 8 headings 0x4000000 apart further to that
+            // side; the first whose ground 8 m and 16 m ahead passes against
+            // the person's height wins: water at 8 m <= 0.75 m deep, rise to
+            // 8 m <= 0.5 m, drop <= 1 m, rise to 16 m <= 3 m, drop <= 4 m.
+            // Else from DF h + 0x10000000 (OpenDF h - 22.5 degrees), 128
+            // steps the same way testing only 8 m (water, rise <= 2 m, drop
+            // <= 4 m); else h.
+            if (!(p.flags & 0xC)) p.flags |= rnd() < 0x8000 ? 4u : 8u;
+            const int flank256 = int(p.flank * 256.f / 360.f);   // (deg << 8) / 360 (0x4497c0)
+            const float unit = 2 * kPi / 4294967296.f;
+            const float sgn = (p.flags & 4) ? 1.f : -1.f;
+            const float step = sgn * float(0x4000000) * unit;
+            const float w = world.terrain->waterLevel();
+            auto ground = [&](float hh, float m) {
+                const Vec3 a = o.pos + Vec3{std::sin(hh), 0, -std::cos(hh)} * m;
+                return world.terrain->heightAt(a.x, a.z);
+            };
+            bool found = false;
+            float t = h + sgn * float(int64_t(flank256) << 24) * unit;
+            for (int k = 0; k < flank256 / 4 + 8; ++k, t += step) {
+                const float g8 = ground(t, 8.f), g16 = ground(t, 16.f), z = o.pos.y;
+                if (w != 0 && w - g8 > 0.75f) continue;
+                if (g8 - z > 0.5f || g16 - z > 3.f || z - g8 > 1.f || z - g16 > 4.f) continue;
+                chosen = t;
+                found = true;
+                break;
+            }
+            if (!found) {
+                t = h - float(0x10000000) * unit;
+                for (int k = 0; k < 128; ++k, t += step) {
+                    const float g8 = ground(t, 8.f), z = o.pos.y;
+                    if (w != 0 && w - g8 > 0.75f) continue;
+                    if (g8 - z > 2.f || z - g8 > 4.f) continue;
+                    chosen = t;
+                    break;
+                }
+            }
+        } else {
+            const float flank = p.flank * kPi / 180.f;
+            if (p.flags & 4) h += flank;
+            else if (p.flags & 8) h -= flank;
+            // Terrain probe: avoid deep water and big steps.
+            auto ok = [&](float hh) {
+                const Vec3 f{std::sin(hh), 0, -std::cos(hh)};
+                const float g0 = world.terrain->heightAt(o.pos.x, o.pos.z);
+                const Vec3 a = o.pos + f * 2.f, b = o.pos + f * 4.f;
+                const float ga = world.terrain->heightAt(a.x, a.z), gb = world.terrain->heightAt(b.x, b.z);
+                const float w = world.terrain->waterLevel();
+                // DF2 rejects water only with ai flag 0x800, deeper than 0.25 m (0x4151a0).
+                if ((p.flags & 0x800) && w != 0 && w - ga > 0.25f) return false;
+                if (ga - g0 > 0.5f || g0 - ga > 1.f) return false;
+                if (gb - g0 > 3.f || g0 - gb > 4.f) return false;
+                return true;
+            };
+            chosen = h;
+            if (!ok(h)) {
+                const int tries = int(p.flank * 256.f / 360.f) / 4 + 8;
+                const float step = float(0x4000000) / 4294967296.f * 2 * kPi;
+                const float sgn = (rnd() & 0x8000) ? 1.f : -1.f;
+                for (int k = 1; k <= tries; ++k) {
+                    if (ok(h + sgn * step * float(k))) { chosen = h + sgn * step * float(k); break; }
+                    if (ok(h - sgn * step * float(k))) { chosen = h - sgn * step * float(k); break; }
+                }
             }
         }
         o.heading = chosen;
         world.requestMove(o, walkMove(world, p));
         p.think = 64;
         bool friendClose = false;
-        for (const auto& q : world.objects)
-            if (&q != &o && q.person && q.alive() && std::abs(q.pos.x - o.pos.x) < 2.f && std::abs(q.pos.z - o.pos.z) < 2.f)
-                friendClose = true;
+        if (!df2) {
+            // GOG Df.exe 0x45f010 (CD 0x46b588), from 0x45b817: any other
+            // used organics record (0x7cca80: people, the dead and the
+            // player too) within 2 m on all three axes, inclusive.
+            auto near2 = [&](Vec3 q) {
+                return std::abs(q.x - o.pos.x) <= 2.f && std::abs(q.y - o.pos.y) <= 2.f && std::abs(q.z - o.pos.z) <= 2.f;
+            };
+            friendClose = near2(player.origin);
+            for (const auto& q : world.objects)
+                if (&q != &o && q.missionGroup == 3 && !q.removed && near2(q.pos)) friendClose = true;
+        } else {
+            for (const auto& q : world.objects)
+                if (&q != &o && q.person && q.alive() && std::abs(q.pos.x - o.pos.x) < 2.f && std::abs(q.pos.z - o.pos.z) < 2.f)
+                    friendClose = true;
+        }
         if ((dist <= p.closeRange && (p.flags & 0x80)) ||
             (!(p.flags & 2) && p.stateTimer > p.advanceTicks && rnd() < 0x8000 && !friendClose) || (p.flags & 2)) {
             p.state = 2;
@@ -612,6 +1144,32 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
         const Vec3 d = to - from;
         const float dd = std::max(dot(d, d), 1e-4f);
         bool blocked = false;
+        if (df2) {
+            // GOG Df2.exe 0x417650(self, dist, 0x10000), called at 0x401cd7:
+            // every organic of the shooter's side (the player too), alive
+            // and not removed, not the shooter; along the ray from 0.75 m
+            // above the origin by the current yaw +0x30 and pitch +0x34, a
+            // projection t in (0xff / 65536 m, dist] and a miss of at most
+            // 1 m by 0x41e880 (max + 11/32 mid + 1/4 min of |dx|, |dy|, |dz|).
+            const Vec3 dir{std::cos(o.aimPitch) * std::sin(o.heading), std::sin(o.aimPitch), -std::cos(o.aimPitch) * std::cos(o.heading)};
+            auto inLine = [&](Vec3 at) {
+                const Vec3 c = world.nearest(at, from);
+                const float t = dot(c - from, dir);
+                if (t <= 0xff / 65536.f || t > dist) return false;
+                const Vec3 m = c - (from + dir * t);
+                float a = std::abs(m.x), b = std::abs(m.y), e = std::abs(m.z);
+                if (a < b) std::swap(a, b);
+                if (a < e) std::swap(a, e);
+                if (b < e) std::swap(b, e);
+                return a + b * 11.f / 32.f + e * 0.25f <= 1.f;
+            };
+            if (player.alive && player.side == o.side && inLine(player.origin)) blocked = true;
+            for (const auto& q : world.objects) {
+                if (blocked) break;
+                if (&q == &o || !q.person || !q.alive() || q.removed || q.side != o.side) continue;
+                if (inLine(q.pos)) blocked = true;
+            }
+        } else
         for (const auto& q : world.objects) {
             if (&q == &o || !q.person || !q.alive() || q.side != o.side) continue;
             const Vec3 c = world.nearest(q.pos, from);
@@ -632,10 +1190,15 @@ void AiSystem::think(World& world, Person& p, Arsenal& shots, SoundSystem& sound
 
 void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const PlayerView& player) {
     ++ticks_;
-    // Noise boxes are cleared every 0x1b2 ticks (0x4459e8), the "fired"
-    // flags every 0x1f0 (0x4473bc).
-    if (ticks_ % 0x1b2 == 0) noise_.clear();
-    if (ticks_ % 0x1f0 == 0) {
+    // Two counters, each counted up and reset when past its limit (GOG
+    // Df.exe 0x443c50; GOG Df2.exe 0x45fc50 the same): the "fired" flags
+    // cleared when ++[0x6e4744] > 0x1f0 (0x445c80; Df2 [0x67fff4], 0x45adc0),
+    // every 0x1f1 ticks; the noise boxes when ++[0x6e4748] > 0x1b2
+    // (0x45fd80; Df2 [0x67fff8], 0x4156a0), every 0x1b3. Both are globals
+    // no other code writes, so they run on across missions.
+    if (++noiseClock_ > 0x1b2) noiseClock_ = 0, noise_.clear();
+    if (++firedClock_ > 0x1f0) {
+        firedClock_ = 0;
         playerFired_ = false;
         for (auto& p : people_) p.fired = false;
     }
@@ -655,22 +1218,28 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
         // +0x74: direction bits 0-2, speed bits 3-4 = 1 walk / 2 run) becomes
         // a ladder move by direction and z moves at once: walk 0x43f951
         // (table 0x43fb40), run 0x43fa42 (0x43fb60): forward +0x800 / +0x1000
-        // 16 Ladder_Up, back the same down 17 Ladder_Down, left / right 18 /
-        // 19, the diagonals half. Out of the volume the chooser gives the
-        // walk / run move again. AiSystem walks and runs forward only, so
-        // in practice an AI walking into a ladder climbs it, and none climbs
-        // down (INFERRED from the moves AiSystem gives; DF2's AI sets the
-        // control word, not the move).
+        // 16 Ladder_Up, left / right 18 / 19, the front diagonals half (the
+        // GOG build signs the climb by the aim pitch, below). Out of the
+        // volume the chooser gives the walk / run move again. AiSystem walks
+        // and runs forward only, so an AI walking into a ladder climbs up
+        // while aiming up and down otherwise (INFERRED from the moves
+        // AiSystem gives; DF2's AI sets the control word, not the move).
         if (world.df2Rules && (ticks_ & 1) && !o.chute && !o.swimming) {
             const bool onLadderMove = o.moveNumber >= 16 && o.moveNumber <= 19;
             const int want = onLadderMove ? p.gait : o.moveNumber;
             int dir = -1, speed = 0;
             for (const auto& [lo, sp] : {std::pair{20, 1}, {28, 1}, {40, 1}, {48, 1}, {60, 2}, {68, 2}, {80, 2}, {88, 2}})
                 if (want >= lo && want < lo + 8) { dir = want - lo; speed = sp; }
-            if (o.ladder && dir >= 0) {
-                static const int climb[8] = {2, 1, 0, -1, -2, -1, 0, 1};
-                static const int ladderMove[8] = {16, 18, 18, 18, 17, 19, 19, 19};
-                o.base += float(climb[dir] * (speed == 2 ? 0x800 : 0x400)) / 65536.f;
+            // GOG Df2.exe's chooser 0x445980 (0x445d1b walk, 0x445df7 run):
+            // the climb's sign is the aim pitch +0x34 (in (0, 0x7fffffff) up,
+            // level or down down), Ladder_Down is never chosen; back and its
+            // diagonals give move 0 Null walking and the run move running
+            // (AiSystem gives forward moves only, so those are left out).
+            if (o.ladder && dir >= 0 && (dir <= 2 || dir >= 6)) {
+                static const int climb[8] = {2, 1, 0, 0, 0, 0, 0, 1};
+                static const int ladderMove[8] = {16, 18, 18, 0, 0, 0, 19, 19};
+                const int s = o.aimPitch > 0 ? 1 : -1;
+                o.base += float(s * climb[dir] * (speed == 2 ? 0x800 : 0x400)) / 65536.f;
                 p.gait = want;
                 world.requestMove(o, ladderMove[dir]);
                 if (o.moveNumber != ladderMove[dir]) o.moveNumber = ladderMove[dir];   // not in this .ANM: still the ladder move
@@ -678,6 +1247,13 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 world.requestMove(o, p.gait);
                 p.gait = -1;
             }
+        }
+        // GOG Df2.exe 0x445980 (the chooser of 0x4467d0's odd ticks): a
+        // person manning an emplaced gun (+0x8c) plays 107 Crouched_EWeap
+        // (speed 0; not in the enemies' .ANMs: no motion either).
+        if (world.df2Rules && (ticks_ & 1) && !o.chute && o.mount >= 0) {
+            world.requestMove(o, 107);
+            if (o.moveNumber != 107) o.moveNumber = 107;
         }
         // Movement (0x436158): the move's .ANM speed along the heading (not
         // while on a DF2 parachute).
@@ -700,9 +1276,10 @@ void AiSystem::tick(World& world, Arsenal& shots, SoundSystem& sound, const Play
                 // the same +-0.75 m mover box), on odd ticks only (0x436cbe);
                 // DF2 pushes people out of the volumes in World::personTick.
                 Vec3 feet{next.x, o.base, next.z};
-                if (ticks_ & 1) feet = world.resolve(feet, 0.75f, 1.75f, 0.5f);
+                if (ticks_ & 1) feet = world.resolve(feet, o.hip);
                 o.pos.x = feet.x;
                 o.pos.z = feet.z;
+                o.base = feet.y;   // the push can move the origin up or down (0x4889c0)
                 const float ext = world.extent();
                 o.pos.x -= std::floor(o.pos.x / ext) * ext;
                 o.pos.z -= std::floor(o.pos.z / ext) * ext;
@@ -721,35 +1298,87 @@ bool AiSystem::spotted(int team, int targetTeam) const {
     return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (spotted_[size_t(team)] >> targetTeam & 1);
 }
 
-bool AiSystem::engaging(int team) const { return team >= 0 && team < 64 && engaging_[size_t(team)]; }
+bool AiSystem::engaging(int team, int targetTeam) const {
+    return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (engaging_[size_t(team)] >> targetTeam & 1);
+}
 
 bool AiSystem::alerted(int team) const { return team >= 0 && team < 64 && teamAlert_[size_t(team)] == 2; }
+
+// The path's start point for a follow-path order (GOG Df.exe 0x45c5e0,
+// GOG Df2.exe 0x4032f0, the same code): the 3D distance in whole metres
+// between the object and each marker (ground plus record height), from the
+// raw differences (no world wrap), each >> 16 before squaring; '<=' so the
+// last of equal points wins.
+int nearestPathPoint(const World& world, const Mission& mission, const MissionPath& path, Vec3 pos) {
+    const float ext = world.extent();
+    auto metres = [](float d) { return int32_t(std::floor(double(d) * 65536.0)) >> 16; };   // 16.16 >> 16
+    int32_t best = 0x7fffffff;
+    int at = 0;
+    for (size_t k = 0; k < path.points.size(); ++k) {
+        const MissionObject* wp = mission.inGroup(2, path.points[k]);
+        if (!wp) continue;
+        const float mx = std::fmod(std::fmod(wp->x, ext) + ext, ext), mz = std::fmod(std::fmod(-wp->y, ext) + ext, ext);
+        const float mh = (world.terrain ? world.terrain->heightAt(mx, mz) : 0.f) + wp->z;
+        // obj - marker per axis; the EXE's y (north) is OpenDF's -z.
+        const uint32_t dx = uint32_t(metres(pos.x - mx)), dy = uint32_t(metres(mz - pos.z)), dz = uint32_t(metres(pos.y - mh));
+        const int32_t d = int32_t(dz * dz + dx * dx + dy * dy);   // imul / add, 32-bit wrap
+        if (d <= best) best = d, at = int(k);
+    }
+    return at;
+}
 
 bool AiSystem::reached(int team, int path, int point) const {
     auto it = reached_.find(team * 128 + path);
     return it != reached_.end() && point >= 0 && point < 32 && (it->second >> point & 1);
 }
 
+// GOG Df2.exe 0x4032f0: the path point nearest in whole metres, each axis
+// of (object - marker) shifted >> 16 (floor), x, y and the height squared
+// and summed; on a tie the later point wins (<=). Markers stand at ground +
+// record z (0x465490).
+int df2NearestPoint(const World& world, const Mission& m, const MissionPath& mp, const WorldObject& o) {
+    const float ext = world.extent();
+    int64_t best = 0x7fffffff;
+    int pick = 0;
+    for (size_t k = 0; k < mp.points.size(); ++k) {
+        const MissionObject* wp = m.inGroup(2, mp.points[k]);
+        if (!wp) continue;
+        const Vec3 at = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos);
+        const int64_t dx = int64_t(std::floor(double(o.pos.x) - at.x));
+        const int64_t dy = int64_t(std::floor(double(at.z) - o.pos.z));   // DF y is -z
+        const int64_t dz = int64_t(std::floor(double(o.base) - (world.terrain->heightAt(at.x, at.z) + wp->z)));
+        const int64_t d = dx * dx + dy * dy + dz * dz;
+        if (d <= best) best = d, pick = int(k);
+    }
+    return pick;
+}
+
 void AiSystem::followPath(World& world, int team, int path) {
-    // 0x46bbe8: teams below 3 are ignored; each member takes the path from
-    // its nearest point.
-    if (team < 3 || !mission_ || path <= 0 || path >= int(mission_->paths.size())) return;
+    // 0x46bbe8 (GOG Df.exe 0x45f670): teams below 3 are ignored; each member
+    // takes the path from its nearest point (0x45c5e0, 0 for an empty path).
+    // Path 0 is taken too: the next path step ends path mode (see patrol).
+    if (team < 3 || !mission_ || path < 0 || path >= int(mission_->paths.size())) return;
     const MissionPath& mp = mission_->paths[size_t(path)];
+    if (world.df2Rules) {
+        // GOG Df2.exe 0x418040: every organic of the team with an AI block,
+        // dead or alive (a removed one is zeroed, team 0), from the point
+        // 0x4032f0 picks; the think timer is left alone.
+        for (auto& p : people_) {
+            const WorldObject& o = world.objects[size_t(p.object)];
+            if (o.team != team || o.removed) continue;
+            p.pathMode = 1;
+            p.path = path;
+            p.waypoint = df2NearestPoint(world, *mission_, mp, o);
+        }
+        return;
+    }
     for (auto& p : people_) {
         WorldObject& o = world.objects[size_t(p.object)];
-        if (o.team != team || !o.alive()) continue;
+        if (o.team != team || (!df2 && !o.alive())) continue;
         p.pathMode = 1;
         p.path = path;
-        float best = 1e30f;
-        const float ext = world.extent();
-        for (size_t k = 0; k < mp.points.size(); ++k) {
-            const MissionObject* wp = mission_->inGroup(2, mp.points[k]);
-            if (!wp) continue;
-            Vec3 at{std::fmod(std::fmod(wp->x, ext) + ext, ext), o.pos.y, std::fmod(std::fmod(-wp->y, ext) + ext, ext)};
-            const Vec3 d = world.nearest(at, o.pos) - o.pos;
-            if (dot(d, d) < best) best = dot(d, d), p.waypoint = int(k);
-        }
-        p.think = 1;
+        // No think timer change: the member reacts at its next think.
+        p.waypoint = nearestPathPoint(world, *mission_, mp, o.pos);
     }
 }
 
@@ -758,10 +1387,15 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         if (world.objects[size_t(p.object)].team != team) continue;
         switch (subtype) {
         case 1: p.weapon = aiWeaponMode(value); world.objects[size_t(p.object)].weaponMode = p.weapon; break;
-        case 2: if (df2 && !value) p.flags &= ~2u; else p.flags |= 2; break;   // DF2 also clears
-        case 3: if (df2 && !value) p.flags &= ~0x10u; else p.flags |= 0x10; break;   // DF2 also clears
-        case 4: if (df2 && !value) p.flags &= ~0x20u; else p.flags |= 0x20; break;   // DF2 also clears
-        case 5: p.alert = 2; alertTeam(team); break;
+        // 2/3/4/15 set a flag for a non-zero value and clear it for 0 in both
+        // games (GOG Df.exe 0x45ff20, CD 0x46c444); 14 the same for silent.
+        case 2: if (!value) p.flags &= ~2u; else p.flags |= 2; break;
+        case 3: if (!value) p.flags &= ~0x10u; else p.flags |= 0x10; break;
+        case 4: if (!value) p.flags &= ~0x20u; else p.flags |= 0x20; break;
+        // 5/6 set the live alert byte (GOG Df.exe 0x45ff20 ai+0x9c, Df2.exe
+        // 0x4185b0 ai+0xb4) to 2 / 0; the team's alert word is not touched
+        // here (DF2 sets it after the loop, below).
+        case 5: p.alert = 2; break;
         case 6: p.alert = 0; break;
         case 7: p.fov = float(value); break;
         case 8: if (value > 0) p.accuracy = float(value); break;
@@ -770,8 +1404,8 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         case 11: p.holdTicks = value * 62; break;
         case 12: p.giveUpTicks = value * 62; break;
         case 13: p.flank = float(value); break;
-        case 14: p.silent = df2 ? value != 0 : true; break;
-        case 15: if (df2 && !value) p.flags &= ~1u; else p.flags |= 1; break;
+        case 14: p.silent = value != 0; break;
+        case 15: if (!value) p.flags &= ~1u; else p.flags |= 1; break;
         // DF2 (0x413...): 16-19 set or clear ai 0x200 / 0x400 / 0x800 / 0x1000.
         case 16: case 17: case 18: case 19:
             if (df2) {
@@ -782,6 +1416,14 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         default: break;
         }
     }
+    // Delta Force 2's action (GOG Df2.exe 0x4184c0): after the members,
+    // sub 5 sets the team's alert word (0x4045c0) and 6 clears it (0x4045a0),
+    // with or without members, the word the "team alerted" condition reads
+    // (0x41af30); team 0 is skipped. Delta Force's 0x4601a0 does neither:
+    // there only a member that really reacts (0x44a3e0 from 0x45e280 /
+    // 0x45fd90 / 0x464c50) alerts the team.
+    if (df2 && team > 0 && team < 64 && (subtype == 5 || subtype == 6))
+        teamAlert_[size_t(team)] = subtype == 5 ? 2 : 0;
 }
 
 void AiSystem::teamSpeed(int team, int kmh) {

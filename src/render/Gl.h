@@ -91,7 +91,10 @@
     X(void, VertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*)) \
     X(void, ActiveTexture, (GLenum)) \
     X(void, TexImage3D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*)) \
-    X(void, GenerateMipmap, (GLenum))
+    X(void, GenerateMipmap, (GLenum)) \
+    X(void, BufferSubData, (GLenum, std::ptrdiff_t, std::ptrdiff_t, const void*)) \
+    X(void, VertexAttribDivisor, (GLuint, GLuint)) \
+    X(void, DrawElementsInstanced, (GLenum, GLsizei, GLenum, const void*, GLsizei))
 
 #define DFGL_DECLARE(ret, name, args) \
     using PFN_df##name = ret(DFGL_API*) args; \
@@ -132,6 +135,9 @@ DFGL_FUNCS(DFGL_DECLARE)
 #define glActiveTexture dfglActiveTexture
 #define glTexImage3D dfglTexImage3D
 #define glGenerateMipmap dfglGenerateMipmap
+#define glBufferSubData dfglBufferSubData
+#define glVertexAttribDivisor dfglVertexAttribDivisor
+#define glDrawElementsInstanced dfglDrawElementsInstanced
 
 namespace df {
 bool loadGl(const char** missing);

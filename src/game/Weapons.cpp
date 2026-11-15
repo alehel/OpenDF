@@ -14,10 +14,9 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 constexpr int kModeCount = 39, kGunCount = 28, kRowCount = 28;
-// DF.EXE (US release) tables; see docs/FORMATS.md.
-constexpr uint32_t kModeTable = 0x4E97D0, kModeRecord = 168;
-constexpr uint32_t kGunTable = 0x4E9060, kGunRecord = 52;
-constexpr uint32_t kRowTable = 0x4E9610, kRowRecord = 16;
+// DF.EXE tables (CD 0x4E97D0 modes, 0x4E9060 guns, 0x4E9610 rows; the
+// build's addresses come from ExeImage::df1()); see docs/FORMATS.md.
+constexpr uint32_t kModeRecord = 168, kGunRecord = 52;
 constexpr int kReloadTicks = 0x78;   // 0x44a004
 constexpr int kFragRow = 26;         // slot 9: always the frag grenade (0x44b598)
 
@@ -247,7 +246,8 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     // The user's DF.EXE: sanity-check (M4 single shot: item 4057, gun 7 with
     // a 30-round magazine; row 9 = modes 6, 10, 7), then read everything.
     fromExe_ = false;
-    if (exe && exe->loaded()) {
+    if (const Df1ExeTables* t = exe ? exe->df1() : nullptr) {
+        const uint32_t kModeTable = t->modes, kGunTable = t->guns, kRowTable = t->rows, kRowRecord = t->rowRecord;
         int32_t item = 0, gun = 0, size = 0, r9 = 0;
         if (exe->i32(kModeTable + 7 * kModeRecord + 0x64, item) && exe->i32(kModeTable + 7 * kModeRecord + 0x74, gun) &&
             exe->i32(kGunTable + 7 * kGunRecord + 0x08, size) && exe->i32(kRowTable + 9 * kRowRecord + 4, r9) &&
@@ -311,13 +311,21 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     clock_ = flashTimer_ = 0;
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
+    clearTracers();
     impacts_.clear();
+    tracers_.clear();
 }
 
 bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout lo) {
-    constexpr uint32_t kModes = 0x4C7238, kTypes = 0x4C5150, kAmmo = 0x4C4310, kCurve = 0x4C86B8;
-    constexpr int kModeN = 57, kTypeN = 39, kAmmoN = 38, kCurveN = 44;
-    if (!exe.loaded()) return false;
+    const Df2ExeTables* t = exe.df2();
+    if (!t) return false;
+    // CD 0x4C7238 modes, 0x4C5150 types, 0x4C4310 ammo, 0x4C86B8 curve; the
+    // build's from ExeImage::df2(). GOG Df2.exe's ammunition records are 100
+    // bytes with a word inserted at +0x0C (`at`) and the flags 16 bits up.
+    const uint32_t kModes = t->modes, kTypes = t->types, kAmmo = t->ammo, kCurve = t->curve;
+    constexpr int kModeN = 57, kTypeN = 39, kCurveN = 44;
+    const int kAmmoN = t->ammoCount;
+    auto at = [&](uint32_t cdOffset) { return cdOffset >= 0x0C ? cdOffset + t->ammoShift : cdOffset; };
     bool ok = true;
     auto rd = [&](uint32_t va) { int32_t v = 0; ok = ok && exe.i32(va, v); return v; };
     std::vector<ModeDef> modes(kModeN);
@@ -348,6 +356,7 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
         d.icon = -1;
         // Bursts (0x414ad0): 6, 8 and 51 (shot 8 then 9), 21, 35, 36.
         d.burst = m == 6 || m == 8 || m == 51 || m == 21 || m == 35 || m == 36;
+        d.df2Flags = f;
         d.binoculars = (f & 0x200) != 0;   // tested by the move chooser 0x43f690 (0x43f76a / 0x43f7b3)
         if (items && d.item > 0)
             if (const ItemDef* it = items->byId(100000 + d.item); it && !it->graphic.empty()) {
@@ -357,26 +366,28 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
             }
     }
     for (int a = 0; a < kAmmoN; ++a) {
-        const uint32_t b = kAmmo + uint32_t(a) * 96;
+        const uint32_t b = kAmmo + uint32_t(a) * t->ammoRecord;
         GunDef& g = guns[size_t(a)];
         g.n = rd(b + 0x04);
         g.magazine = rd(b + 0x08);
-        g.velocity = rd(b + 0x0C);
-        g.power = rd(b + 0x10);
-        g.falloff = std::max(1, rd(b + 0x14));
-        g.lifetime = rd(b + 0x18);
-        g.accuracy = rd(b + 0x1C);
-        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
-        g.flags = rd(b + 0x30);
+        if (t->ammoShift) g.extraClips = rd(b + 0x0C);   // GOG Df2.exe 0x44dfc0 (Extra Ammo)
+        g.velocity = rd(b + at(0x0C));
+        g.power = rd(b + at(0x10));
+        g.falloff = std::max(1, rd(b + at(0x14)));
+        g.lifetime = rd(b + at(0x18));
+        g.accuracy = rd(b + at(0x1C));
+        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + at(0x20 + 4 * uint32_t(k)));
+        // In the CD's bits (GOG Df2.exe 0x451ae0 tests them 16 bits higher).
+        g.flags = int(uint32_t(rd(b + at(0x30))) >> t->ammoFlagShift);
         // 0x46b230: thresholds / 62 (C truncation), coefficients 2^32 / c.
         for (int k = 0; k < 5; ++k) {
-            g.dragThr[k] = int64_t(rd(b + 0x34 + 8 * uint32_t(k))) / 62;
-            const int64_t c = rd(b + 0x38 + 8 * uint32_t(k));
+            g.dragThr[k] = int64_t(rd(b + at(0x34 + 8 * uint32_t(k)))) / 62;
+            const int64_t c = rd(b + at(0x38 + 8 * uint32_t(k)));
             g.dragCoef[k] = c ? (int64_t(1) << 32) / c : 0;
         }
-        // +0x58 is both the fifth band's coefficient and the one under water.
+        // +0x58 (GOG +0x5C) is both the fifth band's coefficient and the one under water.
         g.waterCoef = g.dragCoef[4];
-        const int64_t grains = int64_t(rd(b + 0x5C)) << 16;
+        const int64_t grains = int64_t(rd(b + at(0x5C))) << 16;
         const int64_t kg = (grains << 16) / 0x3c480000;
         g.mass = (kg << 16) / 0xa7;
     }
@@ -391,36 +402,82 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     // Sanity: the M4's ammo (7) is 30 rounds at 915 m/s.
     if (!ok || guns[7].magazine != 30 || guns[7].velocity != 915) return false;
 
-    // Slots (0x447e20): 0 laser designator (type 19), 1 knife (type 2),
-    // 2 sidearm, 3-5 the primary's modes, 6 secondary, 7 body gear,
-    // 8 the radio detonator (type 21 mode 1), 9 the grenade.
-    auto typeMode = [&](int t, int k) { return t >= 0 && t < kTypeN ? rd(kTypes + uint32_t(t) * 216 + 0x84 + 4 * uint32_t(k)) : 0; };
+    // The weapon types' modes (+0x84 + 4k), for the slots (df2Slots).
+    std::vector<std::array<int, 3>> typeModes(kTypeN);
+    for (int ty = 0; ty < kTypeN; ++ty)
+        for (int k = 0; k < 3; ++k) typeModes[size_t(ty)][size_t(k)] = rd(kTypes + uint32_t(ty) * 216 + 0x84 + 4 * uint32_t(k));
+    if (!ok) return false;
     modes_ = std::move(modes);
     guns_ = std::move(guns);
     dragCurve_ = std::move(curve);
-    slots_ = {typeMode(19, 0), typeMode(2, 0), typeMode(lo.sidearm, 0), typeMode(lo.primary, 0), typeMode(lo.primary, 1),
-              typeMode(lo.primary, 2), typeMode(lo.secondary, 0), typeMode(lo.gear, 0), typeMode(21, 1), typeMode(lo.grenade, 0)};
-    for (int& s : slots_)
-        if (s < 0 || s >= int(modes_.size()) || !modes_[size_t(s)].works()) s = 0;
-    // Slot 10: T[35] mode 0 (47, the binoculars, kind 12: fires nothing).
-    if (const int b = typeMode(35, 0); b > 0 && b < int(modes_.size())) slots_[kBinocularSlot] = b;
+    typeModes_ = std::move(typeModes);
+    df2Gog_ = t->ammoShift != 0;   // the GOG build (its 100-byte ammo rows)
+    df2Slots(lo);
+    mount_ = -1;
+    mountGl_ = false;
+    camera_ = -1;
+    camView_ = false;
     prevSlot_ = 3;
-    gear_ = lo.gear;
     df2_ = true;
     fromExe_ = true;
-    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips.
-    kit_ = lo.secondary == 1 ? 1 : 0;
+    reloadTicks_ = 0;
+    cooldown_ = 0;
     refill();
     current_ = 3;
     if (!slots_[3]) cycle();
     zoomLevel_ = 0;
+    // GOG Df2.exe 0x44eeb0: the scope magnification [0x79a698] starts as
+    // the slot-3 mode's scope (+0x38) when it is 0; it is kept otherwise.
+    if (df2Gog_ && df2Mag_ == 0) df2Mag_ = modes_[size_t(slots_[3])].scope;   // GOG only (no [0x79a698] in the CD build)
     cooldown_ = reloadTicks_ = burstLeft_ = 0;
     pressed_ = false;
     clock_ = flashTimer_ = 0;
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
+    clearTracers();
     impacts_.clear();
+    tracers_.clear();
     return true;
+}
+
+// Slots (GOG Df2.exe 0x44eeb0, CD 0x447e20): 0 laser designator (type 19),
+// 1 knife (type 2), 2 sidearm, 3-5 the primary's modes, 6 secondary, 7 body
+// gear, 8 the radio detonator (type 21 mode 1), 9 the grenade, 10 the
+// binoculars (type 35 mode 0, 47: kind 12, fires nothing); GOG 11 / 12 the
+// emplaced guns' modes 0x37 / 0x38 (filled by 0x44dfc0 as refillDf2Gog's
+// fill(55) / fill(56)). Every mode stays in its slot, the body gear's kind-0
+// modes (Armor 43, Ghillie 44, LAR V 45) too: 0x44f160 selects any slot
+// with no kind test, 0x44d3c0 skips only slots holding 0, and firing a kind
+// without a case does nothing (0x44d8a0 default).
+void Arsenal::df2Slots(const Df2Loadout& lo) {
+    auto typeMode = [&](int ty, int k) {
+        const int m = ty >= 0 && ty < int(typeModes_.size()) ? typeModes_[size_t(ty)][size_t(k)] : 0;
+        return m > 0 && m < int(modes_.size()) ? m : 0;
+    };
+    slots_ = {typeMode(19, 0), typeMode(2, 0), typeMode(lo.sidearm, 0), typeMode(lo.primary, 0), typeMode(lo.primary, 1),
+              typeMode(lo.primary, 2), typeMode(lo.secondary, 0), typeMode(lo.gear, 0), typeMode(21, 1), typeMode(lo.grenade, 0),
+              typeMode(35, 0), 0, 0};
+    if (df2Gog_ && int(modes_.size()) > 0x38) {
+        slots_[kMountSlot] = 0x37;
+        slots_[kMountGlSlot] = 0x38;
+    }
+    gear_ = lo.gear;
+    df2Lo_ = lo;
+    // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips
+    // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
+    kit_ = lo.secondary == 1 ? 1 : 0;
+}
+
+void Arsenal::rearmDf2(const Df2Loadout& lo) {
+    // Request Weapons (GOG Df2.exe 0x409610 case 0x56, CD 0x408c60):
+    // 0x44eeb0 (CD 0x447e20) rebuilds the slots and refills, then 0x44f160
+    // (CD 0x4480b0) selects the slot already held. The scope flag, the
+    // binoculars' return slot, the camera and every round in flight stay.
+    if (!df2_) return;
+    df2Slots(lo);
+    refill();
+    if (df2Gog_ && df2Mag_ == 0) df2Mag_ = modes_[size_t(slots_[3])].scope;   // 0x44eeb0's end (GOG only)
+    select(current_);
 }
 
 void Arsenal::setWind(float kph, float degrees) {
@@ -441,11 +498,17 @@ int Arsenal::df2Damage(const Projectile& b) const {
     return e <= 0x190000 ? 1 : int(e / 0x190000);
 }
 
-void Arsenal::df2Drag(Projectile& b, float water) const {
+int64_t Arsenal::df2Speed(const Projectile& b) {
+    const int64_t v[3] = {int64_t(b.vel.x * kTick * 65536.f), int64_t(b.vel.y * kTick * 65536.f), int64_t(b.vel.z * kTick * 65536.f)};
+    return int64_t(std::sqrt(double(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])));
+}
+
+void Arsenal::df2Drag(Projectile& b, float water, int64_t s) const {
     if (b.gun < 0 || b.gun >= int(guns_.size()) || dragCurve_.empty()) return;
     const GunDef& g = guns_[size_t(b.gun)];
     int64_t v[3] = {int64_t(b.vel.x * kTick * 65536.f), int64_t(b.vel.y * kTick * 65536.f), int64_t(b.vel.z * kTick * 65536.f)};
-    const int64_t s = int64_t(std::sqrt(double(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])));
+    // s: the speed at the start of the tick (GOG Df2.exe 0x453860 local_30),
+    // the velocity itself as penetration left it.
     const bool under = water != 0 && b.pos.y < water;
     int64_t c = 0;
     if (under) c = g.waterCoef;
@@ -458,9 +521,65 @@ void Arsenal::df2Drag(Projectile& b, float water) const {
     int64_t k = (f * c) >> 16;
     if (under) k = (k * (0x10000 + (int64_t((water - b.pos.y) * 65536.f) << 16) / 0xa0000)) >> 16;
     k = std::clamp<int64_t>(k, 0, 0x8000);
-    const int64_t wind[3] = {windX_, 0, windZ_};
+    // GOG Df2.exe 0x453860: toward the wind only while above the water
+    // level (water < z); at or below it toward rest. The CD's 0x44c2f0
+    // always pulls toward the wind (DAT_004ee250..58), above the water or
+    // not; only its drag coefficient depends on the depth.
+    const bool windy = !df2Gog_ || water < b.pos.y;
+    const int64_t wind[3] = {windy ? windX_ : 0, 0, windy ? windZ_ : 0};
     for (int i = 0; i < 3; ++i) v[i] -= ((v[i] - wind[i]) * k) >> 16;
     b.vel = Vec3{float(v[0]), float(v[1]), float(v[2])} * (1.f / (65536.f * kTick));
+}
+
+void Arsenal::tracerColour(Projectile& b, const World& world) {
+    // The round's tracer colour (+0x9c), set when it is fired (GOG Df2.exe
+    // 0x451ae0): by the shooter's side, 1 0xb9a0a0ff, 2 0xb9ffa0a0, 3
+    // 0xb9ffff00, 4 0xb9ff027f, else white; the M203 (CD 0x01) and the LAW
+    // (0x40) white; shrapnel 0x1010101 (0x452120); shotgun pellets 0
+    // (0x451eb0); a round with no shooter 0 (the record is cleared).
+    b.coloured = true;
+    if (b.flags & 0x20) { b.colour = 0x01010101; return; }
+    if (b.flags & 0x400) { b.colour = 0; return; }
+    const int side = b.shooter == -3 ? 1   // the player (Game kPlayerSide)
+                     : b.shooter >= 0 && size_t(b.shooter) < world.objects.size() ? world.objects[size_t(b.shooter)].side
+                                                                                    : -1;
+    if (side < 0) { b.colour = 0; return; }
+    b.colour = side == 1 ? 0xb9a0a0ffu : side == 2 ? 0xb9ffa0a0u : side == 3 ? 0xb9ffff00u : side == 4 ? 0xb9ff027fu : 0xffffffffu;
+    if (b.flags & 0x41) b.colour = 0xffffffffu;
+}
+
+void Arsenal::recordTracer(const Projectile& b, Vec3 from, Vec3 to, Vec3 tickStart) {
+    // Every pass of a DF2 round (GOG Df2.exe 0x4546e4..0x454797 ->
+    // 0x452290): with the round under the water (its position at the start
+    // of the tick) always, in white; otherwise, in single player, with the
+    // Tracers option on (attributes 0x80 clear) a round with none of GOG
+    // flags 0x1c900000 (CD 0x1c90: hand and delay grenades, shotgun pellets
+    // among them), with it off only the LAW and shrapnel (0x600000,
+    // CD 0x60). A ring of 2048 (0x7ff), life 0x1e ticks.
+    if (!df2_ || (from.x == to.x && from.y == to.y && from.z == to.z)) return;
+    uint32_t colour = b.colour;
+    if (waterLevel != 0 && tickStart.y < waterLevel) colour = 0xffffffffu;
+    else if (tracersOff ? !(b.flags & 0x60) : (b.flags & 0x1c90)) return;
+    tracerHead_ = (tracerHead_ + 1) & 0x7ff;
+    df2Tracers_[size_t(tracerHead_)] = Tracer{from, to, 0x1e, colour};
+}
+
+void Arsenal::ageTracers(uint32_t tick) {
+    // GOG Df2.exe 0x452610, per drawn frame: every record loses the ticks
+    // since the last frame (none while paused); gone once life >> 2 < 1.
+    const int elapsed = tracerClock_ <= tick ? int(tick - tracerClock_) : 0;
+    tracerClock_ = tick;
+    for (auto& t : df2Tracers_)
+        if (t.life > 0) {
+            t.life -= elapsed;
+            if ((t.life >> 2) < 1) t.life = 0;
+        }
+}
+
+void Arsenal::clearTracers() {
+    // 0x452530.
+    df2Tracers_.assign(2048, Tracer{});
+    tracerHead_ = 0;
 }
 
 void Arsenal::refill() {
@@ -469,6 +588,10 @@ void Arsenal::refill() {
     chambered_.assign(guns_.size(), 0);
     mag_.assign(guns_.size(), 0);
     spares_.assign(guns_.size(), 0);
+    if (df2_ && df2Gog_) {
+        refillDf2Gog();
+        return;
+    }
     for (int i = 0; i < kSlots; ++i) {
         if (!slots_[size_t(i)]) continue;
         const int g = modes_[size_t(slots_[size_t(i)])].gun;
@@ -478,11 +601,71 @@ void Arsenal::refill() {
         mag_[size_t(g)] = gd.magazine;
         chambered_[size_t(g)] = 1;
     }
-    reloadTicks_ = 0;
+    // Neither game's refill touches the reload timer [0xc23834] or the
+    // cooldown (GOG Df.exe 0x4848c0, CD 0x44b634; DF2 CD 0x4472d0): a running
+    // reload goes on and its end (0x483390) uses one of the new spares.
+}
+
+void Arsenal::refillGrenades() {
+    // DF2's grenade crate 4118 (GOG Df2.exe message 0x1f -> 0x44e310, CD
+    // 0x447380): every slot 0-9 holding mode 0x21, 0x22 or 0x31 gets n - 1
+    // spare clips, a full magazine and a round chambered; the timers stay.
+    for (int i = 0; i < kSlots; ++i) {
+        const int m = slots_[size_t(i)];
+        if (m != 0x21 && m != 0x22 && m != 0x31) continue;
+        const int g = modes_[size_t(m)].gun;
+        if (g < 0 || g >= int(guns_.size())) continue;
+        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
+        mag_[size_t(g)] = guns_[size_t(g)].magazine;
+        chambered_[size_t(g)] = 1;
+    }
+}
+
+void Arsenal::refillDf2Gog() {
+    // GOG Df2.exe 0x44dfc0: per weapon's ammo n - 1 spare clips, a full
+    // magazine, a round chambered, for slots 2-7 and 9 and the two mounted
+    // guns' modes 55 and 56 (slots 0, 1 and 8 use ammo 0, which OpenDF
+    // fills as the CD does). Slot 7 holding slot 6's mode (the same item as
+    // secondary and gear) adds n clips to it. Extra Ammo as the secondary
+    // (+0xb7) and again as the gear (+0xb8) each add the ammo's +0x0C clips
+    // to slot 3's weapon, and to slot 4's when the primary is type 9 or 10.
+    auto fill = [&](int mode) {
+        if (mode <= 0 || mode >= int(modes_.size())) return;
+        const int g = modes_[size_t(mode)].gun;
+        if (g < 0 || g >= int(guns_.size())) return;
+        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
+        mag_[size_t(g)] = guns_[size_t(g)].magazine;
+        chambered_[size_t(g)] = 1;
+    };
+    auto gunOf = [&](int slot) {
+        const int m = slots_[size_t(slot)];
+        return m > 0 && m < int(modes_.size()) ? modes_[size_t(m)].gun : -1;
+    };
+    for (int i : {0, 1, 8}) fill(slots_[size_t(i)]);
+    for (int i : {2, 3, 4, 5, 6}) fill(slots_[size_t(i)]);
+    if (slots_[7] && slots_[7] == slots_[6]) {
+        if (const int g = gunOf(7); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].n;
+    } else {
+        fill(slots_[7]);
+    }
+    fill(slots_[9]);
+    fill(55);
+    fill(56);
+    for (int kit : {df2Lo_.secondary, df2Lo_.gear}) {
+        if (kit != 1) continue;
+        if (const int g = gunOf(3); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].extraClips;
+        if (df2Lo_.primary == 9 || df2Lo_.primary == 10)
+            if (const int g = gunOf(4); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].extraClips;
+    }
+    // 0x44dfc0 leaves the reload timer [0x79a2d0] and the cooldown
+    // [0x79a2cc]: a running reload goes on.
 }
 
 void Arsenal::select(int slot) {
     if (slot < 0 || slot >= int(slots_.size())) return;   // 10: DF2's binoculars (0x41b6e3)
+    // GOG Df2.exe 0x44f160: slots 11 / 12 only with a gun manned (player
+    // +0x8c), and not again while held.
+    if ((slot == kMountSlot || slot == kMountGlSlot) && (mount_ < 0 || slot == current_)) return;
     // DF.EXE 0x44aa74 / DF2.EXE 0x4480b0 (the key handlers 0x42de85 /
     // 0x41bced call it for any slot 0-9): no test for an empty slot or for
     // the slot already held, so the same key again cancels a running
@@ -505,22 +688,66 @@ void Arsenal::select(int slot) {
     // +0x24 (0x44a290 / 0x44a4c0; DF2 0x447f40(0)). Others: nothing.
     const int type = mode().type;
     if (type == 1) { if (magRef() == 0) startReload(); }
-    else if ((type == 2 || type == 7 || type == 9 || type == 11) && !chambered() && sparesRef() > 0) {
+    else if ((type == 2 || type == 7 || type == 9 || type == 11 || type == 13) && !chambered() && sparesRef() > 0) {
         cooldown_ = mode().cooldown;
         sound(1);
     }
 }
 
-void Arsenal::cycle() {
+void Arsenal::cycle(int dir) {
+    if (current_ >= kMountSlot) return;   // GOG Df2.exe 0x44d3c0: nothing from slots 11 / 12
+    if (df2_) {
+        // 0x44d3c0: forward current + 1..9, then 0..current (with 10,
+        // DF2's binoculars, 0..10); back current - 1..0, then 9..current
+        // (none from 10).
+        if (dir >= 1) {
+            for (int s = current_ + 1; s < kSlots; ++s)
+                if (slots_[size_t(s)]) { select(s); return; }
+            for (int s = 0; s < current_ + 1; ++s)
+                if (slots_[size_t(s)]) { select(s); return; }
+        } else {
+            for (int s = current_ - 1; s >= 0; --s)
+                if (slots_[size_t(s)]) { select(s); return; }
+            if (current_ - 1 > 8) return;
+            for (int s = 9; s > current_ - 1; --s)
+                if (slots_[size_t(s)]) { select(s); return; }
+        }
+        return;
+    }
     for (int k = 1; k <= kSlots; ++k) {
         const int s = (current_ + k) % kSlots;
         if (slots_[size_t(s)]) { select(s); return; }
     }
 }
 
+// GOG Df.exe 0x484b70(-1): slots current-1 down to 0, then 9 down to the
+// current one; the first holding a weapon is selected (0x483dd0).
+void Arsenal::cycleBack() {
+    if (current_ >= kSlots) return;
+    for (int k = 1; k <= kSlots; ++k) {
+        const int s = (current_ - k + kSlots) % kSlots;
+        if (slots_[size_t(s)]) { select(s); return; }
+    }
+}
+
 void Arsenal::reload() {
-    if (mode().type != 1) return;   // only guns have magazines (0x44a860)
-    startReload();
+    // The reload command (GOG Df.exe 0xbe -> 0x483bd0, table 0x483ba4; CD
+    // 0x44a88c, table 0x44a860): guns (1) start the reload; launchers (2,
+    // 0x483580) and claymores, satchels and grenades (7, 9, 11, 0x4837d0)
+    // start the mode's cooldown with the load sound +0x24 unless one is
+    // running, whatever the chamber holds (its end then uses a spare, see
+    // tick()); other types nothing. DF2 the same (GOG Df2.exe 0x41f150
+    // command 0x5d -> 0x44f070 -> 0x44f0e0 / 0x44f000(0), CD 0x447fb0 ->
+    // 0x448020 / 0x447f40(0)), GOG with its video camera (kind 13) too.
+    const int type = mode().type;
+    if (type == 1) {
+        startReload();
+    } else if (type == 2 || type == 7 || type == 9 || type == 11 || (df2_ && type == 13)) {
+        if (cooldown_ <= 0) {
+            cooldown_ = mode().cooldown;
+            sound(1);
+        }
+    }
 }
 
 void Arsenal::sound(int field, int gunIndex) {
@@ -549,11 +776,13 @@ void Arsenal::toggleZoom() {
     zoomLevel_ = zoomLevel_ ? 0 : 1;
 }
 
-void Arsenal::fire(Player& player) {
+bool Arsenal::fire(Player& player) {
     const ModeDef& md = mode();
     const GunDef& g = gun();
     chamberedRef() = 0;
-    cooldown_ = md.cooldown;
+    // DF2's radio detonator (GOG Df2.exe 0x44d8a0 case 8 -> 0x407400, CD
+    // 0x446be0 -> 0x407000) starts no cooldown: every press detonates.
+    if (!(df2_ && md.type == 8)) cooldown_ = md.cooldown;
     std::uniform_real_distribution<float> unit(0.f, 1.f);
     std::uniform_real_distribution<float> turn(0.f, 2 * kPi);
     if (md.type == 7 || md.type == 9) {
@@ -565,23 +794,44 @@ void Arsenal::fire(Player& player) {
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
         const int item = md.type == 9 ? 4020 : slots_[size_t(current_)] == 37 ? 4014 : 4040;
+        // DF2 (GOG Df2.exe 0x44d590 / 0x44d6d0, CD 0x4468e0 / 0x446a20)
+        // sends the player's object z (+0x2c, the body origin) for the
+        // host's 0.25 m surface snap, and ends with 0x44f000(0) (CD
+        // 0x447f40(0)): the cooldown and the load sound +0x24.
         events_.push_back({WeaponEvent::Place, item,
-                           player.feet + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});
-        return;
+                           (df2_ ? player.origin() : player.feet) + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f,
+                           player.yaw});
+        if (df2_) sound(1);
+        return true;
+    }
+    if (md.type == 13) {
+        // GOG Df2.exe 0x44d460, the video camera: item 4138 1 m ahead at the
+        // player's heading (0x406d00; the host places it as a satchel,
+        // 0x459b80, and first removes the player's older one, 0x418190),
+        // the satchel's kick, and the cooldown with the load sound +0x24
+        // (0x44f000(0)).
+        const float r = turn(rng_);
+        kick_[0] -= 0x1000 / 65536.f;
+        kick_[1] = 0x400 / 65536.f * std::sin(r);
+        kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
+        events_.push_back({WeaponEvent::Place, 4138,
+                           player.origin() + Vec3{std::sin(player.yaw), 0, -std::cos(player.yaw)} * 1.f, player.yaw});   // z: +0x2c
+        sound(1);
+        return true;
     }
     if (md.type == 8) {
         // Radio detonator (0x42cef8): all the player's satchels and radio
         // claymores; no ammunition.
         chamberedRef() = 1;
         events_.push_back({WeaponEvent::Detonate});
-        return;
+        return true;
     }
     if (md.type == 10) {
         // Laser designator (0x44a6f8): "Fire Mission request, over." with
         // 0x1AE now; the request itself when the cooldown ends (0x44a764).
         chamberedRef() = 1;
         events_.push_back({WeaponEvent::LaserPressed});
-        return;
+        return true;
     }
     if (md.type == 6) {
         // Knife (0x44a598): the model pulls back 0x2000 and down 0x2000 with
@@ -593,7 +843,7 @@ void Arsenal::fire(Player& player) {
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = (0x400 * std::cos(r) - 0x2000) / 65536.f;
         stabs_.push_back(player.origin() + player.forward() * (0x8000 / 65536.f));
-        return;
+        return true;
     }
     if (md.type == 1) {
         // 0x449cbc: the gun model jumps 0x800 back and a random 0x400
@@ -602,7 +852,6 @@ void Arsenal::fire(Player& player) {
         kick_[0] = -0x800 / 65536.f;
         kick_[1] = 0x400 / 65536.f * std::sin(r);
         kick_[2] = 0x400 / 65536.f * std::cos(r);
-        flashTimer_ = kTick;   // the flash mesh shows for about one frame (0x4045f9)
     } else if (md.type == 2) {
         // 0x44a184: 0x4000 back, added to the kick still settling; the
         // +-0x400 circle and 0x4000 down (DF2.EXE the same).
@@ -621,7 +870,15 @@ void Arsenal::fire(Player& player) {
     // Spread (0x46af90): yaw and pitch each off by (A−1)·30·(0x8000 − rand)
     // binary angle, i.e. uniform ±(A−1)·0.0824°.
     float yaw = player.yaw, pitch = player.pitch;
-    if (g.accuracy > 1) {
+    if (g.accuracy > 1 && sharedRand_ && !df2_) {
+        // GOG Df.exe 0x45ea00: yaw and pitch each += (A - 1) * 0x1e *
+        // (0x8000 - 0x477860()) binary angle (OpenDF's yaw runs the other way).
+        const float unit = 2 * kPi / 4294967296.f * float((g.accuracy - 1) * 0x1e);
+        const int32_t ry = 0x8000 - int32_t(sharedRand_());
+        const int32_t rp = 0x8000 - int32_t(sharedRand_());
+        yaw -= unit * float(ry);
+        pitch += unit * float(rp);
+    } else if (g.accuracy > 1) {
         const float maxDev = 30.f * 0x8000 / 4294967296.f * 2 * kPi * float(g.accuracy - 1);
         std::uniform_real_distribution<float> u(-1.f, 1.f);
         yaw += u(rng_) * maxDev;
@@ -635,7 +892,12 @@ void Arsenal::fire(Player& player) {
     // at the table offset plus the kick, aligned with the view). Launchers
     // always fire from the model (0x44a120).
     Vec3 origin;
-    if (zoomed() && md.type == 1) {
+    if (df2Gog_ && md.type == 1 && mount_ >= 0 && player.mounted()) {
+        // GOG Df2.exe 0x44dd50 -> 0x416e90: a manned gun fires from its
+        // hardpoint 2 through the posed mesh 1 (the mounted eye) with the
+        // player's yaw and pitch.
+        origin = player.eye();
+    } else if (zoomed() && md.type == 1) {
         origin = player.eye() + Vec3{0, -0x200 / 65536.f, 0};
     } else {
         const Vec3 fwd = player.forward();
@@ -656,23 +918,42 @@ void Arsenal::fire(Player& player) {
         }
         origin = player.eye() + fwd * f - right * l + up * u;
     }
-    // Delta Force 2 (DF2.EXE 0x414ad0): a muzzle under the water fires only
-    // the knife (1) and the underwater pistol (0x27) and rifle (0x28/0x29);
-    // anything else plays its gun +0x2C sound (the same field 0x447070 plays
-    // as the dry click) at the shooter and fires nothing; the caller still
-    // uses the round, kicks and starts the cooldown (0x44718a..0x44725c).
+    // Delta Force 2 (CD DF2.EXE 0x414ad0, GOG Df2.exe 0x416a30): a muzzle
+    // under the water fires only the knife (1) and the underwater pistol
+    // (0x27) and rifle (0x28/0x29), and in the GOG build the delay grenade
+    // (0x31); anything else plays its gun +0x2C sound (the same field
+    // 0x447070 plays as the dry click) at the shooter and fires nothing
+    // (GOG: the player's burst counter +0x7c cleared, see command()); the
+    // caller still uses the round, kicks and starts the cooldown
+    // (0x44718a..0x44725c; a launcher or grenade with its load sound,
+    // GOG 0x44dbf0 / 0x44d940 -> 0x44f000(0)).
     if (underwaterRule && waterLevel != 0 && origin.y < waterLevel) {
         const int m = slots_[size_t(current_)];
-        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29) {
+        if (m != 1 && m != 0x27 && m != 0x28 && m != 0x29 && !(df2Gog_ && m == 0x31)) {
             if (g.sounds[3] > 0) sounds_.push_back({g.sounds[3], player.origin(), false});
-            return;
+            if (md.type == 2 || md.type == 11) sound(1);
+            return false;
         }
     }
     // Speed: velocity · 65536 / 62 per tick (0x44d450).
     Projectile p;
     p.pos = origin;
     p.vel = dir * (float(g.velocity) * 60.f / 62.f);
+    // GOG Df2.exe 0x451ae0 (not in CD 0x44a6a0): ammo 0x21 (the delay
+    // grenade's) fired from under the water leaves at 1/8 speed (each 16.16
+    // component >> 3).
+    if (df2_ && df2Gog_ && md.gun == 0x21 && waterLevel != 0 && origin.y < waterLevel) {
+        const auto eighth = [](float v) { return float(int32_t(int64_t(v * kTick * 65536.f)) >> 3) / (65536.f * kTick); };
+        p.vel = Vec3{eighth(p.vel.x), eighth(p.vel.y), eighth(p.vel.z)};
+    }
     p.lifetime = g.lifetime;
+    // GOG Df2.exe 0x451ae0 (the 0x10000000 branch, CD bit 0x1000): the
+    // delay grenade's fuse is the lifetime less (yaw >> 16) & 0x7f, the
+    // round's binary yaw (anticlockwise from east: pi/2 - OpenDF heading).
+    if (df2_ && (g.flags & 0x1000)) {
+        const uint32_t bits = uint32_t(int64_t(std::llround(double(kPi / 2 - yaw) / (2 * kPi) * 4294967296.0)));
+        p.lifetime -= int((bits >> 16) & 0x7f);
+    }
     p.power = g.power;
     p.falloff = g.falloff;
     p.flags = g.flags;
@@ -681,14 +962,31 @@ void Arsenal::fire(Player& player) {
     p.gun = md.gun;
     p.orient();
     if (df2_ && (g.flags & 0x400)) {
-        // DF2's shotgun (shot 0x13, 0x44aa10): 12 pellets, heading and pitch
-        // each uniform within ±0x4000000 (±5.625°) of the aim. (DF2 seeds its
-        // generator with the heading; OpenDF's own generator here.)
+        // DF2's shotgun (shot 0x13, CD 0x44aa10, GOG Df2.exe 0x451eb0): the
+        // shared generator seeded with the binary yaw >> 16 (0x41ea10; yaw
+        // anticlockwise from east, pi/2 - OpenDF heading), then 12 pellets,
+        // each two numbers r1, r2 (0x41ea20): yaw (r1 + 0x1f8000) * 0x800 +
+        // (yaw & 0xffff0000), pitch the same with r2 (up to ±0x4000000,
+        // ±5.625°, about the truncated aim); the generator is left so.
         std::uniform_real_distribution<float> u(-1.f, 1.f);
         const float half = 5.625f * kPi / 180.f;
+        const auto toBits = [](double a) { return uint32_t(int64_t(std::llround(a / (2 * kPi) * 4294967296.0))); };
+        const uint32_t yawBits = toBits(double(kPi / 2 - yaw)), pitchBits = toBits(double(pitch));   // after the spread (0x416a30)
+        const bool shared = df2Seed && df2Rand;
+        if (shared) df2Seed(yawBits >> 16);
         for (int i = 0; i < 12; ++i) {
             Projectile q = p;
-            const float y = player.yaw + u(rng_) * half, pt = player.pitch + u(rng_) * half;
+            float y, pt;
+            if (!shared) {
+                y = player.yaw + u(rng_) * half;
+                pt = player.pitch + u(rng_) * half;
+            } else {
+                const uint32_t r1 = df2Rand(), r2 = df2Rand();
+                const uint32_t py = (r1 + 0x1f8000u) * 0x800u + (yawBits & 0xffff0000u);
+                const uint32_t pp = (r2 + 0x1f8000u) * 0x800u + (pitchBits & 0xffff0000u);
+                y = kPi / 2 - float(double(py) / 4294967296.0 * 2 * kPi);
+                pt = float(double(int32_t(pp)) / 4294967296.0 * 2 * kPi);
+            }
             q.vel = Vec3{std::cos(pt) * std::sin(y), std::sin(pt), -std::cos(pt) * std::cos(y)} * (float(g.velocity) * 60.f / 62.f);
             q.id = ++projectileIds_;
             q.orient();
@@ -697,9 +995,20 @@ void Arsenal::fire(Player& player) {
     } else {
         bullets_.push_back(p);
     }
+    // The round marks the shooter as having fired. Delta Force (0x462f20,
+    // +0x6d |= 0x40) unless the round's gun (0x45ea00: a burst's first
+    // round the burst gun, the others the next one) has flag 0x80 (0x463119):
+    // the silenced guns. Delta Force 2 (GOG Df2.exe 0x451ae0, +0x64 0x4000)
+    // unless the ammo is suppressed (CD flag 0x80), sound or not.
+    if (df2_) {
+        if (!(g.flags & 0x80)) fireMark_ = true;
+    } else {
+        const int bg = burstGun(slots_[size_t(current_)]);
+        if (!(guns_[size_t(bg >= 0 ? bg + (followUp_ ? 1 : 0) : md.gun)].flags & 0x80)) fireMark_ = true;
+    }
     // The Barrett (mode 15) pushes the shooter back 0x800 (1/32 m) along
-    // -heading (0x447070).
-    if (df2_ && slots_[size_t(current_)] == 15) {
+    // -heading, in both games (GOG Df.exe 0x483044, CD 0x449cbc; DF2 0x447070).
+    if (slots_[size_t(current_)] == 15) {
         player.feet.x -= std::sin(player.yaw) * (0x800 / 65536.f);
         player.feet.z += std::cos(player.yaw) * (0x800 / 65536.f);
     }
@@ -713,8 +1022,17 @@ void Arsenal::fire(Player& player) {
     } else if (g.sounds[0] > 0) {
         sounds_.push_back({g.sounds[0], origin, true});
     }
-    // A launcher loads its next round at once, with the load sound (0x44a290).
-    if (md.type == 2) sound(1);
+    // Then the flash meshes (DF.EXE 0x44d635, DF2.EXE 0x44a9be): ammo +0x30
+    // bit 0x2 mesh 1, bit 0x4 mesh 2 (the M203's grenades: 0x5).
+    if (const int fm = ((g.flags & 0x2) ? 1 : 0) | ((g.flags & 0x4) ? 2 : 0)) {
+        flashMeshes_ = fm;
+        flashTimer_ = kTick;   // shows for about one frame
+    }
+    // A launcher loads its next round at once, with the load sound
+    // (0x44a290); DF2's grenades too (GOG Df2.exe 0x44d940 -> 0x44f000(0),
+    // CD 0x446be0 -> 0x447f40(0)).
+    if (md.type == 2 || (df2_ && md.type == 11)) sound(1);
+    return true;
 }
 
 void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
@@ -726,8 +1044,32 @@ void Arsenal::update(float dt, bool triggerDown, bool triggerPressed, Player& pl
         const float step = 0x80 / 65536.f * 60.f * dt;
         k = k > 0 ? std::max(0.f, k - step) : std::min(0.f, k + step);
     }
-    for (clock_ += dt; clock_ >= kTick; clock_ -= kTick) tick(triggerDown, player, messages);
+    // GOG Df2.exe 0x44c840: the camera is let go once destroyed (+0x64 & 4)
+    // or removed; its pitch is kept within +-0x20000000 (45 degrees).
+    if (camera_ >= 0) {
+        if (size_t(camera_) >= world.objects.size() || !world.objects[size_t(camera_)].alive()) camera_ = -1;
+        else camPitch_ = std::clamp(camPitch_, -kPi / 4, kPi / 4);
+    }
+    mount_ = df2Gog_ && world.playerMount >= 0 && size_t(world.playerMount) < world.objects.size() ? world.playerMount : -1;
+    {
+        const ItemDef* it = mount_ >= 0 ? world.objects[size_t(mount_)].item : nullptr;
+        mountGl_ = it && it->id == 100000 + 0xff0;
+    }
+    for (clock_ += dt; clock_ >= kTick; clock_ -= kTick) {
+        tick(triggerDown, player, messages);
+        mountTick();
+    }
     moveProjectiles(dt, world);
+}
+
+// GOG Df2.exe 0x44c840's end, after the weapon's tick: no gun manned (player
+// +0x8c) and slot 11 or 12 held -> 0x44f160(3); a gun manned and neither
+// held -> 0x44f160(12) for item 4080 (+0x20 == 0xff0), else 0x44f160(11).
+void Arsenal::mountTick() {
+    if (!df2Gog_) return;
+    const bool onGun = current_ == kMountSlot || current_ == kMountGlSlot;
+    if (mount_ < 0) { if (onGun) select(3); }
+    else if (!onGun) select(mountGl_ ? kMountGlSlot : kMountSlot);
 }
 
 // One 60 Hz tick of the weapon: DF.EXE 0x449830 / DF2.EXE 0x446050, the
@@ -748,7 +1090,7 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             // is held (DF1 not with the binoculars up, [0x93367c] 0x449ff1).
             if (magRef() > 0) {
                 chamberedRef() = 1;
-                --magRef();
+                if (!infiniteAmmo_) --magRef();   // GOG Df.exe 0x483240: not with [0x67dbc9] & 1
                 if (magRef() == 0) startReload();
                 else if (md.automatic() && triggerDown && !binoculars_) { fire(player); shot = true; }
             } else {
@@ -761,9 +1103,21 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             chamberedRef() = 1;
         } else if (md.type == 6) {
             chamberedRef() = 1;   // 0x44a6c4 / DF2 0x4462d0: the knife is ready again
-        } else if (sparesRef() > 0 && !chambered()) {
-            // 0x44a318 / 0x44a548 (DF2 0x4463c0): the next grenade, launcher
-            // round or charge from the spares (DF2's "clips").
+        } else if (!df2_) {
+            // GOG Df.exe 0x483b70 (table 0x483b44; CD 0x44a318 / 0x44a548):
+            // launchers (2, 0x483610) and claymores, satchels and grenades
+            // (7, 9, 11, 0x483860) take the next one from the spares without
+            // looking at the chamber, so a reload-key cooldown on a loaded
+            // weapon costs a spare; other types nothing.
+            if ((md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11) && sparesRef() > 0) {
+                chamberedRef() = 1;
+                if (!infiniteAmmo_) --sparesRef();   // 0x483654 / 0x4838a4: not with [0x67dbc9] & 1
+            }
+        } else if ((md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11 || md.type == 13) && sparesRef() > 0) {
+            // GOG Df2.exe 0x44cc20 (CD 0x446340): the next grenade, launcher
+            // round or charge (GOG: or camera, kind 13) from the clips, the
+            // chamber not looked at (as DF1), so a reload-key cooldown on a
+            // loaded one costs a clip; other kinds nothing.
             chamberedRef() = 1;
             --sparesRef();
         }
@@ -785,13 +1139,28 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     // checks the binoculars (0x44a947; DF2's are a mode of kind 12, which fires
     // nothing). A press during the cooldown is lost.
     auto command = [&](bool followUp) {
+        if (md.type == 13 && !shot) camView_ = true;   // GOG Df2.exe 0x44d8a0 case 0xd, before 0x44d460's tests
         if (shot || cooldown_ > 0 || binoculars_) return;
         if (md.type == 8 || md.type == 10) {
             fire(player);   // the detonator and the designator need no round
         } else if (md.type == 1 || md.type == 2 || md.type == 11) {
             if (chambered()) {
-                if (followUp) { --burstLeft_; followUp_ = true; fire(player); followUp_ = false; }
-                else { fire(player); if (md.burst) burstLeft_ = 2; }   // 0x46af90 / 0x414ad0: three rounds in all
+                // A burst's rounds are counted in the shot (0x46af90 /
+                // 0x414ad0 / GOG 0x416a30: three rounds in all), which DF2's
+                // under-water rule leaves before: no burst is started, a
+                // follow-up's count is kept (CD) or the counter cleared (GOG
+                // 0x416a30: the player's +0x7c = 0).
+                if (followUp) {
+                    followUp_ = true;
+                    const bool fired = fire(player);
+                    followUp_ = false;
+                    if (fired) --burstLeft_;
+                    else if (df2Gog_) burstLeft_ = 0;
+                } else if (fire(player) && md.burst) {
+                    burstLeft_ = 2;
+                } else if (df2Gog_) {
+                    burstLeft_ = 0;
+                }
             } else {
                 // Dry fire: the click +0x2C at the player and the burst
                 // counter cleared (guns 0x449dd8 / 0x4470ae, launchers
@@ -802,9 +1171,16 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 sound(3);
                 if (md.type == 1) cooldown_ = md.cooldown;
             }
-        } else if (md.type == 6 || md.type == 7 || md.type == 9) {
-            // Knife, claymore, satchel: nothing without a chambered one, no
-            // click (0x44ad8b / 0x44aecb; DF2 0x44691b / 0x446a5a).
+        } else if (md.type == 6) {
+            // Knife: no chamber test, only the cooldown (GOG Df.exe 0x483b10
+            // case 6, CD 0x44a7c8; GOG Df2.exe 0x44df60 lets kind 6 through
+            // with ammo 0 and 0x44d8a0 case 6 -> 0x44da80 tests only
+            // [0x79a2cc] < 1), so a switch during the cooldown (select
+            // clears it) cannot leave it dead.
+            fire(player);
+        } else if (md.type == 7 || md.type == 9 || md.type == 13) {
+            // Claymore, satchel: nothing without a chambered one, no click
+            // (0x44aecb; DF2 0x446a5a); GOG's video camera the same (0x44d460).
             if (chambered()) fire(player);
         }
         shot = true;
@@ -833,6 +1209,33 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
     ++debugTick_;
 }
 
+// The round's colour +0x88 (GOG Df.exe 0x462f20): with a shooter, green at
+// night (0x8000ff00), else by the shooter's side (1 0xb9a0a0ff, 2
+// 0xb9ffa0a0, other 0xffffffff); without one 0. M203 rounds (gun flag 1) and
+// the LAW (0x40, not a hand grenade 0x10) white. Shrapnel's 0x01010101 is
+// set by its spawner (0x463200).
+uint32_t Arsenal::df1TracerColour(const Projectile& b, const World& world) const {
+    uint32_t c = 0;
+    if (b.shooter != -1) {
+        const int side = b.shooter == -3 ? playerSide
+                         : b.shooter >= 0 && size_t(b.shooter) < world.objects.size() ? world.objects[size_t(b.shooter)].side
+                                                                                     : 0;
+        c = night ? 0x8000ff00u : side == 1 ? 0xb9a0a0ffu : side == 2 ? 0xb9ffa0a0u : 0xffffffffu;
+    }
+    if ((b.flags & 0x01) || (!(b.flags & 0x10) && (b.flags & 0x40))) c = 0xffffffffu;
+    return c;
+}
+
+// GOG Df.exe 0x465273..0x4652a9 (single player): with the Tracers option off
+// (attributes 0x1000) only shrapnel and the LAW (flags & 0x60) leave a line;
+// otherwise every round but hand grenades (0x10) and silenced guns (0x80).
+// (Multiplayer tests its own option bit, [0x67f548] & 1, the same way.)
+void Arsenal::tracer(const Projectile& b, Vec3 to) {
+    if (df2_) return;
+    if (tracersOff ? !(b.flags & 0x60) : (b.flags & 0x90)) return;
+    tracers_.push(b.pos, to, b.tracer);
+}
+
 void Arsenal::moveProjectiles(float dt, World& world) {
     // Projectiles (0x44f3e4), per 60 Hz tick: trace the segment pos..pos+v,
     // the nearest hit stops it (no penetration); otherwise move, gravity
@@ -841,19 +1244,94 @@ void Arsenal::moveProjectiles(float dt, World& world) {
     // The death move's direction: DF.EXE from the shooter; DF2.EXE 0x44c063
     // from the round's reversed velocity.
     auto hitFrom = [&](const Projectile& p, const RayHit& h) { return df2_ ? h.point - p.vel : p.from; };
+    // DF2 (GOG Df2.exe 0x4532f0): the round spends cost·(hp2 + 1) of its
+    // energy E = |v|²·M (16.16, v per tick); with E above that it goes on at
+    // speed × sqrt((E−T)/E), otherwise it stops (velocity 0).
+    auto spend = [&](Projectile& b, int64_t cost, int hp2) {
+        const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
+                      vz = int64_t(b.vel.z * kTick * 65536.f);
+        const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
+        const int64_t t = (cost * (int64_t(hp2 + 1) * 65536)) >> 16;
+        if (e > t && e > 0) {
+            b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
+            return true;
+        }
+        b.vel = {0, 0, 0};
+        return false;
+    };
+    // Delta Force's whiz-by (GOG Df.exe 0x464eb0 -> 0x464e00): sound 0x41 at
+    // the point of the whole step s..next nearest the listener, when it lies
+    // at 0 <= t < the step's length, and the step's start or its end e (the
+    // hit point 0x4000 back on a hit, else next) is within 40 m of the
+    // listener on x, and the start or the end on the other horizontal axis.
+    auto whiz = [&](Vec3 s, Vec3 next, Vec3 e) {
+        const auto near = [](float a, float b, float l) { return std::abs(a - l) < 40.f || std::abs(b - l) < 40.f; };
+        if (!near(s.x, e.x, listener_.x) || !near(s.z, e.z, listener_.z)) return;
+        const Vec3 d = next - s;
+        const float dd = dot(d, d);
+        if (dd <= 0) return;
+        const float t = dot(listener_ - s, d) / dd;
+        if (t >= 0 && t < 1) sounds_.push_back({0x41, s + d * t});
+    };
+    // Delta Force 2's whiz-by (GOG Df2.exe 0x4547a2 -> 0x453770, CD 0x44d146
+    // -> 0x44c200), on every pass, the one that hits included: when the
+    // pass's start s or its end e (the hit point backed off, the water's
+    // +0x6000, or the tick's end) is within 40 m of the listener on x and
+    // the start or the end on the other horizontal axis, sound 0x41 at the
+    // point of s..tickEnd nearest the listener if it lies at 0 <= t < the
+    // remaining length. GOG skips hand and delay grenades (0x10100000, CD
+    // 0x1010); the CD build has no flag test.
+    auto df2Whiz = [&](const Projectile& p, Vec3 s, Vec3 tickEnd, Vec3 e) {
+        if (df2Gog_ && (p.flags & 0x1010)) return;
+        if (!((std::abs(s.x - listener_.x) < 40.f || std::abs(e.x - listener_.x) < 40.f) &&
+              (std::abs(s.z - listener_.z) < 40.f || std::abs(e.z - listener_.z) < 40.f)))
+            return;
+        const Vec3 d = tickEnd - s;
+        const float dd = dot(d, d);
+        if (dd <= 0) return;
+        const float t = dot(listener_ - s, d) / dd;
+        if (t >= 0 && t < 1) sounds_.push_back({0x41, s + d * t});
+    };
     for (auto& b : bullets_) {
-        int passes = 0;   // DF2: up to 20 hits in a tick (penetration)
+        if (!df2_ && !b.tracerSet) { b.tracer = df1TracerColour(b, world); b.tracerSet = true; }
+        // DF2 penetration (GOG Df2.exe 0x453860): a tick is up to 20 passes
+        // along the segment traced at its start; a pass that goes on resumes
+        // 0x2000 past the hit toward the same end point, the person it went
+        // through skipped (local_50) in place of the shooter. After 20 passes
+        // the round is left where the tick began, its lifetime unchanged.
+        int passes = 0;
+        bool resume = false;
+        Vec3 resumeEnd{}, tickStart{};
+        // GOG Df2.exe 0x453860 (local_30): the drag band and curve take the
+        // speed at the start of the tick, before any penetration.
+        int64_t tickSpeed = 0;
+        // GOG Df2.exe 0x453860 (local_50): rounds with ammo flag 0x200000 (CD
+        // 0x20, the fragments) do not skip their shooter (the blast's owner).
+        const int skip = df2_ && (b.flags & 0x20) ? -1 : b.shooter;
+        int ignore = skip;
         for (b.tickClock += dt; b.tickClock >= kTick && b.age < b.lifetime; b.tickClock -= kTick) {
-            const Vec3 next = b.pos + b.vel * kTick;
+            if (!resume) {
+                passes = 0, ignore = skip, tickStart = b.pos;
+                tickSpeed = df2Speed(b);
+            }
+            const Vec3 next = resume ? resumeEnd : b.pos + b.vel * kTick;
+            const bool firstPass = !resume;
+            const Vec3 passStart = b.pos;
+            bool whizzed = false;   // DF2: this pass's whiz-by test is done
+            if (df2_ && !b.coloured) tracerColour(b, world);
+            resume = false;
             RayHit hit;
-            bool hitSomething = world.raycast(b.pos, next, hit, true, b.shooter, true, true);
+            bool hitSomething = world.raycast(b.pos, next, hit, true, ignore, true, true);
             // DF2 0x44c391: a round under the water slower than 0x4000 a tick
-            // (grenades excepted) is spent after this tick's trace.
+            // (grenades excepted) is spent after this tick's trace. GOG Df2.exe
+            // 0x453922: tested once a tick, before the passes; a spent round
+            // goes through nothing.
             bool spent = false;
-            if (const float w = world.terrain->waterLevel(); df2_ && w != 0 && b.pos.y < w && !(b.flags & 0x1000))
+            if (const float w = world.terrain->waterLevel(); df2_ && firstPass && w != 0 && b.pos.y < w && !(b.flags & 0x1000))
                 spent = std::sqrt(dot(b.vel, b.vel)) * kTick < 0x4000 / 65536.f;
             Vec3 stopAt{};
             bool stopped = false;   // DF2: the tick ends at the water
+            bool recorded = false;  // this pass's tracer is stored
             // Water (0x44f0e4, tested after terrain and objects; the nearest
             // wins): a start under or within 0x200 of the surface hits at
             // t = 0, otherwise where the segment crosses the level. The round
@@ -868,6 +1346,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 // and the tick ends 0x6000 further on (0.125 m past the surface),
                 // velocity kept (a delay grenade's zeroed). So rounds go on
                 // under the water and never come back out.
+                // GOG Df2.exe 0x453860 case 4: a delay grenade (0x10000000) backs
+                // off 0x2000 (every hit, 0x453b2c) and, when the point 0x6000 on
+                // is below the level, keeps 1/8 of its velocity (each 16.16
+                // component >> 3, decompile 0x45453d..) instead of stopping.
                 const Vec3 seg = next - b.pos;
                 const float len = std::sqrt(dot(seg, seg));
                 const bool down = b.pos.y > w && next.y < w, up = b.pos.y < w && next.y > w;
@@ -875,23 +1357,32 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     const Vec3 u = seg * (1.f / len);
                     const float d = down ? (b.pos.y - w) / std::abs(u.y) : -(w - b.pos.y) / u.y;
                     if (up || !hitSomething || d < hit.t * len) {
-                        const Vec3 at = b.pos + u * (d - 0x4000 / 65536.f);
+                        const float back = (df2Gog_ && (b.flags & 0x1000) ? 0x2000 : 0x4000) / 65536.f;
+                        const Vec3 at = b.pos + u * (d - back);
                         if (b.flags & 0x851) {
                             Impact im{at, -2, -1};
                             im.explosive = true;
                             im.armed = !(b.age <= 8 && !(b.flags & 0x50));
                             im.flags = b.flags;
+                            im.shooter = b.shooter;
                             impacts_.push_back(im);
+                            recordTracer(b, passStart, at, tickStart);
+                            df2Whiz(b, passStart, next, at);
                             b.age = b.lifetime;
                             break;
                         }
                         Impact im{at, -2, -1};
                         im.flags = b.flags;
+                        im.shooter = b.shooter;
                         impacts_.push_back(im);
                         stopAt = at + u * (0x6000 / 65536.f);
                         stopped = true;
                         hitSomething = false;
-                        if (b.flags & 0x1000) b.vel = {0, 0, 0};
+                        if ((b.flags & 0x1000) && !df2Gog_) b.vel = {0, 0, 0};
+                        else if ((b.flags & 0x1000) && stopAt.y < w) {
+                            const auto eighth = [](float v) { return float(int32_t(int64_t(v * kTick * 65536.f)) >> 3) / (65536.f * kTick); };
+                            b.vel = Vec3{eighth(b.vel.x), eighth(b.vel.y), eighth(b.vel.z)};
+                        }
                     }
                 }
             } else if (const float w = world.terrain->waterLevel(); w != 0) {
@@ -908,25 +1399,81 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             }
             // DF2's delay grenade (flag 0x1000, 0x44ae50): it never goes off on
             // impact; on an object's face it slides off, v -= n·(v·n)·1.07 then
-            // × 0.85; on anything else it stops there.
+            // × 0.85; on a person it stops, on the ground it keeps its
+            // velocity (below).
+            // GOG Df2.exe 0x453860 case 1/2 (LAB_00453fe7): with more than 10
+            // ticks left it goes on through an intact object's 0x10000000
+            // (glass) face, shattering it, with a +-40 m noise.
+            if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object >= 0 && !world.objects[size_t(hit.object)].person &&
+                (hit.material & 0x10000000) && !world.objects[size_t(hit.object)].wrecked && b.lifetime - b.age > 10) {
+                Impact im{hit.point, hit.object, -1};
+                im.glass = true;
+                im.mesh = hit.mesh;
+                im.noise = 40.f;
+                im.flags = b.flags;
+                im.shooter = b.shooter;
+                impacts_.push_back(im);
+                const Vec3 u = normalize(next - b.pos);
+                recordTracer(b, passStart, hit.point - u * (0x2000 / 65536.f), tickStart);
+                df2Whiz(b, passStart, next, hit.point - u * (0x2000 / 65536.f));
+                whizzed = true;
+                const Vec3 from = hit.point + u * (0x4000 / 65536.f);   // 0x2000 back + 0x6000
+                if (dot(next - from, u) > 0 && ++passes < 20) {
+                    b.pos = from;
+                    resume = true;
+                    resumeEnd = next;
+                    b.tickClock += kTick;
+                    continue;
+                }
+                hitSomething = false;
+            }
             if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object != -2) {
-                const Vec3 dir = normalize(b.vel);
-                b.pos = hit.point - dir * (0x4000 / 65536.f);
-                if (hit.object >= 0 && !world.objects[size_t(hit.object)].person) {
+                // GOG Df2.exe 0x453860: the pass ends at the hit backed off
+                // 0x2000 (0x453b2c; CD 0x4000, 0x44c2f0) and the tick runs on
+                // as for any round: the whiz-by test, gravity, drag and the
+                // age. With the fuse at ttl < 11 it goes off there (below). On
+                // the ground (case 0) nothing else: the velocity is kept. On a
+                // person (case 3) it stops. On an object (case 1/2) 0x453510
+                // first (hp2 < 0: stopped, ttl 0), then, the fuse still
+                // running, the bounce 0x452300: v -= n·(v·n)·1.07, then × 0.85.
+                const Vec3 u = normalize(next - passStart);
+                stopAt = hit.point - u * ((df2Gog_ ? 0x2000 : 0x4000) / 65536.f);
+                stopped = true;
+                recordTracer(b, passStart, stopAt, tickStart);
+                recorded = true;
+                const bool person = hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person);
+                const bool onObject = hit.object >= 0 && !person;
+                bool fuse = b.lifetime - b.age <= 10;   // ttl < 11, before this tick's decrement
+                const ItemDef* it = onObject ? world.objects[size_t(hit.object)].item : nullptr;
+                if (it && it->damageClass < 0) b.vel = {0, 0, 0}, fuse = true;
+                else if (onObject && !fuse) {
                     const float d = dot(b.vel, hit.normal);
                     b.vel = (b.vel - hit.normal * (d * float(0x111EB) / 65536.f)) * (float(0xD999) / 65536.f);
-                } else {
-                    b.vel = {0, 0, 0};
-                }
-                ++b.age;
-                if (b.lifetime - b.age <= 10) {
-                    Impact im{b.pos, -1, -1};
+                } else if (person) b.vel = {0, 0, 0};
+                if (fuse) {
+                    // On an object (0x453f7e) effect 0x14; on the ground or a
+                    // person (no blast there) the fuse's burst below.
+                    Impact im{stopAt, onObject ? hit.object : -1, -1};
                     im.explosive = true;
                     im.flags = b.flags;
+                    im.shooter = b.shooter;
+                    im.timer = !onObject && hit.object != -1;
                     impacts_.push_back(im);
+                    // GOG Df2.exe 0x453dd2 (ground) / 0x453fae (object): after
+                    // that blast ttl = 0 and the jump to 0x454687 finds the
+                    // 0x10000000 bit still set, so 0x4546a8 queues the fuse's
+                    // burst as well (kind 1, effect 0x14, sound 0x32).
+                    if (!im.timer) {
+                        Impact burst{stopAt, -1, -1};
+                        burst.explosive = true;
+                        burst.flags = b.flags;
+                        burst.shooter = b.shooter;
+                        burst.timer = true;
+                        impacts_.push_back(burst);
+                    }
                     b.age = b.lifetime;
                 }
-                continue;
+                hitSomething = false;
             }
             if (hitSomething) {
                 const Vec3 dir = normalize(b.vel);
@@ -938,7 +1485,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 im.law = b.flags & 0x40;
                 im.flags = b.flags;
                 im.material = hit.material;
+                im.shooter = b.shooter;
+                im.mesh = hit.mesh;
                 impacts_.push_back(im);
+                tracer(b, im.pos);   // to the hit point (0x465273)
                 if (std::getenv("OPENDF_DEBUGHITS")) {
                     std::fprintf(stderr, "hit obj %d part %d mesh %d material %08x at (%.2f %.2f %.2f) age %d\n", hit.object, hit.part,
                                  hit.mesh, hit.material, hit.point.x, hit.point.y, hit.point.z, b.age);
@@ -951,80 +1501,124 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                                          o.spheres[k][2], o.spheres[k][3]);
                     }
                 }
-                // Delta Force 2 (0x44bff0): people take the round's energy,
-                // max(1, E / 25), x8 on the head (part 2).
+                bool goesOn = false;   // DF2: the round passes through
                 if (df2_ && (hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person))) {
-                    int dmg = df2Damage(b);
-                    // Kevlar (0x44cd1f..0x44cd54 -> 0x44bdd0): on any person
-                    // whose AI block +0xB8 is 31 (Armor), parts 0 and 1, the
-                    // round first spends 75·(n + 1) of its energy (n: the
-                    // person's second hp value, item +0x98); nothing left, no
-                    // damage. Only player slots ever set +0xB8 (the loadout
-                    // copy 0x45429d, network players 0x408ee2 / 0x40a089 /
-                    // 0x40a623); a placed soldier's block is zeroed by
-                    // 0x404080 and the BMS loader 0x403590 never writes it, so
-                    // in single player only the player can wear Kevlar.
-                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1) {
-                        const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
-                                      vz = int64_t(b.vel.z * kTick * 65536.f);
-                        const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
-                        const int64_t left = e - int64_t(0x4b0000) * (playerArmourClass + 1);
-                        dmg = left <= 0 ? 0 : left <= 0x190000 ? 1 : int(left / 0x190000);
+                    // People (GOG Df2.exe 0x453860 case 3). The person's second
+                    // hp value: item +0x98 (the player's soldier item for the
+                    // player).
+                    const ItemDef* pit = hit.object >= 0 ? world.objects[size_t(hit.object)].item : nullptr;
+                    const int hp2 = hit.object == -3 ? playerArmourClass : pit ? pit->damageClass : 0;
+                    // Kevlar (0x4532f0(0x4b0000)): on any person whose AI block
+                    // +0xB8 is 31 (Armor), parts 0 and 1, the round first spends
+                    // 75·(hp2 + 1) of its energy; nothing left, no damage. Only
+                    // player slots ever set +0xB8 (the loadout copy 0x45429d,
+                    // network players 0x408ee2 / 0x40a089 / 0x40a623); a placed
+                    // soldier's block is zeroed by 0x404080 and the BMS loader
+                    // 0x403590 never writes it, so in single player only the
+                    // player can wear Kevlar.
+                    // A spent round (ttl 0 under the water, 0x453922) runs
+                    // Kevlar but neither damages nor goes on: 0x453860 calls
+                    // 0x453510 only while 0 < ttl (+0xfc, 0x454384), and goes
+                    // on past the person likewise (0x4544f1).
+                    bool alive = !spent;
+                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1 && !spend(b, 0x4b0000, hp2)) alive = false;
+                    // Damage (0x453510, while the round has energy left): for
+                    // hp2 < 0 none and the round stops; else the energy left,
+                    // max(1, E / 25), x8 on the head (part 2).
+                    if (alive && hp2 < 0) b.vel = {0, 0, 0}, alive = false;
+                    if (alive) {
+                        const int dmg = df2Damage(b) * (hit.part == 2 ? 8 : 1);
+                        if (hit.object == -3) playerHits_.push_back({dmg, hit.part, b.from});
+                        else
+                            world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
                     }
-                    dmg *= hit.part == 2 ? 8 : 1;
-                    if (hit.object == -3) { if (dmg > 0) playerHits_.push_back({dmg, hit.part, b.from}); }
-                    else
-                        world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
+                    // Over-penetration (0x4544b9): a regular round (not 0x1851:
+                    // GOG 0x8400000 / 0x110000 / 0x10000000) spends 100·(hp2 + 1)
+                    // on the flesh, makes a 5 m AI noise (0x4544d6) and, with
+                    // energy left, goes on past that person.
+                    if ((b.flags & 0x1851) == 0) {
+                        impacts_.back().noise = 5.f;
+                        if (alive && spend(b, 0x640000, hp2)) goesOn = true;
+                    }
                 } else if (df2_ && hit.object >= 0) {
                     // Objects (0x44bff0): an item whose second hp value is below
                     // 0 stops the round unharmed; buildings take nothing;
                     // vehicles only rockets (flag 0x40: 64) and shells and
-                    // impact grenades (0x11: 16); the rest max(1, E/25). (The
-                    // rounds' penetration by surface material is not in OpenDF:
-                    // a round stops at the first object.)
+                    // impact grenades (0x11: 16); the rest max(1, E/25).
                     const WorldObject& target = world.objects[size_t(hit.object)];
                     const ItemDef* it = target.item;
                     int dmg = 0;
                     if (it && it->damageClass >= 0 && it->type != "building") {
                         if (it->type == "vehicle") dmg = (b.flags & 0x40) ? 64 : (b.flags & 0x11) ? 16 : 0;
+                        // GOG Df2.exe 0x453510: rounds with ammo flag 0x1000000 (CD
+                        // 0x100; GOG ammo 0x17..0x1a) do nothing to `noak` items.
+                        else if ((b.flags & 0x100) && (it->attrib & 0x80)) dmg = 0;
                         else dmg = df2Damage(b);
                     }
                     if (dmg > 0) world.damage(hit.object, dmg, 0x7fff, world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
-                    // Penetration (0x44c2f0 -> 0x44bdd0): the face's material
-                    // costs 100 (Flesh item, checked first), metal 200, wood 90,
-                    // stone 500, bush 10, armour 2000, canvas 5, 0x10000000 10;
-                    // none: the round stops. T = cost · (hp2 + 1); with E =
-                    // |v|²·M above T the round goes on, its speed × sqrt((E−T)/E),
-                    // from 0.25 m before the hit + 0.375 m; up to 20 hits a tick.
-                    if (it && !b.explosive() && passes < 20) {
+                    // GOG Df2.exe 0x453510 (before the flag tests): an item
+                    // whose second hp value is below 0 ('hp n -1': dish, radar,
+                    // SA2, boxcars, trucks, ...) stops every round dead.
+                    if (it && it->damageClass < 0) b.vel = {0, 0, 0};
+                    // GOG Df2.exe 0x453860 (0x453fe7, reached before the blast for
+                    // the LAW and impact rounds, armed or not): an intact
+                    // object's 0x10000000 (glass) face shatters (0x414a90) with a
+                    // +-40 m noise and the round flies on, no blast.
+                    if ((b.flags & 0x851) && (hit.material & 0x10000000) && !target.wrecked) {
+                        Impact& g = impacts_.back();
+                        g.explosive = false;
+                        g.glass = true;
+                        g.noise = 40.f;
+                        goesOn = !(it && it->damageClass < 0);
+                    }
+                    // Penetration (0x44c2f0 -> 0x44bdd0; GOG Df2.exe 0x453860
+                    // case 1/2 -> 0x4532f0): a regular round (not flags 0x1851:
+                    // GOG 0x8400000 / 0x110000 / 0x10000000) on an object with
+                    // an item; the face's material costs 100 (Flesh item,
+                    // checked first), metal 200, wood 90, stone 500, bush 10,
+                    // armour 2000, canvas 5, 0x10000000 10 while the object is
+                    // intact. T = cost · (hp2 + 1); with E = |v|²·M above T the
+                    // round goes on, its speed × sqrt((E−T)/E); otherwise it
+                    // stops. A face with none of these (wire fences: WIREFENC /
+                    // WIREGATE 'Afencing', FENCEHI 'Abrbwr', 0x8003), or 0x10000000
+                    // on a husk, costs nothing (GOG 0x4542ee: effect 5 only) and
+                    // the round goes on at full speed. Each branch makes its
+                    // own AI noise (0x414660 radius): flesh and wood 5 m
+                    // (0x50000, shared tail 0x454083), metal, stone and armour
+                    // 15 m (0xf0000), bush and canvas 3 m (0x30000), an intact
+                    // 0x10000000 face 20 m (0x140000), none or a husk's
+                    // 0x10000000 face 5 m (0x4542f2). The round goes on from
+                    // 0.25 m before the hit + 0.375 m; up to 20 hits a tick.
+                    if (it && (b.flags & 0x1851) == 0) {
                         int cost = 0;
                         const uint32_t m = hit.material;
+                        float noise = 5.f;
                         if (it->attrib & 0x40) cost = 100;
-                        else if (m & 0x10000) cost = 200;
+                        else if (m & 0x10000) cost = 200, noise = 15.f;
                         else if (m & 0x20000) cost = 90;
-                        else if (m & 0x40000) cost = 500;
-                        else if (m & 0x80000) cost = 10;
-                        else if (m & 0x04000000) cost = 2000;
-                        else if (m & 0x08000000) cost = 5;
-                        else if (m & 0x10000000) cost = 10;
-                        if (cost > 0) {
-                            const int64_t vx = int64_t(b.vel.x * kTick * 65536.f), vy = int64_t(b.vel.y * kTick * 65536.f),
-                                          vz = int64_t(b.vel.z * kTick * 65536.f);
-                            const int64_t e = (((vx * vx + vy * vy + vz * vz) >> 16) * guns_[size_t(std::max(0, b.gun))].mass) >> 16;
-                            const int64_t t = int64_t(cost) * 65536 * (it->damageClass + 1);
-                            if (e > t && e > 0) {
-                                b.vel = b.vel * float(std::sqrt(double(e - t) / double(e)));
-                                b.pos = hit.point + normalize(b.vel) * (0x2000 / 65536.f);
-                                ++passes;
-                                b.tickClock += kTick;   // the same tick goes on from here
-                                continue;
-                            }
-                        }
+                        else if (m & 0x40000) cost = 500, noise = 15.f;
+                        else if (m & 0x80000) cost = 10, noise = 3.f;
+                        else if (m & 0x04000000) cost = 2000, noise = 15.f;
+                        else if (m & 0x08000000) cost = 5, noise = 3.f;
+                        else if ((m & 0x10000000) && !target.wrecked) cost = 10, noise = 20.f, impacts_.back().glass = true;
+                        impacts_.back().noise = noise;
+                        // hp2 < 0: stopped above, whatever the face.
+                        goesOn = it->damageClass >= 0 && (cost == 0 || spend(b, int64_t(cost) * 65536, it->damageClass));
                     }
-                } else
+                } else {
                 // Direct hit (0x44f184): 1 << (power >> (age / falloff)), x4
                 // on the head (part 2); explosives too, before their blast.
-                if (hit.object == -3) {
+                // GOG Df.exe 0x464c50, a living person: with attributes 0x4000
+                // a same-side shooter's round does nothing (the player is
+                // a person of side playerSide). (Its exception for a target
+                // with flags & 0x80 is not modelled.)
+                const int shooterSide = b.shooter == -3 ? playerSide
+                                        : b.shooter >= 0 && size_t(b.shooter) < world.objects.size() ? world.objects[size_t(b.shooter)].side
+                                                                                                      : -1;
+                const bool targetPerson = hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person);
+                const int targetSide = hit.object == -3 ? playerSide : hit.object >= 0 ? world.objects[size_t(hit.object)].side : -1;
+                if (targetPerson && sameSideSafe && b.shooter != hit.object && shooterSide != -1 && shooterSide == targetSide) {
+                } else if (hit.object == -3) {
                     // The player (0x44f184 / 0x44f2b2): armour class 0.
                     playerHits_.push_back({(1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), hit.part, b.from});
                 } else if (hit.object >= 0 && (b.flags & 0x100) && world.objects[size_t(hit.object)].item &&
@@ -1032,6 +1626,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // 0x44f184: rounds with flag 0x100 do nothing to `noak` items.
                 } else if (hit.object >= 0) {
                     WorldObject& target = world.objects[size_t(hit.object)];
+                    if (target.person && !target.dead) roundHits_.push_back(hit.object);   // 0x464c50: the alert first
                     const int before = target.hp;
                     world.damage(hit.object, (1 << (b.power >> (b.age / b.falloff))) * (hit.part == 2 ? 4 : 1), b.power,
                                  world.deathMove(hit.object, 1, std::max(0, hit.part), hitFrom(b, hit)), b.shooter);
@@ -1044,20 +1639,63 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         if (hit.mesh != 6) ++target.tailHits;   // +0xD4 (mesh 6: +0xD8, never read)
                     }
                 }
-                b.age = b.lifetime;
-                break;
+                }
+                // The pass's tracer (0x454797) ends 0x4000 before the hit;
+                // once a pass (0x452290), so the tick end below does not
+                // record it again.
+                recordTracer(b, passStart, hit.point - normalize(next - passStart) * (0x4000 / 65536.f), tickStart);
+                recorded = true;
+                if (df2_) {
+                    df2Whiz(b, passStart, next, hit.point - normalize(next - passStart) * (0x4000 / 65536.f));
+                    whizzed = true;
+                }
+                if (goesOn && !spent) {
+                    // GOG 0x454823..0x454894: the next pass starts 0x2000 past the hit
+                    // (0x4000 back + 0x6000); when that is at or past the end
+                    // of the tick's segment, the tick ends at the hit point
+                    // 0x4000 back.
+                    const Vec3 u = normalize(next - b.pos);
+                    const Vec3 from = hit.point + u * (0x2000 / 65536.f);
+                    if (dot(next - from, u) > 0) {
+                        if (++passes >= 20) {
+                            b.pos = tickStart;   // the pass loop runs out (0x45488b)
+                            continue;
+                        }
+                        if (hit.object == -3 || (hit.object >= 0 && world.objects[size_t(hit.object)].person)) ignore = hit.object;
+                        b.pos = from;
+                        resume = true;
+                        resumeEnd = next;
+                        b.tickClock += kTick;   // the same tick goes on from here
+                        continue;
+                    }
+                    stopAt = hit.point - u * (0x4000 / 65536.f);
+                    stopped = true;
+                } else {
+                    // Delta Force (GOG Df.exe 0x464eb0): a hitting step goes on
+                    // to the whiz-by test too (LAB_00465273), its end the hit
+                    // point 0x4000 back.
+                    if (!df2_) whiz(b.pos, next, hit.point - dir * 0.25f);
+                    b.age = b.lifetime;
+                    break;
+                }
             }
-            // Whiz-by (0x44f330): the point of this step nearest the listener,
-            // if it lies inside the step and the round is within 40 m of the
-            // listener on both horizontal axes.
-            {
-                const Vec3 d = next - b.pos;
-                const float dd = dot(d, d);
-                const float t = dd > 0 ? dot(listener_ - b.pos, d) / dd : -1;
-                if (t > 0 && t < 1 && std::abs(b.pos.x - listener_.x) < 40.f && std::abs(b.pos.z - listener_.z) < 40.f)
-                    sounds_.push_back({0x41, b.pos + d * t});
-            }
+            if (df2_) {
+                if (!whizzed) df2Whiz(b, passStart, next, stopped ? stopAt : next);
+            } else whiz(b.pos, next, next);
+            if (!stopped) tracer(b, next);   // the whole step (0x465273)
             b.pos = stopped ? stopAt : next;
+            if (!recorded) recordTracer(b, passStart, b.pos, tickStart);
+            // The delay grenade explodes (type 1) once its ttl is below 11
+            // (GOG Df2.exe 0x4546a8, every pass, before the tick's decrement).
+            if (df2_ && (b.flags & 0x1000) && b.lifetime - b.age <= 10 && b.age < b.lifetime) {
+                Impact im{b.pos, -1, -1};
+                im.explosive = true;
+                im.flags = b.flags;
+                im.shooter = b.shooter;
+                im.timer = true;   // GOG Df2.exe 0x4546a8: kind 1, effect 0x14, no smoke
+                impacts_.push_back(im);
+                b.age = b.lifetime;
+            }
             if (df2_) {
                 // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
                 // for a delay grenade under the water), then drag toward the
@@ -1065,18 +1703,10 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                 const float w = world.terrain->waterLevel();
                 const bool under = w != 0 && b.pos.y <= w;
                 if (!(b.flags & 0x40)) b.vel.y -= ((b.flags & 0x1000) && under ? 0x14 : 0xa7) * 60.f / 65536.f * 60.f * kTick;
-                df2Drag(b, w);
+                df2Drag(b, w, tickSpeed);
                 if (spent) b.age = b.lifetime;
             } else if (!(b.flags & 0x40)) b.vel.y -= 0xb2 * 3600.f / 65536.f * kTick;
             ++b.age;
-            // The delay grenade explodes (type 1) once its lifetime is 10 or less.
-            if (df2_ && (b.flags & 0x1000) && b.lifetime - b.age <= 10 && b.age < b.lifetime) {
-                Impact im{b.pos, -1, -1};
-                im.explosive = true;
-                im.flags = b.flags;
-                impacts_.push_back(im);
-                b.age = b.lifetime;
-            }
             if (b.pos.y < -1.f) b.age = b.lifetime;
         }
     }

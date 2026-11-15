@@ -13,9 +13,13 @@ namespace df {
 struct Model3diTexture {
     std::string name;
     int width = 0, height = 0;
-    uint8_t sequence = 0;            // what materials refer to
+    int sequence = 0;                // what materials refer to (v8: signed 16-bit)
     bool indexZeroTransparent = false;
     bool alpha16 = false;            // v8: 16-bit texels (index, alpha)
+    // Header +0x16 flag 0x10 (v5; v8 +0x22): the palette is left out of the
+    // TRN grade (GOG Df.exe 0x4867a0 and GOG Df2.exe 0x4454e0 skip textures
+    // flagged 0x10 or 0x80).
+    bool noGrade = false;
     std::vector<uint8_t> rgba;       // width*height*4, decoded
     std::vector<uint8_t> indices;    // the raw 8-bit texels (used as alpha by 0x8000 materials)
 };
@@ -26,6 +30,10 @@ struct ModelVertex {
     float px, py, pz;
     float nx, ny, nz;
     float u, v;
+    // DF2 skinned meshes (mesh flag byte bit 0): the mesh whose matrix
+    // places this vertex (vertex word +6, DF2.EXE 0x44b140); -1 = the
+    // face's own mesh.
+    float bone = -1;
 };
 
 // Material flags (DF.EXE renderer, 0x46f9e3): 0x0001 textured, 0x0002
@@ -47,7 +55,21 @@ struct ModelBatch {
     float fullbright = -1;           // +0x3c when flag 0x0020, else -1
     uint16_t impact = 0;             // +0x12: surface for impact effects (metal, wood, stone, ...)
     bool doubleSided = false;
+    int slot = 0;                    // the (front) material's signed +0x1F: animated frame slot, or 0x7F
     std::vector<ModelVertex> vertices;   // triangle list
+};
+
+// One material record of a LOD as drawn (Delta Force's animated materials
+// draw with the frame's whole record, GOG Df.exe 0x46b1d0).
+struct ModelMaterial {
+    int texture = -1;
+    float color[3] = {0.7f, 0.7f, 0.7f};
+    int blend = 0;
+    uint32_t flags = 0;
+    float specular = 0;
+    int specularPower = 0;
+    float fullbright = -1;
+    bool hidden = false;             // flag 0x0800 or no span
 };
 
 // Axis-aligned box in model space (already in OpenDF axes, metres).
@@ -71,7 +93,12 @@ struct CollisionBox {
     // Volume type (+0x00): 1 box, 3 upright cylinder (centre +0x08..+0x10,
     // radius +0x18); others are ignored by DF.EXE's mover test (0x437a28).
     int type = 1;
-    float cx = 0, cz = 0, r = 0;   // cylinder centre (OpenDF x, z) and radius
+    float cx = 0, cz = 0, r = 0;   // centre +0x08 / +0x0C (OpenDF x, z) and the cylinder's radius
+    float cy = 0;                  // centre +0x10 (height, OpenDF y)
+    // v5: the mesh that owns the volume (each mesh the next +0x1C volumes,
+    // by running total); -1 none (DF.EXE's mover test 0x4889c0 then never
+    // reaches it).
+    int mesh = -1;
 };
 
 // Delta Force 2 (v8) collision volume as DF2.EXE's push-out 0x440f80 reads
@@ -88,8 +115,15 @@ struct MeshVolumes { float box[6] = {0, 0, 0, 0, 0, 0}; std::vector<PlaneVolume>
 struct ModelLod {
     std::vector<ModelBatch> batches;
     int frames = 1, ticksPerFrame = 1;      // LOD header +0x40 / +0x58 (effects)
+    // LOD header +0x5a (the high word of +0x58) is not 0: the gnrc draw
+    // (GOG Df.exe 0x481060) animates the LOD's 0x4000 materials.
+    bool animated = false;
     std::vector<int> materialTextures;      // per material: texture index (-1 none), for animated materials
+    std::vector<ModelMaterial> materials;   // per material record
     std::vector<CollisionBox> collision;   // from the file's collision volumes (v5)
+    // v5: per mesh its box (+0x40..+0x54), OpenDF axes: min x, y, z, max x,
+    // y, z; GOG Df.exe's mover test 0x4889c0 tests it before the volumes.
+    std::vector<std::array<float, 6>> meshBoxes;
     std::vector<MeshVolumes> meshVolumes;  // v8 LOD 0: per mesh, the plane volumes (DF2.EXE 0x440f80)
     std::vector<std::vector<HitFace>> hitMeshes;   // LOD 0 only: every face per mesh (hidden ones too)
     // Hardpoints (LOD header +0xA0, 12 bytes: i32 x, y, z in 16.16 m),
@@ -122,9 +156,10 @@ struct Model3di {
     float radius = 1;                // header +0x60, metres
     float flatRadius = 0;            // header +0x64: LOD 0's largest horizontal vertex radius (blasts, collision reach)
     float height = 0;                // LOD 0 header +0x24: zmax - zmin (model +0x68 at load, 0x43f383)
-    // LOD 0 header +0x28..+0x34: xmin, xmax, ymin, ymax in metres, file axes
-    // (x forward, y left); DF2's bld2 footprint (0x402979).
-    float box[4] = {0, 0, 0, 0};
+    // LOD 0 header +0x28..+0x3c: xmin, xmax, ymin, ymax, zmin, zmax in
+    // metres, file axes (x forward, y left, z up); DF2's bld2 footprint
+    // (0x402979) and the blast's "inside" test (GOG Df2.exe 0x454fab).
+    float box[6] = {0, 0, 0, 0, 0, 0};
     std::vector<Model3diTexture> textures;
     std::vector<ModelLod> lods;
 };

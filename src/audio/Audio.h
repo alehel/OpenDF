@@ -57,14 +57,35 @@ public:
     // for it. As DF.EXE's mixer (0x4a99b0): 16 voices, 10-15 kept for
     // looping sounds (group 1); a one-shot (group 0) takes a free voice, or
     // else the first one-shot voice quieter than itself (`volume` 0..255),
-    // or is dropped. `pitch` scales the clip's own rate.
+    // or is dropped (Delta Force: fixed slots, see play()). `pitch` scales
+    // the clip's own rate. Delta Force 2
+    // (setDfGame(2)) allocates as GOG Df2.exe 0x4aafc0 over 16 fixed slots:
+    // a one-shot takes the lowest slot neither reserved nor playing nor
+    // pending, else the lowest neither reserved nor pending whose playing
+    // voice is quieter (it becomes that slot's pending voice, promoted at the
+    // next mix), else is dropped; a loop takes the lowest free slot of 10-15.
     int play(const SoundClip* clip, float left, float right, float pitch = 1, int volume = 255, bool loop = false,
              int group = 0);
+    // Delta Force: voices 10-15 kept for the loops (GOG Df.exe 0x43e4a0
+    // at a mission's sound-bank load, 0x4950a0(i, 1)) until the mission
+    // ends (0x43e6d0); outside, a one-shot may take any of the 16.
+    void setLoopVoicesReserved(bool on) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        loopsReserved_ = on;
+    }
     void setGains(int voice, float left, float right);
     void setPitch(int voice, float pitch);
     void stop(int voice);
     bool playing(int voice) const;
+    // stopAll() also clears the reservations (GOG Df2.exe 0x47c160 ->
+    // 0x498351 zeroes the slot table).
     void stopAll();
+    // DF2: slot `slot` (0-15) kept from one-shots (0x47c320 -> 0x4aabc2;
+    // slots 10-15 during a mission, 0x4679c0 / 0x467bc0).
+    void setReserved(int slot, bool on) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (slot >= 0 && slot < 16) reserved_[size_t(slot)] = on;
+    }
     void setMasterVolume(float v) { master_ = v; }
     // DF.EXE's integer mixer (mixer.md; 0x4992dc, 0x497fda): each voice's
     // gain is DF's integer (pan · vol · 255) >> 16, rebuilt from the float
@@ -134,7 +155,8 @@ private:
         int gL = 0, gR = 0;
         int32_t stepCur = 0, stepTarget = 0, stepDelta = 0;
         bool updated = false;
-        bool started = false;   // DF2: mixed at least once (else still pending)
+        bool started = false;   // mixed at least once (else still pending)
+        int slot = -1;          // DF1 / DF2: the voice slot 0..15
     };
     void dfMixBlock(int frames);   // DF2.EXE 0x48e028 over one call's frames
     void dfVoices(int32_t* acc, int from, int frames);
@@ -146,7 +168,10 @@ private:
     std::map<std::string, std::unique_ptr<SoundClip>> clips_;
     SDL_AudioDeviceID device_ = 0;
     int nextId_ = 1;
-    static constexpr int kOneShotVoices = 10, kLoopVoices = 6;
+    static constexpr int kOneShotVoices = 10, kLoopVoices = 6, kVoices = 16;
+    bool loopsReserved_ = false;
+    std::array<bool, 16> reserved_{};   // DF2: slot +0x3d
+    uint32_t loopSeed_ = 0xd1cface0;    // DF2: the loops' start offsets ([0x498348])
     float master_ = 1;
     std::vector<float> scratch_;
     float feedback_[2] = {0, 0};   // the last output sample per channel (0x497fda)

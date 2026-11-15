@@ -11,7 +11,9 @@ namespace df {
 
 DfConfig::DfConfig() {
     // Write order 0x40dc88; defaults 0x40dab8 (renderer 1 and max_res 4 are
-    // the values for an OS version above 5, [0x4e552c]).
+    // the values for an OS version above 5, [0x4e552c]; internet_address
+    // "0.0.0.0", the rest of the text keys empty). The GOG Df.exe has the
+    // same keys and defaults (0x407120, 0x407360) except df1Gog()'s.
     struct D { const char* section; const char* key; int value; bool text; };
     static const D kDefaults[] = {
         {"MUSIC", "cd_play", 0, false}, {"MUSIC", "menu_track", 2, false}, {"MUSIC", "game_track", 2, false},
@@ -36,10 +38,25 @@ DfConfig::DfConfig() {
         {"MAP", "map_infrared", 1, false}, {"MAP", "map_iff", 1, false}, {"MAP", "map_AWAC", 1, false},
         {"SYSTEM", "preempt_pff", 0, false}, {"SYSTEM", "whichbrowser", 0, false},
     };
-    for (const D& d : kDefaults) entries_.push_back({d.section, d.key, d.text, d.value, {}});
+    for (const D& d : kDefaults) entries_.push_back({d.section, d.key, d.text, d.value, {}, {}, {}});
+    find("internet_address")->str = "0.0.0.0";
 }
 
-DfConfig DfConfig::df2() {
+DfConfig DfConfig::df1Gog() {
+    // GOG Df.exe 0x407120: attributes 2 ([0x4cee8c]); the writer 0x407360
+    // adds four keys after whichbrowser (all read back by 0x406640):
+    // country (0x4c8b78, the only line with tabs before its '='),
+    // red_password, blue_password (empty) and mp_verbose 1 ([0x4cf2e0]).
+    DfConfig c;
+    c.set("attributes", 2);
+    c.entries_.push_back({"SYSTEM", "country", true, 0, {}, "country\t\t\t", {}});
+    c.entries_.push_back({"SYSTEM", "red_password", true, 0, {}, {}, {}});
+    c.entries_.push_back({"SYSTEM", "blue_password", true, 0, {}, {}, {}});
+    c.entries_.push_back({"SYSTEM", "mp_verbose", false, 1, {}, {}, {}});
+    return c;
+}
+
+DfConfig DfConfig::df2(bool gog) {
     DfConfig c;
     c.entries_.clear();
     struct D { const char* section; const char* key; int value; const char* str; };
@@ -68,7 +85,18 @@ DfConfig DfConfig::df2() {
         {"SYSTEM", "red_password", 0, ""}, {"SYSTEM", "blue_password", 0, ""}, {"SYSTEM", "yellow_password", 0, ""},
         {"SYSTEM", "violet_password", 0, ""}, {"SYSTEM", "mp_verbose", 1, nullptr},
     };
-    for (const D& d : kDf2) c.entries_.push_back({d.section, d.key, d.str != nullptr, d.value, d.str ? d.str : ""});
+    for (const D& d : kDf2) {
+        // GOG Df2.exe's writer 0x43bd10 (CD 0x436cd0) adds mp_gameport
+        // [0x4f29e8], mp_vonport [0x4f29ec] and mp_usealtnwport [0x4f29f0]
+        // (all 0, 0x43bae0) before login_password, and "flagreturntime"
+        // [0x4f2b18] (default 0xd2) after contest. Its parser 0x43b110 reads
+        // that value back only as "mp_flagreturntime" (0x4c7634).
+        if (gog && std::string(d.key) == "login_password")
+            for (const char* k : {"mp_gameport", "mp_vonport", "mp_usealtnwport"}) c.entries_.push_back({"MULTIPLAYER", k, false, 0, {}, {}, {}});
+        c.entries_.push_back({d.section, d.key, d.str != nullptr, d.value, d.str ? d.str : "", {}, {}});
+        if (gog && std::string(d.key) == "contest")
+            c.entries_.push_back({"MULTIPLAYER", "flagreturntime", false, 0xd2, {}, {}, "mp_flagreturntime"});
+    }
     return c;
 }
 
@@ -76,6 +104,13 @@ DfConfig::Entry* DfConfig::find(const std::string& key) {
     const std::string k = toUpper(key);
     for (Entry& e : entries_)
         if (toUpper(e.key) == k) return &e;
+    return nullptr;
+}
+
+DfConfig::Entry* DfConfig::findLoaded(const std::string& key) {
+    const std::string k = toUpper(key);
+    for (Entry& e : entries_)
+        if (toUpper(e.loadKey.empty() ? e.key : e.loadKey) == k) return &e;
     return nullptr;
 }
 
@@ -97,24 +132,40 @@ bool DfConfig::load(const std::filesystem::path& file) {
     if (!f) return false;
     std::string line;
     while (std::getline(f, line)) {
-        // Tokens: key, '=', value (strings in quotes); '/' starts a comment line.
-        size_t a = line.find_first_not_of(" \t\r");
-        if (a == std::string::npos || line[a] == '/') continue;
-        const size_t eq = line.find('=', a);
-        if (eq == std::string::npos) continue;
-        std::string key = line.substr(a, eq - a);
-        key.erase(key.find_last_not_of(" \t") + 1);
-        std::string value = line.substr(eq + 1);
-        value.erase(0, value.find_first_not_of(" \t"));
-        value.erase(value.find_last_not_of(" \t\r") + 1);
-        Entry* e = find(key);
-        if (!e) continue;   // unknown keys are ignored, as 0x40d1e4 does
-        if (e->text) {
-            if (value.size() >= 2 && value.front() == '"' && value.back() == '"') value = value.substr(1, value.size() - 2);
-            e->str = value;
-        } else {
-            e->value = std::atoi(value.c_str());   // atoi (0x490eaa)
+        // GOG Df.exe 0x4568e0: a line (up to 700 bytes, cut at the newline;
+        // text mode drops a CR) is split by 0x4565f0 on ' ', ',' and '\t',
+        // a double quote grouping up to the next one (the quotes removed,
+        // so "" makes no token), at most 30 tokens. No token, or a first
+        // token starting with '/', skips the line; 0x406640 then compares
+        // token 0 with the keys (case-insensitive, 0x49be20) and takes token
+        // 2 as the value, whatever token 1 is. Delta Force 2 reads df2.cfg
+        // the same way (GOG Df2.exe 0x46adb0 / 0x46ae90).
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::vector<std::string> tok;
+        bool quoted = false, start = true;
+        for (char c : line) {
+            if (!quoted && (c == ' ' || c == ',' || c == '\t')) { start = true; continue; }
+            if (c == '"') {
+                if (quoted) { quoted = false; start = true; }
+                else { quoted = true; start = true; }
+                continue;
+            }
+            if (start) {
+                if (tok.size() >= 30) break;
+                tok.emplace_back();
+            }
+            start = false;
+            tok.back() += c;
         }
+        if (tok.empty() || tok[0][0] == '/') continue;
+        // INFERRED: with fewer than three tokens (key = "") DF.EXE reads a
+        // stale token-2 pointer into the line, an empty string in practice;
+        // OpenDF ignores the line.
+        if (tok.size() < 3) continue;
+        Entry* e = findLoaded(tok[0]);
+        if (!e) continue;   // unknown keys are ignored, as 0x406640 does
+        if (e->text) e->str = tok[2];
+        else e->value = std::atoi(tok[2].c_str());   // atoi (0x49afa0)
     }
     return true;
 }
@@ -130,7 +181,8 @@ bool DfConfig::save(const std::filesystem::path& file) const {
             section = e.section;
         }
         char line[160];
-        if (e.text) std::snprintf(line, sizeof line, "%-16s = \"%s\"\n", e.key.c_str(), e.str.c_str());
+        if (!e.label.empty()) std::snprintf(line, sizeof line, "%s = \"%s\"\n", e.label.c_str(), e.str.c_str());
+        else if (e.text) std::snprintf(line, sizeof line, "%-16s = \"%s\"\n", e.key.c_str(), e.str.c_str());
         else std::snprintf(line, sizeof line, "%-16s = %i\n", e.key.c_str(), e.value);
         f << line;
     }

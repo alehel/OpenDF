@@ -40,6 +40,8 @@ const struct { int number; const char* name; float visibility, aim; } kMoves[] =
     {94, "Running6_S_2HW", 4.f, 4.f}, {95, "Running7_S_2HW", 4.f, 4.f}, {100, "Crouched_1HW", 0.5f, 1.f},
     {101, "Crouched_2HW", 0.5f, 1.f}, {102, "Crouched_SLW", 0.5f, 1.f}, {103, "Crouched_SCW", 0.5f, 1.f},
     {104, "Crouched_BIN", 0.5f, 1.f}, {105, "Crouched_SWTCH", 0.5f, 1.f}, {106, "Crouched_KNIFE", 0.5f, 1.f},
+    // GOG Df2.exe's table: 107 Crouched_EWeap, manning an emplaced gun (0x445980).
+    {107, "Crouched_EWeap", 0.5f, 1.f},
     {110, "Prone_1HW", 0.08f, 1.f}, {111, "Prone_2HW", 0.08f, 1.f}, {112, "Prone_SLW", 0.08f, 1.f},
     {113, "Prone_SCW", 0.08f, 1.f}, {114, "Prone_BIN", 0.08f, 1.f}, {115, "Prone_SWTCH", 0.08f, 1.f},
     {116, "Prone_KNIFE", 0.08f, 1.f}, {120, "Crawling_CR0", 0.2f, 1.2f}, {121, "Crawling_CR1", 0.2f, 1.2f},
@@ -77,6 +79,14 @@ const struct { int number; const char* name; float visibility, aim; } kMoves[] =
     {247, "Death_B_P15DL", 1.f, 1.f}, {248, "Death_B_P15DB", 1.f, 1.f}, {249, "Death_B_P15DR", 1.f, 1.f},
     {250, "Death_G_DF", 1.f, 1.f}, {251, "Death_G_DL", 1.f, 1.f}, {252, "Death_G_DB", 1.f, 1.f},
     {253, "Death_G_DR", 1.f, 1.f}, {254, "Death_Water", 1.f, 1.f}, {255, "Death_Fire", 1.f, 1.f},
+    // Delta Force 2 only: the plain WalkingN / RunningN moves (Df2.exe's
+    // table records 20..27 / 60..67, chosen for modes without a hand class,
+    // GOG 0x445980) count as the _2HW numbers here; listed last, so
+    // moveName of those numbers still gives the _2HW names.
+    {28, "Walking0", 2.f, 2.f}, {29, "Walking1", 2.f, 2.f}, {30, "Walking2", 2.f, 2.f}, {31, "Walking3", 2.f, 2.f},
+    {32, "Walking4", 2.f, 2.f}, {33, "Walking5", 2.f, 2.f}, {34, "Walking6", 2.f, 2.f}, {35, "Walking7", 2.f, 2.f},
+    {68, "Running0", 4.f, 4.f}, {69, "Running1", 4.f, 4.f}, {70, "Running2", 4.f, 4.f}, {71, "Running3", 4.f, 4.f},
+    {72, "Running4", 4.f, 4.f}, {73, "Running5", 4.f, 4.f}, {74, "Running6", 4.f, 4.f}, {75, "Running7", 4.f, 4.f},
 };
 } // namespace
 

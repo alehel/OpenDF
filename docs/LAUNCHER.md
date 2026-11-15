@@ -54,11 +54,20 @@ open a system dialog.
   (Comanche, an empty folder) is refused.
 - Choosing a setup folder itself stores the game folder above it, the same
   folder `--game` takes (Delta Force keeps its soldier profiles there).
+- GOG releases: the GOG game folder (`Df.exe` / `Df2.exe` next to `Df.pff`,
+  `Dfbase.pff` / `Df2.pff`) is recognised as it is. GOG's offline installer
+  itself is not read; unpacked with innoextract (`innoextract -d
+  games/GOG/DF2 setup_delta_force_2_….exe`) it puts the game in an `app`
+  folder, and choosing the folder above it stores `app` (e.g. `games/GOG/DF2`
+  → `games/GOG/DF2/app`). `--game` takes the `app` folder itself. Each install
+  is run with its own executable's tables and behaviour (CD or GOG build).
 - A folder already in the list is not added twice.
 
 On the very first start (no settings file yet, or an empty list) the launcher
 adds every game it finds in a `games/` folder in the current folder or next
-to the executable, in release order.
+to the executable, in release order. Only the folders directly inside `games/` are
+looked at, so a GOG install kept deeper (`games/GOG/DF2/app`) is added with
+*Add game*.
 
 ## Settings file
 
@@ -79,9 +88,37 @@ game=/Users/me/OpenDF/games/DF2
 
 [launcher]
 last=/Users/me/OpenDF/games/DF2
+
+[display]
+fullscreen=0
 ```
 
 `--settings FILE` uses another file (for testing).
+
+## Fullscreen
+
+An OpenDF amenity (the original games set a display mode of their own; OpenDF's
+window is its own): **Alt+Enter** (Alt+keypad Enter too; on macOS also
+**Cmd+Ctrl+F**, the system's shortcut, or **Cmd+F**) switches between a window
+and desktop fullscreen in the launcher, both front ends (also during the
+intro movies, where it does not skip them), missions and the viewers. The
+key press goes no further, so Enter does not also start a game or press a
+menu button, and a mission does not see it held. F11 is not used: it is
+Delta Force's contour map key.
+
+- The setting is one for the whole run: every window OpenDF opens (launcher,
+  front end, mission, back to the front end) follows it.
+- Each toggle is written to `opendf.ini` (`[display] fullscreen=1`, the rest
+  of the file kept), also when the launcher was skipped with `--game`; the
+  next start uses it.
+- `--fullscreen` / `--windowed` start that way for this run (a toggle is
+  still remembered).
+- The 640x480 screens are scaled to the new size with the aspect ratio kept
+  and the mouse follows; missions use the whole screen.
+- Screenshot runs (`--screenshot`, hidden windows) never go fullscreen and do
+  not write the setting.
+
+Code: `src/render/Window.{h,cpp}`; `main.cpp` loads and saves the setting.
 
 ## Testing
 

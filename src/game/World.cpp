@@ -102,6 +102,7 @@ void World::refreshBoxes(WorldObject& o) const {
 
 void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const Mission& mission) {
     objects.clear();
+    playerMount = -1;
     // Skeletons and move tables of people (ITEMS.DEF chr_file, anim_def).
     auto load = [&](const ItemDef& item, WorldObject& o) {
         if (item.chrFile.empty() || item.animDef.empty()) return;
@@ -124,18 +125,23 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
     };
     const float ext = extent();
     for (const auto& mo : mission.objects) {
+        if (mo.omitted) continue;
         const ItemDef* item = items.byMissionType(mo.type);
         if (!item || item->graphic.empty() || item->type == "effect") continue;
         WorldObject o;
         o.item = item;
         o.model = models.get(vfs, item->graphic);
         if (!o.model) continue;
+        o.intact = o.model;
         if (!item->husk.empty()) o.husk = models.get(vfs, item->husk);
         o.pos = {std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
         o.pos.y = terrain->heightAt(o.pos.x, o.pos.z) + mo.z;
         o.heading = mo.heading * kPi / 180.f;
         o.lift = mo.z;
         o.person = item->type == "person";
+        // Record +0x36 -> object +0x34 (GOG Df2.exe 0x403790, GOG Df.exe
+        // 0x449710): the body pitch; for people that word is the aim pitch.
+        (o.person ? o.aimPitch : o.pitch) = mo.pitch * kPi / 180.f;
         o.base = o.pos.y;
         // Delta Force 2 (0x45bb10): a person 100 m or more up starts on a
         // parachute.
@@ -156,7 +162,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
         o.radarShape = int(int8_t(mo.raw[19] & 0xFF));
-        o.mapMarker = df2Rules ? o.radarShape != 0 : (mo.raw[19] & 0xFFFF) != 0;
+        o.mapMarker = df2Rules ? o.radarShape != 0 : (mo.raw[19] & 0xFF) != 0;   // DF.EXE +0x76: record byte +0x4C
 
         o.missionX = mo.x;
         o.missionY = mo.y;
@@ -176,7 +182,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
             if (o.chr && o.moves) {
                 startMove(o, 2);
                 o.hip = 0;
-                if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) o.hip = Chr::originHeight(*f);
+                if (o.anim.currentFrame(*o.chr)) o.hip = o.anim.originHeight(*o.chr);
             }
             o.base = origin - o.hip;
             poseUpdate(o);
@@ -188,6 +194,7 @@ int World::spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float hea
     WorldObject o;
     o.item = item;
     o.model = model;
+    o.intact = model;
     o.pos = pos;
     o.base = pos.y;
     o.heading = heading;
@@ -204,6 +211,7 @@ bool World::startMove(WorldObject& o, int number) {
     if (!mv || !o.chr->animation(mv->animation)) return false;
     o.anim.start(*o.chr, mv->animation);
     o.moveNumber = number;
+    if (!df2Rules && ((number >= 250 && number <= 253) || number == 255)) smokeOwners_.push_back(int(&o - objects.data()));
     return true;
 }
 
@@ -262,8 +270,8 @@ void World::poseUpdate(WorldObject& o) {
     if (!o.chr) return;
     if (o.chr->ksa()) o.spheres = o.model ? ksaSpheres(*o.model, *o.chr, o.anim.angles(), o.aimPitch) : decltype(o.spheres){};
     else o.spheres = o.chr->spheres(o.anim.angles());
-    if (const ChrFrame* f = o.anim.currentFrame(*o.chr)) {
-        o.hip = Chr::originHeight(*f);
+    if (o.anim.currentFrame(*o.chr)) {
+        o.hip = o.anim.originHeight(*o.chr);
         o.pos.y = o.base + o.hip;
     }
 }
@@ -310,47 +318,89 @@ float World::groundHeight(Vec3 feet, float step, int* owner) const {
     return df2Surface(feet, step, df2Neighbours(feet, 10.f));
 }
 
-Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
+Vec3 World::resolve(Vec3 feet, float originAbove) const {
     if (df2Rules) return feet;   // DF2.EXE has no mover box: the volume push-out (0x440f80) in personTick
+    // GOG Df.exe 0x4889c0 (CD 0x437a28), at most two passes over the mover's
+    // list while something pushed (0x487370). The mover is a box around its
+    // body origin (obj +0x2C): x, y +-0.75 m, height origin - 0.75 ..
+    // origin + 1.0 m, in each mesh's frame.
+    constexpr float kHalf = 0xc000 / 65536.f, kUp = 0x10000 / 65536.f;
+    Vec3 org{feet.x, feet.y + originAbove, feet.z};
     for (int pass = 0; pass < 2; ++pass) {
+        bool any = false;
         for (const auto& o : objects) {
-            if (o.boxes.empty()) continue;
-            Vec3 at = nearest(o.pos, feet);
-            float dx = at.x - feet.x, dz = at.z - feet.z;
-            float reach = o.model->radius + radius + 1;
-            if (dx * dx + dz * dz > reach * reach) continue;
-            Frame f(at, o.heading);
-            for (const auto& b : o.boxes) {
-                float bottom = at.y + b.min[1], top = at.y + b.max[1];
-                if (feet.y + step >= top || feet.y + height <= bottom) continue;  // can step onto it / passes under
-                if (b.type != 1 && b.type != 3) continue;   // other volume types are ignored (0x437a28)
-                // 0x437a28: the mover is a square of +-radius in the
-                // object's frame; an overlap is pushed out along the axis
-                // needing the smaller push (x on a tie), toward the side
-                // away from the box centre.
-                Vec3 l = f.toLocal(feet);
-                if (l.x + radius < b.min[0] || l.x - radius > b.max[0] || l.z + radius < b.min[2] || l.z - radius > b.max[2]) continue;
-                const float cx = (b.min[0] + b.max[0]) * 0.5f, cz = (b.min[2] + b.max[2]) * 0.5f;
-                const float qx = l.x < cx ? b.min[0] - (l.x + radius) : b.max[0] - (l.x - radius);
-                const float qz = l.z < cz ? b.min[2] - (l.z + radius) : b.max[2] - (l.z - radius);
-                float px = 0, pz = 0;
-                if (b.type == 3) {
-                    // Cylinder: within r + radius of the centre, set out to
-                    // (r + radius) x 1.01 along the line from the centre.
-                    const float dx = l.x - b.cx, dz = l.z - b.cz, dist = std::sqrt(dx * dx + dz * dz);
-                    const float k = (b.r + radius) * 1.01f;
-                    if (dist > b.r + radius) continue;
-                    const float a = std::atan2(dz, dx);
-                    px = b.cx + k * std::cos(a) - l.x;
-                    pz = b.cz + k * std::sin(a) - l.z;
-                } else if (std::abs(qz) >= std::abs(qx)) px = qx; else pz = qz;
-                // Back to world: inverse of toLocal's rotation.
-                feet.x += f.c * px + f.s * pz;
-                feet.z += -f.s * px + f.c * pz;
+            // The mover's list (0x436a34, rebuilt every tick by 0x436bec
+            // into +0x104 / +0x108) takes its candidates from the object
+            // arrays 0x820f60 and 0x796f60 (not the mover itself), never
+            // from the people array 0x785b60: soldiers and the player do
+            // not collide with people, their own body box included.
+            if (o.person || o.removed || o.dead || !o.model || o.boxes.empty()) continue;
+            // Only models with collision volumes (LOD +0xb0); the bounds
+            // OpenDF makes up for the others (refreshBoxes) are for rounds.
+            const GpuModel& m = *o.model;
+            if (m.collision.empty()) continue;
+            // The object's square: +-(model +0x64 + 0.75) around it.
+            const Vec3 at = nearest(o.pos, org);
+            const float reach = m.flatRadius + kHalf;
+            if (std::abs(at.x - org.x) > reach || std::abs(at.z - org.z) > reach) continue;
+            // A touch item (attrib movecb 0x10) never pushes (0x488c5b); its
+            // touch is Game::touchPickups.
+            const bool touch = o.item && (o.item->attrib & 0x10);
+            const Mat4 w = o.matrix(at);
+            auto toLocal = [&](Vec3 p) {
+                const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
+                return Vec3{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
+                            w.at(0, 2) * q.x + w.at(1, 2) * q.y + w.at(2, 2) * q.z};
+            };
+            for (size_t mi = 0; mi < m.meshBoxes.size(); ++mi) {
+                // Each mesh with volumes (+0x1C): its box (+0x40..+0x54) first.
+                const auto& mb = m.meshBoxes[mi];
+                Vec3 l = toLocal(org);
+                if (!(l.x - kHalf <= mb[3] && mb[0] <= l.x + kHalf && l.z - kHalf <= mb[5] && mb[2] <= l.z + kHalf &&
+                      l.y - kHalf <= mb[4] && mb[1] <= l.y + kUp))
+                    continue;
+                bool pushed = false;
+                for (const auto& b : m.collision) {
+                    if (b.mesh != int(mi) || (b.type != 1 && b.type != 3)) continue;
+                    if (!(b.min[0] <= l.x + kHalf && l.x - kHalf <= b.max[0] && b.min[2] <= l.z + kHalf && l.z - kHalf <= b.max[2] &&
+                          b.min[1] <= l.y + kUp && l.y - kHalf <= b.max[1]))
+                        continue;
+                    if (b.type == 1) {
+                        // Away from the volume's centre (+0x08..+0x10) along
+                        // the axis needing the smallest push: x unless y or
+                        // z needs less, then y unless z needs less (file
+                        // axes; OpenDF z is file -y, y the height).
+                        const float qx = l.x < b.cx ? b.min[0] - (l.x + kHalf) : b.max[0] - (l.x - kHalf);
+                        const float qz = l.z > b.cz ? b.max[2] - (l.z - kHalf) : b.min[2] - (l.z + kHalf);
+                        const float qy = l.y < b.cy ? b.min[1] - (l.y + kUp) : b.max[1] - (l.y - kHalf);
+                        const float ax = std::abs(qx), az = std::abs(qz), ay = std::abs(qy);
+                        if (ax <= az && ax <= ay) l.x += qx;
+                        else if (az <= ax && az <= ay) l.z += qz;
+                        else l.y += qy;
+                        pushed = true;
+                    } else {
+                        // Upright cylinder: within r + 0.75 of the centre (on
+                        // x, y), set out to (r + 0.75) x 1.01 (0x1028f).
+                        const float dx = l.x - b.cx, dz = l.z - b.cz;
+                        if (std::sqrt(dx * dx + dz * dz) > b.r + kHalf) continue;
+                        const float k = (b.r + kHalf) * (0x1028f / 65536.f), a = std::atan2(dz, dx);
+                        l.x = b.cx + k * std::cos(a);
+                        l.z = b.cz + k * std::sin(a);
+                        pushed = true;
+                    }
+                }
+                if (!pushed) continue;
+                // Written back (0x45cda0) unless the item is a touch item;
+                // either way the pass counts as pushing.
+                if (!touch) org = Vec3{w.at(0, 0) * l.x + w.at(0, 1) * l.y + w.at(0, 2) * l.z + w.at(0, 3),
+                                       w.at(1, 0) * l.x + w.at(1, 1) * l.y + w.at(1, 2) * l.z + w.at(1, 3),
+                                       w.at(2, 0) * l.x + w.at(2, 1) * l.y + w.at(2, 2) * l.z + w.at(2, 3)};
+                any = true;
             }
         }
+        if (!any) break;
     }
-    return feet;
+    return {org.x, org.y - originAbove, org.z};
 }
 
 // A round against one object's LOD 0 faces (0x44e918, per object): the
@@ -370,8 +420,7 @@ Vec3 World::resolve(Vec3 feet, float radius, float height, float step) const {
 // The object's LOD 0 meshes posed by its draw routine: fn(mesh, world
 // matrix) for every mesh whose pose slot is not skipped.
 template <class Fn>
-static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, std::array<uint8_t, 64>& hitSkip, Fn fn) {
-    const GpuModel& m = *o.model;
+static void forPosedMeshes(const World& world, const WorldObject& o, const GpuModel& m, Vec3 ref, std::array<uint8_t, 64>& hitSkip, Fn fn) {
     const std::string& code = m.lodCodes[0];
     if (code == "efct" || code == "shrk" || m.hitMeshes.empty()) return;
     const size_t meshes = m.hitMeshes.size();
@@ -387,6 +436,15 @@ static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, s
         const bool fast = o.rotorSpeed >= float(0x0C000000);
         for (int i : fast ? std::array<int, 2>{2, 4} : std::array<int, 2>{3, 5})
             if (i < int(hitSkip.size())) hitSkip[size_t(i)] = 1;
+    } else if (code == "palm" && !world.df2Rules) {
+        // GOG Df.exe 0x44d2a0: every slot is the object matrix with its skip
+        // flag clear, then the state's unused meshes are flagged.
+        std::vector<bool> shown;
+        palmPose(o.palmState, meshes, m.points, pose, shown);
+        for (size_t i = 0; i < meshes && i < hitSkip.size(); ++i) hitSkip[i] = shown[i] ? 0 : 1;
+    } else if (code == "ewpn") {
+        for (size_t i = 0; i < meshes && i < hitSkip.size(); ++i) hitSkip[i] = 0;
+        pose = world.ewpnPose(o, meshes);
     } else if (code == "tire") {
         hitSkip[1] = 1;   // the shadow; slots 0, 2, 3 keep their flags (0x4807e0)
         if (m.points.size() >= 3) {
@@ -401,6 +459,32 @@ static void forPosedMeshes(const World& world, const WorldObject& o, Vec3 ref, s
         if (mi < hitSkip.size() && hitSkip[mi]) continue;
         if (!fn(int(mi), body * pose[mi])) return;
     }
+}
+
+void palmPose(int state, size_t meshes, const std::vector<std::array<float, 3>>& points, std::vector<Mat4>& pose,
+              std::vector<bool>& shown) {
+    std::vector<int> drawn;
+    int hp = -1;
+    switch (state) {
+    case 0: drawn = {0, 1, 2}; break;
+    case 1: drawn = {0, 3}; break;
+    case 2: drawn = {0, 1, 5}; break;
+    case 0x10: drawn = {1, 2, 4}; hp = 0; break;
+    case 0x11: drawn = {2}; hp = 1; break;
+    case 0x20: drawn = {1, 4}; hp = 0; break;
+    default: break;
+    }
+    Mat4 hide;
+    for (float& x : hide.m) x = 0;
+    Mat4 at;
+    if (hp >= 0 && size_t(hp) < points.size()) {
+        const auto& p = points[size_t(hp)];
+        at = translate({-p[0], -p[1], -p[2]});
+    }
+    pose.assign(meshes, hide);
+    shown.assign(meshes, false);
+    for (int i : drawn)
+        if (size_t(i) < meshes) pose[size_t(i)] = at, shown[size_t(i)] = true;
 }
 
 // File axes (x, y, z up) of a world point in a posed mesh.
@@ -433,10 +517,9 @@ static bool inTriangle(const HitFace& f, float pu, float pv, int ua, int va) {
 }
 
 template <class Visit>
-static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip, uint32_t skipMaterial,
-                      float maxT, Visit visit) {
-    const GpuModel& m = *o.model;
-    forPosedMeshes(world, o, a, hitSkip, [&](int mi, const Mat4& w) {
+static void testFaces(const World& world, const WorldObject& o, const GpuModel& m, Vec3 a, Vec3 b, std::array<uint8_t, 64>& hitSkip,
+                      uint32_t skipMaterial, float maxT, bool bothSides, Visit visit) {
+    forPosedMeshes(world, o, m, a, hitSkip, [&](int mi, const Mat4& w) {
         auto toFile = [&](Vec3 p) {
             const Vec3 q{p.x - w.at(0, 3), p.y - w.at(1, 3), p.z - w.at(2, 3)};
             const Vec3 l{w.at(0, 0) * q.x + w.at(1, 0) * q.y + w.at(2, 0) * q.z, w.at(0, 1) * q.x + w.at(1, 1) * q.y + w.at(2, 1) * q.z,
@@ -451,7 +534,10 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
             if (f.material & skipMaterial) continue;
             const float ds = f.n[0] * ls[0] + f.n[1] * ls[1] + f.n[2] * ls[2] + f.d;
             const float de = f.n[0] * le[0] + f.n[1] * le[1] + f.n[2] * le[2] + f.d;
-            if (f.material & 0x2) { if ((ds > 0 && de > 0) || (ds <= 0 && de <= 0)) continue; }
+            // bothSides: any crossing of the plane, whatever the material
+            // (GOG Df.exe rounds, 0x464a44..0x464b71); else from the front
+            // only, both ways with material 0x2 (CD 0x44e918, sight 0x42db80).
+            if (bothSides || (f.material & 0x2)) { if ((ds > 0) == (de > 0)) continue; }
             else if (!(ds > 0 && de <= 0)) continue;
             const float sum = std::abs(ds) + std::abs(de);
             if (sum <= 0) continue;
@@ -466,15 +552,16 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
     });
 }
 
-float World::faceGround(Vec3 feet, float step, int* owner) const {
+float World::faceGround(Vec3 feet, float step, int* owner, int skip) const {
     float best = terrain->heightAt(feet.x, feet.z);
     if (owner) *owner = -1;   // mover +0x100 = 0 (0x435dd9)
     for (const auto& o : objects) {
         if (o.person || o.removed || !o.model || o.model->hitMeshes.empty()) continue;
+        if (skip >= 0 && &o == &objects[size_t(skip)]) continue;
         const Vec3 at = nearest(o.pos, feet);
         const float R = o.model->flatRadius;   // +0x64
         if (std::abs(at.x - feet.x) > R || std::abs(at.z - feet.z) > R) continue;
-        forPosedMeshes(*this, o, feet, hitSkip_, [&](int mi, const Mat4& w) {
+        forPosedMeshes(*this, o, *o.model, feet, hitSkip_, [&](int mi, const Mat4& w) {
             const auto L = toFileAxes(w, feet);
             for (const HitFace& f : o.model->hitMeshes[size_t(mi)]) {
                 if (L[0] < f.box[0] || L[0] > f.box[1] || L[1] < f.box[2] || L[1] > f.box[3]) continue;
@@ -528,7 +615,8 @@ void World::carry(int platform, Vec3& pos, float& heading) const {
 //   bit 0 clear, per point: into the mesh (0x42baa0 inverse, 0x42b550); the
 //   cube must overlap the mesh box (+0x40..+0x54); then sum := 0 and per
 //   volume, per plane s = n.L + d - half, outside at the first s >= 0;
-//   inside: type 4 -> flags |= 1, type 6 -> flags |= 4, others: hit and
+//   inside: type 4 -> flags |= 1, type 6 -> flags |= 4 (GOG Df2.exe
+//   0x447450 also type 7 -> flags |= 8, where the CD build pushes), others: hit and
 //   sum += s_max x n of the least-negative plane. After the points, push +=
 //   the slot's rotation (0x42b680) of sum.
 // READ quirk kept: `sum` is cleared only when a point passes a mesh box, so
@@ -550,7 +638,7 @@ bool World::df2Overlap(const WorldObject& n, const Vec3* pts, const float* halve
     if (!near || !m.hasVolumes) return false;
     bool hit = false;
     float sum[3] = {0, 0, 0};
-    forPosedMeshes(*this, n, pts[0], hitSkip_, [&](int mi, const Mat4& w) {
+    forPosedMeshes(*this, n, *n.model, pts[0], hitSkip_, [&](int mi, const Mat4& w) {
         if (size_t(mi) >= m.meshVolumes.size() || m.meshVolumes[size_t(mi)].volumes.empty()) return true;
         const MeshVolumes& mv = m.meshVolumes[size_t(mi)];
         for (int k = 0; k < count; ++k) {
@@ -572,6 +660,7 @@ bool World::df2Overlap(const WorldObject& n, const Vec3* pts, const float* halve
                 if (!inside) continue;
                 if (v.type == 4) flags |= 1;
                 else if (v.type == 6) flags |= 4;
+                else if (v.type == 7) flags |= 8;   // GOG Df2.exe 0x447450: an emplaced gun's seat, not solid
                 else {
                     hit = true;
                     if (bp)
@@ -613,7 +702,8 @@ std::vector<int> World::df2Neighbours(Vec3 at, float margin, int self) const {
 // push.z < 0 -> standing on it (+0xF8 = it); x and y move by the push less
 // 0x1999 (0.1 m) toward zero, not at all within 0.1 m; z: a push under
 // 0x51E (0.02 m) gets 0x51E added, z -= push.z (so 0.02 m of overlap stays,
-// and a side push lowers z by 0.02 m). The points are not moved between
+// and a side push lowers z by 0.02 m); with a ladder volume touched (flags
+// 1) the whole push instead (GOG 0x446ebc). The points are not moved between
 // neighbours. Flags 1 (type 4) with the player or AI +0x34 & 0x400: ladder
 // 0x400000 and not airborne; flags 4 (type 6): +0x64 |= 0x1000000.
 World::Df2Contact World::df2PushOut(Vec3& origin, float feetOffset, const std::vector<int>& neighbours, bool mayClimb) const {
@@ -631,17 +721,121 @@ World::Df2Contact World::df2PushOut(Vec3& origin, float feetOffset, const std::v
                 c.touched.push_back(i);
             } else {
                 if (push.y < 0) { c.onObject = true; c.platform = i; }
-                if (std::abs(push.x) > kSide) origin.x -= push.x > 0 ? push.x - kSide : push.x + kSide;
-                if (std::abs(push.z) > kSide) origin.z -= push.z > 0 ? push.z - kSide : push.z + kSide;
-                float pz = push.y;
-                if (pz < kOverlap) pz += kOverlap;
-                origin.y -= pz;
+                if (flags & 1) {
+                    // GOG Df2.exe 0x446ebc: an object whose ladder volume
+                    // (type 4) the points touch pushes in full
+                    // (0x446f33..0x446f4b), whoever climbs.
+                    origin.x -= push.x;
+                    origin.z -= push.z;
+                    origin.y -= push.y;
+                } else {
+                    if (std::abs(push.x) > kSide) origin.x -= push.x > 0 ? push.x - kSide : push.x + kSide;
+                    if (std::abs(push.z) > kSide) origin.z -= push.z > 0 ? push.z - kSide : push.z + kSide;
+                    float pz = push.y;
+                    if (pz < kOverlap) pz += kOverlap;
+                    origin.y -= pz;
+                }
             }
         }
         if ((flags & 1) && mayClimb) c.ladder = true;
         if (flags & 4) c.armory = true;
+        if (flags & 8) c.mounts.push_back(i);   // GOG Df2.exe 0x4467d0: 0x4145a0(person, it)
     }
     return c;
+}
+
+static Vec3 applyPoint(const Mat4& w, Vec3 p) {
+    return {w.at(0, 0) * p.x + w.at(0, 1) * p.y + w.at(0, 2) * p.z + w.at(0, 3),
+            w.at(1, 0) * p.x + w.at(1, 1) * p.y + w.at(1, 2) * p.z + w.at(1, 3),
+            w.at(2, 0) * p.x + w.at(2, 1) * p.y + w.at(2, 2) * p.z + w.at(2, 3)};
+}
+
+// GOG Df2.exe 0x4145a0 (READ), see World.h. The "anyone mans it" test
+// scans every person's +0x8c (0xc7216c, stride 0x114), the player's too.
+bool World::df2Mount(int person, int gun, int moveDir, bool dead) {
+    if (gun < 0 || size_t(gun) >= objects.size()) return false;
+    WorldObject& g = objects[size_t(gun)];
+    const bool player = person == -3;
+    if (!player && (person < 0 || size_t(person) >= objects.size())) return false;
+    int& link = player ? playerMount : objects[size_t(person)].mount;
+    if (!g.item || (link != -1 && link != gun) || !(g.item->attrib & 0x8000)) return false;
+    if ((moveDir >= 3 && moveDir <= 5) || dead || !g.alive()) {
+        link = -1;
+        g.gunner = -1;
+        return false;
+    }
+    if (link != -1) return false;   // already on this gun
+    if (playerMount == gun) return false;
+    for (const WorldObject& o : objects)
+        if (o.person && o.mount == gun) return false;
+    link = gun;
+    g.gunner = person;    return true;
+}
+
+// GOG Df2.exe 0x4467d0's end: a destroyed gun (+0x64 & 4) lets go.
+void World::clearMount(int person) {
+    int& link = person == -3 ? playerMount : objects[size_t(person)].mount;
+    if (link >= 0 && size_t(link) < objects.size()) objects[size_t(link)].gunner = -1;
+    link = -1;
+}
+
+// GOG Df2.exe 0x418300 (READ): matrix 0x4308d0 from the gun's position and
+// (heading = the person's +0x30, pitch 0, roll 0), applied (0x4301c0) to the
+// gun model's hardpoint 0 (LOD 0 +0xA4, ints 0..2).
+Vec3 World::mountOrigin(int gun, float personHeading, Vec3 ref) const {
+    const WorldObject& g = objects[size_t(gun)];
+    const Vec3 at = nearest(g.pos, ref);
+    if (!g.model || g.model->points.empty()) return at;
+    const auto& p = g.model->points[0];
+    return applyPoint(translate(at) * rotateY(kPi * 0.5f - personHeading), {p[0], p[1], p[2]});
+}
+
+// GOG Df2.exe 0x450c60 (disassembled; not in the Ghidra export): slot 0 =
+// the object's matrix (0x4308d0); if +0xF8 (the gunner) is set and his
+// +0x8c is this gun, the matrix 0x430ad0 of (-hardpoint 1, yaw = gunner
+// +0x30 - gun +0x30, pitch = gunner +0x34, roll 0), a turn about hardpoint
+// 1, is put after slot 0 for slots 1 and 2 (0x42fcf0); else (and +0xF8
+// cleared when the link is stale) every slot is slot 0.
+std::vector<Mat4> World::ewpnPose(const WorldObject& g, size_t meshes) const {
+    std::vector<Mat4> pose(meshes, Mat4{});
+    if (!g.model || g.model->points.size() < 2 || g.gunner == -1) return pose;
+    const int self = int(&g - objects.data());
+    float yaw = 0, pitch = 0;
+    if (g.gunner == -3) {
+        if (playerMount != self) return pose;
+        yaw = playerYaw;
+        pitch = playerPitch;
+    } else {
+        if (g.gunner < 0 || size_t(g.gunner) >= objects.size() || objects[size_t(g.gunner)].mount != self) return pose;
+        yaw = objects[size_t(g.gunner)].heading;
+        pitch = objects[size_t(g.gunner)].aimPitch;
+    }
+    // DF yaw is anticlockwise, OpenDF headings clockwise; pitch up positive
+    // about the model's sideways axis (as the vehicles' body pitch).
+    Mat4 gp;
+    const float c = std::cos(pitch), s = std::sin(pitch);
+    gp.at(0, 0) = c; gp.at(0, 1) = -s;
+    gp.at(1, 0) = s; gp.at(1, 1) = c;
+    const auto& p = g.model->points[1];
+    const Mat4 turn = translate({p[0], p[1], p[2]}) * rotateY(-(yaw - g.heading)) * gp * translate({-p[0], -p[1], -p[2]});
+    for (size_t i = 1; i < meshes && i < 3; ++i) pose[i] = turn;
+    return pose;
+}
+
+// GOG Df2.exe 0x416e90 (READ): the gun's pose routine (+0x4C), its slot 1
+// (+0x40) applied to hardpoint 2 (+0xA4 +0x18..+0x20); the view (0x416a30)
+// takes the person's own heading and pitch.
+Vec3 World::mountEye(int gun, Vec3 ref) const {
+    const WorldObject& g = objects[size_t(gun)];
+    const Vec3 at = nearest(g.pos, ref);
+    if (!g.model || g.model->points.size() < 3) return at;
+    const auto& p = g.model->points[2];
+    Mat4 slot1 = g.matrix(at);
+    if (g.model->lodCodes[0] == "ewpn") {
+        const auto pose = ewpnPose(g, std::max<size_t>(g.model->hitMeshes.size(), 2));
+        slot1 = slot1 * pose[1];
+    }
+    return applyPoint(slot1, {p[0], p[1], p[2]});
 }
 
 // DF2.EXE 0x43fb80(p, mover, step), READ: best = terrain(p); +0xF8 = 0; per
@@ -679,7 +873,7 @@ Vec3 World::personStep(WorldObject& o, float velocity) const {
 
 bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool haveObject, int& mesh, uint32_t& material, Vec3* normal) const {
     bool found = false;
-    testFaces(*this, o, a, b, hitSkip_, 0x01000000, 2.f, [&](const HitFace& f, int mi, float t) {
+    testFaces(*this, o, *o.model, a, b, hitSkip_, 0x01000000, 2.f, !df2Rules, [&](const HitFace& f, int mi, float t) {
         // Ties: a later face wins among objects, not over the terrain.
         if (haveObject || found ? t > best : t >= best) return true;
         best = t;
@@ -698,37 +892,94 @@ bool World::roundHit(const WorldObject& o, Vec3 a, Vec3 b, float& best, bool hav
 // 0x868C material bit (translucent, keyed, ...) counted as see-through
 // while any other blocks; people never block; +1 when either end is at or
 // below a water level. Result: <= 0 blocked, else 1 + see-through count.
-int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
+int World::sight(Vec3 a, Vec3 b, int looker, int target, bool fog) const {
     b = nearest(b, a);
     const Vec3 d = b - a;
     const float len = std::sqrt(dot(d, d));
     if (len >= 800.f) return 0;
     // Delta Force 2 (0x406180): with fog on, not past the fog distance.
-    if (df2Rules && fogLevel > 0 && len > float(1 << fogLevel)) return 0;
+    if (df2Rules && fog && fogLevel > 0 && len > float(1 << fogLevel)) return 0;
     if (len < 1e-4f) return 1;
-    RayHit h;
     if (!df2Rules) {
-        // DF.EXE's terrain march 0x433190: every 1/16 m, a point below the
-        // ground (strictly) blocks. (Its coarse 1 m skip over the max map is
-        // conservative; the 1 m step-back it does when the coarse cell at
-        // the start is not below it only re-tests points behind the start,
-        // left out: INFERRED to change nothing in practice.)
+        // GOG Df.exe's terrain march 0x47e4b0 (CD 0x433074), in 1/16 m
+        // steps i from the start, clear once i passes the length: a coarse
+        // test every 1 m against the cell's max map (0x47d9e0), a point at
+        // or below it (inclusive) backing up 1 m and testing the next 19
+        // points strictly against the ground with its detail elevation
+        // (0x47e000; so a hit at the start tests points behind the eye),
+        // then the coarse test again from the last of them. Ground that
+        // rises between coarse points above the max map's cells is missed.
         const int n = int(len * 16.f);
         const Vec3 step = d * (1.f / 16.f / len);
-        for (int i = 1; i <= n; ++i) {
+        int i = 0;
+        while (i <= n) {
             const Vec3 p = a + step * float(i);
-            if (terrain->heightAt(p.x, p.z) > p.y) return 0;
+            if (p.y > terrain->sightMax(p.x, p.z)) { i += 16; continue; }
+            i -= 16;
+            for (int k = 0; k < 19; ++k) {
+                if (++i > n) break;
+                const Vec3 q = a + step * float(i);
+                if (q.y < terrain->sightHeight(q.x, q.z)) return 0;
+            }
         }
-    } else if (raycast(a, b, h, false)) return 0;
+    } else if (fog) {
+        // GOG Df2.exe 0x4063d0 -> 0x46e740 (CD 0x406180 -> 0x464710), in
+        // its 16.16 axes (x east, y north = -z, z up): the length isqrt(sum of d^2 >> 22) << 11, the
+        // unit direction d * (2^32 / length) >> 16, and n = length >> 12
+        // steps i of 1/16 m from the start. Every 1 m a coarse test against
+        // the word grid's vertex at (x >> 16, y >> 16); a point at or below
+        // it (inclusive) backs up 1 m and tests the next 19 points (dir >> 4
+        // each) strictly against the bilinear height 0x46e870, then the
+        // coarse test again. Clear once i passes n; blocked returns -i <<
+        // 12, which is positive for a hit behind the start (i < 0).
+        auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+        const int32_t dx = fx(d.x), dy = fx(-d.z), dz = fx(d.y);
+        auto sq = [](int32_t v) { return uint32_t(uint64_t(int64_t(v) * v) >> 22); };
+        const uint32_t sum = sq(dx) + sq(dy) + sq(dz);
+        const uint32_t root = dfIsqrt(sum);   // 0x41e830 rounds
+        const int32_t length = int32_t(root << 11);
+        if (length == 0) return 1;
+        const int32_t inv = int32_t(0x100000000LL / length);
+        const int32_t ux = int32_t((int64_t(dx) * inv) >> 16), uy = int32_t((int64_t(dy) * inv) >> 16), uz = int32_t((int64_t(dz) * inv) >> 16);
+        const int n = length >> 12;
+        int32_t x = fx(a.x), y = fx(-a.z), z = fx(a.y);
+        int i = 0;
+        for (;;) {
+            if (i > n) break;
+            if (z > terrain->df2SightVertex(x, y)) {
+                x += ux, y += uy, z += uz;
+                i += 16;
+                continue;
+            }
+            i -= 16;
+            x -= ux, y -= uy, z -= uz;
+            bool clear = false;
+            for (int k = 0; k < 19; ++k) {
+                x += ux >> 4, y += uy >> 4, z += uz >> 4;
+                if (++i > n) { clear = true; break; }
+                if (z < terrain->df2SightGround(x, y)) return -i * 0x1000;
+            }
+            if (clear) break;
+        }
+    } else if (RayHit h; raycast(a, b, h, false)) {
+        // The line of fire (fog off: 0x406610 -> 0x46e610, blasts) tests the
+        // plain ground like a round.
+        return 0;
+    }
     const Vec3 mid = a + d * 0.5f;
     int extra = 0;
     for (size_t i = 0; i < objects.size(); ++i) {
         const WorldObject& o = objects[i];
-        // DF1 skips only empty records, the looker and the target (0x45b737,
-        // 0x45b74a, 0x45b792): a carried item (hidden, +0x6c & 2) still counts.
-        if (int(i) == looker || int(i) == target || o.person || !o.model || (o.removed && !(o.carried && !df2Rules))) continue;
+        // DF1 skips only empty records, the looker and the target (GOG
+        // 0x42db80; CD 0x45b737, 0x45b74a, 0x45b792): a carried item (hidden,
+        // +0x6c & 2) and one destroyed without a husk (its record kept) still
+        // count, with the intact model +0x10 (radius +0x60, its pose and
+        // faces) whether a husk or nothing is drawn.
+        if (int(i) == looker || int(i) == target || o.person || !o.model) continue;
+        if (o.removed && !(!df2Rules && (o.carried || o.blown))) continue;
+        const GpuModel& m = !df2Rules && o.intact ? *o.intact : *o.model;
         const Vec3 at = nearest(o.pos, mid);
-        const float R = o.model->headerRadius;
+        const float R = m.headerRadius;
         if (at.x < std::min(a.x, b.x) - R || at.x > std::max(a.x, b.x) + R || at.y < std::min(a.y, b.y) - R ||
             at.y > std::max(a.y, b.y) + R || at.z < std::min(a.z, b.z) - R || at.z > std::max(a.z, b.z) + R)
             continue;
@@ -741,7 +992,7 @@ int World::sight(Vec3 a, Vec3 b, int looker, int target) const {
         if (y < z) std::swap(y, z);
         if (x + y * 11.f / 32.f + z * 0.25f > R) continue;
         bool blocked = false;
-        testFaces(*this, o, a, b, hitSkip_, 0x800, 2.f, [&](const HitFace& f, int, float) {
+        testFaces(*this, o, m, a, b, hitSkip_, 0x800, 2.f, false, [&](const HitFace& f, int, float) {
             if (f.material & 0x868C) { ++extra; return true; }
             blocked = true;
             return false;
@@ -759,8 +1010,37 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
     const float len = std::sqrt(dot(d, d));
     if (len < 1e-5f) return false;
 
+    // Delta Force's rounds (GOG Df.exe 0x47e390, from the round mover
+    // 0x464eb0): 1 m steps from the start while above the raw corner byte of
+    // the cell (x0, y0); at or below it, 1 m back and up to 19 steps of
+    // 1/16 m against the bilinear ground (below it: a hit at that many
+    // sixteenths, which can lie behind the start), then coarse again; no hit
+    // once the count passes the length in sixteenths.
+    const int steps = rounds && !df2Rules ? 0 : std::max(2, int(len / 0.5f));
+    if (rounds && !df2Rules) {
+        const Vec3 dir = d * (1.f / len);
+        const int limit = int(len * 16.f);
+        int n = 0;
+        bool hitGround = false;
+        for (;;) {
+            if (n > limit) break;
+            const Vec3 p = a + dir * (float(n) / 16.f);
+            if (p.y > terrain->cornerHeight(p.x, p.z)) { n += 16; continue; }
+            n -= 16;
+            for (int fine = 0; fine < 19; ++fine) {
+                if (++n > limit) break;
+                const Vec3 q = a + dir * (float(n) / 16.f);
+                if (q.y < terrain->heightAt(q.x, q.z)) { hitGround = true; break; }
+            }
+            if (hitGround || n > limit) break;
+        }
+        if (hitGround) {
+            hit.t = float(n) / 16.f / len;
+            hit.object = -1;
+            found = true;
+        }
+    }
     // Terrain: march, then refine by bisection.
-    const int steps = std::max(2, int(len / 0.5f));
     float prev = 0;
     for (int i = 1; i <= steps; ++i) {
         float t = float(i) / steps;
@@ -790,6 +1070,21 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
         if (y < z) std::swap(y, z);
         return x + y * 11.f / 32.f + z * 0.25f;
     };
+    // Delta Force's rounds (GOG Df.exe 0x463790, the player among the
+    // people): the body origin inside the segment's box grown by 2 m, its
+    // projection on the line not behind the start (-1 < dot(origin - a,
+    // dir)), and that line point (not clamped to the end) within 1.5 m
+    // (0x477670) of the origin; only then the posed spheres.
+    const bool df1Round = rounds && !df2Rules;
+    auto broadPhase = [&](Vec3 at, float& tc, auto&& closest) {
+        if (!df1Round) return closest(at, tc) <= 1.5f;
+        if (at.x < std::min(a.x, b.x) - 2.f || at.x > std::max(a.x, b.x) + 2.f || at.y < std::min(a.y, b.y) - 2.f ||
+            at.y > std::max(a.y, b.y) + 2.f || at.z < std::min(a.z, b.z) - 2.f || at.z > std::max(a.z, b.z) + 2.f)
+            return false;
+        tc = dot(at - a, d) / (len * len);
+        if (tc < 0) return false;
+        return approxLen(a + d * tc - at) <= 1.5f;
+    };
     if (objects && people && ignore != -3 && playerBody.present) {
         const Vec3 at = nearest(playerBody.origin, mid);
         auto closest = [&](Vec3 c, float& t) {
@@ -797,7 +1092,7 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
             return approxLen(a + d * t - c);
         };
         float tc;
-        if (closest(at, tc) <= 1.5f) {
+        if (broadPhase(at, tc, closest)) {
             const float h = playerBody.heading;
             const Vec3 fwd{std::sin(h), 0, -std::cos(h)}, left{-std::cos(h), 0, -std::sin(h)};
             for (size_t k = 0; k < playerBody.spheres.size(); ++k) {
@@ -813,14 +1108,24 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
             }
         }
     }
+    // (OpenDF) The gun the shooter mans is skipped with the shooter: until
+    // the gun's own weapon (GOG Df2.exe 0x44c840 / 0x44f160) is ported, a
+    // gunner fires his personal weapon from the eye on the gun (hardpoint 2
+    // of its posed mesh 1), and its rounds and sight lines would otherwise
+    // hit the gun's own meshes.
+    const int ignoreMount = ignore == -3 ? playerMount
+                            : ignore >= 0 && size_t(ignore) < this->objects.size() ? this->objects[size_t(ignore)].mount
+                                                                                    : -1;
     for (size_t i = 0; objects && i < this->objects.size(); ++i) {
-        if (int(i) == ignore) continue;
+        if (int(i) == ignore || (ignoreMount >= 0 && int(i) == ignoreMount)) continue;
         const auto& o = this->objects[i];
         if (!people && o.person) continue;
         // Living people (DF.EXE 0x44dca4): only if the path passes within 1.5 m
         // of the body origin, then each part's sphere; the nearest along the
-        // path wins.
-        if (o.person && !o.dead && !o.spheres.empty()) {
+        // path wins. Delta Force's rounds (GOG Df.exe 0x463790) do not skip
+        // the dead (no flags & 4 test): a body's posed spheres stop them
+        // (flesh effect and sound, no damage, an armed explosive goes off).
+        if (o.person && (!o.dead || (rounds && !df2Rules && !o.removed)) && !o.spheres.empty()) {
             const Vec3 at = nearest(o.pos, mid);
             // Distance as DF.EXE measures it (0x435bf8): largest component +
             // 11/32 of the middle one + 1/4 of the smallest.
@@ -837,7 +1142,7 @@ bool World::raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects, int ignore, bool 
                 return approxLen(a + d * t - c);
             };
             float tc;
-            if (closest(at, tc) > 1.5f) continue;
+            if (!broadPhase(at, tc, closest)) continue;
             const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)}, left{-std::cos(o.heading), 0, -std::sin(o.heading)};
             for (size_t k = 0; k < o.spheres.size(); ++k) {
                 const auto& sp = o.spheres[k];
@@ -913,6 +1218,10 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
     WorldObject& o = objects[index];
     if (o.removed || o.dead) return {};
     if (o.item && power < o.item->damageClass) return {};
+    // Delta Force 2: an object's +0xF8 holds who damaged it last (rounds
+    // 0x453510, blasts 0x454b60), which the boat's death blasts pass on as
+    // their owner (GOG Df2.exe 0x402206..0x4022a3).
+    if (df2Rules && !o.person && killer != -1) o.killer = killer;
     if (o.person) {
         // People have ITEMS.DEF's hit points (2-4) and die at 0 (head hits'
         // multipliers are applied by the callers from the .CHR / .KSA spheres).
@@ -923,7 +1232,36 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         // The death animation (0x46c920 / 0x469764); without one, topple.
         if (!(deathMove >= 0 && startMove(o, deathMove)) && !startMove(o, 0xBE)) o.fall = 0.001f;
         refreshBoxes(o);
-        return o.item->name + " down";
+        return o.item->displayName + " down";
+    }
+    if (!df2Rules && o.item && o.item->aiFunction == "gnrc") {
+        // GOG Df.exe 0x4533f0 (CD 0x47ee6c), the think and the damage
+        // handler: at hp <= 0 it sets flags 4 and thinks again in 0x20 ticks;
+        // the next run with flag 4 (that think, or at once a further round or
+        // blast) blows it up (0x453270) and only then sets flag 8, the husk.
+        // Game::gnrcExplode does that part.
+        if (o.gnrcTimer > 0) { o.gnrcTimer = 0; return {}; }
+        if (o.hp <= 0 || o.gnrcTimer == 0) return {};
+        o.hp -= amount;
+        if (o.hp > 0) return {};
+        o.gnrcTimer = 0x20;
+        return o.item->displayName + " destroyed";
+    }
+    if (!df2Rules && o.item && o.item->aiFunction == "brrl") {
+        // GOG Df.exe 0x45bf80, the barrel's think and damage handler (the
+        // damage 0x464c50 and the blasts call it without a flags & 4 test):
+        // with flag 4 set it goes off at once (0x446fb0, 10 fragments), the
+        // smoke generator (0x447610) and the record cleared (0x4471d0);
+        // otherwise at hp <= 0 flags |= 4 and the think in 10 ticks. Until
+        // then the barrel stays drawn and is still hit by rounds and blasts.
+        if (o.detonate > 0) { o.detonate = 1; return {}; }   // goes off at the next tick
+        if (o.hp <= 0) return {};
+        o.hp -= amount;
+        if (o.hp > 0) return {};
+        o.hp = 0;
+        o.detonate = 10;
+        destroyed_.push_back(index);
+        return o.item->displayName + " destroyed";
     }
     if (o.hp <= 0 || !o.item) return {};   // indestructible
     o.hp -= amount;
@@ -933,20 +1271,22 @@ std::string World::damage(int index, int amount, int power, int deathMove, int k
         o.hp = 0;
         o.collapse = 0;
         destroyed_.push_back(index);
-        return o.item->name + " destroyed";
+        return o.item->displayName + " destroyed";
     }
-    if (df2Rules && !o.husk && (o.item->aiFunction == "mine" || o.item->aiFunction == "vtrg")) {
+    if (!o.husk && (o.item->aiFunction == "mine" || (df2Rules && (o.item->aiFunction == "vtrg" || o.item->aiFunction == "prnh")))) {
         // DF2.EXE 0x4295f0 / 0x42a980: flagged destroyed (4, or 0x10C) but
         // not removed; with no husk the model stays drawn (the draw list
         // 0x4490d0 skips only +0x64 & 2, the draw 0x4459f0 takes the husk only
-        // with flag 8 and a husk).
+        // with flag 8 and a husk). Delta Force's mine (GOG Df.exe 0x453220)
+        // also only sets flag 4 (and blows up, see the destroyed loop). A
+        // dead fish (prnh 0x42db20: 0x10C) floats on, belly up.
         o.hp = 0;
         o.wrecked = true;
         destroyed_.push_back(index);
-        return o.item->name + " destroyed";
+        return o.item->displayName + " destroyed";
     }
     applyHusk(index);
-    return o.item->name + " destroyed";
+    return o.item->displayName + " destroyed";
 }
 
 void World::applyHusk(int index) {
@@ -957,6 +1297,7 @@ void World::applyHusk(int index) {
         o.wrecked = true;
     } else {
         o.removed = true;
+        o.blown = true;
     }
     o.hp = 0;
     if (o.collapse < 0) destroyed_.push_back(index);
@@ -975,7 +1316,7 @@ void World::applyHusk(int index) {
 // (0x44ff27): 128 - 16 d (heavy) or 32 - 4 d; when neither sight line from
 // the origin or 0.5 m above it reaches 0.5 m above the blast: nothing for
 // type 1, half otherwise.
-std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
+std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy, int owner, int ownerSide) {
     std::vector<std::string> out;
     auto len3 = [](float a, float b, float c) {
         a = std::abs(a), b = std::abs(b), c = std::abs(c);
@@ -987,18 +1328,24 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
     const Vec3 target = at + Vec3{0, 0.5f, 0};
     for (size_t i = 0; i < objects.size(); ++i) {
         WorldObject& o = objects[i];
-        if (!o.alive()) continue;
+        if (!o.alive() && o.gnrcTimer <= 0 && o.detonate <= 0) continue;   // a waiting gnrc object (0x4533f0) or barrel (0x45bf80) still takes it
         const Vec3 p = nearest(o.pos, at);
         if (o.person) {
             const float r = radius + 1.f;
             if (std::abs(p.x - at.x) > r || std::abs(p.y - at.y) > r || std::abs(p.z - at.z) > r) continue;
             float d = len3(p.x - at.x, p.y - at.y, p.z - at.z);
             if (d > r) continue;
-            // Line of sight (0x45be04): from the body to the blast point
-            // raised 0.5 m, then from 0.5 m higher; both blocked: no damage
-            // for type 1, double distance otherwise.
-            RayHit h;
-            if (raycast(p, target, h, false) && raycast(p + Vec3{0, 0.5f, 0}, target, h, false)) {
+            // Line of sight: from the body to the blast point raised 0.5 m,
+            // then from 0.5 m higher; both blocked: no damage for type 1,
+            // double distance otherwise. Delta Force (GOG Df.exe 0x465830 ->
+            // 0x42e2b0, CD 0x45be04) uses the sight line, so terrain,
+            // buildings, decorations and items shield. Delta Force 2 (GOG
+            // Df2.exe 0x454bde / 0x454c01 -> 0x406610): the line of fire, the
+            // terrain and the decorations and items in the way (walls,
+            // buildings, vehicles), no fog cutoff.
+            const bool blocked = df2Rules ? sight(p, target, int(i), -1, false) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1, false) <= 0
+                                          : sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0;
+            if (blocked) {
                 if (!heavy) continue;
                 d *= 2;
             }
@@ -1006,13 +1353,20 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             // 4 m, half under 8 m, a quarter beyond.
             const int base = radius > 11.f ? 32 : 8;
             const int amount = df2Rules ? (d < 4 ? base : d < 8 ? base / 2 : base / 4) : d < 4 ? 4 : d < 8 ? 2 : 1;
-            // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8).
-            const int type = (d >= 4 && d < 8 && (std::rand() & 3) == 0) ? 3 : 2;
-            std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at));
+            // Death move type 2, or 3 one time in four at 4-8 m (0x44fda8;
+            // GOG Df.exe 0x465977: 0x477860 below 0x4000).
+            const int type = (d >= 4 && d < 8 && (rand16 ? rand16() < 0x4000 : (std::rand() & 3) == 0)) ? 3 : 2;
+            // DF2 0x454cd7: the owner goes into the victim's +0xF8.
+            std::string m = damage(int(i), amount, 99, deathMove(int(i), type, 0, at), df2Rules ? owner : -1);
             if (!m.empty()) out.push_back(m);
             continue;
         }
-        if (o.hp <= 0 || !o.model) continue;
+        // A destroyed Delta Force gnrc object waiting to go off (flag 4, no
+        // husk yet) is still in the blast and fires at once (0x4533f0).
+        if ((o.hp <= 0 && o.gnrcTimer <= 0 && o.detonate <= 0) || !o.model) continue;
+        // DF2 0x454f52..0x454f56: an object of the owner's side is spared.
+        // (The CD's 0x44d4a0 has no such test.)
+        if (df2Rules && df2Gog && owner != -1 && o.side == ownerSide) continue;
         const std::string& type = o.item ? o.item->type : std::string();
         const float h = o.model->flatRadius, v = o.model->height;
         float d;
@@ -1033,18 +1387,36 @@ std::vector<std::string> World::blast(Vec3 at, float radius, bool heavy) {
             // DF2.EXE 0x44d4a0: type 5 (12 m) 512 - 16 d, type 3 128 - 16 d,
             // type 1 32 - 4 d; blast class 3 / 2 / 0, +1 inside the object's
             // box, must reach the item's third hp value (def+0x9c).
+            // GOG Df2.exe 0x454b60 (0x454f6c..0x45503c): the amounts from
+            // the 16.16 distance, 0x200 - (d >> 12), 0x80 - (d >> 12), 0x20 -
+            // (d >> 14); the +1 when the blast point, in the object's frame
+            // (0x4308d0 / 0x430870 / 0x430320), lies strictly inside the LOD
+            // 0 header box +0x28..+0x3c.
             const bool five = radius > 11.f;
-            amount = five ? int(512 - 16 * d) : heavy ? int(128 - 16 * d) : int(32 - 4 * d);
+            const int32_t df = int32_t(d * 65536.f);
+            amount = five ? 0x200 - (df >> 12) : heavy ? 0x80 - (df >> 12) : 0x20 - (df >> 14);
             int cls = five ? 3 : heavy ? 2 : 0;
-            if (d <= 0.f) ++cls;
+            {
+                const Mat4 m = o.matrix(o.pos);
+                const Vec3 r = at - p;
+                float l[3];
+                for (int j = 0; j < 3; ++j) l[j] = m.at(0, j) * r.x + m.at(1, j) * r.y + m.at(2, j) * r.z;
+                const float fx = l[0], fy = -l[2], fz = l[1];   // OpenDF model axes -> file x forward, y left, z up
+                const float* bx = o.model->box;
+                if (bx[0] < fx && fx < bx[1] && bx[2] < fy && fy < bx[3] && bx[4] < fz && fz < bx[5]) ++cls;
+            }
             if (o.item && cls < o.item->hp3) continue;
         }
-        if (sight(p, target, int(i), -1) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1) <= 0) {
+        if (sight(p, target, int(i), -1, !df2Rules) <= 0 && sight(p + Vec3{0, 0.5f, 0}, target, int(i), -1, !df2Rules) <= 0) {
             if (!heavy) continue;
             amount >>= 1;
         }
-        if (amount <= 0) continue;
-        std::string m = damage(int(i), amount);
+        // Delta Force (GOG Df.exe 0x465830, 0x4659de): the amount is clamped
+        // to 0 and the object still gets the event, so a destroyed gnrc
+        // object waiting to go off (0x4533f0) fires at once.
+        if (df2Rules && amount <= 0) continue;
+        amount = std::max(amount, 0);
+        std::string m = damage(int(i), amount, 99, -1, df2Rules ? owner : -1);
         if (!m.empty()) out.push_back(m);
     }
     return out;
@@ -1190,9 +1562,35 @@ void World::personTickDf2(WorldObject& o) {
         o.pos.z = origin.z;
         o.base = origin.y - o.hip;
         if (c.onObject) { onObject = true; o.platform = c.platform; }
-        if (c.ladder) { o.airborne = false; o.ladder = true; }
+        // GOG Df2.exe 0x446e0a: airborne cleared, 0x400000 set; not prone
+        // (+0x74 & 0x20, 0x446e15) vel_z = 0 (0x446e1c). +0x74 is the human
+        // control word: written only for the local player (0x41efd0,
+        // 0x447120) and by the multiplayer receive paths (0x409fae,
+        // 0x45d3e7), never for an AI, so for the AI the prone test is
+        // always false and the ladder always zeroes vel_z.
+        if (c.ladder) {
+            o.airborne = false;
+            o.ladder = true;
+            o.vz = 0;
+        }
         if (c.armory) o.armory = true;
+        // GOG Df2.exe 0x4467d0: flags 8 -> 0x4145a0(person, gun); a new
+        // link places the origin at the gun (0x418300). The control
+        // direction (+0x74 & 7) is the walk / run move's.
+        const int self = int(&o - objects.data());
+        int dir = 0;
+        for (const auto& [lo, n] : {std::pair{20, 8}, {28, 8}, {40, 8}, {48, 8}, {60, 8}, {68, 8}, {80, 8}, {88, 8}})
+            if (o.moveNumber >= lo && o.moveNumber < lo + n) dir = o.moveNumber - lo;
+        for (int g : c.mounts)
+            if (df2Mount(self, g, dir, o.dead)) {
+                const Vec3 m = mountOrigin(g, o.heading, o.pos);
+                o.pos.x = m.x;
+                o.pos.z = m.z;
+                o.base = m.y - o.hip;
+            }
     }
+    // 0x4467d0's end: the gun destroyed (+0x64 & 4) clears both links.
+    if (o.mount >= 0 && !objects[size_t(o.mount)].alive()) clearMount(int(&o - objects.data()));
     // Ground (0x440af6): d = 0 on an object, else feet - terrain (d <= 0
     // clears +0xF8).
     float d = 0;
@@ -1210,10 +1608,11 @@ void World::personTickDf2(WorldObject& o) {
         else { o.chute = false; landings_.push_back(int(&o - objects.data())); }
     } else if (o.airborne) {
         if (d <= 0) {
-            // Landing (0x43f600, single player): n = trunc(vz / -10360.5) - 1
-            // for everyone but the player, (1 << n) - 1 damage, kind 4.
+            // Landing (0x43f600, GOG 0x4458f0, single player): n = trunc(vz /
+            // -10354) - 1 (mulhi by -0x6545c5f3, >> 12) for everyone but the
+            // player, (1 << n) - 1 damage, kind 4.
             if (o.alive()) {
-                const int n = int(-o.vz * 65536.f / 10360.5f) - 1;
+                const int n = int(-o.vz * 65536.f / 10354.f) - 1;
                 if (n >= 1) {
                     const int idx = int(&o - objects.data());
                     if (auto m = damage(idx, (1 << std::min(n, 20)) - 1, 0x7fff, deathMoveNumber(true, false, 4, 0, 0)); !m.empty())
@@ -1243,6 +1642,8 @@ void World::personTickDf2(WorldObject& o) {
         o.swimming = true;   // 0x440c5c: walking in, no splash, gravity once
         o.vz -= G;
     } else if (d > 0x800 / 65536.f && !o.ladder) {
+        // 0x4470a5: no gravity on a ladder unless prone (+0x74 & 0x20,
+        // 0x4470ac; never set for an AI, see 0x446e15 above).
         o.vz -= G;
         if (d > 0x8000 / 65536.f || o.vz > 0) o.airborne = true;
     }

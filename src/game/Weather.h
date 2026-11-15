@@ -40,7 +40,7 @@ private:
     struct Particle { int32_t x = 0, y = 0, z = 0; bool active = false; };
     std::array<Particle, 1024> parts_{};   // 0x4e9240, 20 bytes each
     int type_ = 0;                         // 0x4ee270
-    int32_t cam_[3] = {0, 0, 0};           // 0x4ee264..0x4ee26c (x east, y north, z up)
+    int32_t cam_[3] = {0, 0, 0};           // 0x4ee264..0x4ee26c, GOG 0x512e84..0x512e8c: the player origin (x east, y north, z up)
     // DF2.EXE's generator 0x41ac40 (x = rol(x,11) + x, x = rol(x,4) ^ 1, 16
     // bits). DF2 shares one state with its other callers (shrapnel reseeds
     // it to 0x5FC per burst); OpenDF keeps a separate state for the weather.

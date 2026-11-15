@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <iterator>
 
 namespace fs = std::filesystem;
 
@@ -34,7 +35,17 @@ void pffDecrypt(uint8_t* data, size_t size) {
     for (size_t i = 0; i < size; ++i) data[i] ^= stream[i & 31];
 }
 
-bool PffArchive::open(const fs::path& path, std::string* error) {
+void pffDecryptDf2(uint8_t* data, size_t size) {
+    // GOG Df2.exe 0x47d9f0 (CD 0x472b50): k = 0x312a4ce, k = rol(k, 7)
+    // before each byte, byte ^= low byte of k.
+    uint32_t k = 0x0312A4CEu;
+    for (size_t i = 0; i < size; ++i) {
+        k = (k << 7) | (k >> 25);
+        data[i] ^= static_cast<uint8_t>(k);
+    }
+}
+
+bool PffArchive::open(const fs::path& path, std::string* error, bool df2Rules) {
     path_ = path;
     file_.open(path, std::ios::binary);
     if (!file_) {
@@ -48,14 +59,19 @@ bool PffArchive::open(const fs::path& path, std::string* error) {
     }
     const uint32_t headerSize = readU32(hdr);
     const uint32_t count = readU32(hdr + 8);
-    const uint32_t recordSize = readU32(hdr + 12);
+    uint32_t recordSize = readU32(hdr + 12);
     const uint32_t tableOffset = readU32(hdr + 16);
-    if (std::memcmp(hdr + 4, "PFF", 3) != 0 || headerSize < 20 || recordSize < 32) {
+    // GOG Df2.exe 0x47d720 (CD 0x472880) checks only header size >= 0x14:
+    // no magic, a fixed 0x20 stride, every entry kept (looked up by name,
+    // 0x47d810), and only entries with bit 0 of byte 2 set are decrypted
+    // (0x47da20 / 0x47dab0).
+    if (df2Rules) recordSize = 32;
+    if ((!df2Rules && std::memcmp(hdr + 4, "PFF", 3) != 0) || headerSize < 20 || recordSize < 32) {
         if (error) *error = path.string() + " is not a PFF archive";
         return false;
     }
     const char version = static_cast<char>(hdr[7]);
-    encrypted_ = (version == '2');
+    encrypted_ = !df2Rules && version == '2';
 
     std::vector<uint8_t> table(size_t(count) * recordSize);
     file_.seekg(tableOffset);
@@ -70,8 +86,9 @@ bool PffArchive::open(const fs::path& path, std::string* error) {
     for (uint32_t i = 0; i < count; ++i) {
         const uint8_t* r = table.data() + size_t(i) * recordSize;
         // PFF3: first dword is a "deleted" flag. PFF2: a per-entry checksum.
-        if (!encrypted_ && readU32(r) != 0) continue;
+        if (!df2Rules && !encrypted_ && readU32(r) != 0) continue;
         PffEntry e;
+        e.encrypted = df2Rules && (r[2] & 1);
         e.offset = readU32(r + 4);
         e.size = readU32(r + 8);
         e.timestamp = readU32(r + 12);
@@ -90,13 +107,18 @@ bool PffArchive::read(const PffEntry& e, std::vector<uint8_t>& out) {
     file_.seekg(e.offset);
     if (!file_.read(reinterpret_cast<char*>(out.data()), e.size)) return false;
     if (encrypted_) pffDecrypt(out.data(), out.size());
+    else if (e.encrypted) pffDecryptDf2(out.data(), out.size());
     return true;
 }
 
-bool Vfs::mount(const fs::path& archive, std::string* error) {
+bool Vfs::mount(const fs::path& archive, std::string* error, bool df2Rules) {
     auto a = std::make_unique<PffArchive>();
-    if (!a->open(archive, error)) return false;
-    for (size_t i = 0; i < a->entries().size(); ++i) index_[a->entries()[i].name] = {a.get(), i};
+    if (!a->open(archive, error, df2Rules)) return false;
+    for (size_t i = 0; i < a->entries().size(); ++i) {
+        const Ref r{a.get(), i};
+        if (firstWins_) index_.try_emplace(a->entries()[i].name, r);
+        else index_[a->entries()[i].name] = r;
+    }
     archives_.push_back(std::move(a));
     return true;
 }
@@ -128,39 +150,101 @@ bool Vfs::mountGameDir(const fs::path& gameDir, std::string* error) {
         return {};
     };
 
+    // A Delta Force 2 folder (one with DF2.PFF): the archives Df2.exe opens
+    // itself, DF2.PFF and TERRAINS.PFF, follow its reader's rules; the CD's
+    // PFF2 install packs (MISSIONS/AUDIO.PFF) stay PACK.EXE's.
+    bool df2 = false;
+    for (auto& root : roots)
+        if (!findIn(root, "DF2.PFF").empty()) df2 = true;
+
     int mounted = 0;
+    bool haveDfBase = false;
     for (const char* name : kArchives) {
         for (auto& root : roots) {
             fs::path p = findIn(root, name);
             if (p.empty()) continue;
             std::string err;
-            if (mount(p, &err)) ++mounted;
+            // Delta Force: DF.EXE opens dfbase.pff as the primary archive and
+            // df.pff as the secondary (GOG 0x48fc10, CD 0x485590), looks a
+            // name up in the primary first and in df.pff only on a miss
+            // (0x48fd00), taking the first directory match (0x49e590). So
+            // with DFBASE.PFF present the first archive and the first entry
+            // win between those two. DF.EXE never opens the CD's PFF2 packs
+            // (MISSIONS, AUDIO, VIEWS): PACK.EXE merges them into the
+            // installed dfbase.pff, the replaced entry becoming '<DEAD
+            // SPACE>', so a pack's copy is the one read and they override as
+            // before (AUDIO.PFF's BEEP2 / EXPLODE / FIRE / MISSILE.WAV). The
+            // later games keep later archives overriding.
+            const std::string n = name;
+            if (n == "DFBASE.PFF") haveDfBase = true;
+            firstWins_ = haveDfBase && (n == "DFBASE.PFF" || n == "DF.PFF");
+            if (mount(p, &err, df2 && (n == "DF2.PFF" || n == "TERRAINS.PFF"))) ++mounted;
             else if (error) *error += err + "\n";
             break;
         }
     }
+    firstWins_ = false;
     if (mounted == 0 && error) *error += "no PFF archives found under " + gameDir.string();
     return exists("DF.PFF") || mounted > 0;
 }
 
-bool Vfs::exists(const std::string& name) const { return index_.count(toUpper(name)) != 0; }
+bool Vfs::exists(const std::string& name) const { return loose_.count(toUpper(name)) != 0 || index_.count(toUpper(name)) != 0; }
+
+void Vfs::addLoose(const std::string& name, const fs::path& file) { loose_[toUpper(name)] = file; }
+
+// NovaLogic's text-file scrambler, reversed: drop headerLen bytes, reverse
+// the rest, then XOR each byte with the low byte of the stream
+// s = rol(rol(s, 11) + s, 4) ^ 1, stepped before each byte (GOG Df.exe
+// 0x456eb0, DF2.EXE 0x4614f0).
+static void descrambleNova(std::vector<uint8_t>& data, size_t headerLen, uint32_t seed) {
+    if (data.size() < headerLen) return;
+    std::vector<uint8_t> body(data.rbegin(), data.rend() - std::ptrdiff_t(headerLen));
+    auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+    uint32_t st = seed;
+    for (auto& b : body) {
+        st = rol(rol(st, 11) + st, 4) ^ 1;
+        b ^= uint8_t(st);
+    }
+    data.swap(body);
+}
 
 bool Vfs::read(const std::string& name, std::vector<uint8_t>& out) {
+    // An archive entry comes first: a loose file (Delta Force 2's Quick
+    // Missions folder *.bms) never shadows one. GOG Df2.exe reads a folder
+    // file only for the list entry it came from (flag 1, [0x4f39f0]); that
+    // entry's own file goes to the mission as GameOptions::missionFile.
     auto it = index_.find(toUpper(name));
-    if (it == index_.end()) return false;
+    if (it == index_.end()) {
+        auto l = loose_.find(toUpper(name));
+        if (l == loose_.end()) return false;
+        std::ifstream f(l->second, std::ios::binary);
+        if (!f) return false;
+        out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        return true;
+    }
     if (!it->second.archive->read(it->second.archive->entries()[it->second.index], out)) return false;
     // Delta Force 2 and later scramble some text files (ITEMS.DEF, LOOP.DEF,
     // .ANM): "SCR\x01", then the payload reversed and XORed with a stream
     // s = rol(rol(s, 11) + s, 4) ^ 1 from s = 0x01234567 (DF2.EXE 0x4614f0).
     if (out.size() >= 4 && std::memcmp(out.data(), "SCR\x01", 4) == 0) {
-        std::vector<uint8_t> body(out.rbegin(), out.rend() - 4);
-        uint32_t st = 0x01234567;
-        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
-        for (auto& b : body) {
-            st = rol(rol(st, 11) + st, 4) ^ 1;
-            b ^= uint8_t(st);
-        }
-        out.swap(body);
+        descrambleNova(out, 4, 0x01234567);
+        return true;
+    }
+    // The GOG Delta Force (Df.exe 1.00.03.03p) stores ITEMS.DEF, LOOP.DEF and
+    // every .ANM the same way but with no header and key 0x04960552: its text
+    // parser (GOG Df.exe 0x456720) runs the descrambler 0x456eb0 whenever the
+    // caller passes a key, and the key is DAT_00503228 = 0x4960552 (set in
+    // 0x401050); callers 0x4827a0/0x401490 (items.def), 0x43edb0 (LOOP.DEF)
+    // and 0x42d200/0x42d100 (.anm). Every original file of both builds starts
+    // with '/', so plain (CD or modded) files are left alone and a result is
+    // kept only when it starts with '/'.
+    const std::string up = toUpper(name);
+    const bool gogScrambled = up == "ITEMS.DEF" || up == "LOOP.DEF" ||
+                              (up.size() >= 4 && up.compare(up.size() - 4, 4, ".ANM") == 0);
+    if (gogScrambled && !out.empty() && out[0] != '/') {
+        std::vector<uint8_t> plain = out;
+        descrambleNova(plain, 0, 0x04960552);
+        if (plain[0] == '/') out.swap(plain);
     }
     return true;
 }
@@ -172,6 +256,9 @@ std::vector<std::string> Vfs::list(const std::string& extension) const {
         if (ext.empty() || (name.size() >= ext.size() && name.compare(name.size() - ext.size(), ext.size(), ext) == 0))
             names.push_back(name);
     }
+    for (auto& [name, file] : loose_)
+        if (!index_.count(name) && (ext.empty() || (name.size() >= ext.size() && name.compare(name.size() - ext.size(), ext.size(), ext) == 0)))
+            names.push_back(name);
     std::sort(names.begin(), names.end());
     return names;
 }

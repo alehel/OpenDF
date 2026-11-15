@@ -114,6 +114,7 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
         if (error) *error = "cannot load HUD font " + name;
         return false;
     }
+    useSheetHud_ = false;
     std::vector<uint8_t> rgba(size_t(img.width) * img.height * 4, 255);
     for (size_t i = 0; i < img.pixels.size(); ++i) rgba[i * 4 + 3] = img.pixels[i] == 9 ? 255 : 0;
     for (int line = 0; line < 16; ++line) {
@@ -147,7 +148,24 @@ bool Hud::loadFont(Vfs& vfs, const std::string& name, std::string* error) {
     return true;
 }
 
-SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
+bool Hud::loadSheetHudFont(Vfs& vfs, const std::string& name, std::string* error) {
+    SheetFont f = loadSheetFont(vfs, name);
+    if (!f.ok) {
+        if (error) *error = "cannot load HUD font " + name;
+        return false;
+    }
+    if (sheetHud_.tex.texture) {   // the previous mode's font
+        flush();
+        images_.erase(std::remove(images_.begin(), images_.end(), sheetHud_.tex.texture), images_.end());
+        glDeleteTextures(1, &sheetHud_.tex.texture);
+        texture_ = 0;
+    }
+    sheetHud_ = f;
+    useSheetHud_ = true;
+    return true;
+}
+
+SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name, bool blend) {
     SheetFont f;
     std::vector<uint8_t> data;
     IndexedImage img;
@@ -157,7 +175,13 @@ SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v >= 8 || v == 4) {
+            rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+            // 0x41bb90's blend branch: dst += (colour - dst) * (B >> 1) >> 7,
+            // B the blue of the sheet's palette entry (0x405560 stores it
+            // as byte 0 of each BGRA entry).
+            rgba[i * 4 + 3] = blend ? uint8_t((img.palette[v].b >> 1) * 2) : 255;
+        }
     }
     int y0 = 0;
     for (int band = 0; band < 16 && y0 < H; ++band) {
@@ -181,6 +205,10 @@ SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
         }
         y0 = y1 + 2;
     }
+    // GOG Df2.exe 0x41bb90: a character with no glyph (entry byte +5 clear)
+    // is drawn as glyph 0.
+    for (int c = 1; c < 256; ++c)
+        if (f.glyphs[c].w == 0) f.glyphs[c] = f.glyphs[0];
     f.tex = makeImage(W, H, rgba);
     f.ok = f.height > 0;
     return f;
@@ -294,6 +322,28 @@ HudImage Hud::loadImage(Vfs& vfs, const std::string& name, bool blackTransparent
         rgba[i * 4] = c.r; rgba[i * 4 + 1] = c.g; rgba[i * 4 + 2] = c.b;
         rgba[i * 4 + 3] = (index0Transparent ? img.pixels[i] != 0 : (!blackTransparent || (c.r | c.g | c.b))) ? 255 : 0;
     }
+    // Keyed texels take the mean colour of their opaque neighbours (black if
+    // none), so linear filtering when scaling fades only the alpha at an
+    // edge and never mixes in the key colour (CURSOR1.PCX's index 0 is blue).
+    if (blackTransparent || index0Transparent) {
+        const std::vector<uint8_t> src = rgba;
+        const int W = img.width, H = img.height;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                uint8_t* p = &rgba[(size_t(y) * size_t(W) + size_t(x)) * 4];
+                if (p[3]) continue;
+                int r = 0, g = 0, b = 0, n = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                        const uint8_t* q = &src[(size_t(ny) * size_t(W) + size_t(nx)) * 4];
+                        if (!q[3]) continue;
+                        r += q[0]; g += q[1]; b += q[2]; ++n;
+                    }
+                p[0] = uint8_t(n ? r / n : 0); p[1] = uint8_t(n ? g / n : 0); p[2] = uint8_t(n ? b / n : 0);
+            }
+    }
     glGenTextures(1, &out.texture);
     glBindTexture(GL_TEXTURE_2D, out.texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -399,16 +449,41 @@ void Hud::quad(float x0, float y0, float x1, float y1, float u0, float v0, float
     verts_.insert(verts_.end(), {a, b, d, d, b, e});
 }
 
+// GOG Df2.exe 0x41bb90: a code whose entry has no glyph (+5 == 0) draws and
+// advances as entry 0 (0x41bc36).
+static const SheetFont::Glyph& sheetGlyph(const SheetFont& f, unsigned char ch) {
+    return f.glyphs[ch].w > 0 ? f.glyphs[ch] : f.glyphs[0];
+}
+
 float Hud::textWidth(const std::string& s, float scale) const {
     float w = 0;
+    if (useSheetHud_) {
+        for (unsigned char ch : s) w += float(sheetGlyph(sheetHud_, ch).w + 1) * scale;
+        return w;
+    }
     for (unsigned char ch : s) w += (glyphW_[ch] + 1) * scale;
     return w;
 }
 
 float Hud::text(float x, float y, const std::string& s, Color c, float scale) {
+    if (useSheetHud_) {
+        // 0x41bb90, opaque (font +0x1c bit 0 clear): each glyph pixel left
+        // nonzero by the scanner takes the colour; advance width + 1; no shadow.
+        const SheetFont& f = sheetHud_;
+        const float start = x;
+        for (unsigned char ch : s) {
+            const SheetFont::Glyph& g = sheetGlyph(f, ch);
+            if (g.w > 0)
+                imageUV(f.tex.texture, x, y, float(g.w) * scale, float(g.h) * scale, float(g.x) / float(f.tex.width),
+                        float(g.y) / float(f.tex.height), float(g.x + g.w) / float(f.tex.width),
+                        float(g.y + g.h) / float(f.tex.height), c);
+            x += float(g.w + 1) * scale;
+        }
+        return x - start;
+    }
     setMode(1, font_);
     const float start = x;
-    for (int pass = 0; pass < 2; ++pass) {
+    for (int pass = textShadow_ ? 0 : 1; pass < 2; ++pass) {
         // Pass 0 draws a 1-pixel dark shadow so text reads on any background.
         float px = start + (pass == 0 ? scale : 0), py = y + (pass == 0 ? scale : 0);
         Color col = pass == 0 ? Color{0, 0, 0, c.a * 0.8f} : c;

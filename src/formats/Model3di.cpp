@@ -45,11 +45,6 @@ bool layoutFor(int version, Layout& l) {
     }
 }
 
-std::string upper(std::string s) {
-    for (auto& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-    return s;
-}
-
 } // namespace
 
 bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* error, int variant) {
@@ -82,9 +77,16 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t f = layout.v8 ? 0x0C : 0;   // v8 fields move by 12 (a second name at +0x0C)
         t.name = r.str(p, 12);
         const uint32_t size = r.u32(p + 0x10 + f);
-        t.sequence = r.u8(p + 0x14 + f);
+        // v8: the header is copied whole into the texture table (GOG Df2.exe
+        // 0x445120, 0x34 bytes) and +0x20 is read as a signed word
+        // (0x444d5f / 0x444eb1).
+        t.sequence = layout.v8 ? int(r.i16(p + 0x14 + f)) : int(r.u8(p + 0x14 + f));
         const uint8_t tflags = r.u8(p + 0x16 + f);
         t.indexZeroTransparent = !layout.v8 && (tflags & 0x20) != 0;
+        // Flag 0x10 keeps the palette out of the TRN grade in both games
+        // (GOG Df.exe 0x4867a0; GOG Df2.exe 0x4454e0 tests flags & 0x90, the
+        // v8 byte at +0x22).
+        t.noGrade = (tflags & 0x10) != 0;
         t.width = r.u16(p + 0x18 + f);
         t.height = r.u16(p + 0x1A + f);
         const size_t pixels = p + layout.texHeader;
@@ -150,14 +152,9 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         p = palette + 1024;
     }
 
-    std::map<uint8_t, int> bySequence;
-    std::map<std::string, int> byName;
-    for (int i = int(m.textures.size()) - 1; i >= 0; --i) {
+    std::map<int, int> bySequence;
+    for (int i = int(m.textures.size()) - 1; i >= 0; --i)
         bySequence[m.textures[i].sequence] = i;      // first one wins
-        const std::string n = upper(m.textures[i].name);
-        byName[n] = i;
-        if (n.size() > 1) byName.emplace(n.substr(1), i);
-    }
 
     for (uint32_t li = 0; li < lodCount; ++li) {
         if (!r.ok(p, layout.lodHeader)) return fail("truncated LOD header");
@@ -179,32 +176,51 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         const size_t matOff = q; q += size_t(nmat) * layout.material;
         if (!r.ok(p + layout.lodHeader, q - (p + layout.lodHeader))) return fail("truncated LOD data");
 
-        struct Mat { int tex; float rgb[3]; bool hidden; int blend; uint32_t flags; float spec; int specPow; float bright; uint16_t impact; };
+        // slot: signed byte +0x1F (the animated material's frame slot, or
+        // 0x7F: a back-side material follows, DF2.EXE 0x44bc00); noSpan:
+        // hidden for a reason other than flag 0x0800.
+        struct Mat { int tex; float rgb[3]; bool hidden; int blend; uint32_t flags; float spec; int specPow; float bright; uint16_t impact;
+                     int slot = 0; bool noSpan = false; };
         std::vector<Mat> mats(nmat);
         for (uint32_t i = 0; i < nmat; ++i) {
             const size_t o = matOff + size_t(i) * layout.material;
             uint32_t flags = r.u16(o + 0x10);
             const size_t rgbAt = o + 0x28 + 3 * size_t(variant);
             Mat mt{-1, {r.u8(rgbAt) / 255.f, r.u8(rgbAt + 1) / 255.f, r.u8(rgbAt + 2) / 255.f}, false, 0, flags,
-                   r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f,
+                   // Delta Force 2 has no specular term (GOG Df2.exe 0x44bab0;
+                   // +0x38/+0x40 are never read by its rasterisers).
+                   layout.v8 ? 0.f : r.i32(o + 0x38) / 65536.f, int(r.u8(o + 0x40)), (flags & 0x0020) ? r.i32(o + 0x3c) / 65536.f : -1.f,
                    r.u16(o + 0x12)};
             // Textured only if a texture has the variant's sequence id (0x43f217).
-            if (flags & 0x0001) {
+            if ((flags & 0x0001) && layout.v8) {
+                // GOG Df2.exe 0x444d3d: the byte is sign-extended and compared
+                // with the textures' signed words in file order (0x444d5f), with
+                // no name fallback; 0x80..0xFF never match and no match sets
+                // 0x0800 (0x444d74), e.g. df2par02's vest pieces.
+                const int ti = int(int8_t(r.u8(o + 0x34 + size_t(variant))));
+                if (auto it = bySequence.find(ti); it != bySequence.end()) mt.tex = it->second;
+            } else if (flags & 0x0001) {
+                // GOG Df.exe 0x485e30 (loop 0x48623b, CD 0x43f217): only a
+                // texture whose sequence is the byte +0x34+variant; with none
+                // 0x486354 clears 0x0001 and the variant's RGB is drawn (no
+                // lookup by name, e.g. FPLAYRN1's GOGGLES in snow missions).
                 const uint8_t ti = r.u8(o + 0x34 + size_t(variant));
                 if (auto it = bySequence.find(ti); ti != 0xFF && it != bySequence.end()) mt.tex = it->second;
-                else if (auto jt = byName.find(upper(r.str(o, 12))); jt != byName.end()) mt.tex = jt->second;
             } else if (layout.v8 && (flags & 0x8000)) {
                 // v8: an alpha material without 0x0001 takes its texture by
-                // the sequence at +0x37 (DF2.EXE 0x43ebca), e.g. the SMKT_H
+                // the signed sequence at +0x37 (GOG Df2.exe 0x444e9a vs the
+                // signed word at 0x444eb1; CD 0x43ebca), e.g. the SMKT_H
                 // dust-cloud frames and SNOW.3DI.
-                const uint8_t ti = r.u8(o + 0x37);
+                const int ti = int(int8_t(r.u8(o + 0x37)));
                 if (auto it = bySequence.find(ti); it != bySequence.end()) mt.tex = it->second;
             }
             // 0x0800 hidden; 0x0008 is not drawn in the hi-colour renderer;
             // 0x0080 and 0x8000 need a texture (no span for the untextured ones).
             const bool textured = mt.tex >= 0;
-            mt.hidden = (flags & (0x0800 | 0x0008)) != 0 || ((flags & (0x0080 | 0x8000)) && !textured) ||
+            mt.noSpan = (flags & 0x0008) != 0 || ((flags & (0x0080 | 0x8000)) && !textured) ||
                         (layout.v8 && (flags & 0x0001) && !textured);   // v8: a missing texture hides it
+            mt.hidden = mt.noSpan || (flags & 0x0800) != 0;
+            mt.slot = int(int8_t(r.u8(o + 0x1F)));
             // v8: 0x8000 marks the alpha textures (16-bit index + alpha):
             // lit as usual and blended by the texel's alpha (mode 3).
             mt.blend = (flags & 0x8000) ? (layout.v8 ? 3 : 2) : (flags & 0x0080) ? 1 : 0;
@@ -229,6 +245,18 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
 
         ModelLod lod;
         lod.materialTextures = matTextures;
+        for (const auto& mt : mats) {
+            ModelMaterial mm;
+            mm.texture = mt.tex;
+            std::copy(mt.rgb, mt.rgb + 3, mm.color);
+            mm.blend = mt.blend;
+            mm.flags = mt.flags;
+            mm.specular = mt.spec;
+            mm.specularPower = mt.specPow;
+            mm.fullbright = mt.bright;
+            mm.hidden = mt.hidden;
+            lod.materials.push_back(mm);
+        }
         // Hardpoints: i32 x, y, z in 16.16 metres, file axes as the vertices.
         for (uint32_t i = 0; i < nh; ++i) {
             const size_t o = hOff + size_t(i) * 12;
@@ -237,8 +265,9 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
         lod.frames = std::max(1, r.i32(p + 0x40) >> 16);
         if (li == 0) m.height = r.i32(p + 0x24) / 65536.f;
         if (li == 0)
-            for (int k = 0; k < 4; ++k) m.box[k] = r.i32(p + 0x28 + 4 * size_t(k)) / 65536.f;
+            for (int k = 0; k < 6; ++k) m.box[k] = r.i32(p + 0x28 + 4 * size_t(k)) / 65536.f;
         lod.ticksPerFrame = std::max(1, r.i32(p + 0x58) >> 16);
+        lod.animated = r.u16(p + 0x5a) != 0;
         // Collision volume: 72 bytes; the axis-aligned box is six 16.16-metre
         // values at +0x30 (xmin, xmax, ymin, ymax, zmin, zmax) in file axes.
         for (uint32_t i = 0; i < nvol; ++i) {
@@ -253,8 +282,24 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
             cb.cx = r.i32(vo + 0x08) / 65536.f;
             cb.cz = -r.i32(vo + 0x0C) / 65536.f;
             cb.r = r.i32(vo + 0x18) / 65536.f;
+            cb.cy = r.i32(vo + 0x10) / 65536.f;
+            // v5: the owning mesh, by the running total of the meshes' +0x1C.
+            if (!layout.v8) {
+                uint32_t first = 0;
+                for (uint32_t mi = 0; mi < nm; ++mi) {
+                    const uint32_t count = r.u32(mOff + size_t(mi) * layout.mesh + 0x1C);
+                    if (i >= first && i - first < count) { cb.mesh = int(mi); break; }
+                    first += count;
+                }
+            }
             lod.collision.push_back(cb);
         }
+        if (layout.volumes && !layout.v8)
+            for (uint32_t mi = 0; mi < nm; ++mi) {
+                const size_t mo = mOff + size_t(mi) * layout.mesh + 0x40;
+                auto v = [&](int k) { return r.i32(mo + 4 * size_t(k)) / 65536.f; };
+                lod.meshBoxes.push_back({v(0), v(4), -v(3), v(1), v(5), -v(2)});
+            }
         // v8 (DF2.EXE loader 0x43e937..0x43e9a4): each mesh owns the next
         // +0x1C volumes, each volume the next +0x48 planes. Running totals
         // past the LOD's counts (10 shipped LODs do not add up) are cut off
@@ -339,7 +384,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                         lod.hitMeshes[mi].push_back(h);
                     }
                 }
-                if (matIdx >= nmat || mats[matIdx].hidden) continue;
+                // Delta Force (GOG Df.exe 0x46b1d0): an animated slot-1
+                // material is swapped for its frame's record before the
+                // 0x0800 test, so its faces are kept (the draw tests the
+                // frame's record).
+                const bool df1Anim = !layout.v8 && matIdx < nmat && (mats[matIdx].flags & 0x4000) && mats[matIdx].slot == 1;
+                if (matIdx >= nmat || (mats[matIdx].hidden && !(df1Anim && !mats[matIdx].noSpan))) continue;
                 uint32_t vi[3], ni[3];
                 bool valid = true;
                 for (int c = 0; c < 3; ++c) {
@@ -350,25 +400,44 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 if (!valid) continue;
 
                 const Mat& mt = mats[matIdx];
-                const int key = int(matIdx) * 1024 + int(mi);
-                auto it = batchIndex.find(key);
-                if (it == batchIndex.end()) {
-                    ModelBatch b;
-                    b.texture = mt.tex;
-                    std::copy(mt.rgb, mt.rgb + 3, b.color);
-                    b.blend = mt.blend;
-                    b.flags = mt.flags;
-                    b.material = int(matIdx);
-                    b.mesh = int(mi);
-                    b.specular = mt.spec;
-                    b.specularPower = mt.specPow;
-                    b.fullbright = mt.bright;
-                    b.doubleSided = (mt.flags & 0x0002) != 0;
-                    b.impact = mt.impact;
-                    it = batchIndex.emplace(key, lod.batches.size()).first;
-                    lod.batches.push_back(std::move(b));
-                }
-                ModelBatch& b = lod.batches[it->second];
+                // DF2.EXE / GOG Df2.exe 0x44bc00: a back-facing face of a
+                // two-sided material (flag 0x0002) that also has flag 0x4000
+                // and slot +0x1F == 0x7F is drawn with the next material
+                // (+0x78: its texture, flags, blend and brightness), turned
+                // and lit from its back; its front keeps the material.
+                // Only flag 0x0800 is tested on the front material. Delta
+                // Force the same (GOG Df.exe 0x46b1d0: +0x10 & 2, +0x11 &
+                // 0x40, +0x1F == 0x7F -> the next 0x4c record), e.g. the
+                // BGUY01 hat, BAGTENT and BRDM panels.
+                const bool backMaterial = (mt.flags & 0x4002) == 0x4002 && mt.slot == 0x7F && matIdx + 1 < nmat;
+                auto batchFor = [&](int key, const Mat& bm, uint32_t index, bool doubleSided) -> size_t {
+                    auto it = batchIndex.find(key);
+                    if (it == batchIndex.end()) {
+                        ModelBatch b;
+                        b.texture = bm.tex;
+                        std::copy(bm.rgb, bm.rgb + 3, b.color);
+                        b.blend = bm.blend;
+                        b.flags = bm.flags;
+                        b.material = int(index);
+                        b.mesh = int(mi);
+                        b.specular = bm.spec;
+                        b.specularPower = bm.specPow;
+                        b.fullbright = bm.bright;
+                        b.doubleSided = doubleSided;
+                        b.impact = bm.impact;
+                        b.slot = mt.slot;
+                        it = batchIndex.emplace(key, lod.batches.size()).first;
+                        lod.batches.push_back(std::move(b));
+                    }
+                    return it->second;
+                };
+                const size_t frontAt = batchFor(int(matIdx) * 1024 + int(mi), mt, matIdx, !backMaterial && (mt.flags & 0x0002) != 0);
+                // The back side: its own single-sided batch, winding reversed.
+                const size_t backAt = backMaterial && !mats[matIdx + 1].noSpan
+                                          ? batchFor((1 << 24) + int(matIdx) * 1024 + int(mi), mats[matIdx + 1], matIdx + 1, false)
+                                          : SIZE_MAX;
+                ModelBatch& b = lod.batches[frontAt];
+                ModelBatch* back = backAt != SIZE_MAX ? &lod.batches[backAt] : nullptr;
 
                 std::array<float, 3> pos[3] = {vertex(vi[0]), vertex(vi[1]), vertex(vi[2])};
                 float e1[3], e2[3], fn[3];
@@ -383,6 +452,13 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                 // face normal (word +0x02) for all three (flat) (0x46fa5a).
                 const bool gouraud = (r.u8(fo) & 1) != 0;
                 const uint32_t faceNormal = nBase + uint32_t(r.u16(fo + 0x02));
+                // GOG Df.exe 0x46b1d0 -> 0x469fc0 (DF1) and DF2.EXE / GOG
+                // Df2.exe 0x44bc00 -> 0x44b140: in a mesh whose flag byte +0
+                // has bit 0 set, each vertex is placed by the part matrix its
+                // own word +6 names (skinned joints); else 0x469dc0 / 0x44af90
+                // places the whole mesh by the mesh's matrix. Both layouts.
+                const bool skinned = (r.u8(mo) & 1) != 0;
+                ModelVertex tri[3];
                 for (int c = 0; c < 3; ++c) {
                     ModelVertex v{};
                     v.px = pos[c][0]; v.py = pos[c][1]; v.pz = pos[c][2];
@@ -391,6 +467,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                     v.nx = n[0]; v.ny = n[1]; v.nz = n[2];
                     v.u = r.i32(fo + 0x04 + c * 4) / 65536.f;
                     v.v = r.i32(fo + 0x10 + c * 4) / 65536.f;
+                    v.bone = -1.f;
+                    if (skinned) {
+                        const uint16_t bone = r.u16(vOff + size_t(vi[c]) * 8 + 6);
+                        if (bone < nm) v.bone = float(bone);
+                    }
+                    tri[c] = v;
                     b.vertices.push_back(v);
                     for (int a = 0; a < 3; ++a) {
                         float val = (&v.px)[a];
@@ -400,6 +482,12 @@ bool loadModel3di(const std::vector<uint8_t>& file, Model3di& m, std::string* er
                     }
                     first = false;
                 }
+                if (back)
+                    for (int c : {0, 2, 1}) {
+                        ModelVertex v = tri[c];
+                        v.nx = -v.nx; v.ny = -v.ny; v.nz = -v.nz;
+                        back->vertices.push_back(v);
+                    }
                 ++lod.triangleCount;
             }
             vBase += meshVerts;

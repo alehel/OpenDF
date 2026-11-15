@@ -1,6 +1,8 @@
 # Delta Force file formats
 
-Notes from reverse engineering the US retail CD (v1.00.000, Oct 1998).
+Notes from reverse engineering the US retail CD (v1.00.000, Oct 1998) and
+the GOG release (Df.exe 1.00.03.03p, the reference build since 2026-11).
+Delta Force 2's formats are in docs/OTHER-GAMES.md.
 All integers are little-endian.
 
 ## Disc layout
@@ -18,10 +20,25 @@ All integers are little-endian.
 | `DFSETUP/PACK.EXE` | | archive tool; holds the PFF2 cipher (`/ENCODE`) |
 | `DFSETUP/CMPRSSH0.DLL` | | static-Huffman `compress_buffer`/`expand_buffer`; **not** used for PFF2 |
 
+The GOG release is an installed copy: `Df.exe`, `Dfbase.pff` (637 files; its
+`ITEMS.DEF`, `LOOP.DEF` and `.ANM` files are scrambled, see
+docs/OTHER-GAMES.md "SCR text scrambling"), `Df.pff`, `Dfmusic.sbf` and
+`INTRO.KDV` in one folder. It has no PFF2 packs and none of their files (the
+legacy `.3DO` / `.AI` / `.JIM` library, `AUDIO.PFF`'s WAVs and MIDIs, the award
+videos). Its Delta Force 2
+holds `Df2.exe`, `Df2.pff`, `Terrains.pff`, `Df2music.sbf` and `DF2INTRO.BIK`.
+
 At install time the encrypted PFF2 packs are decoded by `PACK.EXE` and merged
 into the installed `dfbase.pff`. OpenDF instead mounts them all directly, in
-this order, with later archives overriding earlier ones:
-`DFBASE, DF, MISSIONS, AUDIO, VIEWS`.
+this order: `DFBASE, DF, MISSIONS, AUDIO, VIEWS`. DF.EXE looks a name up in
+`dfbase.pff` first and in `df.pff` only when it is missing there, taking the
+first directory entry of that name (GOG 0x48fc10, 0x48fd00, 0x49e590), so
+with `DFBASE.PFF` mounted the first archive and the first entry win between
+`DFBASE` and `DF` (the one name both stock archives hold with different data,
+`_BACKUP_.PCX`, is never read). The packs override what comes before them, as
+the merge does (it turns a replaced entry into `<DEAD SPACE>`): on the CD,
+`AUDIO.PFF`'s BEEP2, EXPLODE, FIRE and MISSILE.WAV replace `DFBASE.PFF`'s.
+The later games' archives keep later ones overriding earlier ones.
 
 ## PFF archive
 
@@ -69,10 +86,31 @@ for (i = 0; i < size; i++) {
 Because rol-7 has period 32 on a 32-bit word, the keystream is a fixed
 32-byte pattern beginning `00 78 2E 7C 70 07 C2 77 …`.
 
+### Delta Force 2's own reader
+
+Df2.exe reads its `DF2.PFF` and `TERRAINS.PFF` with its own rules (GOG
+0x47d720, CD 0x472880): only `headerSize >= 0x14` is checked (no magic), the
+stride is always 0x20, every entry is kept (no deleted flag) and found by name,
+and an entry is decrypted only when bit 0 of its byte 2 (the flag dword's third
+byte) is set, with key `0x312A4CE` and the same rol-7 step (0x47d9f0). No
+shipped DF2 entry is flagged. OpenDF reads those two archives of a Delta Force
+2 folder this way; the CD's PFF2 install packs keep PACK.EXE's rules.
+
 ## PCX
 
 Standard ZSoft PCX v5, 8 bpp, one plane, RLE, with a 256-colour VGA palette
 after a `0x0C` marker at the end.
+
+DF.EXE also writes PCX: the PrintScreen command (Shift+P in a mission,
+table flag 0x40, command 2; Shift+P in the menus, GOG 0x40d9e0) saves the
+screen to the first free `sshot000.pcx`..`sshot998.pcx` (GOG 0x473eb0;
+the CD's 0x426afc `screen00.pcx`..`screen98.pcx`) in the game folder,
+nothing when all exist. Header 0x0A, 5, 1, 8, window 0, 0, w − 1, h − 1,
+75 dpi, bytes per line the width rounded up to even, palette info 1; an
+8-bit screen as one plane plus the palette, a hi-colour one as three
+planes (R, G, B rows) and no palette. Runs are at most 63 and stop at the
+row's end; a lone byte with its top two bits set goes out as 0xC1, byte.
+OpenDF writes the drawn window that way, 24-bit.
 
 ## TRN terrain descriptor
 
@@ -100,6 +138,13 @@ type R G B material      maps colour-map colours to footstep/terrain materials
 ```
 
 Terrains are 1024×1024 and **wrap around** in both directions.
+
+Delta Force 2 (GOG Df2.exe parser 0x46f9b0, CD 0x465ab0) compares keys with
+`_strcmpi`, also reads `fog_level`, `fog_color R,G,B`, `turbidity R,G,B` and
+`height_scale`, and starts every TRN from its own defaults (0x46d890): all 0
+except `sky_height` 1236, `sun_slope` 60, `horizon` 1, `turbidity` 23,8,4 and
+fog colour 192,192,192 (so a missing `gamma`/`saturation`/`filter` is 0, not
+128). Every shipped DF2 TRN sets those three, `sun_slope` and `sky_height`.
 
 **Scale:** 1 m per map pixel and about 0.25 m per elevation step; see
 *World scale and orientation* below. The exact meaning of `gamma`, `horizon`
@@ -133,7 +178,9 @@ LOD × count, each: header (v5: 184 bytes, v2-v4: 176) then data
   u32 @0x80 vertices, @0x88 normals, @0x90 faces, @0x98 meshes,
       @0xA0 hardpoints, @0xA8 materials, @0xB0 collision volumes (v5 only)
   data, in order:
-    vertex   8 bytes   i16 x, y, z; u16 mesh
+    vertex   8 bytes   i16 x, y, z; u16 mesh (v5 and v8, in a mesh whose flag byte
+                       has bit 0: the part whose matrix places it, GOG Df.exe
+                       0x469fc0, DF2.EXE 0x44b140)
     normal   8 bytes   i16 x, y, z (/16384); i16 flags
     face    72 bytes   u16 flags; i32 u[3] @0x04, v[3] @0x10 (/65536, may exceed 1 = tiling);
                        i16 vertex[3] @0x1C, normal[3] @0x22 (relative to the mesh);
@@ -149,6 +196,14 @@ LOD × count, each: header (v5: 184 bytes, v2-v4: 176) then data
                        (e.g. the rope bridge has 24: posts and deck planks)
     material 76 bytes  name[12]; u32 flags @0x10; u8 flat RGB @0x28; u8 texture sequence @0x34
 ```
+
+Delta Force 2's v8 models (texture fields 12 bytes later) keep the sequence
+as a signed 16-bit word at @0x20, and Df2.exe compares it with the
+material's sequence byte (@0x34 + camouflage variant, or @0x37 for an alpha
+material) sign-extended (GOG 0x444d3d / 0x444e9a), with no fallback by
+name: a byte 0x80..0xFF never matches and the material is hidden (0x0800).
+That hides `DF2PAR02`'s vest pieces (sequences 128..137) and one LOD of
+`DF2FNT01`.
 
 **Character models** (soldiers, hostages) have their origin at the hips (for
 `PLAYER01`, z runs from −1.01 m to +0.82 m), so they have to be raised by
@@ -197,10 +252,25 @@ Delta Force itself draws `.3DI` via `ITEMS.DEF`, so OpenDF ignores these for now
 
 ## ITEMS.DEF
 
+The GOG release (Df.exe 1.00.03.03p) stores ITEMS.DEF, LOOP.DEF and every
+`.ANM` scrambled, with no header: the bytes reversed, then each XORed with the
+low byte of s = rol(rol(s, 11) + s, 4) ^ 1 (stepped before each byte) from
+s = 0x04960552 (descrambler 0x456eb0, called by the text parser 0x456720).
+Descrambled they match the CD files byte for byte. DF2 uses the same stream
+behind a `SCR\x01` header with seed 0x01234567. OpenDF undoes both in
+`Vfs::read`.
+
 Text: `begin "name"` … `end` blocks with `id`, `type` (decoration, building,
 vehicle, person, object, marker, effect), `graphic` (`.3DI`), `husk`
 (destroyed graphic), `hp A B`, `ai_function`, `move_function`, `chr_file` and
 `anim_def` (people), and vehicle handling values.
+
+After loading it DF.EXE renames every item that has a DFGAME.BIN "Item
+Names" entry `STR_ITM%04i` (id − 100000) to that text (GOG 0x401490 ->
+0x482960, CD 0x4496c0): 110 of the 306 items, e.g. hummer → "humvee",
+sandbnk3 → "bunker, sand". Nothing looks items up by name afterwards;
+OpenDF keeps the ITEMS.DEF name for its lookups and shows the new one
+(`ItemDef::displayName`).
 
 `hp A B`: A is hit points (every person has 1). B looks like a damage class:
 0 for soft things such as crates and barrels, 1 for vehicles, 2 for trees.
@@ -234,6 +304,68 @@ camera: 90° horizontal field of view across the 640×362 3D view (about 58.9°
 vertical). Rendering it that way reproduces footage of the original exactly
 (`docs/compare-weapon-original.png`, original left).
 
+## Game executables (CD and GOG builds)
+
+OpenDF reads static tables (weapons, key bindings, sound names, voice sets)
+out of the user's own game executable (`src/core/ExeImage.*`). The executable
+is found next to the PFF archives, any case: the CD's `DFSETUP/DF.EXE` /
+`DF2SETUP/DF2.EXE`, or GOG's `Df.exe` / `Df2.exe` in the game folder (`app/`
+when the GOG installer was unpacked with innoextract). The build is
+recognised by file size and CRC-32; each build has its own set of table
+addresses (`Df1ExeTables` / `Df2ExeTables`). Any other file (another patch
+level, a regional or modified executable) is reported as an unknown build
+and tried against each table set in turn (DF.EXE CD, GOG, then DF2.EXE CD,
+GOG) by its key table (`move_forward` on the Up arrow); the first that fits
+is used ("unknown build ...; its tables matched the DF.EXE (CD) set"), and
+each table's own sanity check (weapons, keys, sounds) still accepts or
+rejects it. When none fits, OpenDF uses its built-in values, as when the
+executable is missing. The GOG release
+is the reference: where its tables differ from the CD's, its values are used.
+
+| Build | Size | CRC-32 |
+|---|---|---|
+| CD `DF.EXE` (v1.00.000) | 1,043,468 | `63B1DB57` |
+| GOG `Df.exe` | 1,102,860 | `7CED8382` |
+| CD `DF2.EXE` | 835,584 | `A0947236` |
+| GOG `Df2.exe` | 921,600 | `4CED7D2C` |
+
+Delta Force (the tables were matched through the code that uses them, CD /
+GOG function):
+
+| Table | CD | GOG | Found through | Differences in GOG's |
+|---|---|---|---|---|
+| player weapon modes (39 × 168) | `0x4E97D0` | `0x4F9934` | `0x470580` / `0x46bfb0` | none |
+| guns (28 × 52) | `0x4E9060` | `0x4F9154` | `0x470580` / `0x46bfb0` | gun 2 magazine 1 (was 0); guns 4-6 (M89 rounds) power 1, falloff 5 (were 0, 10) |
+| loadout rows (28) | `0x4E9610`, 16 bytes | `0x4F9704`, **20 bytes** | `0x470580` / `0x46bfb0`, rows read at r·0x10 / r·0x14 + 4 (GOG `0x484970`) | a fifth word (1-5, not read by OpenDF); the modes are the same |
+| key bindings (44 bytes) | `0x4DF4F8` | `0x4FB300` | `0x41cbc0` / `0x41cd30` | 119 bindings (CD 121) |
+| sounds (0x200 × 40) | `0x4EB194` | `0x4F2EA4` | `0x472e70` / `0x43e340` | ids 451-470 added (`AMAC1`..`AMAC10`, `DMAC1`..`DMAC10`) |
+| voice sets (16 × 12) | `0x4F019C` | `0x4F7EAC` | `0x473f70` / `0x43f5a0` | none |
+
+Delta Force 2:
+
+| Table | CD | GOG | Found through | Differences in GOG's |
+|---|---|---|---|---|
+| weapon modes (57 × 92) | `0x4C7238` | `0x4DC5E0` | `0x46b230` / `0x4758f0` | mode 48 is a weapon (type 13, ammunition 38, item 4138); modes 55/56 changed; flag 0x100 on modes 31, 48 |
+| weapon types (39 × 216) | `0x4C5150` | `0x4DA4F8` | `0x46b230` / `0x4758f0` | none past the names |
+| ammunition | `0x4C4310`, 38 × 96 | `0x4D95B8`, **39 × 100** | `0x46b230` / `0x4758f0` | see below |
+| drag curve (44 × 12) | `0x4C86B8` | `0x4DDA60` | `0x46b230` / `0x4758f0` | none |
+| key bindings (0x200 records) | `0x4A5CA8`, 44 bytes | `0x4B1710`, **0x70 bytes** | `0x41c700` / `0x41e370` | 155 bindings (CD 120): name at +4, key at +0x24 in both; GOG adds a description at +0x30 |
+| sounds (469 used of 1023 × 40) | `0x4B85A8` | `0x4CD7C8` | `0x45da50` / `0x467880` | none |
+| voice sets (22 × 12) | `0x4B70FC` | `0x4CBCC0` | `0x448240` / `0x44f340` | none |
+
+GOG `Df2.exe`'s ammunition records have a word inserted at `+0x0C` (values
+1-10, not identified; OpenDF does not read it), so every CD field from
+`+0x0C` on is 4 bytes later: velocity `+0x10`, power `+0x14`, falloff
+`+0x18`, lifetime `+0x1C`, accuracy `+0x20`, sounds `+0x24..+0x30`, flags
+`+0x34`, drag bands `+0x38..+0x5C`, grains `+0x60`. The flags hold the CD's
+bits 16 higher (the bullet set-up, CD `0x44a6a0` / GOG `0x451ae0`, tests
+`0x1, 0x10, 0x1000, 0x40, 0x800` / `0x10000, 0x100000, 0x10000000, 0x400000,
+0x8000000`); OpenDF shifts them down and keeps the CD's bit values. Values
+that changed: ammunition 4-6 accuracy 3 (was 5) and grains 180 (124); 12, 13
+lifetime 1000 (600); 13 spare magazines 12 (18); 14 2 (3); 29 4 (3); 36 is
+now 200-round magazines (n 2, accuracy 8); 37 40-round magazines (n 2,
+accuracy 7, flags 0x2003); 38 is new.
+
 ## F_SML640.PCX (HUD font)
 
 256×256, one 16-pixel line per 16 characters (line = code / 16, so line 2 is
@@ -257,7 +389,9 @@ multiplayer maps).
 0x64  char dialogue[16]    "dfdlg02"
 0x98  u32 counts[...]      the first four add up to the object count
 0x10C object records, 96 bytes each, until a zero type
-  0x00 u32 type            ITEMS.DEF id − 100000 (one item, 3034, is stored as-is)
+  0x00 u32 type            ITEMS.DEF id − 100000; a type with no item is the first
+                           ITEMS.DEF entry, 'null' (DF.EXE GOG 0x4828c0): C04M05's
+                           two type-3034 objects ("inhut2" has the mistyped id 3034)
   0x08 u32 id              unique within the mission
   0x0C u32 flags           team/state bits (0, 0x10, 0x100, 0x102, 0x112 …; not decoded)
   0x10 i32 x               16.16, metres east
@@ -440,6 +574,27 @@ states (track-relative): Begin, BasicLoop, Lost, Won, Cancelled, FromMP
 Byte-coded stack VM (DF.EXE 0x4ab5ce, table 0x4ab070); jumps are relative to the code base, calls
 and states to the track. Globals Var00..Var15 at byte offsets 0x00..0x3C, `i` 0x40, `lastTime`
 0x44; the game writes Var0n with 0x4b8570. The full opcode table is in src/audio/Music.cpp.
+Opcode 0x01 pushes its byte zero-extended (DF.EXE 0x4ab681, DF2.EXE 0x48b2c1).
+
+Delta Force 2: DF2MUSIC.SBF (next to DF2.EXE) and DF2MUSIC.BIN (track "DF2Menu", 13 states:
+0 Begin picks by Var00/Var02, 1 the intro (int201..204, toms1xx), 2..4 after a mission, 5..11 one
+per page group, 12 the page switch). DF2.EXE's VM (0x48b1f0, table 0x48ac50) adds a switch,
+opcode 0x35 (0x48b610; a nop in DF.EXE): operands `n, unused, entrySize, totalLength`, then n
+entries; a value below n runs its entry's first instruction and, when that ends at the entry's end,
+goes on after the switch (totalLength from the opcode); otherwise the switch is skipped. State 12
+switches on Var01 (0→5, 1→6, 2/3→7, 4→5, 5→8, 6→9, 7→10, 8/9→7, 10→11), the page states pick
+random stems with switches. `0x33 8` setVolume and `0x33 9` fadeTo (0x48b74a / 0x48b75c → 0x46c240
+/ 0x46c280) set the fade and its target (0..255, 16.16); when a stem starts the step is
+(target − fade) / (size / blockSize) (0x46bf86), and each queued block sets the stream volume to
+master · fade >> 8 before stepping (0x46c050; the volume applies to the whole ring, 0x4a0372).
+DF.EXE does the same (GOG Df.exe 0x4c4fa0 / 0x4c4fe0, 0x4c4ca0, 0x4c4d20 -> 0x494810 / 0x4b52dd):
+with the fade full the stream volume is (255 · cd_volume) >> 8; its sub-ops 2..7 push their own
+number and pop nothing (0x4b705d). The
+menus write Var01 every frame from the current state (0x43cc20 from the main loop 0x45ecd8):
+Campaign 1, MultiPlayer / JoinMultiPlayer / NovaWorld 2 (10 with 0x4cdf4c), Options1/2 3,
+ChooseSoldier 4, Credits 5, MissionBriefing 6, ChangeGear 7, HostMultiPlayer 8, HostOptions1 9,
+others 0. Without the switch every page state was skipped and the script fell back to Begin,
+which with Var00 = 0 restarted the intro piece.
 
 ## KDV video (INTRO.KDV, VIEWS.PFF H_*.KDV)
 
@@ -491,9 +646,10 @@ either one byte with bit 7 set, an index (bits 0..6) into a 128-entry
 cache cleared at the start of every frame (0x487e61), or 3 bytes: blue =
 first byte << 1 (7 bits), green, red. The literal colours of type 1 and 2
 blocks go into the cache at a rolling index (0, 1, ... 127, 0); type 0's
-do not. In types 0 and 1 a pixel whose red byte is 0 is not written; a
-type 2 block is not written when its colour is 0, 0, 0 (so real black is
-coded as red 1). DF.EXE has a second path for 16-bit displays (0x48859d,
+do not. A pixel (types 0 and 1) or a type 2 block whose colour is 0, 0, 0
+is not written (so real black is coded as red 1): DF.EXE decodes into a
+32-bit target on any display of 24 bits or more (GOG 0x4913ec, 0x492725)
+and tests the whole colour dword. DF.EXE has a second path for 16-bit displays (0x48859d,
 the same stream converted to 16 bits); its 8-bit and 24-bit paths are the
 ones that match the files.
 

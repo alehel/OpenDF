@@ -1,10 +1,13 @@
 # The other NovaLogic games in `games/`
 
-A first survey (2026-11-14) of what supporting the later Delta Force games
-would involve, and a separate note on Comanche. Everything here was read from
-the files on the discs; nothing is implemented yet. Plan: Delta Force 2, Land
-Warrior and Task Force Dagger in OpenDF; Comanche as a separate application
-(research only here).
+Started as a survey (2026-11-14) of what supporting the later Delta Force
+games would involve, with a separate note on Comanche; the survey sections
+below were read from the files on the discs. Delta Force 2 has since been
+implemented: "Status in OpenDF" records what it does and where each value
+comes from (DF2.EXE; the GOG build, Delta Force 2 1.06.15, is the reference,
+and GOG installs work as well as the CD). Plan: Land Warrior next, then Black
+Hawk Down and Task Force Dagger; Comanche as a separate application (research
+only here).
 
 ## Shared NovaLogic files
 
@@ -26,18 +29,18 @@ Warrior and Task Force Dagger in OpenDF; Comanche as a separate application
 | `TERRAINS.PFF` (PFF3) | 621 3DI, 67 PCX, 50 TGA, 19 CAL, 18 TRN, 18 JPG, DEF |
 | `MISSIONS.PFF`, `AUDIO.PFF` | the shared library (above) |
 | `DF2MUSIC.SBF` | music bank (DF1's `DFMUSIC.SBF` format family) |
-| `DF2.EXE` (835 584 bytes), `DF2MED.EXE` | the game and the mission editor |
+| `DF2.EXE` (835 584 bytes), `DF2MED.EXE` | the game and the mission editor (GOG: `Df2.exe`, 921 600 bytes, in the game folder with `Df2.pff`, `Terrains.pff`, `Df2music.sbf`) |
 
 First differences from DF1:
 - 3DI header version **8** (DF1: 5); BMS version **0x0F** (DF1: 0x0D); TRN is
   the same text format (`terrain_name ...`).
 - The `.DEF` files (`ITEMS.DEF`, `HUD.DEF`, `LOOP.DEF`) are no longer plain
-  text: they start with `SCR` followed by scrambled bytes. A decoder must be
-  found in `DF2.EXE`.
+  text: they start with `SCR` followed by scrambled bytes (decoder found in
+  `DF2.EXE`: "SCR text scrambling" below).
 - New file types: `TGA` textures, `CAL` (terrain, 19 files), `KSA`
   (`PLAYER01.KSA`, probably the character animation replacing `.CHR`).
-- The game data directory is `DF2SETUP/`; OpenDF only looks in `DFSETUP/`
-  today (`Vfs::mountGameDir`, `findGameExe`).
+- The game data directory is `DF2SETUP/` (GOG: the game folder itself);
+  `Vfs::mountGameDir` and `findDf2Exe` look in both.
 
 ## Land Warrior (2000) — `games/DFLW/DFLSETUP`
 
@@ -80,39 +83,80 @@ First differences from DF1:
     How DF2's renderer DLL draws them is INFERRED, not traced), the texture
     variant mask (3 camouflage variants), 192-byte LOD headers, collision
     planes, 80-byte volumes, 120-byte materials (DF2.EXE 0x43e570).
+    Lighting (GOG Df2.exe 0x44bab0): colour x intensity, intensity ambient
+    0x8ccc + diffuse 0x8000 x |n.L| (back faces /4) or the fullbright +0x3c,
+    capped at 0xffff; no specular and no shade-table highlight. The TRN
+    grade is baked into palettes and material colours before shading
+    (0x4454e0 -> 0x413cd0 / 0x413ba0), skipping textures flagged 0x10
+    (smoke, flashes, mist, sparks, blob shadows); no df.cfg table after.
   - **BMS version 0x0F**: a 0x208-byte header (title/author 32 bytes, terrain
     0x44, dialogue 0x54, flags 0x78 with night 0x100000, weather 0xAC); the
     rest is DF1's layout (DF2.EXE 0x403bd0).
   - **SCR text scrambling** (ITEMS.DEF, LOOP.DEF, .ANM): reversed payload XORed
     with `s = rol(rol(s,11)+s,4) ^ 1` from 0x01234567 (DF2.EXE 0x4614f0),
-    undone in `Vfs::read`.
+    undone in `Vfs::read`. The GOG Delta Force (Df.exe 1.00.03.03p) scrambles
+    the same 13 files in DFBASE.PFF with no header: the whole file reversed,
+    then the same stream from 0x4960552 (GOG Df.exe 0x401050, 0x456720,
+    0x456eb0); `Vfs::read` undoes it when DFBASE.PFF carries DFDK.KEY
+    (only the GOG release does), and the results match the CD files byte
+    for byte.
   - Terrain colour maps as JPEG (libjpeg, optional at build time) or TGA.
+    DF2's JPEGs (terrain colour maps, front-end pictures, the briefing
+    map) decode as Df2.exe's own decoder 0x482310 does: libjpeg supplies
+    the coefficients, then 0x481220's IDCT, whose column pass takes the
+    row-6 term from coefficient c+54 instead of c+48 (8x8 block artefacts
+    in about 16% of DF2_MAIN.JPG's blocks, all of DFD1_C.JPG's), nearest
+    chroma and the 0x481080 colour tables. Bit-exact with libjpeg's islow
+    without fancy upsampling once the slip is undone. The launcher keeps
+    plain libjpeg.
 - `opendf --game games/DF2 mission D03M01` (or any `DxxMyy`) loads and plays
-  with DF1's rules and built-in tables, now with:
+  on DF1's engine with DF2's own rules and DF2.EXE's tables (CD or GOG
+  build; built-in copies when the executable is missing), now with:
   - **soldier animations** from `PLAYER01.KSA` (DF2.EXE 0x41e5e0): 255
     animations of 88-byte frames (15 part angles, pose extents, feet height,
     root motion, event), next-animation/frame continuation, no interpolation;
-    posed about the model's mesh pivots with DF2's rotation Rz(a0)Ry(a1)Rx(a2)
+    each step advances first and fires the entered frame's event, carrying
+    its root offset, a wrap or chain carrying none (GOG Df2.exe 0x423380); a
+    move change sets frame 0 and steps at once (0x4467d0 -> 0x423420), so
+    frame-0 events never fire; an airborne person (+0x64 & 0x2000, not 0x40)
+    is drawn in frame 0 of its Jumping_1HW animation (0x451090, move table
+    +0xe3c); posed about the model's mesh pivots with DF2's rotation Rz(a0)Ry(a1)Rx(a2)
     (0x449df0);
   - **sounds** from `DF2.PWF` (DF1's PWF2 format) with DF2's table (0x4B85A8,
     1024 id slots), whole 16-bit WAV samples (DF2 fixed DF1's low-byte bug);
+    a name the bank defines twice plays its first record (GOG Df2.exe
+    0x47b300; DF2.PWF has 8, e.g. GS_M16_SHOT, EXPLO_WATER, SATCHEL_SET);
+    the "Sound: loop" marker items (types 6045..6087) carry their region's
+    LOOP.DEF loop from mission load (0x465330 -> 0x4682b0: antloop, zaireloop,
+    nigerloop, iranloop, kazloop, nightloop, waterloop 1/2), mixed with the
+    other loops (6 loudest every 8 ticks);
   - **terrain detail**: a 64-wide TGA strip of 64×64 tiles blended by their
     alpha, one tile a map cell; the **sky gradient**: all 256 entries of
     column 0 of the TGA sky palette, not interpolated, screen row k above the
     horizon row taking entry (k·s) >> 16 with s = 10·fov·horizon/width per
     row (0x467700); **surfaces** only from the `char_data` .CAL (DT/GS/SW/
-    RK/CT/SD → dirt/grass/snow/rock/sand; the TRN `type` lines are ignored,
+    RK/CT/SD → dirt/grass/snow/rock/sand, RD/MD/IE/QS → classes 8-11, GOG
+    0x470190; table[i] is CAL line i+1, blank and `/` lines counted, only
+    lines of exactly two tokens and numbers 1..256 stored, 0x46ac50 /
+    0x4705d0; the TRN `type` lines are ignored,
     0x465e5b), read through DF2.EXE's renumbering bug, class(o) =
     cal[remap[remap[o]]] (0x4643a0, 0x466668), copied as the player hears it;
     no .CAL or unmatched names: class 0, silent footsteps (0x4139ae; ±5 m AI
-    noise per step, ±2 m on sand, ±10 m in water);
+    noise per step, ±2 m on sand, ±10 m in water); RD/MD/IE/QS are classes
+    8..11, which only the GOG build sounds (footsteps 0x415780: road/QS/mud
+    0x82/0x83, ice 0x86/0x87; terrain hits 0x415a60: road metal 0x37, mud and
+    QS dirt, ice sand, with AI noise 10/5/5/2 m), the CD build is silent there;
+    terrain hits make an AI noise by class (5/2/2/10/5/10 m for 1..6; GOG 0x415a60 all of 1..11: sound 3C/40/3A/3D/3A/3C/3C/37/3C/3A/3C, effect slot 5/7/9/13/8/6/5/11/5/9/5, noise 5/2/2/10/5/10/10/10/5/5/2 m);
+  - **rotor loops** (GOG 0x42c2da): 502 for the gazelle, Havoc, Hind and
+    Ka-29, 503 for the Black Hawk only; **whiz-by** 0x41 (0x4547a2): never for
+    hand or delay grenades in the GOG build (the CD's 0x44d146 has no such test), on every pass of a tick (the one that hits too), the pass's start or end (the hit backed off, or the tick's end) within 40 m on each axis, at the point of the rest of the tick's segment nearest the listener (0x453770);
   - **soldier hit spheres** (0x44b2f0): KSA has no skeleton, so one sphere
     per mesh, centred on the posed mesh pivot, radius mesh +0x64; the 1.5 m
     body pre-test and nearest-along-the-ray rule are DF1's;
   - **DF2's own HUD** (DF2.EXE 0x442940; full notes in the tracing specs):
     the 3D view is only the rows between two opaque bitmap strips
-    (`DHT%iG`/`DHB%iG`, 0x45cb40); every position per display mode from
-    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000; the weapon,
+    (`DHT%iG`/`DHB%iG`, 0x45cb40; drawn before every overlay box, GOG 0x448fd0); every position per display mode from
+    `HUD.DEF` (0x444150); text in the HUD font in 0xff8000, all DF2 text without a shadow (GOG 0x41bb90); the HUD font f_sml%i (i = min(width, 800)) is a band sheet (GOG 0x465a20 -> 0x41ba90 flag 2, 0x41b9a0 / 0x41b8a0: F_SML640 277x240, 15-row bands), undefined characters drawn as glyph 0; the weapon,
     stance, carried-item and radar-frame images through a fixed amber ramp
     (index i → (i·255>>8, i>>1, 0)) added onto the strip (0x450c10, saturating);
     weapon icon by mode from a 22-frame sheet (0x443370); weapon name from
@@ -122,12 +166,39 @@ First differences from DF1:
     `ELEVATION` (0x442c30) with names per waypoint record +0x58 from
     `DF2WPN.BIN` "WPNames"; the player's name (0x441b20); the radar: the
     colour map north-up at 1.6 m a pixel at 640 (scale as the command map),
-    route lines, objects by their marker shape, GPS soldiers, the player, the
+    route lines, objects by their marker shape, GPS soldiers, the player
+    (colours as the command map's, GOG 0x4273b0: the player 0xff8000, its
+    side's people green, other sides' people red, other objects by side 0
+    green, 1 0x1040ff, 2 red, 3 yellow, 4 0xff027f), the
     next-waypoint dot on the `map_radius` ring (0x421510, 0x4226c0,
-    0x443850); the top strip: the last three of two 40-line histories
-    (system and chat), each line in its own colour, no timeout (0x442170);
-    the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
-    (0x45a9e0). Wider windows (amenity): each strip is split inside one
+    0x443850), the rad%i frame added over the blips (GOG 0x448620); the top strip: the last three of two 40-line histories
+    (system and chat), each line in its own colour, no timeout (0x442170;
+    GOG 0x448770). GOG Df2.exe keeps each message raw (0x77 characters) and
+    word-wraps it into the 40-line history the strip, the command map and
+    the message log draw (0x4212a0 chat, 0x421440 sys, wrap 0x41be90): the
+    HUD.DEF box width x2 − (x1 − 4) in the HUD font, a break at the last
+    space, continuation lines indented "  " and measured with two space
+    glyphs of indent; a mode change re-wraps the raw rings (0x4215e0);
+    every mission start, a replay too, empties all four rings (0x41ede0
+    from 0x466ba0; the CD build keeps them);
+    the crosshair: four orange arms, gap W·320/65536 (GOG: W·1024/65536
+    while manning a gun, 0x4642b0), arm W·640/65536 (0x45a9e0); the laser
+    designator ignores the Crosshairs option: the arms while its scope flag
+    holds, else a blinking "No Target" (GOG Overlays STROVER90) W·0x380/65536
+    above the centre; target identification (GOG 0x4642b0, scope 0x455be0,
+    pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
+    first person (organics table) of the player's side or side 0 along the aim within the
+    centre's range + 2 m and 2 m of the ray gets, if on the player's side,
+    four red diagonal ticks at the crosshair corners (scope: ±r/2 to ±r/4),
+    and, if it has a name (object +0x54 from 0x403790: DF2WPN.BIN `PeopleNames` STRNAME%03i of
+    record +4, item 6005 `WPNames` STRWPNAME%03i of +0x58), its name in red W·1920/65536 above the top arm (scope: at
+    the inset centre), with the crosshairs on or off; friendly tags (F,
+    GOG 0x41f150 / 0x44fe70 / 0x44fee0): 0 off, 1 names, 2 glyph 4, with
+    STRMISC05 / 04 / 33, on (1) at every fresh mission start but kept on a
+    replay (0x466ba0), none with attributes & 0x400; named people on the
+    player's side in view, 1 m projecting over half a pixel, 25 above the
+    origin raised by 1 m, centred, no clip, always green 0x00ff00 (the CD
+    build coloured by side). Wider windows (amenity): each strip is split inside one
     panel, the halves stay at the window's sides and that panel stretches;
     HUD.DEF points follow their half. INFERRED: the weapon's ammo kind uses
     DF1's weapon type numbers; radar objects use record +0x4C as their
@@ -137,9 +208,13 @@ First differences from DF1:
   - **sky**: the mission's sky block (BMS 0xB8..0xE4, a SUNSETS.DEF entry)
     replaces the TRN's clouds, gradient, sky height, horizon, gamma,
     saturation and filter when both names are set (0x4654b6); clouds blend
-    toward the cloud colour (gradient row 0) by density/256 (0x4679b0); the
+    toward the cloud colour (gradient row 0) by density/256 (0x4679b0),
+    the 512-wide sky map point-sampled from 9 levels built as the water's
+    (0x46d8f0), the level per row from the texel step (GOG 0x4718f0, at
+    most 8); drift 1/64 texel per loop tick, which runs on in the pause
+    ([0xc249ec], 0x40b850); the
     sky is not colour-graded; the gradient rows as described above (view
-    +0x4c is the FOV in degrees, 22 with the binoculars);
+    +0x4c is the FOV in degrees, 22 with the binoculars; GOG 22.5 in 16.16);
   - **fog** (used on the disc: D03M07 and D06M17 fog_level 5, DM_S21 and
     KH_S22 7, TDM_D31 7 in 0x646464): BMS flag 0x78 bit 1 → fog_level +0x8C,
     bit 2 → fog_color +0x90 (0x45d6df; TRN keys `fog_level` / `fog_color`,
@@ -147,17 +222,36 @@ First differences from DF1:
     at D, every pixel blended c + (C − c)·min(255, depth·256/D)/256 after the
     objects (the software frame's pass 0x4485b0; INFERRED: depth = view
     depth), the water plane out to min(D, 2047 m), soldiers see no farther
-    than D (0x406180). DF2 has no ring fog on its far terrain;
+    than D (0x406180). DF2 has no ring fog on its far terrain; GOG Df2.exe
+    tints its colour-only (far) rings by each cell's detail tile, out =
+    sat(c · S[t]/256 + C[t]) with C the tile's mean alpha-premultiplied
+    RGB and S 255 − its mean alpha (loader 0x46f680, 2×2 reductions
+    0x46d970), at mip 0 while drawing (0x470900 -> 0x472380, 0x490a79)
+    and baked into mips 1..9 (0x46e0f0); OpenDF builds that tinted map
+    once with its mips for the far rings; its ring
+    table (GOG 0x4722f0 -> 0x472440, divisors p1/p2 2.0 in the main view,
+    3.2 in the binocular moves, the scope's as DF1's, 2.2 in the
+    picture-in-picture views): near bands end at F/(2^k·p1), k 6..1 (80 m
+    at F 320), far band k 0..8 ends at 2^k·F/p2 with colour mip k (terrain
+    to 40960 m unless fogged). Near ground relief (0x471c00): every sample
+    raised by e/256 m (no threshold), e from the detail elevation's 2×2-max
+    pyramid at the band's level, nearest texel (OpenDF's ¼ m mesh samples
+    the finest bands coarsely). Not done: the
+    Turbo option's 4 near bands, 0x46dc00's height-weighted mip filter and
+    max-filtered far heights, and the stored map's +2·max detail bias (line
+    tests, radar);
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
-    born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
+    born up to 64 m around the player object's origin, 16 m up, whatever
+    the camera (GOG Df2.exe 0x464d8b -> 0x476170; the CD build used the
+    last frame's camera) (rain 5 a tick
     falling 0x5000, snow 1 falling 0x800), drifting with the full wind
     velocity, effect 17 where they reach the water level (0x46baa0); rain
     a 1-pixel streak 0.5 m up and half a tick of wind back in (106,126,154)
     at 100/255, snow SNOW.3DI at scale 2 facing the camera, both after the
-    fog (0x46b780). DF2's D3D frame never called the drawing, so with a
-    3D card the original showed none; OpenDF draws what its software
-    renderer showed;
+    fog (0x46b780). The CD build's D3D frame never called the drawing;
+    GOG's does (0x44fa80 -> 0x475e40, snow at scale 0x100000 there, 0x20000
+    in software). OpenDF draws the software look;
   - **air** (0x4587f0): +1 a tick while the player's origin is 0.5 m or more
     under the water; surfacing with more than 60 resets it (AIR_SUCK 801);
     gags (802) at 2304/2496/2688; over 2880 (48 s) the player drowns at once;
@@ -167,12 +261,17 @@ First differences from DF1:
     stops it; OpenDF has no DF2 loadout yet, so nobody wears one;
   - **wind**: fixed for the mission from the BMS header (+0xE8 kph, +0xEC
     degrees it blows from; DF2.EXE 0x45d3f8), shown as `Wind: SW, 3kph` /
-    `Wind: None`. The `sp_wind` option (default/none/random) only applies in
-    multiplayer. Its physical effect, DF2's projectile drag toward the wind
+    `Wind: None`. In single player the `sp_wind` option picks it (GOG
+    Df2.exe 0x466ba0, CD 0x45d1c0): default the mission's, none 0 kph,
+    random 0x4763e0 with the first two draws of 0x41ea20 after its
+    0x10101010 seed, always 12 degrees / 18 kph (`Wind: N, 18kph`), its
+    drift vector the reverse of what the mission wind would give for that
+    direction (no half turn before the sin/cos). Its physical effect, DF2's projectile drag toward the wind
     velocity (0x44c2f0, per-ammo drag bands; DF1 has no drag), is in
     (`Arsenal::df2Drag`).
   - **heights** (DF2.EXE 0x464c30, 0x464798): the elevation PCX smoothed
-    into 8.8 words, H = 256·Σw·h/29 with the wrapping kernel [2 3 2; 3 9 3;
+    into 8.8 words, H = (256·Σw·h·0x8d3) >> 16 (about ÷ 29; GOG Df2.exe
+    0x46eb30) with the wrapping kernel [2 3 2; 3 9 3;
     2 3 2], compared as H << 7: **0.5 m a step** (DF1 0.25 m); ground under
     the water level darkened at load by ×(255 − 6·depth steps)/256, at least
     25/256 (0x4637c0); the mission's water height override (flag 0x78 bit 0,
@@ -181,6 +280,9 @@ First differences from DF1:
     plane at the level out to 2047 m, the 256-wide `water_map` PCX in its own
     palette graded like the terrain, 16 texels a metre, DF1's ±0.25 m wobble
     (16 m, 512 ticks), averaged 50/50 with the scene and writing depth;
+    point-sampled from 8 levels (256..2) whose mips average the indices,
+    (a+b+c+d+2)>>2 less 1 when non-zero (GOG Df2.exe 0x46d8f0), the level
+    per row from the horizontal texel step (0x470aa0, at most 7);
     drawn before the objects with the camera above it, after them below it,
     then a 50 % tint with palette entry 255 over the view. No water when the
     PCX fails to load (RIPPLE3 is not on the disc: DMDG3 and DMS2 are dry).
@@ -192,11 +294,14 @@ First differences from DF1:
     for both: in water a tick moves the whole per-frame step, on land half,
     so swimming is 2v·cos(pitch) and v·sin(pitch) (AUDIT X9). DF2 only:
     shots from a muzzle under the water fire just the knife and the
-    underwater pistol/rifle, others play their +0x2C sound (0x414ad0); the
+    underwater pistol/rifle, others play their +0x2C sound (0x414ad0), for
+    the AI soldiers too; GOG (0x416a30) also lets the delay grenade (mode
+    0x31) through, at 1/8 speed (0x451ae0, ammo 0x21), and a blocked
+    player shot ends his burst (+0x7c = 0); the
     animation events 0x10/0x11/0x17 play DEATH_WATER/UW_IDLE/UW_SWIM
     (0x43f480). The AI swims too (both games, every person runs the same
     move): falling in sets the swim flag with effect 4 and sound 0x8A at the
-    surface, walking in sets it silently with one gravity step; in water
+    surface (DF2: the player's too, GOG 0x446fb6..0x446ffa), walking in sets it silently with one gravity step; in water
     vz ×0x68DB per DF1 AI ground pass (every 4th tick, 0x43693b; the
     player's ×0xCCCC), ×0xCCCC every tick in DF2 (0x440c0a); out when the
     origin is above the level; the bottom holds. The swim motion is by the
@@ -204,7 +309,7 @@ First differences from DF1:
     heading and pitch. DF2's chooser (0x43f690) makes any mover under the
     level play 141 Swimming (moving forward) or 140 Floating; DF1's AI keeps
     its own move (only the player's controller picks Swimming, 0x43752e).
-    The AI's steering keeps out of deep water (DF1 0x46b34c: 0.75 m; DF2
+    The AI's steering keeps out of deep water (DF1 0x46b34c: 0.75 m at 8 m ahead; DF2
     0x4151a0: 0.25 m with ai flag 0x800 only).
   - **collision volumes** (0x440f80, 0x440984): v8 volumes are convex plane
     sets (LOD +0xB0 planes, volume +0x48 count). People and the player are
@@ -215,26 +320,70 @@ First differences from DF1:
     pushed out along the least-negative plane: sideways less 0.1 m
     (nothing within 0.1 m), vertically less 0.02 m (a side push sinks the
     mover 0.02 m, which the terrain then lifts back); a downward push stands
-    him on the object (ground distance 0, +0xF8 = it). Touch items
-    (movecb) do not push. Type 4 volumes are ladders: no gravity, and the
-    chooser climbs: forward +0x800 (run +0x1000) a chooser tick (odd ticks)
-    with Ladder_Up, back down, the diagonals half, sideways Ladder_Left /
-    Right (0x43f951 walk, 0x43fa42 run; jump tables 0x43fb40 / 0x43fb60);
+    him on the object (ground distance 0, +0xF8 = it). An object whose
+    ladder volume the cubes also touch pushes in full instead, no 0.1 m
+    and no 0.02 m, whoever climbs (GOG Df2.exe 0x446ebc). Touch items
+    (movecb) do not push. Type 4 volumes are ladders: contact clears airborne
+    and, unless prone (+0x74 & 0x20), zeroes vel_z (GOG Df2.exe 0x446e0a..
+    0x446e1c), and there is no gravity on one unless prone (0x4470a5: a
+    prone person falls through), so a jump or a fall stops at the ladder;
+    an AI's +0x74 is never written outside the local player (0x41efd0,
+    0x447120) and the network receive paths (0x409fae, 0x45d3e7), so the
+    prone test is always false for an AI. The
+    chooser climbs (GOG Df2.exe 0x445980; CD 0x43f951 / 0x43fa42, which
+    climbed down on back): forward 0x800 (run 0x1000) a chooser tick (odd
+    ticks) with Ladder_Up, up when the pitch +0x34 is above level, down
+    when level or below; the front diagonals half with Ladder_Left /
+    Right, sideways those moves with no climb; Ladder_Down is never
+    chosen. Back and its diagonals: standing and walking move 0 Null (no
+    motion), running or crouched the land moves (stepping off). Standing
+    or crouched still and not shooting: Ladder_Stand. Prone never climbs;
     the player always may, AI with ai flag 0x400 (BMS record +0xC bit
     0x1000; 73 soldiers in D03M03/06/08, D05M06/09, D06M05/11/19). The
     chooser 0x43f690 is the person move's (0x44044f) for everyone, so an AI
     walking or running into a ladder climbs it (AiSystem: the walk / run
     move becomes the ladder move while +0x64 & 0x400000, z at once; back
-    to it out of the volume). AI only goes forward, so none climbs down.
+    to it out of the volume). AI only goes forward, so it climbs up only
+    while its aim pitch (+0x34) is above level; at level it goes down.
     Only PLAYANIM.ANM has the Ladder_* moves (velocity 0.25 / 0.5); enemy
     .ANMs climb in place with no horizontal step (INFERRED: DF2's table
     entry for a missing move). A side push sinks 0.02 m a tick, so a
     walker (0x800 per odd tick) pressed against a wall cannot climb, a
-    runner (0x1000) can (READ: 0x440a8b). `OPENDF_TESTLADDER=1|ITEM` sends
+    runner (0x1000) can (READ: 0x440a8b); in GOG Df2.exe the ladder's
+    own object pushes in full (0x446ebc), so only other objects sink him. `OPENDF_TESTLADDER=1|ITEM` sends
     the first such soldier into the nearest ladder (testing; D06M11's
-    powcamp guard tower: climbed 27.5 to 32.9 m and stepped onto it). Type 6 volumes set +0x64 & 0x1000000: the
+    powcamp guard tower: under the CD rules climbed 27.5 to 32.9 m and
+    stepped onto it; under GOG's the guard aims level and stays at the foot). Type 6 volumes set +0x64 & 0x1000000: the
     armory (item 103099 `armory`, model AMMODUMP, in the multiplayer maps;
-    KHUFU and TAVERN have one too). READ quirks kept: the sum of a mesh is
+    KHUFU and TAVERN have one too). Emplaced guns (GOG Df2.exe 1.06.15
+    only; the CD build pushes type 7 like any solid volume): ITEMS.DEF
+    attrib `EWeap` (0x8000; `4Team` is 0x4000, 0x422cca / 0x422cfa) marks
+    50Cal_S/K/K0/K2/P/B and glaunch; their seat is a type-7 volume, which
+    sets flags 8 and does not push (0x447450). The person move calls
+    0x4145a0(person, gun) for it (0x4467d0): with the gun EWeap and the
+    person on nothing or this gun, a control direction 3..5 (keys held
+    back, 0x41efd0) or either dead/destroyed clears both links (person
+    +0x8c, gun +0xF8); else, if nobody's +0x8c is this gun, it links them
+    and puts the person's origin at the gun plus hardpoint 0 turned by his
+    heading (0x418300). Linked, the chooser plays 107 Crouched_EWeap
+    (0x445980; speed 0 in PLAYANIM.ANM, absent from the enemies'), the
+    player's heading stays within 45 degrees of the gun's and the pitch
+    within 22.5, re-placed every chooser tick (0x447120), the view comes
+    from hardpoint 2 through the gun's posed mesh 1 with the player's
+    angles (0x44dd50 -> 0x416e90), and the gun's "ewpn" pose (0x450c60)
+    turns meshes 1 and 2 about hardpoint 1 by the gunner's heading less
+    the gun's and his pitch. A destroyed gun lets go (0x4467d0's end).
+    The gun's own weapon: slots 11 / 12 hold modes 0x37 (.50 cal, ammo
+    36, 200 rounds, cooldown 6, full auto) and 0x38 (ammo 37, 40 rounds,
+    cooldown 16) (0x44eeb0); after each weapon tick (0x44c840's end) a
+    manned gun selects 12 for item 4080 (glaunch), else 11, and none
+    held returns to slot 3; 0x44f160 refuses 11 / 12 without a gun
+    (a weapon key switches away for one tick), 0x44d3c0 does not cycle
+    off them, and the rounds leave the mounted eye (0x44dd50 ->
+    0x416e90). Not done: the HUD's name and icon for modes 55 / 56
+    and the multiplayer mount 0x4183d0. Only TKH_G21 places
+    guns (two 50Cal_K); walking into one there seats the player.
+    READ quirks kept: the sum of a mesh is
     cleared only when a point reaches the mesh box, so a mesh no point
     reaches adds the previous mesh's push again. DF2 has no DF1 mover box
     (World::resolve does nothing under DF2 rules) and no face ground: the
@@ -255,7 +404,8 @@ First differences from DF1:
     put soldiers on the cars; `OPENDF_TEAMSPEED=10:40` starts D06M05's
     train at once; `OPENDF_DEBUGRIDE=1` lists the riders.
   - **sound**: DF2's tables read from the user's DF2.EXE (sound names
-    0x4B85A8, 469 records, ids below 0x400; voice sets 0x4B70FC, 22 sets: the
+    0x4B85A8, GOG 0x4CD7C8, 469 records, ids below 0x400; voice sets 0x4B70FC,
+    GOG 0x4CBCC0, 22 sets: the
     new 16-21 are ids 700-772), built-in copies otherwise; no terrain
     occlusion (0x45E0A0 returns 1.0); the layer flag 0x80 shuffle (a random
     start, then in turn back round to it, 0x470560); the speed-of-sound queue
@@ -279,19 +429,63 @@ First differences from DF1:
     samples by pitch × the clip's rate field (0x4a0092) and convert WAVs
     with the canonical 44-byte header (0x4711a0: rate field (rate·16) /
     22050 << 24, size +0x28, data +0x2c; 16-bit by the whole word).
+    GOG Df2.exe's sound start 0x47b3c0: per layer the variant pick, then the
+    definition's pitch random, then the variant's; no range test before the
+    pick, so a layer out of range still steps its counters and starts at
+    volume 0 (0x47b9a0, 0x47b602); a definition with flag 1 skips layers
+    with flag 0x20 (0x47b3a0). NEW.PWF, when present, overrides DF2.PWF per
+    flag-1 record with its own samples (0x4679c0). The mixer has 16 slots
+    taken in index order (0x4aafc0: a free one, else the first quieter
+    playing one not already pending), slots 10-15 reserved for the loops
+    during a mission (0x47c320 from 0x4679c0, cleared by 0x47c160); a loop
+    starts 0..255 samples past sample 1 from a mixer seed (0xd1cface0, rol
+    11 + seed + 1, 0x4996d9) and every repeat restarts at sample 1 with the
+    fraction dropped. Loop emitters are refreshed once a 60 Hz tick
+    (0x464d51 -> 0x4683f0, acting every 8th call). Footstep events are
+    silent for an airborne body (0x445750: +0x64 & 0x2000), decorations
+    think every 8 ticks (0x446550, markers 64), and with dialog volume 0 a
+    radio line shows no subtitle either (0x467950). The music stream queues
+    while fewer than 13 blocks wait behind the playing one (0x4ab2c2,
+    0x4766c0), a new stream volume re-gains the waiting blocks only
+    (0x47bb70 -> 0x4ab372), and each script tick starts with empty data and
+    return stacks (0x496271 / 0x496276).
   - **weapons** read from the user's DF2.EXE (0x46b230 and its in-place
     conversions): 57 modes (0x4C7238, 92 bytes: kind = DF1's fire type, ammo,
     first-person item, offsets, muzzle vertex, cooldown, zoom, flags 0x1
     scope / 0x40 full auto / 0x4 one-handed), 39 weapon types (0x4C5150,
     loadout categories, modes), 38 ammo records (0x4C4310: DF1's gun layout
-    plus drag bands and bullet mass), the drag curve (0x4C86B8); slots per
+    plus drag bands and bullet mass), the drag curve (0x4C86B8); the GOG
+    Df2.exe 1.06.15 (init 0x4758f0) keeps them elsewhere (ammo 0x4D95B8, 39
+    rows of 100 bytes with a new dword at +0x0C and the flags << 16; types
+    0x4DA4F8, modes 0x4DC5E0, curve 0x4DDA60) with its own values (e.g. ammo
+    4-6 accuracy 3 and 180 grains, M203 12 rounds, grenade and M203 flight
+    1000 ticks), told apart by the M4's ammo row; slots per
     0x447e20 (laser, knife, sidearm, primary ×3, secondary, gear, detonator,
-    grenade), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
+    grenade; every non-zero mode kept, the body gear's kind-0 Armor /
+    Ghillie / LAR V too, which key 7 and cycling stop on and which fire
+    nothing), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
+    the reload key on launchers, claymores, satchels, grenades (GOG: and the
+    camera) starts the mode's cooldown with the load sound (0x44f070 /
+    0x44f000, CD 0x447fb0), whose end takes a clip whatever the chamber
+    holds (0x44cc20, CD 0x446340); grenades, satchels and claymores end
+    their throw / placement with the same cooldown and load sound, and
+    place at the player's object z (+0x2c); the radio detonator clicks (2D
+    sound 0x7c, 0x407400) and starts no cooldown; the scope zeroing is the
+    soldier's (+0x5c4 -> [0x67cdac], 0x43c280, stored back by 0x43c6f0);
+    GOG's Df2.exe 1.06.15 (0x4758f0, told apart by the M4's ammo record) has
+    the tables at 0x4DC5E0 / 0x4DA4F8 / 0x4D95B8 / 0x4DDA60, 39 ammo records
+    of 100 bytes (+0x0C the clips Extra Ammo adds, later fields 4 on, flags
+    << 16), changed values (M203 12 rounds, mounted guns 55/56 full auto) and
+    its own refill (0x44dfc0: Extra Ammo as secondary or gear adds +0x0C
+    clips to slot 3's weapon, slot 4's too for primaries 9/10);
     projectiles (0x44c2f0): gravity 0xa7 a tick², drag toward the mission's
     wind by the ammo's speed band and the curve (×(1 + depth/10) under water,
-    at most 0.5 a tick), rounds under the water spent below 15.5 m/s; people
+    at most 0.5 a tick; GOG 0x453860 pulls toward rest instead of the wind
+    at or under the water level, the CD always toward the wind), rounds under the water spent below 15.5 m/s; people
     take max(1, |v|²·M / 25) (×8 head, 0x44bf40/0x44bff0); the MasterKey's
-    12 pellets within ±5.625°; the Barrett's 1/32 m push. Water (0x44bd40,
+    12 pellets within ±5.625° (GOG 0x451eb0: the shared generator seeded
+    with the binary yaw >> 16, each pellet (r + 0x1f8000)·0x800 about the
+    yaw and pitch truncated to 16 bits); the Barrett's 1/32 m push. Water (0x44bd40,
     hit type 4, handled at 0x44cee5): a round crossing the surface splashes
     (effect 2, sound 0x3B) and its tick ends 0.125 m below it, velocity kept,
     so rounds go on under the water (and a rising one is pushed back down);
@@ -306,14 +500,73 @@ First differences from DF1:
     unharmed, buildings take nothing, vehicles only rockets (64) and
     shells/impact grenades (16), others max(1, E/25); explosions (0x44d4a0):
     people base 8 (32 for the 12 m charge) full/half/quarter by 4 m/8 m,
-    objects 512/128 − 16d or 32 − 4d with a blast class (3/2/0, +1 inside)
-    that must reach the item's third hp value. Rounds penetrate objects (0x44bdd0: the face's
+    objects 0x200/0x80 − (d >> 12) or 0x20 − (d >> 14) (16.16 d) with a
+    blast class (3/2/0, +1 when the blast point, in the object's frame, is
+    strictly inside the LOD 0 header box, GOG 0x454fab) that must reach the
+    item's third hp value; rounds with ammo flag 0x1000000 (0x17..0x1a) do
+    nothing to `noak` items (0x453510); the blast's line of fire for
+    people, the player and objects is GOG 0x406610 (terrain, decorations and
+    items in the way, no fog cutoff); the blast carries its owner (the
+    round's shooter, the charge's placer, the strike's requester): objects of
+    the owner's side are spared and victims and fragments credit the owner
+    (0x454b60, 0x452120). Round explosions (GOG 0x453860): gex5 (0x13) on the
+    ground with a smoke generator (none for impact rounds whose ammo has
+    0x20000000), boomd (0x14) on objects, people and for the delay grenade's
+    fuse, effect 4 / sound 0x35 in the water, each with a ±200 m AI noise;
+    water splashes ±10 m, a dud M203 on a person effect 0x10, sound 0x39,
+    ±5 m. Glass (an intact object's 0x10000000 face): rounds and explosives
+    (LAW, impact and delay grenades) go through it without exploding, the
+    mesh breaking once (obj +0x78) with GLASS_SMASH 800 and a ±20 m (±40 m
+    for explosives) noise, no impact effect; the panes stay drawn (+0x78 has
+    no draw reader). Not yet: the glass shards (0x414a90: min(100, area·20)
+    of 107047..107049, ai `gdeb`), the blast's flag-2 mesh pass, and the
+    palm trees' hit stages (0x42ed40: hit part 0/1 into +0xB4, 2 into
+    +0xB8, over 10 -> 0x429e40(part); 0x42eae0 / 0x42eed0: the falling
+    palmsection, sounds 0x12E / 303); a palm at hp <= 0 does throw its
+    palmdebris pieces with sound 300 (0x429e40(-1), as GOG Df.exe's
+    0x44e6b0(-1); DF2's gdeb mover 0x42e6a0 is DF1's); the owner of a vehicle's or
+    charge's own detonate / fragment chain (0x414960) is not passed on
+    either (the boat's five big blasts take its +0xF8); nor the cactus and
+    oak debris (cact 0x42e620 -> 0x429880, oakt 0x42e8b0 -> 0x429a80: DF2's
+    debris objects, whose move OpenDF does not have yet; the live oaks'
+    ambient sound is done). Every effect takes two numbers from the shared
+    generator 0x41ea20 (0x4156b0: yaw, scale rand + 0x8000); the common
+    blast (0x414960: vehicles, helicopters, barrels, mines) seeds it first,
+    so its fragments start at the third number, and leaves no smoke
+    generator; the claymore (0x415520) blasts at the charge, no smoke, its
+    fan Y + (−30 + 1.8k)° about the anticlockwise yaw from 0.2 m up. AI
+    sight lines (0x4063d0 -> 0x46e740) test the ground raised by the detail
+    elevation (the stored grid), rounds and blasts the plain ground. The bld2
+    crush (0x45cd80) takes 100 hp from people, every item-list object and
+    every non-building decoration in its box. Rounds penetrate objects (0x44bdd0: the face's
     material cost × (hp2 + 1) against |v|²·M, speed × sqrt((E−T)/E), up to 20
-    hits a tick). Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
+    hits a tick; a face with no impact material, such as the wire fences, or
+    glass on a husk costs nothing and the round goes on at full speed, GOG
+    0x453860; an AI noise per material: flesh, wood and none 5 m, metal, stone and armour 15 m, bush and canvas 3 m, intact glass 20 m)
+    and people (GOG 0x453860 case 3: flesh 100·(hp2 + 1) after the damage, a
+    5 m noise, the person skipped for the rest of the tick); the passes of a
+    tick follow the segment traced at its start, each resuming 0x2000 past
+    the hit. An item with hp2 < 0 (dish, radar, the 'Target:' vehicles)
+    stops every round dead, whatever its face (0x453510), and sets off a
+    delay grenade there. Tracers (0x452290 / 0x452610): every pass of a
+    round leaves a segment in a ring of 2048 that fades over 0x1e ticks
+    (alpha ((life >> 2) << 3) / 255), coloured at fire time by the
+    shooter's side (0x451ae0: 1 light blue, 2 light red, 3 yellow, 4 pink,
+    else white; M203 and LAW white, shrapnel 0x1010101); with Options3
+    TRACERS on (attributes 0x80 clear) all but rounds with flags 0x1c900000
+    (hand and delay grenades, shotgun pellets among them), off only the LAW
+    and shrapnel; under the water every round, in white. Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
     and speeds, but fragments are ammo 31 and DF2's random generator 0x41ac40
     is reseeded to 0x5FC by every burst (DF1's seed call is empty), so each
-    burst has the same pattern about its heading; big blasts 0.2 m up, the
-    fire-mission shell kept above the water. Death moves (0x415130): DF1's
+    burst has the same pattern about its heading; the big blast (GOG
+    0x45f910 -> 0x4174d0: satchel, fire mission, boat, ibom) at the given
+    point (the +0x3333 goes only into the network packet), gex5 with the
+    generator's first two numbers as its yaw and scale, kind 5, a ±200 m
+    noise, no smoke, 200 fragments fanned from the object's yaw (the strike
+    0); the fire-mission shell kept above the water. Rounds drawn in flight:
+    M203 first, then the hand and delay grenades' 4033, then the LAW's
+    rocket (0x451ae0); the delay grenade's fuse is its lifetime less
+    (yaw >> 16) & 0x7f. Death moves (0x415130): DF1's
     names, plus kind 4 (falls: Death_B_P11DF) and 5 (drowning: Death_Water),
     no part clamp; soldiers landing hard take (1 << n) − 1 (0x43f600).
     Weapon handling is DF1's, routine for routine (READ): select 0x4480b0
@@ -324,10 +577,19 @@ First differences from DF1:
     reload end, then the burst counter's fire command), the silent cooldown-
     end chambering 0x446410 (full auto on flag 0x40), reload end 0x447950
     (an empty chamber gets the cooldown with +0x24 via 0x447f40(0); no
-    message — "Ammo reloaded" is the ammo crate in both games), dry fire
+    message), dry fire
     0x4470ae (click +0x2C, silent cooldown, burst counter 0; launchers and
     grenades click only, charges do nothing) and the fire command 0x447270
-    with no reload gate. DF2's scope flag [0x7655f4] is only toggled
+    with no reload gate; the knife strikes whenever its cooldown is out,
+    with no chamber test (GOG 0x44df60 / 0x44da80). A round from ammo
+    without flag 0x80 (GOG 0x800000; the suppressed ammo 4, 5, 6 and 17
+    have it) marks its shooter as having fired (+0x64 0x4000, x6 to be
+    seen; 0x451ae0), sound or not; suppressed rounds still make their noise
+    box. Ammo crates (0x446050): 4010, 4055, 4082 and 4089 refill
+    everything (0x44dfc0), 4118 the grenades only (modes 0x21, 0x22, 0x31,
+    0x44e310); neither touches the reload timer or the cooldown; the
+    message is Misc "STRMSIC17", misspelt in both builds, so an empty line
+    (in 0xff8000) goes into the system messages, and sound 0x164. DF2's scope flag [0x7655f4] is only toggled
     (0x447b30, from command 0x41b35a; cleared with the weapon block at the
     mission start, 0x4477bf) and counts for flag-0x1 modes (0x447b40), so it
     survives weapon changes, reloads, moving and the binoculars. DF2's
@@ -335,71 +597,229 @@ First differences from DF1:
     47, kind 12, flags 0x200, no scope bit) and saves the slot held in
     [0x76553c], B again selects that slot. So with the scope flag on, the
     scope is hidden while the binoculars are held and comes back with the
-    gun. The binocular view (FOV 22, the random offset 0x4481e0 picked anew
+    gun. The binocular view (FOV 22.5 in GOG Df2.exe 0x465f90, 0x168000 in
+    16.16; 22 in the CD build; the random offset 0x4481e0 picked anew
     on each raise, the Heading/Distance texts) shows only in the raised
     moves 0x68/0x72/5, which the move chooser 0x43f690 picks for a 0x200
     mode at speed bits ((+0x74 >> 3) & 3) zero: walking keeps the
-    binoculars in hand (their HUD name red) but lowers the view. The scope
-    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18), while
+    binoculars in hand (their HUD name red) but lowers the view. The
+    chooser's hand class (GOG 0x445980) is the mode's +0x3C: & 0x18 the
+    *_2HW moves, & 4 the *_1HW ones, anything else (knife, grenades,
+    satchel, claymores, detonator, laser, binoculars) the plain WalkingN /
+    RunningN (Running0 6.0 m/s against Running0_2HW's 5.0), _S only for
+    the two hand classes; still: BIN 0x200, SLW 0x10, SCW with the scope
+    in (standing), 2HW 8, 1HW 4, else KNIFE (prone: 1HW). The scope
+    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18; GOG
+    0x455790 also while dead, airborne, swimming or on a ladder, +0x64 &
+    0x422004, and in an outside view, the same test gating the zeroing and
+    magnification keys), while
     the shot's origin and the designator take 0x447b40 alone; the mouse
-    turns at an eighth while the inset shows (0x41ae13). DF1's [0x93353c]
+    turns at an eighth while the inset shows in the CD build (0x41ae13);
+    GOG Df2.exe 0x41eb50 replaces the eighth by a rate that grows with the
+    frame's counts u over the mode's width / height s, 0x40000 + 4096 ·
+    scope · (2u/s)² binary angle per count, scope = the soldier's SCOPE
+    SENSITIVITY (+0x5d8, Settings 0..0x180) + 0x80 clamped to 0x80..0x1ff;
+    the mouse sensitivity (+0x5b0, 0..0x200) is used as 0x80 when <= 0 and
+    0x1ff above. Both are written back after the mission; the rate applies while 0x455790 holds (scope up, player alive); its 'scopescale' command (0x3b) has no key in the table or the Keyboard screen. DF1's [0x93353c]
     is the same (AUDIT G5), hidden while moving or with the binoculars up
     ([0x93367c], a flag that moving clears, 0x4373ab). Kevlar is checked on every person
     (0x44cd35, AI block +0xB8 = 31), but only player slots ever set that
     byte (0x45429d and the network copies); placed soldiers have none.
+    GOG Df2.exe's video camera (secondary or gear type 36, mode 48, kind
+    13, ammo 38: one camera): firing sets the inset flag [0x79a6b4]
+    (0x44d8a0) and, chambered and out of cooldown, places item 4138 1 m
+    ahead like a satchel (0x44d460 -> 0x406d00; the host removes the
+    player's older camera first, 0x459b80 -> 0x418190, and 0x414850 takes
+    the new one as [0x79a6b8] with its yaw and pitch), with the satchel's
+    kick and the load sound; its cooldown ends like a satchel's (0x44cc20).
+    0x44c840 lets the camera go once destroyed or removed and keeps its
+    pitch within 45 degrees. While the flag is on and the scope is not
+    shown, 0x465f90 -> 0x4568a0 draws the camera's view (0.5 m above it,
+    90 degrees across) at x 0x2c0..0x3c0, y view top + 0x40..+0x100 of the
+    1024x768 frame, or clears the flag when there is no camera. VCam (F12,
+    0x41f150 case 0x28) toggles the flag; holding mode 48 with the view on
+    the mouse turns the camera instead of the player (0x41eb50 -> commands
+    0x35..0x38, cases 0x29..0x2c). Mode flag 0x100 (modes 31, 48) hides the
+    first-person model once no clip or chambered one is left (0x44ea10).
+    The Forward Observer (GOG 0x41f150 case 0x14, fo F11: night vision
+    off, [0x79a6a8] toggled; N turns it off, case 0x27): with the camera's
+    inset off and the scope not shown, 0x456670 draws its target's view
+    ([0x79a6ac], the player at mission start, 0x44e7f0) in the same
+    rectangle (x rounded down to 4) from the target's origin raised by the
+    player's eye offset [0x79a688], its yaw and pitch, 90 degrees across,
+    the target itself not drawn; 0x4559d0(1) outlines it in 0xff8000 and
+    writes the target's name at (x0 + 10, y1 + 10); a target no longer in
+    use turns it off, none while the player is dead or the target on
+    another side. Tab (case 0x15, 0x44e590) picks the next person in use on
+    the player's side with item attrib 8 (FO), wrapping; none: no target.
+    OpenDF counts the player's own table entry as before the first person.
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
-    STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
-    pause (STROVER7), the message log (the system history 15..0, entry 0 the
-    newest, bottom-anchored, own colours),
+    STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20;
+    GOG 0x448fd0 in the HUD colour [0x67d378], which the unbound hudcolor
+    command steps through white, 0x010101, green, 0x1040ff, yellow, red,
+    0x41f150 case 10, kept across missions by 0x43c160 / 0x43c280),
+    pause (STROVER7), the message log (CD 0x442850: a panel with the system
+    history 15..0, entry 0 the newest, bottom-anchored, own colours; GOG
+    0x448e40: the whole view darkened without an outline, STROVER43 at
+    view top + 20, and both wrapped histories 15..0 at their top-strip
+    columns from view top + item y0 + W·120/1024, 12W/640 apart),
     the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
     header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
-    as spelt), binocular texts in orange at the view's centre − 15; the
+    as spelt; each header only when its list has an entry, 0x448b10),
+    the audio macros list (A, AudioMacros; GOG 0x4478f0 / CD 0x441410):
+    the panel (128, 200)-(896, 560), "%i - %s" lines of "Male / Female
+    Audio Macros" STRMAM_/STRFAM_%02i at (200, 240 + 30k); while it is up
+    the digits 1..9, 0 send macro 1..10 (a network message only, 0x407160)
+    and close it instead of selecting a weapon (0x421940), Escape closes it
+    first (0x41f150 case 0x11), binocular texts in orange at the view's centre − 15; the
+    help (F1; GOG Df2.exe 0x41e5d0 at the mission start, drawn by
+    0x41e620): the action table's 0x200 rows with the soldier's bindings,
+    rows without a key or mouse button and category 11 left out, sorted by
+    category then name, named by DF2GAME.BIN HelpScreenActions, a page per
+    category or 14 rows titled "Help - <HelpScreenText category>", "Page %i
+    of %i", key texts from HelpScreenKeys (Ctrl-/Alt-/Shift- by flags
+    0x100/0x80/0x40, " or " a mouse button, " *" for flag 0x200), drawn at
+    x + 20, y + 100 of 1024x768 in the view's darkened, outlined box;
+    PgUp / PgDn turn the pages with wrap (0x41e240). The CD build's table
+    has no categories, so with CD DF2.EXE OpenDF keeps its old layout; the
     scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
-    half-blended navy inner segments, "%4im" range in orange, the zeroing
+    inner segments that halve the pixels (0x457480 colour 0), "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
-    0x44e0a0), the laser square;
+    0x44e0a0) and above it the magnification "%2ix" (below), the laser
+    diamond (vertices r/8 out on the axes); the range is the depth at the
+    inset's centre, whose pitch carries the zeroing (GOG 0x4557e0); friendly
+    tags inside the disc are covered by the inset (0x455be0 after 0x44fe70).
+    The scope shows (GOG 0x455790) only while
+    the scope flag is on for a flag-1 mode, no move key is down, and the
+    player is not dead, airborne, swimming or on a ladder (+0x64 &
+    0x422004); it also gates the scoped mouse and the X/Z/E keys; the
+    scope view's FOV 28.125 / mag degrees
+    in 16.16 (GOG 0x4557e0: 0x46500000 / (mag × 640)), mag for slots 3-5
+    the kept magnification [0x79a698] (E / Shift+E step it 2..scope with
+    wraparound while scoped, 0x44c7e0; cleared at mission start, 0x44e7f0,
+    then the slot-3 scope, 0x44eeb0; clamped by 0x44e6a0; shown as "%2ix" at (700, 480) in
+    yellow), half of it with the
+    fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
+    DF1's 28 / mag whole degrees (Scope Mag: command 0xc2 'scopemag', only
+    while 0x455790 holds; the CD build has no magnification, its scope view
+    takes the mode's scope);
     night vision (key N, on at the start of night missions: 0x44781e) as an
-    ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450); the
-    scope image green ×4 at night. DF2 has no "Player Health: Easy".
+    ellipse 4r × 2r, green only ×4, over the gun, which is drawn inside the
+    3D frame and depth-tested against the world (GOG 0x44f8d0 -> 0x44ea10,
+    before the fog and the under-water tint 0x44fcb0); no night vision with
+    another camera or while dead (GOG 0x465f90 -> 0x450550), nor 
+    while the scope shows (GOG 0x465fde); the scope image green ×4 while the
+    night vision is on (GOG 0x455be0, [0x79a7fc]). DF2 has no "Player Health: Easy".
   - **front end** (`opendf --game games/DF2 play`; src/menu/FrontendDf2.cpp;
     DF2.EXE states 0x45ec40): DF2.MNU parsed as 0x42e460 does ([SOUNDS]
     [ARGBS] [FONTS] [IMAGES] [MENUS] [BUTTONS], strtok fields, attribute
-    letters, z-order lists, button sizes), DF2.BIN `MENU` texts, 640×480
+    letters, buttons qsorted by name with _strcmpi then each menu's list
+    exchange-sorted by descending z-order, GOG 0x432ba0 / 0x433040, so the
+    Campaigns region buttons draw over the world map; button sizes), DF2.BIN `MENU` texts, 640×480
     screens scaled to the window (amenity), 4-frame button strips, the menu
     fonts (bands ending at a column-0 marker row), mm_Rect outlines 0xCA4409;
-    Choose Soldier (df2plyrs.sav 'FPBC' v10, 5 × 0x6E8: name, face, arm patch,
+    Choose Soldier (df2plyrs.sav 'FPBC' v14 as GOG 0x436890 writes, v10..v14
+    read with 0x4369f0's per-version patch, 5 × 0x6E8: name, face, arm patch,
     stats; "Blackhawk" when empty; name editing), Main Menu (help texts
     teletyped; NovaWorld, Multiplayer and Update disabled), Campaigns (C03/C05,
     regions, the 28 missions with the header +0x7C unlock rule, done marks,
-    titles under the dots, CABRIEF), Quick Missions (D06*, TITLE, QMBRIEF,
-    pictures), Mission Briefing (MBBRIEF, the terrain JPG ×4 with numbered
-    waypoints), Change Gear (categories 3/4/2/4+5, grenades 26/37, the
+    titles under the dots, CABRIEF; GOG 0x434800: only this campaign's
+    regions with a done or unlocked mission and only the done or unlocked
+    dots of the current region are shown, the rest hidden and unclickable;
+    the shown region kept per campaign, first the first available one with
+    missions left, a complete one making the next blink every 30 ticks,
+    GOG 0x434440 / 0x434a90 / 0x434a20 / 0x43457b, with campaign 2's blink
+    word shared with the timer as in the EXE; the Main Menu resets the
+    campaign to 1, 0x43a5c9), Quick Missions (GOG 0x442960: first the
+    game folder's *.bms files, titled by their file name with the header's
+    briefing (+0x108, 0x404530; the Mission Briefing shows it too), then
+    the archive's D06*, TITLE, QMBRIEF, pictures; each only when header
+    +0x78 & 0xFE800000 is 0; OpenDF loads such a file through the VFS by
+    its name), Mission Briefing (MBBRIEF at (x + 5, y + 5) in its border,
+    scrolled by but_mb_brvsl over max(0, lines - 25), GOG 0x43d000 /
+    0x43d120; the map, GOG 0x43ce90: the
+    version-15 header's terrain name with .JPG for .TRN (DFS1.JPG, 256²)
+    tiled 4 × 4 into 1024² (0x46c760), drawn 1:1 at (x+1, y+1) inside the
+    mm_Rect border, nothing at all without the picture; the scroll is the
+    map sliders' value, range picture − view, eased by ≤ 10 a tick toward a
+    target (page tick 0x43ca20) that the sliders, the arrows (±10 at once,
+    0x43d610..0x43d6d0), MAP CENTER (0x43d930) and a press on the map
+    (0x43d250 event 3: centres on the point under the mouse) set; the BMS
+    markers of GOG 0x4045e0, object byte +0x4C set and flags & 0x50 clear, up
+    to 50, at 4 m a pixel: route markers 1-3 joined by 0xFFFFE000 lines with a yellow icon
+    and their number at (x+4, y-5), the others as 8-frame team icons
+    grn/blu/red/yel_icon.pcx, GOG 0x43d250; scroll centred by (view-1)>>1,
+    0x43cdf0), Change Gear (categories 3/4/2/4+5, grenades 26/37, the
     mission's header defaults +0x94..+0x97), Settings pages 1 and 3 (df2.cfg,
     sp_wind, gpsicon, attributes), DF2MUSIC.SBF with DF2MUSIC.BIN; after a
     mission back to Campaigns / Quick Missions (no debriefing in DF2), the
-    win marking the mission done and the unlock mask kept; the voice briefing
+    win marking the mission done and the unlock mask kept, every run saving the scope zeroing (+0x5c4, read back at the next start; GOG 0x43c280 / 0x43c869); a fresh mission start shows df2_wait.pcx (scaled nearest, GOG 0x466ba0(0) -> 0x465ed0, with the Loading Text lines; the Space replay does not); the voice briefing
     (0x4384f0: on entering the briefing once per chosen mission, and from
     PLAY BRIEFING; `<mission>NN.WAV`, NN 01..19, filed by NN and played in
     slot order, each when the last has ended; the music first ramps over 60
     ticks from the soldier's music volume +0x5bc toward 70 and stays there
     until the page is left, 0x437a70; each voice at direction 0, volume 255,
     pitch 1.0 (0x437933), gains 62 / 63, the dialogue volume unused) and
-    slider dragging. Settings has four
-    pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 48 rows (labels
-    0x4b3af0, defaults 0x4b2cb8 copied into new soldiers by 0x431c00,
-    soldier +0x2e0, 12 bytes {VK, mouse 0..3, 0}), ten shown, scroll arrows
-    and a slider forced to range 39; clicking a key box waits for one key or
+    slider dragging. The mouse (GOG 0x433f20): the hit test 0x4337a0 takes
+    the first button from the top z-order whose box (0x432690: image push
+    button w × h/4, slider image with the track p3 as length, any other
+    image type 0 × 0; text box or (p1, p2) without one, 1.6 times as tall
+    and left of x when right-justified unless G) holds the mouse, skipping
+    only J (0x200), so hidden, C and callback-less buttons are hit too and
+    cover what is below; then by type (0x433ec0) push buttons (btn_roll on
+    entering, btn_slct on pressing, unless M) or sliders (a press near the
+    knob holds it, elsewhere steps the value by user1 or 5 toward the
+    mouse), other types nothing, drawstate 0 and 4 ignored. Settings has four
+    pages that wrap (0x4b3ae0): page 2 "Keyboard" (0x439ea0): 59 rows in the
+    GOG build (labels 0x4c8144, defaults 0x4c7190 copied into new soldiers by
+    0x4368f0; the CD's 48 plus PRINT_SCREEN, the voice-over-net keys,
+    SELECT_TARGETED and SCOPE_MAGNIFICATION, rows 45/46 named
+    INCREASE/DECREASE_SCOPE_ZERO; soldier +0x2e0, 12 bytes {VK, mouse 0..3,
+    0}), ten shown, scroll arrows and a slider forced to range 50; clicking a key box waits for one key or
     mouse button (left 1, right 2, middle 3, swallowed while waiting), which
-    is taken from every other row first; keys outside 0x439310's list
-    (Esc, F-keys, Alt, '/', …) give REMAP_RESERVED; DELETE KEY then a row
+    is taken from every other row first; Esc, Scroll Lock, Pause, the
+    Windows keys, VK 0x2A, '`' and F1..F24 give REMAP_RESERVED (GOG
+    0x43e6c0; the CD's allow-list 0x439310 is gone); DELETE KEY then a row
     clears it, DEFAULT copies the defaults, REVERT the snapshot taken on the
     first visit (cleared by ACCEPT); key names as 0x439fe0 ("CTRL OR MOUSE
     1", "KEYPAD 5"); messages REMAP_* teletyped in the box at (455,205)
     130×145; ACCEPT saves df2plyrs.sav; at mission start every row sets its
     command's key (0 clears it) and mouse mask (1, 2, 0x10), FIRE_WEAPON both
-    attack_1 and attack_2 (0x43afb0). Page 4 "Voice-over-net": drawn from the
+    attack_1 and attack_2 (GOG 0x441140; PrintScreen and the Von*
+    commands have no game-side action in OpenDF yet). In a mission (GOG
+    0x421be0) a key runs the table's first one-shot record (flags +0x2a
+    without 4) for it whose modifier test passes: flag 0x40 needs Shift,
+    0x100 Ctrl; otherwise with Shift or Ctrl down (not the key itself) it
+    needs 0x200 (resolution, tab, NextWaypoint, NextFlag, cycle,
+    scopemag), so weapon keys do nothing while walking with Shift or
+    firing with Ctrl; Shift sets bit 31, which reverses cycle,
+    NextWaypoint, NextFlag and scopemag (0x41f150). A mouse button
+    (0x420e10: left 1, right 2, middle 0x10) runs the first one-shot
+    record with exactly that mouse mask (scope on the right, Prone on the
+    middle); the wheel (0x4799e0, per 120) steps the zeroing (forward up,
+    back down) while the scope shows, else cycles (back next, forward
+    previous; 0x44d3c0 with -1: current - 1..0, then 9..current).
+    Views (GOG 0x414240 / 0x413dd0, eased by 0x4141b0 each tick: the
+    pivot 1/16 toward the body, the yaw 1/32): 1stPerson F2, 3rdPersonp F5
+    (chase: the body's eased yaw + [0xbf2b78]), 3rdPersonw F6 (world-fixed
+    yaw [0xbf2b78]), 3rdPersonl F7 (fly-by: a point 4 m out at the body yaw
+    + 67.5 degrees, 1.5 m above the ground, moved on past 30 m); refused
+    while dead. A new mode resets yaw 0, pitch 0x4000000, distance 3 m;
+    the held keypad keys turn ([0xbf2b78] -/+ 0x2000000 a tick), tilt
+    (pitch -67.5..90 degrees) and zoom (1/8 m a tick, 1..500 m). Dead, the
+    chase view is forced with the yaw tick << 21 (0x465f90). Outside
+    views draw the player's body and hide the gun, crosshair and target
+    ID; the scope does not show (0x455790) unless picture-in-picture is
+    on, and the listener is the camera (0x418c80). Picture-in-picture
+    (pinp, F8, [0x67cd10] from df2.cfg picinpic, 0x43c280; CD [0x652fc8]):
+    in an outside view the player's own first-person view (FOV 90, his body
+    and gun not drawn) in the inset rectangle with an amber outline and no
+    name (0x456480 / CD 0x44eaf0), ahead of the video camera and FO insets,
+    not while the scope shows (its inset then looks from the player's eye)
+    or the player is dead. Not done: the body's held weapon, rounds from
+    the gun's muzzle (0x44dd50 -> 0x416f60). Page 4 "Voice-over-net": drawn from the
     MNU with the VON_BLURB box (opt4_Explain 0x43ad30); its other callbacks
     are empty in DF2.EXE (0x4015e0), so nothing on it does anything. Credits
     (0x430e00): CREDITS.SCR's `[MISSIONSCRIPT]` (strtok ", ", `{PRINTTEXT}`
@@ -409,62 +829,123 @@ First differences from DF1:
     (−1 forever), drawn in slot order; at the end back to the Main Menu.
     Teletype boxes play a random TTY_CLK1..9 on channel 2 each tick while
     typing (0x43d110 calls 0x43d000 while unfinished; DF2.EXE does it per
-    drawn frame); menu sounds use their channels (mnu_tran 1, btn_slct 3,
-    btn_roll 4: a new sound cuts the old). Screen changes: no fade is drawn
-    (the hooks 0x468c00/40/70 call an empty table); input is ignored for 12
-    ticks after entering a screen; only the Main Menu and the Mission
-    Briefing wait 12 more ticks after a click before switching (0x4356a0,
-    0x437811), the others switch at once. A soldier saved by earlier OpenDF
+    drawn frame); menu sounds ignore their channel and overlap, each at its
+    MNU [SOUNDS] volume (the line's 4th field, clamped 0..255; GOG Df2.exe
+    0x4342d0 -> 0x4758b0 -> 0x442e40), not scaled by the SFX slider (the
+    soldier's +0x5b8 goes to 0x67cd20, which nothing reads). While the music
+    is on, the menu loop forces Var1 to the screen's value every frame
+    before the stream update (GOG 0x468b3f..0x468b4d, 0x442f60). Screen changes: no fade
+    is drawn (the hooks 0x468c00/40/70 call an empty table); the mouse is
+    ignored for 12 ticks after entering a screen and keys typed meanwhile
+    are handled when those ticks end (GOG 0x4333c0 leaves its key queue
+    unread); only the Main Menu and the Mission Briefing wait 12 more ticks
+    after a click before switching (0x4356a0, 0x437811; keys then are lost,
+    and owner draws other than mm_Rect get event 0xC and draw nothing, so
+    the briefing text and map blank), the others switch at once. Push
+    buttons (GOG 0x433f20 / 0x433a30): a button pressed and then left by
+    the mouse fires as it is left; releasing over a lit button sends it
+    event 2 then 1 again; while a soldier name is edited a click on any
+    other button (or none) accepts the name before the click goes on. A soldier saved by earlier OpenDF
     builds with no bindings at all gets the defaults when loaded (an OpenDF
     repair). Not yet: multiplayer (out of scope).
   - **command map** (key C; 0x40b370): instead of the 3D view, a 640×480
     mouse screen (scaled into the window; the background tiles continue past
     its sides): CTILE2 background, CTILE panels with DF2_EDGE/DF2_CRNR frames
-    3 px outside, the last three chat/system lines, the tabs (Cmap
-    CMAP_MENU000-004, F_LG640, 0xff9020 / 0x603000, clickable); Map tab: the
+    3 px outside, the last three chat/system lines, the six tabs of GOG's
+    table 0x4af9e0 (Map, VON, Players, Team, Weapons, Mission: Cmap
+    CMAP_MENU000, the literal "VON", CMAP_MENU001-004; F_LG640, loaded with
+    flags 3 (0x465a20) and so blended by 0x41bb90, each ink pixel with weight
+    (palette blue >> 1) / 128, no shadow; 0xff9020 /
+    0x603000, laid out from x 40 with the rest up to 984 shared six ways,
+    0x40bda0, clickable on their text, 0x40d860; the CD's table has five);
+    Map tab: the
     radar picture at the radar's scale in (48,200)-(640,656), 100 m grid in
-    orange with white labels (columns x/100+10 as letters, rows 10 − y/100),
-    route lines, double-size blips with a black outline, waypoint names, the
+    orange with white labels (columns x/100+10 as letters, negative ones
+    wrapped by 702, rows 10 − y/100),
+    route lines, double-size blips with a black outline in GOG's colours
+    (0x4273b0: the player 0xff8000, its side's people green, other sides'
+    people red; other objects by side), with Names every named blip's +0x54
+    name (PeopleNames / WPNames, the soldier name, W waypoint names) at
+    (x + size, y) in each outline pass's colour (0x427904), the
     toggle buttons (Gridlines, Names, People, Waypoints, Vehicles, Buildings:
-    END1/MIDL/END2, 0xff9020 on / 0x683000 off), the icon buttons, + / −
+    END1/MIDL/END2, text 0xff9020 on / 0x683000 off; every text button
+    draws frame 1 under the mouse and 2 while held there, GOG 0x40c8a0 /
+    0x40cae0), the icon buttons, + / −
     zoom, >< re-centre, right-drag pan, the DF2CURSA / DF2CROSA cursors in
-    green; Mission tab: MBBRIEF in 0xc06000; Team tab (0x40f190): the side-1
-    soldiers (player first) as Name/Plan/Weapon rows, picked there or by
+    green; Mission tab (0x412bb0): MBBRIEF through the text box 0x40c310
+    in (64,216)-(608,704), 0xc06000, wrapped at spaces / '~' / CR / LF,
+    lines the 'A' glyph height + 2 apart, empty segments not drawn,
+    clipped at the bottom, scrolled by its bar (608, 0..count+1 page 18),
+    then "Game Settings\rn/a" unwrapped in (704,216)-(960,704) with its own
+    bar at 944 (READ quirk: a line cut by width at a CR/LF/'~' loses the
+    first letter of the next word, "ituation."); VON (0x40f5b0) and
+    Players (0x40fb70): the players (the player alone in single player),
+    16 numbered rows from y 240, the VON or Receive/Waypoints/Mute/Text
+    chat headings, no per-row buttons on the player's own row; Team tab
+    (0x410060): the side-1
+    soldiers (player first; dead ones stay, 0x40d520 has no health test,
+    an empty name shows CMAP_ITEM_UNKNOWN) as Name/Weapon/Plan rows from y 240 (14
+    rows, headings Name at 80, Weapon centred at 288, Plan at 464, y 204),
+    each row hit only on its number-less name rect (0x40d790), picked there or by
     clicking them on the map (0x422640); a teammate's four orders (Cmap
     CMAP_BTN_NOORDER/HPHF/HPCM/HP) set the AI byte +0xBB and answer with
     STRMISC34..37 in green (0x4113b0 -> 0x403380); the player's plans are
-    shown (multiplayer only). All five tabs show in single player. One
+    shown (multiplayer only). All six tabs show in single player. One
     selection ([0xbcb424]) is shared by Map picks (the nearest blip drawn
     last frame within 1000 px², 0x422640), Players rows and Team rows; the
     selected blip blinks (outline its colour halved, colour | 0x808080 while
     (frame + 8) & 0x20). The selected-object panel at (684,200) (0x40e190:
     Selected/name/team/grid/Plan/Weapons for the player and squad;
-    Waypoint/Building/Vehicle with name and grid 0x422d60) and its action
-    buttons from (688,696) upward (0x40dd50: Bozo Filter and Send Message to
-    as no-ops, Set as my Waypoint, Delete, Rename) on the Map, Players and
-    Team tabs. The W tool (0x411250, one-shot; the W button made with state 0
+    Waypoint (items 6005 / 6089 only, 0x40ebf0)/Building/Vehicle with the
+    object's +0x54 name as is (no fallback) and grid 0x427a60: 16.16 fixed
+    point, columns wrapped by 70200 m, rows by 10000 m) and its action
+    buttons from (688,696) upward (GOG 0x40e800: Bozo Filter as a no-op,
+    Set as my Waypoint, Delete, Rename; the CD's 0x40dd50 also had Send
+    Message to) on the Map, Players and Team tabs (none on VON). Any mouse
+    button works the tabs, rows and buttons (0x40c1e0 ORs every held
+    button); left alone picks on the map, right drags it; a click on the
+    open tab does nothing (0x40d800). Opening or closing the map puts the
+    pointer at the screen centre (0x4673b0 -> 0x479b80); the cursor is kept
+    inside the 640x480 screen (0x40ccf0) and the Game Paused box is drawn
+    over the map (0x449200). Map draw (0x4261e0 / 0x4273b0): soldiers,
+    objects, the route, waypoints, the player (hidden with People off),
+    then the selection again with its last shape (so a selected HUD
+    waypoint does not blink out); Buildings hides buildings and
+    decorations, Vehicles vehicles, Waypoints only items 6005, 6026..6028,
+    6089, 6092, 6093 (other markers stay); destroyed S&D decorations are
+    not drawn (map and radar); objects at their absolute mission positions,
+    not the nearest wrapped copy; with Gridlines the orange north arrow and
+    "N" at (590, 220), the grid labels outlined in 0x010101 and drawn only
+    when they fit inside the map (0x426fd0 / 0x4270c0). The W tool (0x411250, one-shot; the W button made with state 0
     on every Map visit; the white DF2WCURA cursor anywhere on the Map tab):
     a click on the map makes a player waypoint "WP" (item 6089, 128-slot pool
     0xd34dc0 cleared at mission load; full: nothing made) at the clicked
     ground point, selects it and opens the "Type in a name" prompt (16
     chars, the darkened box 0x4422b0); held left drags waypoints, mission
-    ones too (x/y only). Pool waypoints show on the map and the HUD radar as
+    ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show in the 3D view (GOG 0x450070: a green line one metre tall straight up the screen, the name centred 15 pixels above), on the map and the HUD radar as
     green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
     (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
-    list; W returns to the list at entry 1, 0x446700; a deleted one shows NO
-    WAYPOINT). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
+    list; a deleted one shows NO WAYPOINT). NextWaypoint (0x44d280, -1 with
+    Shift): nothing with fewer than two route entries (a custom HUD waypoint
+    stays), the route cleared when no entry exists, from index 0 when the
+    HUD waypoint is not on the list, entries without an item skipped. The
+    W tool's point is cut to whole metres from the integer centre pixel
+    (0x427ba0). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
     Escape clears first): the green ramp 0x4aecdc, also on the HUD radar, no
     water blend; contours ({{{, map only): 0x00ff00 where H >> 12 changes
-    from the previous pixel of the row or the pixel south. The Players tab
-    (the player alone in single player: number, name, red brackets when
-    selected; headings; scroll bar arrows). The Weapons tab (0x40fbe0):
-    current and requested loadout with WEAP640 pictures by type (0x4434e0),
+    from the previous pixel of the row or the pixel south. The mission
+    route keeps up to 16 points (GOG 0x459740; DF1 8). The Weapons tab (0x40fbe0):
+    current and requested loadout with WEAP640 pictures by type (0x4434e0;
+    GOG 0x449b50 also gives type 9, M4/M203, frame 4),
     < > cycling through types the slot's category mask allows (0x4a4c88),
     the button rows' quirk (empty slots share a row); Request Weapons is
     accepted only while the player overlaps a type-6 volume (+0x64 &
     0x1000000, an armory: 0x45a6e0), else nothing happens; accepted, the
     loadout is applied with each slot's full magazines and the ammunition
-    pools refilled as at the start (0x458190, 0x456f10). INFERRED: single
+    pools refilled as at the start (0x458190, 0x456f10); the client then
+    rebuilds the slots (GOG 0x44eeb0) and selects the held slot again
+    (0x44f160), keeping the scope flag, the binoculars' return slot and
+    every round in flight (GOG 0x409610 case 0x56). INFERRED: single
     player delivers its own request message. OPENDF_REARM accepts anywhere
     (testing). + / − zoom every frame while held, route lines with the black
     ±1 px outline, the Mission tab's CMAP_SETTINGS title. Not done: the
@@ -473,8 +954,13 @@ First differences from DF1:
     Make Permanent, voice buttons, received waypoints, the start countdown).
     Testing: OPENDF_CMAPTAB opens a tab, OPENDF_CMAPTEST scripts map clicks,
     keys and typing.
-  - **item behaviours** (DF2.EXE ai table 0x4a4030): snd3 ambient markers
-    (acceleration·64 + rand·axle_dist·64 ticks, at the marker, 0x402730);
+  - **item behaviours** (DF2.EXE ai table 0x4a4030): the "Sound: ..." markers
+    snd0..snd3 (GOG Df2.exe 0x4027f0, 0x402850, 0x4028b0, 0x402910; CD
+    0x402730 for snd3): graphic-less records in the markers table, visited
+    every 64 ticks (0x446550), first wait counter % 60 (0x403790, +11 a
+    record, never reset), the sound at the marker, then 20..25 / 8..11 /
+    3..4 × 64 ticks, snd3 int(acceleration)·64 + r·axle_dist·64 ticks, r
+    from the shared generator 0x41ea20;
     bld2 buildings (their sound as dec0's; destroyed: everyone and every
     vehicle within the model's ±flat radius / ±height loses 100 hp, then 64
     steps one per 8 ticks: two rubble bursts a step (effect 0x13 = item 7030,
@@ -485,15 +971,19 @@ First differences from DF1:
     husk at step 8, a ±500 m flags-0 noise that alerts relaxed soldiers;
     0x4028d0); smk2 clouds are SMKT_H billboards growing, rolling and fading
     (0x42aaa0, efct draw 0x41f740), their colour INFERRED to replace the
-    material's; v8 alpha materials without flag 1 take the texture at +0x37
+    material's, graded at spawn (GOG Df2.exe 0x413c50 from 0x415de0 /
+    0x415f70) with the runtime table, which after the load is the df2.cfg
+    gamma with saturation and filters 0x80 (0x4658f0 -> 0x4666c0), not the
+    TRN grade; df2.cfg gamma affects nothing else; v8 alpha materials without flag 1 take the texture at +0x37
     (0x43ebca) and 8-bit grey textures on them are INFERRED drawn as
     texel-as-alpha;
     gnrl breaks silently (0x4012b0); smok one puff (0x402550); ibom the kind-5
     blast with 200 fragments (0x401240 → 0x4572d0); DF2's effect table (0x414500:
     DF1's 16 plus 17 rain, 18 snow, 19 gex5, 20 boomd, 21/22 parachutes,
     23-27). `OPENDF_TESTBLD2=1` destroys a mission's first bld2 at tick 30
-    (testing). The searchlight `slgt` (sweeps ±45° about its placed heading,
-    spots within 22.5° and 1000 m, tracks for 8 thinks, the husk and a
+    (testing). The searchlight `slgt` (DF1 has it too, GOG Df.exe 0x4519a0; sweeps ±45° about its placed heading,
+    spots within 22.5° and 1000 m anyone of another non-zero side (GOG
+    0x42aa10 compares sides, not teams), tracks for 8 thinks, the husk and a
     blast 1 m up when shot; 0x427f30, 0x4281e0, 0x425c70), Land Mine (`mine`
     0x4295f0 when shot or blasted; any person stepping on it, 0x43fc80: a
     blast and a smoke generator 0.5 m up) and wall trigger (`vtrg`
@@ -513,14 +1003,93 @@ First differences from DF1:
     team's speed (the path only fires its events), horn 803 on starting,
     loop 808 (0x42c4a0, 0x401340); carg cars copy the first loco's step and
     rock ±1.4° every 32 m (0x42c440, coupling 0x45bd1f); DF2's veh0 eases its
-    steer by at most 0.18° a tick (0x41efa1);
-  - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up
-    (and, INFERRED from the missions, the player's start marker and
-    teleport targets that high: the trace found no code that sets the chute
-    flag on markers, but starts like D06M06's 160 m only make sense with
-    one) descend 0x2222 a tick under
+    steer by at most 0.18° a tick (0x41efa1) and thinks every 0x20 ticks on
+    a path, 0x40 off it (GOG 0x4237c0); a destroyed one stops dead where it
+    blew up (the move 0x423ac0 runs only while +0x64 & 4 is clear, the
+    think 0x423865 zeroes +0x9C and +0x3C..+0x50). The BRDM (item 102023, graphic
+    number 0x7e7) has a turret gun (GOG 0x423a1e; none with AI flag 1):
+    each think it takes a target through the soldiers' scan (0x417830) drawn
+    against rand, with a pause of 32..95 and a yaw bias scaled by
+    100 / accuracy (0x424680), re-checks the sight line every 0xC0 ticks
+    (0x424780) and aims the turret at the last known point (yaw ±135°,
+    pitch −5.6..45° from the hull, 0x424470); every tick the turret turns
+    0x200000 toward it and, within 0x10000000, fires .50 (mode 53) bursts
+    of 16..47 ticks, one round per 16, pauses 64..127, the bias ×3/4 each
+    time (0x423ac0, 0x424550); `brdm` draws the turret, gun, steered front
+    wheels and the muzzle flash for one frame after a round (0x4295f0);
+    helicopters by graphic number (item def +0x20): rest height of the
+    origin above the ground Black Hawk 0x7e5 0x37000, Havoc 0x7d5 0x38000,
+    Hind 0x7ec 0x41000, Ka-29 0x7ed 0x34000, others (Gazelle) 0x3f000
+    (0x42ca03); only the Black Hawk turns its door to the target (+22.5° /
+    +67.5°, 0x42b922 / 0x42b969) and starts its gun at -90° (0x42c379); door
+    gun limits Gazelle ±45° yaw, -45..0° pitch, Black Hawk -135..-45° yaw,
+    -16.9..0° pitch, any other type unclamped with no fire refusal (0x42bb5e,
+    0x42bccf); rotor loop 503 for the Black Hawk, 502 for the Gazelle, Havoc,
+    Hind and Ka-29 (0x42c8d4);
+    the altitude is chosen at think time (0x42b520) and applied every tick
+    (0x42c960: z += vz, vz += it, no cap; falling, it lands on max(ground,
+    probe) + rest): floor = max(the object probe 0x445f50 from 3 m under
+    the origin, refreshed every ~8 thinks, the terrain 4 m to each side, the
+    water level), raised by samples 1, 2 and 4 s of speed ahead, the
+    climb/descent ×k (1, 2 after the first raising sample, +1 per further
+    one); the band moves by 0x100 << shift (down when sinking, up
+    otherwise); too low +0x100·k (−0x100 above 0x7ff), too high −0x100·k
+    (+0x100 under −0x7ff), in the band ∓0x80 − 0x4D; 7..11 tail hits climb,
+    12+ −0x134. Hover 8 m / band 1 m, path 18 m / 4 m (shift 1, or the tail
+    hits up to 5); the attack approach (only with lift) 18 m / 4 m shift 4
+    beyond 80 m, else 8 m / 1 m shift 5, 7 in the 8..30 m hover band, by
+    0x41e880's distance; landing, unlifted and destroyed ones fall to /
+    settle on the probe floor (at least the water while intact);
+  - **animals** (src/game/Wildlife.cpp; ai table 0x4af100, move table
+    0x4c37xx): vultures `vult` (think 0x42dfe0 every 0x10 ticks, move
+    0x42e1c0): 3 m/s at 72 m (40 m with a target), at least 20 m above
+    the ground, climbing / sinking speed >> 7 a tick; home again (+ a random
+    0..43.6°) beyond 200 m; ENV_VULTURE_CALL with chance 1/64; the corpse
+    scan 0x42aeb0 (dead people of another side, not side 0, within 90° and
+    999 m, in sight; 100/d × angle, ×2 but the player; × perception, ÷4
+    relaxed) against rand takes a target (spotted 0x41ac00), which it
+    circles (0x42df50: 3 m/s beyond 16 m, else 2 m/s with the yaw
+    +0x18000000); destroyed: ENV_VULTURE_DEATH once, it falls under 0x134 a
+    tick with its momentum and thuds (0x48) and bounces on the ground.
+    Penguins `peng` (think 0x42f030 every 8, move 0x42f430): walk their path
+    (0x4033d0) at 0.5 m/s, which the mover holds whatever the think wants
+    (so one without a path walks straight on), hop into the water when the
+    ground 2 s ahead is under it, dive (splash effect 4 + PENGUIN_INTO_WATER,
+    0x45af50), swim at 2.25 m/s with a random ±22.5° heading now and then,
+    climb out (PENGUIN_OUTOF_WTR) and level off; a waddle roll; destroyed:
+    PENGUIN_DEATH (0x42a9f0) and tipping over. Fish `prnh` (think 0x42db20
+    every 8, move 0x42de00): their path at 1 m/s with a tail-flick burst
+    (+0xC0 = 0x100, the speed + (+0xC0 << 12)) 1/32 of thinks, 0.5 m under
+    the surface (0x42d870); unless AI flag 1 (D05M06's eleven `fishy2` all
+    have it, so they only hang under the surface) the scan 0x42ac80 (people
+    of any side but 0 up to 1 m above the water, within the field of view
+    and 99 m, sight from 1 m up; ×6 swimming, ÷256 otherwise) takes a
+    swimmer, kept while he swims; the attack 0x42d920 lunges by the jaw
+    within 4 m, steers ±0x11000000 off him and within 0.75 m, after its
+    pause, bites with chance 1/8 (blast kind 4, 0x455180: 1 hp from every
+    person within 2 m, the player too) with effect 0x10 and
+    ENV_PIRANHA_BITE every time, backing off at -4 m/s; destroyed: belly
+    up, rising to just under the surface (no husk: it stays drawn).
+    Bird trees `btre` (fir_bird; think 0x42d170 every 0x40 ticks): after a
+    rest of 10 thinks, the scan 0x42b070 (people of another side, not side
+    0, alive, no field of view or sight line: 5 / whole metres × move
+    visibility × 8, × 64 if they fired lately) over 16 flushes three
+    sparrows (item 104051, 0x414850) 4 m above the tree at random yaws a
+    quarter turn apart with ENV_SPARROW_CALL; a sparrow `spar` (think
+    0x42d030, move 0x42d0d0) speeds up 0x4000 a think to 3 m/s along its
+    yaw, climbs speed >> 7 a tick and is removed above 100 m.
+    INFERRED: the first think staggered as the markers' (+11 a record % 60);
+    the penguin's flipper / foot phases, the vulture's wing beat (+0xB0)
+    and the sparrow's swing (+0xB0, reader not located) are not drawn;
+  - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
+    and the player and teleported teams at a start or teleport marker more
+    than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe
+    0x45c4b0 (CD 0x4544a0) flags those markers 0x20, which the start
+    (0x460810) and the teleport (0x418be0) copy, descend 0x2222 a tick under
     `parachut` (PFoil items) or `pararnd`; landing (on the ground, an
-    object's volume or the water) leaves the canopy, which tips over and
+    object's volume or the water) leaves the canopy (GOG 0x415cd0: at the
+    person's origin, `parachut` or `pararnd` by its PFoil attribute, the
+    player's too), which tips over and
     sinks for 1800 ticks (`para` 0x42c570). There is no wind drift: with
     PFoil (every player item and the Squad Members) the chute glides 0x4000
     a tick (0.25 m, 15 m/s) along the heading, so the player steers by
@@ -553,25 +1122,16 @@ First differences from DF1:
     still carries DF1's ANIMMGR KDV player (its strings at file 0x87d9f),
     but DF2 ships no KDV file.
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
-    flags}), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
+    flags}; GOG Df2.exe 0x4b1738, 112-byte entries, name +0x4C, key +0x6C), with scopeinc X, scopedec Z, NVG N and scopemag E added to OpenDF's actions.
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:
-  - *unverified guesses* (INFERRED, listed above): the player's parachute
-    start and teleported paratroopers' chutes. A full sweep of DF2.EXE
-    (1999-10-19) finds the chute flag set only by the soldiers' start pass
-    (0x45bb10); the player and teleports copy a marker flag that is never
-    set, so that EXE would drop the player to its death at the ten missions
-    starting 100-160 m up and kill its scripted paradrop teams. OpenDF applies
-    the soldiers' 100 m rule to them too: the start heights sit on that test,
-    the D06M06 briefing says the player paradrops, reviews and walkthroughs
-    describe DF2 missions opening with an automatic parachute drop, and the
-    Land Warrior mission editor manual (same engine family) says a "Start,
-    Player" marker with Z between 100.00 and 300.00 makes the player
-    parachute in, and that this also works for AI units. (DF2's own editor
-    manual says nothing about it; a patched DF2.EXE, the last official patch
-    being 1.06.15, may set the flag where this one does not.) Below 100 m the player
-    starts at the marker's height and drops, as DF2.EXE does;
+  - *the player's parachute* (settled 2026-11-15): earlier traces missed
+    the marker pass GOG Df2.exe 0x45c4b0 / CD 0x4544a0 (its flag write goes
+    through a pointer 0x28 into the record, so it reads as +0x3C); it sets
+    flag 0x20 on start and teleport markers more than 99 m up, and the
+    start and teleport copy it. Below that the player starts at the
+    marker's height and drops, as DF2.EXE does;
   - *settled since*: the ammo display's kinds (DF2's own record +0x0C, with
     grenades red while firing or empty and binoculars red unless up), radar
     shapes (signed byte +0x4C, live positions, 0x403590 / 0x421510), rounds
@@ -595,6 +1155,79 @@ First differences from DF1:
     map prompt y = (H − bottom strip)·768/H − 160 (0x45cb40, 0x443e21);
     the scroll bar's thumb and zones (0x40c7d0, 0x40c8c0); the image-button
     text placement (0x43d4c0); the software z-buffer's depth (0x484077);
+  - *settled since* (mission, GOG Df2.exe 1.06.15): the single-player record
+    filter (0x403790: flags 0x10 / 0x80 dropped, 0x20 / 0x40 kept, '4Team'
+    items and side-3/4 records dropped with mp_numteams 2; the slot stays
+    zeroed), so the player starts on the first loaded 6001 (D05M13 at
+    (-149, -962); 0x460810 takes 106094 markers first, none in the data);
+    the same filter in Df.exe (0x449710) puts DF1 C02M01 at (-191, -113);
+    record yaw = int16 +0x34 and pitch = int16 +0x36 (both games, e.g. the
+    tilted pungi stakes); kill team (0x416380) destroys every object of the
+    team through its ai function, `null` / `dec0` excepted, and on team 1
+    the player too (an organic of team 1, 0x4146f0, whose `plyr` 0x401fc0
+    dies at hp <= 0 on any event: death move kind 1, no red flash); the
+    campaign switches are kept when the mission is left with side 1 the
+    winner and at the Space replay (0x464140 via 0x464190 / 0x466ad0), not
+    at action 8 (0x41b700 case 8 only latches the winner), so the unlock
+    switch a win event sets after its action 8 is kept (DF1 still copies
+    them at action 8); events (0x41ad40, as Df.exe's 0x42e9e0): with a
+    timer running an event only counts down and cannot fire in that
+    visit; the scheduler 0x41ae50 (every 16th tick from the 16th) skips
+    flag 2 and 4 events, its eighth [0x4e029c] never reset (it carries
+    over between missions); flag-2 events are visited once at load
+    (0x41aeb0) and flag-4 events when the mission is left, before the
+    switches are saved (0x464140 -> 0x41aef0; single player sets the gate
+    [0x67cd34]); condition 1/2 tests bit p2 of team p1 (0x41b180); one-point paths are marked stop-at-end (flags |= 1)
+    at load (0x403e20, loop 0x4041b0: 356 of the 778 lack it in the
+    files); condition 1/13
+    "team hit team" (table 0xabbe00, set on a direct hit 0x453510 ->
+    0x41ac30); area condition 1/10 (0x41b200, 0x4152a0): the first and last
+    marker of the tag, both axes must differ, live positions of groups 0
+    and 3 with no alive test, a height range between the markers' absolute
+    heights when either record z is non-zero, objects removed by action 4
+    left out (0x418ce0 -> 0x418110 zeroes the record); pungi sticks (0x446050 case
+    0x42a): hp -= 2 a tick in contact when airborne or running uncrouched,
+    the player and AI alike (INFERRED for the AI: running = a Running move);
+    events (0x41ad40): flag-2 events get one visit at load before the team
+    totals and the player spawn (0x466ba0 -> 0x41aeb0), flag-4 events one
+    when the mission is left (0x464140 -> 0x41aef0), the 1-in-8 pass skips
+    both (0x41ae50, flag 16 is not skipped); a visit that finds a delay or
+    repeat countdown running only counts it down, so a repeating event
+    refires one visit after its countdown ends; condition 1/2 tests bit
+    (team p2) of row p1 (0x41b180; set from the AI 0x4018fc / 0x401f3b ->
+    0x41ac60); AI property 5/6 also sets / clears the team's alert state
+    that condition 1/3 tests (0x4184c0 -> 0x4045c0 / 0x4045a0), members or not;
+    the grenade crate 104118 (0x446050 case 0x1016, the player only):
+    packet 0x1f refills every slot holding mode 0x21 / 0x22 / 0x31
+    (0x44e310), shows Misc "STRMSIC17" (sic, no such key: an empty line)
+    with sound 0x164, and the crate goes (0x418110); leaving a mission
+    (0x43c6f0): a single-player win, campaign or quick, adds the kills and
+    1 to Completed Missions (every win) and marks a campaign mission done,
+    a loss adds nothing; the flags word of the soldier's campaign (+0x28)
+    is what both kinds start with and get back; a DF2 profile with face
+    10-14 plays the female soldier (0x43c280);
+  - *settled since* (mission, second pass): the team table (0x404310 after
+    the flag-2 events and before the player spawn: totals of decorations,
+    organics and items, the player not among them, alive a copy; 0x4043e0
+    every 63 ticks of the never-reset [0x67ffe8] and after action 17
+    0x4151a0: the objects not destroyed, the player while alive); the
+    scheduler's eighth [0x4e029c] is never reset, so it runs on across
+    missions; action 5 sets or clears switch p1 & 31 by p2 (0x41b6c0);
+    follow path (0x418040 -> 0x4032f0): every organic and item of the team
+    with an AI block, dead or alive, from the point nearest in whole metres
+    in x, y and height, a tie to the later point, the think timer left
+    alone; teleport (0x418be0): every organic of the team in use, bodies
+    too, and the player for team 1; Triggered Text (action 6, 0x465cc0)
+    from the mission's own table (header +0x64 with "bin", 0x465980; no
+    shipped mission uses action 6); the scope zero is the soldier's +0x5c4
+    (0x43c280 -> [0x67cdac] -> 0x44eeb0) and goes back after every run
+    (0x43c6f0); the loading screen (0x465ed0: df2_wait.pcx, then the
+    Loading Text lines STRLTEXT1, 4..9 in f_sml and 0xff8000 at (50, 150 +
+    20 k) of 1024 x 768) on a fresh start, none on the Space replay; the
+    default labels and radar shapes of 0x467430 (STROVER19..72, GOG only)
+    over every placed record of the items, decorations and markers tables
+    (0xe00 records from 0xc834e0), with or without a world object, and
+    their names beside the blips (0x4273b0 with Names on);
   - *also INFERRED*: the front end's
     stale justify locals start each frame at 0 (stack garbage in the EXE;
     0 centres the Main menu's hot-key labels); the character of a key
@@ -611,8 +1244,10 @@ First differences from DF1:
     index-2 baseline mark, tight ink boxes with y offset ymin − band − 3,
     numbered across the sheet, advance w + 2 (0x469240), alpha = palette
     red / 256 (0x4616d0)); text measure 0x4694a0, layout 0x42dc7c (both from
-    the text when user1/user2 give no positive size), wrap 0x419d50 (lines
-    'A' height + 3 apart); the button text 0x43d4c0: '&' removed by the
+    the text when user1/user2 give no positive size), wrap GOG 0x41c0e0 /
+    counter 0x41bf70 (a buffer cut at its last space or after the
+    overflowing character, spaces after a break skipped, no '~'; lines 'A'
+    height + 4 apart, the CD's 0x419d50 + 3); the button text 0x43d4c0: '&' removed by the
     set-text routine 0x42d7b0 with the key letter underlined by '_' one
     pixel lower (0x419fd0 left, 0x41a1f0 right-aligned to the box's left,
     0x41a0d0 centred at y + (h − 'A' height)/4), the plain box 0x469380
@@ -621,7 +1256,12 @@ First differences from DF1:
     an image-less push button centred on x, the two stale justify locals,
     other types' box (x, y)−(x + w, y + 'A' height) without underline,
     owner draw after the default draw; character hot keys (0x42de50) and
-    hotkey1/2 (0x42dea0); the command map's scroll bars (creator 0x40c3f0
+    hotkey1/2 (GOG 0x432c50: the Windows virtual key, 13 Enter / 27 Escape
+    in GOG's DF2.MNU; CD 0x42dea0: DirectInput scancodes, 1 Escape); the
+    menu cursor CUR_TARG.TGA with hot spot (12, 12) (GOG 0x434000,
+    0x4436a0); Choose Soldier's and Main's connector lines (0x436720,
+    0x43a780; Main's help and line cleared when the hover ends, 0x43a700);
+    the command map's scroll bars (creator 0x40c3f0
     arrow placement, 0x40c7d0 outline and thumb, 0x40c710 zones, 0x40c8c0
     arrows, pages and thumb drag on the widget pass 0x40c040's hold
     counter); the prompt's Escape (table 0x41d6ac / 0x41d698 → 0x41d669);
@@ -636,7 +1276,11 @@ First differences from DF1:
     sets resolution index 4, closing restores it, 0x45d9ea), and the mode
     set reloads f_sml%i / f_LG%i at i = min(width, 800) (0x45c0a0), so the
     map's text is F_SML640 / F_LG640 at any display mode (the Players
-    headings no longer overlap); the rain's lines test but do
+    headings no longer overlap; f_sml goes through the band scanner
+    0x41ba90 -> 0x41b9a0 / 0x41b8a0 like f_LG and is drawn opaque by
+    0x41bb90, advance width + 1, a code without a glyph as glyph 0, so
+    F_SML640 (277x240, 14-row bands) loads instead of DF1's fixed
+    16-pixel cells keeping F_SML800); the rain's lines test but do
     not write depth (0x46014f); the software water writes its rows' depth
     (0x485e17) and is fogged by the fog pass, its fog quad 0x467568 being
     the hardware path's;
@@ -657,40 +1301,93 @@ First differences from DF1:
     differences, READ): fire also needs under 128 m at night, no parachute,
     no hold-fire order, unseen within BMS +0x54×62 (default 60 s) and more
     than 0x40 ticks of continuous sight (0x401a8f); the scan interval by
-    the player's distance at the last successful scan (62 / 124 / 372, or
-    248 when alert, 0x4015f0); the ghillie suit hides a crouched or prone
-    player who has not fired beyond 50 m and halves visibility within
-    (0x415a69); BMS flag bits 0x800/0x1000/0x2000/0x4000 → attack everyone
+    +0xAC, the player's distance (1024 m unless in the field of view,
+    0x417830) stored whenever the scan returns a candidate, before the
+    draw (0x401de5 / 0x401efe): 62 / 124 / 372, or 248 when alert; the
+    scan's distance is the whole metres of 0x41e880 between the body
+    origins (100 / d, 100 at 0, under 1000; 0x417830), the sight line from
+    1 m up; a spot sets only the target (no last known position, unseen
+    time or 0x80, which the next sight check fills), relaxed: think in
+    0x10 (0x401f5d), alert: marked spotted at once (0x401e00); the
+    ghillie suit hides a crouched or prone player who has not fired at 51
+    m or more and halves visibility within (0x415a69); noise boxes are
+    cleared every 0x1b3 ticks and the fired flags every 0x1f1 (0x45fc50,
+    counters kept across missions); the sight lines' terrain test is
+    0x46e740 (1 m vertex steps on the word grid, 19 bilinear 1/16 m steps
+    from 1 m back where a point is not above it); BMS flag bits 0x800/0x1000/0x2000/0x4000 → attack everyone
     / (movement) / avoid water over 0.25 m / deaf; flag 1 blocks
     acquisition; script properties 16-19 set or clear them and 2/3/4/14/15
     can clear; night lowers perception 0.15; alert soldiers no longer turn
-    while idle; silent soldiers never radio; DF1's water probe only with the
-    avoid-water bit; any order holds position. Enemies fire through DF2's
+    while idle; DF1's water probe only with the
+    avoid-water bit; any order holds position; no shot while a friend (the
+    player included) is within 1 m (0x41e880) of the ray from 0.75 m up
+    along the aim, between 1/256 m and the target distance (0x417650,
+    0x401cd7). The radio is a team share
+    (GOG Df2.exe 0x414350, from 0x401a69 with a target and 0x401d6b alert
+    without one; every 0x1f0 ticks unless silent, timer (−rand) & 0x3f):
+    mates of the side, not deaf, |dx|, |dy| ≤ 50 m and dx²+dy² ≤ 2500, on
+    the same target get a fresher unseen time and last known point (bark 4
+    when 0x1f0 ticks fresher) or learn it died (0x40, bark 5); mates with
+    none take it (bark 4; with 0x40 too, bark 5); their state is not
+    touched. A target seen dead keeps its slot with 0x40 (bark 5 if this
+    soldier killed it, 0x4019d5) and the soldier runs the no-target logic
+    (0x4018ea); the last known point follows the target while it is seen
+    (0x4019f9). A relaxed soldier who hears a noise (0x415480) barks 2
+    unless silent and thinks again in 16 (0x401e76..0x401e95). The dead-
+    friend check is inside the scan (0x417830): own-side bodies, not with
+    flag 0x200, while the alert at the scan's start is not 2, sight 1..2
+    between the body origins and max + 11/32 min < 50 m: alert, team alert,
+    bark 1; the relaxed quarter then no longer applies. A soldier ordered
+    to cover the player (order 2) scores candidates targeting the player
+    twice. Helicopters (0x42bff0) draw against the scan's score with
+    perception once (night-reduced as 0x403790 does) and mark their team as
+    having spotted the target's, again at every sight re-check that holds
+    (0x42b84d); taking a target scales the vertical speed +0xC4 by
+    (ai+0x80 >> 1). Searchlights mark (light team, target team) (0x42ce2f),
+    scan on their first think too, keep the target when the draw fails and
+    aim once more at a target first seen dead (0x42ccf0). Enemies fire through DF2's
     tables (the BMS weapon byte's table is DF1's, file 0xc88c8; 0x414ad0),
-    vehicle guns mode 53. Their shooting is DF1's (READ): the muzzle
+    vehicle guns mode 53 (the BRDM's 0x35, 0x424550), the GOG door gun
+    mode 12 (0x42bc10 sets +0xA8 = 0xC at 0x42bc24; the CD's door gun is
+    not traced and keeps 53). Their shooting is DF1's (READ): the muzzle
     0x414f20 (= 0x46ad30: the mode's +0x08 item's vertex +0x30 at the posed
     hand; no shot without it), the aim 0x415de0 (= 0x46b838: from the body
     origin at the target's origin while it is seen, else the last known
     point with errMul 5, whole-metre distance, the error stored on the
-    body; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
-    target sight line from 1 m up to the target's origin (0x401732).
+    body; in sight errMul is the integer 16 - seen / 62 with seen capped
+    at (16 - aim factor) × 62 and written back, 0x417e20; a muzzle under the
+    water fires nothing but the ammo's fourth sound unless the mode is
+    1, 0x27..0x29 or 0x31, 0x416a30, the BRDM and door guns too; burst rounds along the body's angles ± r>>3 / r>>5), the keep-
+    target sight line from 1 m up to the target's origin (0x401732), after
+    which (seen or not) the full scan runs and a different best candidate
+    scoring over 0x4000, without a random draw, becomes the target (GOG
+    Df2.exe 0x40197f..0x4019fc, scan 0x417830; the scan gives nothing for
+    a side-0 soldier without flag 0x200).
     Squad Members Off is df2.cfg attributes 0x20 (0x45bf44 → 0x45c460): the
     same four Squad Member items as DF1 are deleted (the ghillie one, 105271,
     stays); enemy AI hard is attributes 0x10 (0x415f16). The player is DF2's `player01` (105300, hp 8) or
     its snow, night and female variants by id (0x4128d0), the ghillie and
     LAR V models drawn in their place (0x415410);
   - **delay grenade** (0x44ae50): no impact fuse; it slides off object
-    faces (v −= n·(v·n)·1.07, × 0.85), stops on other surfaces, and goes
-    off (type 1) with 10 ticks of its 444 − rand(127) left.
+    faces (v −= n·(v·n)·1.07, × 0.85), stops on people, keeps its velocity
+    on the ground (each tick ends at the hit backed off, 0x2000 in GOG,
+    0x4000 in the CD), and goes off (type 1) once its ttl is below 11
+    (before that tick's decrement); in GOG the water keeps 1/8 of its
+    velocity (the CD's stops it), it can be thrown under the water at 1/8
+    speed (0x416a30 / 0x451ae0), and no round drifts with the wind under
+    the water; the fuse is 444 −
+    ((heading >> 16) & 0x7f) ticks, from the throw's 32-bit binary heading
+    (GOG 0x451ae0), and it is drawn in flight as the grenade item 4033.
 
 ## Suggested order
 
 1. Mount the later layouts: `DF2SETUP/`, `DFLSETUP/`, `TFDSETUP/`, their
    archive names (`DF2.PFF`, `TERRAINS.PFF`, `DFLW.PFF`, `SMALL.PFF`), and the
-   game executable per game.
+   game executable per game (done; Land Warrior's and Task Force Dagger's
+   executables are not read yet).
 2. Delta Force 2 first (closest to DF1): the `SCR` DEF decoder, 3DI v8, BMS
    0x0F differences, TGA textures, `KSA` animation, `CAL` terrain data; then a
-   mission loading in the viewer, then playing.
+   mission loading in the viewer, then playing (done).
 3. Land Warrior: on top of DF2, the new `SAF`/`ENV` formats and its executable.
 4. Pause: Black Hawk Down (2003) is not in `games/` yet. The games most
    likely build on each other, so it comes before Task Force Dagger.

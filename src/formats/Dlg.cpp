@@ -22,6 +22,8 @@ bool DialogIndex::parse(const std::vector<uint8_t>& d) {
         const uint32_t n = uint32_t(d[o + 0x18]) | uint32_t(d[o + 0x19]) << 8 | uint32_t(d[o + 0x1A]) << 16 |
                            uint32_t(d[o + 0x1B]) << 24;
         if (name.empty() || n > 64) break;
+        // o is dialog +4 (the record starts with u32 0x34), p is part +4:
+        // the clip name sits at part +4 (GOG Df.exe 0x456110).
         size_t p = o + 0x34;
         std::vector<DialogPart> parts;
         for (uint32_t k = 0; k < n && p + 0x44 <= d.size(); ++k, p += 0x44) {
@@ -29,7 +31,9 @@ bool DialogIndex::parse(const std::vector<uint8_t>& d) {
             part.clip = field(d, p, 24);
             const std::string text = field(d, p + 24, 16);
             if (!text.empty() && text[0] == '_') part.subtitle = std::atoi(text.c_str() + 1);
-            if (p + 0x35 < d.size()) part.gap = d[p + 0x35];
+            // Gap byte at part +0x35 = p + 0x31 (GOG Df.exe 0x4562a0 reads
+            // dialog + line*0x44 + 0x69).
+            if (p + 0x31 < d.size()) part.gap = d[p + 0x31];
             parts.push_back(std::move(part));
         }
         dialogs_[name] = std::move(parts);

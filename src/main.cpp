@@ -27,6 +27,7 @@
 #include "render/Math.h"
 #include "render/Models.h"
 #include "render/Terrain.h"
+#include "render/Window.h"
 
 #include <algorithm>
 #include <chrono>
@@ -64,6 +65,7 @@ struct Options {
     int width = 1280, height = 720;
     bool commandGiven = false;
     fs::path settings;       // --settings FILE: the launcher's settings file (testing)
+    int fullscreen = -1;     // --fullscreen 1 / --windowed 0; -1: opendf.ini's setting
 };
 
 bool parseArgs(int argc, char** argv, Options& o) {
@@ -74,6 +76,8 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--terrain") o.terrain = next();
         else if (a == "--screenshot") o.screenshot = next();
         else if (a == "--settings") o.settings = next();
+        else if (a == "--fullscreen") o.fullscreen = 1;
+        else if (a == "--windowed") o.fullscreen = 0;
         else if (a == "--spawn") o.spawn = true;
         else if (a == "--frames") o.frames = std::atoi(next().c_str());
         else if (a == "--weapon") o.weapon = std::atoi(next().c_str());
@@ -144,6 +148,10 @@ void usage() {
         "  opendf bink FILE [OUTDIR [EVERY|N,N,...]]          decode a Bink video (frames to OUTDIR, audio.wav)\n"
         "  --camera X,Y,HEIGHT,YAW,PITCH  start at map metres X (east), Y (north), HEIGHT above\n"
         "                                 ground, compass YAW and PITCH in degrees\n"
+        "  --fullscreen / --windowed      start fullscreen or in a window (default: as last time)\n"
+        "\n"
+        "Alt+Enter (macOS also Cmd+Ctrl+F or Cmd+F) toggles fullscreen anywhere; it is\n"
+        "remembered in opendf.ini.\n"
         "\n"
         "DIR is the folder with the game's .PFF files (CD root or DFSETUP).\n"
         "\n"
@@ -268,8 +276,8 @@ struct GlWindow {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
         SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-        Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI |
-                       (o.screenshot.empty() ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_HIDDEN);
+        const Uint32 flags = windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI |
+                                         (o.screenshot.empty() ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_HIDDEN));
         win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o.width, o.height, flags);
         if (!win) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return false; }
         ctx = SDL_GL_CreateContext(win);
@@ -351,6 +359,7 @@ bool placeMission(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
     const float ext = terrain.mapExtent();
     int missing = 0;
     for (const auto& o : mission.objects) {
+        if (o.omitted) continue;
         const ItemDef* item = items.byMissionType(o.type);
         Vec3 pos{std::fmod(std::fmod(o.x, ext) + ext, ext), 0, std::fmod(std::fmod(-o.y, ext) + ext, ext)};
         const float heading = o.heading * kPi / 180.f;
@@ -482,6 +491,7 @@ int cmdView(Vfs& vfs, Options& o) {
                 std::fprintf(stderr, "%s: %s\n", entries[idx].c_str(), e.empty() ? "unreadable" : e.c_str());
                 return false;
             }
+            dropMultiplayerRecords(mission, items);
             trn = mission.terrain;
             if (auto dot = trn.rfind('.'); dot != std::string::npos) trn.resize(dot);
         }
@@ -543,6 +553,7 @@ int cmdView(Vfs& vfs, Options& o) {
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(win, e)) continue;
             if (e.type == SDL_QUIT) running = false;
             else if (e.type == SDL_MOUSEBUTTONDOWN && !captured) {
                 captured = true;
@@ -632,6 +643,8 @@ int cmdView(Vfs& vfs, Options& o) {
             SceneLighting light;
             light.lut = terrain.lutTexture();
             light.saturation = terrain.saturationFactor();
+            light.gradeLut = terrain.gradeLutTexture();
+            light.gradeSaturation = terrain.gradeSaturation();
             light.highlight = terrain.highlight();
             models.begin(proj * view, light);
             const Vec3 fwdView = cam.forward();
@@ -709,6 +722,7 @@ int cmdModels(Vfs& vfs, Options& o) {
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (fullscreenEvent(window.win, e)) continue;
             if (e.type == SDL_QUIT) running = false;
             else if (e.type == SDL_MOUSEBUTTONDOWN) dragging = true;
             else if (e.type == SDL_MOUSEBUTTONUP) dragging = false;
@@ -953,6 +967,22 @@ int main(int argc, char** argv) {
     if (SDL_Init(graphics ? SDL_INIT_VIDEO : 0) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
+    }
+    if (graphics) {
+        // Fullscreen (an OpenDF amenity, src/render/Window.h): opendf.ini's
+        // [display] fullscreen, unless --fullscreen / --windowed; each toggle
+        // is written back (re-reading the file so the launcher's list stays).
+        const fs::path ini = o.settings.empty() ? LauncherSettings::defaultFile() : o.settings;
+        LauncherSettings s;
+        s.load(ini);
+        setFullscreen(o.fullscreen >= 0 ? o.fullscreen != 0 : s.fullscreen);
+        if (o.screenshot.empty())
+            setFullscreenSaver([ini](bool on) {
+                LauncherSettings cur;
+                cur.load(ini);
+                cur.fullscreen = on;
+                if (!cur.save(ini)) std::fprintf(stderr, "Could not write %s\n", ini.string().c_str());
+            });
     }
     if (o.dataDir.empty() && (o.command == "launcher" || o.command == "play" || (o.command == "view" && !o.commandGiven))) {
         const int rc = runLauncherLoop(o);

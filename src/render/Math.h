@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 
 namespace df {
 
@@ -13,6 +14,24 @@ struct Vec3 {
 inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 inline Vec3 normalize(Vec3 v) { float l = std::sqrt(dot(v, v)); return l > 0 ? v * (1.f / l) : v; }
+
+// The EXEs' integer square root (GOG Df.exe 0x477620, GOG Df2.exe 0x41e830,
+// the same code): n itself while (int)n < 2; else the floor root r of a
+// 16-step digit loop, plus 1 when n - r*r >= r - 1 (unsigned compare), so it
+// rounds: 2 -> 2, 5 -> 3, 11 -> 4, 110 -> 11.
+inline uint32_t dfIsqrt(uint32_t n) {
+    if (int32_t(n) < 2) return n;
+    uint32_t r = uint32_t(std::sqrt(double(n)));
+    while (uint64_t(r) * r > n) --r;
+    while (uint64_t(r + 1) * (r + 1) <= n) ++r;
+    return n - r * r >= r - 1 ? r + 1 : r;
+}
+// dfIsqrt of the sum of the squared whole-metre differences (16.16 >> 16,
+// imul / add with the 32-bit wrap), as a flat range in metres.
+inline float dfFlatRange(float dx, float dy) {
+    const uint32_t a = uint32_t(int32_t(std::floor(dx))), b = uint32_t(int32_t(std::floor(dy)));
+    return float(dfIsqrt(a * a + b * b));
+}
 
 // Column-major 4x4 matrix (OpenGL convention).
 struct Mat4 {

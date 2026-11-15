@@ -23,7 +23,8 @@ public:
     // Starts animation `anim` at frame 0, blending from the current pose.
     void start(const Chr& chr, int anim);
     // One animation tick; returns the event byte of a frame that just
-    // ended (0 if none): 0x40-0x43 footsteps, 0x12-0x16 voices.
+    // ended (0 if none): 0x40-0x43 footsteps, 0x12-0x16 voices. Delta Force
+    // 2 (KSA bodies, GOG Df2.exe 0x423380): the frame just entered.
     int tick(const Chr& chr);
 
     int animation() const { return anim_; }
@@ -38,6 +39,13 @@ public:
     const std::array<float, 3>& rootStep() const { return rootStep_; }
     // The frame being blended to (for contact points / root motion).
     const ChrFrame* currentFrame(const Chr& chr) const;
+    // Height of the origin above the lowest touching contact point, the
+    // contacts interpolated across the frame's ticks (GOG Df.exe 0x43a690
+    // copies the previous frame's contacts to +0x8c, 0x43a2c7 / 0x43a4dc set
+    // the step (new - old) / ticks at +0x90, 0x43a7a0 adds it each tick;
+    // 0x487370 grounds on them with the current frame's mask). KSA frames
+    // keep their own ground height.
+    float originHeight(const Chr& chr) const;
 
 private:
     void enter(const Chr& chr, int anim, int frame);
@@ -47,6 +55,7 @@ private:
     std::vector<std::array<float, 3>> cur_, step_;
     std::array<float, 3> rootStep_{0, 0, 0};
     const ChrFrame* prev_ = nullptr;
+    std::vector<std::array<float, 3>> contacts_, contactStep_;
 };
 
 } // namespace df

@@ -34,9 +34,39 @@ public:
 
     // World-space ground height at (x, z), bilinear, wrapping.
     float heightAt(float x, float z) const;
+    // Delta Force sight lines (GOG Df.exe 0x47e000): heightAt plus the
+    // detail elevation e of the cell's 16x16 detail tile at the sub-texel,
+    // (e - 128) / 64 m where e >= 128.
+    float sightHeight(float x, float z) const;
+    // Delta Force (0x47d9e0, the max map 0xbd52d4): the highest of the
+    // cell's four corners, each its height plus ceil((tile max - 128) / 16)
+    // steps of its own detail tile (0..255 steps, 0.25 m a step).
+    float sightMax(float x, float z) const;
+    bool hasSightMap() const { return !sightMax_.empty(); }
     // The nearest cell's raw height, no interpolation (DF.EXE's byte map
     // 0x68c024, e.g. for sound occlusion).
     float cellHeight(float x, float z) const;
+    // Delta Force's raw corner byte of the cell holding (x, z): GOG Df.exe
+    // [0xbd5284] at (x >> 16, y >> 16), y = -z (the round march 0x47e390).
+    float cornerHeight(float x, float z) const;
+    // Delta Force 2's terrain gradient for sliding (GOG Df2.exe 0x46eaa0):
+    // at the cell holding (x, z), no interpolation, the height change over
+    // +-2 cells / 4 of the word grid [0x535ae8], which holds the smoothed
+    // heights raised by twice the cell's detail tile's top elevation
+    // (0x46e0f0; the ground 0x46e950 takes it off again). In metres a metre,
+    // OpenDF axes (gz = dh/dz). 0 on Delta Force terrains.
+    void df2Gradient(float x, float z, float& gx, float& gz) const;
+    // Delta Force's (GOG Df.exe 0x47e5d0, CD 0x4332ac): at the cell holding
+    // (x, z), no interpolation, the raw height bytes' change over +-2 cells,
+    // x 0x1000 in 16.16 (a step a sixteenth: 0.25 m over 4 m). OpenDF axes
+    // (gz = dh/dz), the cell row as df2Gradient's.
+    void df1Gradient(float x, float z, float& gx, float& gz) const;
+    // Delta Force 2's sight-line ground (GOG Df2.exe 0x46e740), on that same
+    // word grid [0x535ae8] in GOG's 16.16 axes (x east, y north = -z): the
+    // vertex (x >> 16, y >> 16) << 7, and 0x46e870's bilinear height. Both
+    // keep the detail raise. 0 on Delta Force terrains.
+    int32_t df2SightVertex(int32_t x, int32_t y) const;
+    int32_t df2SightGround(int32_t x, int32_t y) const;
     float mapExtent() const { return size_ * scale.cellSize; }
     // DF.EXE [0x68bfe8]: the water level in metres, 0 when the map has none
     // (0x430d28); every water test is skipped when it is 0.
@@ -44,9 +74,19 @@ public:
 
     const TerrainDesc& desc() const { return desc_; }
     Vec3 fogColor() const;
-    // The TRN's colour finish, for models: gamma/filter table, saturation,
-    // and sky palette entry 16 (shade table highlight).
-    GLuint lutTexture() const { return texSkyPal_; }
+    // The final colour stage, for models: the display gamma/filter table and
+    // saturation, and sky palette entry 16 (shade table highlight). Delta
+    // Force: the df.cfg gamma table with filters 128 and no saturation step
+    // (GOG Df.exe 0x402940 / 0x4027d0 -> 0x480bb0(cfg gamma, 0x80 x4));
+    // Delta Force 2: the TRN's table and saturation (the terrain's; DF2
+    // models take the grade before shading instead).
+    GLuint lutTexture() const { return gen2_ ? texSkyPal_ : texDisplayLut_; }
+    // The TRN grade (saturation, then the TRN gamma/filter table) that GOG
+    // Df.exe 0x4867a0 and GOG Df2.exe 0x4454e0 (0x413cd0 / 0x413ba0) bake
+    // into the model palettes and material colours at load, before shading.
+    // Delta Force 2 models use no other table (they skip lutTexture()).
+    GLuint gradeLutTexture() const { return texSkyPal_; }
+    float gradeSaturation() const { return desc_.saturation / 128.f; }
     // Surface at (x, z): 1 dirt, 2 grass, 3 snow, 4 cement, 5 sand, 6 packed
     // dirt, 0 none; each colour-map palette colour is matched to the nearest
     // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects). Delta
@@ -55,10 +95,25 @@ public:
     int surfaceAt(float x, float z) const;
     // Water, after everything else is drawn (DF.EXE 0x43bfd8); `ticks` drives the waves.
     void drawWater(const Mat4& view, const Mat4& proj, Vec3 eye, float ticks);
-    float saturationFactor() const { return desc_.saturation / 128.f; }
+    // Delta Force under water (GOG Df.exe 0x48d570, the camera at or below
+    // the level): after the objects and the translucent faces, over both of
+    // the caller's depth ranges; `phaseTicks` the 20 Hz timer.
+    void drawUnderwater(const Mat4& view, const Mat4& projNear, const Mat4& projFar, Vec3 eye, float phaseTicks);
+    // The same r = 0 tint over what was drawn since with depth (the gun).
+    void tintUnderwaterOver(Vec3 eye);
+    bool df1UnderWater(Vec3 eye) const;
+    // Delta Force 2's under-water tint over the whole 3D view (0x44fcb0), last.
+    void drawWaterTint(Vec3 eye);
+    float saturationFactor() const { return gen2_ ? desc_.saturation / 128.f : 1.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;
     GLuint colorTexture() const { return texColor_; }
+    // Delta Force: the command map's elevation picture (GOG Df.exe 0x48df90
+    // ramp by elevation byte, nearest texel); 0 for Delta Force 2 terrains.
+    GLuint elevationTexture() const { return texElevation_; }
+    // Delta Force: the command map's colour picture (GOG Df.exe 0x48e070):
+    // nearest texel, water cells through the water clut; 0 for Delta Force 2.
+    GLuint mapTexture() const { return texMap_; }
     // Delta Force 2's radar picture (DF2.EXE 0x421510): the level-0 colour
     // map, nearest texel, cells at or under the water level averaged 50/50
     // with the water colour; 0 when not a DF2 terrain.
@@ -68,6 +123,20 @@ public:
     // F / 320: the original's ring distances scale with the focal length of
     // its display mode (F = width / 2 at 90°).
     float ringScale = 1.f;
+    // Delta Force: the ring table's divisors (GOG Df.exe 0x489440 p1, p2):
+    // 2.2 / 2.2 for the main view, 3.2 / 3.2 with the binoculars (0x404640),
+    // the scope 2.5 (magnification under 5) or 5.0 / 2.5 (0x466090). Near rings end at F / (2·p1) m, far
+    // ring k (0..5, 0x48dc70 draws rings 0..10) ends at 2^k·F / p2 m.
+    float ringP1 = 2.2f, ringP2 = 2.2f;
+    // Delta Force: df.cfg "gamma" (DISPLAY, default 128), the display table's
+    // gamma; Delta Force 2: df2.cfg "gamma", the runtime table's. Set before
+    // load().
+    int displayGamma = 128;
+    // Delta Force 2: the runtime colour table left after the load (GOG
+    // Df2.exe 0x4658f0 -> 0x466590 -> 0x4666c0: 0x413b60(df2.cfg gamma
+    // [0x67cce4], saturation 0x80, filters 0x80)), 256 RGB triples; what
+    // 0x413c50 grades the dust and smoke colours with at spawn.
+    const std::vector<uint8_t>& df2RuntimeTable() const { return runtimeLut_; }
     // Delta Force 2: the mission's water height override (BMS flag 0x78 bit 0,
     // word +0x88, in TRN water_height units); -1 none. Set before load().
     int waterOverride = -1;
@@ -83,10 +152,28 @@ public:
     // The per-pixel fog pass of DF2.EXE's software frame (0x4485b0): every
     // pixel of the current viewport blended toward fog_color by its depth.
     // Call after the terrain, water, objects and effects, before rain/snow.
-    void drawFog(const Mat4& proj);
+    // With `farProj` the frame was drawn in two depth passes (Pass): depth
+    // below 0.5 is read with `proj` (range 0..0.5), the rest with farProj.
+    void drawFog(const Mat4& proj, const Mat4* farProj = nullptr);
+    // (OpenDF) Which of the caller's two depth passes draw() and drawWater()
+    // are in: the far pass (view depth >= passSplit, depth range 0.5..1)
+    // draws the sky and skips the chunks wholly nearer than the split; the
+    // near pass skips the sky and the chunks wholly beyond it, and draws the
+    // full-view under-water tints. All: one pass.
+    enum class Pass { All, Far, Near };
+    Pass pass = Pass::All;
+    float passSplit = 0;
     // Delta Force 2's horizontal field of view in degrees (view+0x4c: 90, the
     // binoculars 22), for the sky gradient's step per row (0x4677bd).
     float df2FovDeg = 90.f;
+    // Delta Force's cloud clock: the mission's simulation steps ([0x67dbf4],
+    // 0 at mission start (0x405170), one per step (0x4043b3), so it stops
+    // while paused); below 0 the drift runs on the wall clock (Delta Force 2).
+    float skyTicks = -1.f;
+    // Delta Force's sky gradient view (GOG Df.exe 0x48c990, 640 scale): FOV
+    // in degrees (view +0x4c), width in pixels, focal length.
+    int df1SkyFov = 90, df1SkyW = 640;
+    float df1SkyF = 320.f;
     // Delta Force 2 water (DF2.EXE 0x4670a0/0x466b60): drawn before the
     // objects while the camera is above it, after them below it.
     bool df2Water() const { return gen2_ && hasWater_; }
@@ -94,29 +181,39 @@ public:
 private:
     struct Mesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
     void buildMeshes();
+    void df1WaterSetup(Vec3 eye, float phaseTicks);   // scene copy, program and textures for the DF1 water
     void release();
     Mesh makeGrid(int resolution);
 
     TerrainDesc desc_;
     int size_ = 0;
     std::vector<float> heights_;   // elevation steps (DF2: smoothed, fractional)
+    std::vector<uint8_t> detailTop_;   // DF2: per cell, its detail tile's top elevation (0x46d970 level 0)
     bool gen2_ = false;            // Delta Force 2 terrain (true-colour map)
     Rgb waterColor_{0, 0, 0};      // DF2: graded water palette entry 255 (under-water tint, radar)
     bool alphaDetail_ = false;   // Delta Force 2 detail tiles: blended by their alpha
 
-    GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0;
+    GLuint texColor_ = 0, texHeight_ = 0, texDetailIdx_ = 0, texRadar_ = 0, texElevation_ = 0, texMap_ = 0;
+    GLuint texColorFar_ = 0;   // DF2: the colour map with each cell's detail-tile tint (far rings)
     std::vector<uint8_t> colorRgb_;   // DF2: the colour map as drawn (for the radar)
     GLuint texDetailColor_ = 0, texDetailShade_ = 0;
+    GLuint texDisplayLut_ = 0;   // Delta Force: the df.cfg gamma table (filters 128)
+    std::vector<uint8_t> runtimeLut_;   // Delta Force 2: the df2.cfg gamma table (filters 128)
     GLuint texSkyPal_ = 0, texClouds_ = 0, texWater_ = 0, texWaterGrad_ = 0, texScene_ = 0;
     int sceneW_ = 0, sceneH_ = 0;
     GLuint progTerrain_ = 0, progSky_ = 0, progWater_ = 0, progFog_ = 0;
     GLuint texSkyGrad_ = 0, texDepth_ = 0;   // DF2: the 256-step sky gradient; the depth copy for the fog pass
     int depthW_ = 0, depthH_ = 0;
-    GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0;
+    GLuint skyVao_ = 0, waterVao_ = 0, waterVbo_ = 0, instVbo_ = 0;
+    std::vector<float> instData_;   // the chunk origins of the last draw
     Mesh lods_[5];
     Rgb horizon_{170, 200, 230};
     Rgb skyColors_[17];
     std::vector<uint8_t> surface_;   // per colour-map pixel
+    // Delta Force only: the detail map (tile per cell), the tiles' detail
+    // elevation (256 tiles x 16x16; tiles past the file stay 0, as the
+    // EXE's zeroed buffer) and the sight-line max map (steps per cell).
+    std::vector<uint8_t> detailMap_, detailElev_, sightMax_;
     bool hasWater_ = false;
 };
 

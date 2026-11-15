@@ -11,6 +11,7 @@
 #include "Animator.h"
 
 #include <array>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -21,6 +22,11 @@ struct WorldObject {
     const ItemDef* item = nullptr;
     const GpuModel* model = nullptr;   // current graphic (the husk once destroyed)
     const GpuModel* husk = nullptr;
+    // Delta Force: the load-time model (GOG Df.exe object +0x10, written only
+    // by the loader 0x402ec0 and the organics spawn 0x45d520). Sight lines
+    // (0x42db80) always test it, destroyed or not; rounds take the husk
+    // (+0x14 with flags & 8, 0x464400).
+    const GpuModel* intact = nullptr;
     Vec3 pos;                          // map position (x/z wrapped into the map), y = ground + lift
     float heading = 0;                 // radians clockwise from north
     float lift = 0;                    // height above ground from the mission
@@ -36,7 +42,21 @@ struct WorldObject {
     float fall = 0;                    // 0..1 while a killed person falls
     float hip = 0;                     // people: model origin is at the hips, this far above the feet
     bool wrecked = false;              // destroyed, husk shown
-    int detonate = -1;                 // explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0)
+    // Destroyed without a husk: `removed` (not drawn or hit), but Delta
+    // Force keeps the record (only 0x45da30 frees one, on no destroy path),
+    // so its intact model still blocks sight lines (0x42db80).
+    bool blown = false;
+    // Explosive barrel: ticks until it explodes (DF.EXE 0x45a3c0; GOG Df.exe
+    // 0x45bf80: in DF1 it stays drawn and hittable meanwhile, flag 4).
+    int detonate = -1;
+    // Delta Force `gnrc` objects (GOG Df.exe 0x4533f0): ticks until a
+    // destroyed one goes off (flags 4 set, model still intact); 0 = at the
+    // next tick (hit again while waiting), -1 = idle or done.
+    int gnrcTimer = -1;
+    // Delta Force: an item falling off a destroyed crate (GOG Df.exe mover
+    // 0x4546b0, +0x10c): its vertical speed (+0x44, 16.16 m a tick).
+    bool dropping = false;
+    int32_t dropVz = 0;
     // From the mission record: its group in the file (0 moving objects,
     // 1 scenery, 2 markers, 3 people), team (byte +0x48), side (+0x43) and
     // position in mission coordinates.
@@ -44,7 +64,9 @@ struct WorldObject {
     bool mapMarker = false;            // record +0x4C nonzero: shown on the command map
     int radarShape = 0;                // Delta Force 2: obj+0x6E = signed byte record +0x4C (0x403590)
     double missionX = 0, missionY = 0;
-    bool alive() const { return !dead && !removed && !wrecked; }
+    // A gnrc object waiting to go off has flag 4 already: counted as gone
+    // (0x44a200), though still in blasts and hit by rounds.
+    bool alive() const { return !dead && !removed && !wrecked && gnrcTimer < 0 && detonate < 0; }
     // People: the .CHR hit spheres of their current pose (standing until
     // there is AI), centre in model axes (x forward, y left, z up) relative
     // to the body origin, and radius; metres.
@@ -67,7 +89,10 @@ struct WorldObject {
     uint32_t rotorAngle[2] = {0, 0};
     float rotorSpeed = 0;
     float steer = 0;
-    float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5
+    // Palms (lodCode "palm"): obj+0xE0, 0 intact (no palm breaks yet).
+    int palmState = 0;
+    float gunYaw = 0, gunPitch = 0;    // helo door gun (DF sense), drawn on mesh 5; DF2 BRDM turret (+0xB4/+0xB8)
+    mutable int shotFlash = 0;         // DF2 BRDM obj+0xC8: 10 after a round, -1 a tick; flash mesh 6 while set, drawing clears it (GOG Df2.exe 0x424550/0x423ac0/0x42983d)
     int collapse = -1;
     float vz = 0;                      // people: vertical speed, metres a tick (+0x44)
     bool airborne = false;             // people: falling (DF1 +0x6D & 0x20, DF2 +0x64 & 0x2000)
@@ -90,11 +115,28 @@ struct WorldObject {
     Vec3 tickVel{0, 0, 0};
     float tickTurn = 0;
     std::vector<int> neighbours;       // DF2 +0xFC/+0x100: objects near enough to touch (0x43f2b0)
+    // GOG Df2.exe emplaced guns (item attrib EWeap 0x8000, 0x4145a0):
+    // people: the gun manned (+0x8c, -1 none); a gun: who mans it (its
+    // +0xF8, -1 nobody, -3 the player).
+    int mount = -1, gunner = -1;
+    // DF2 obj+0x78: meshes already shattered (bit per mesh; GOG Df2.exe
+    // 0x414a90 breaks each once). The faces stay drawn and hit (its only
+    // other readers are the network copies 0x409610 / 0x4623d0).
+    uint32_t brokenMeshes = 0;
     int tailHits = 0;                  // helo +0xD4: tail-rotor hits (meshes 3/4), grows when above 2                   // veh0: front-wheel steering (+0x94), OpenDF heading sense
     bool animated() const { return chr && moves && !anim.frozen(); }
 
     Mat4 matrix(Vec3 at) const;
 };
+
+// The palm draw / pose (GOG Df.exe 0x44d5e0 / 0x44d2a0, CD 0x479148 /
+// 0x478e08) by state obj+0xE0: 0 meshes 0, 1, 2; 1: 0, 3; 2: 0, 1, 5;
+// 0x10: 1, 2, 4 at T(-hardpoint 0); 0x11: 2 at T(-hardpoint 1); 0x20: 1, 4
+// at T(-hardpoint 0); any other state nothing. `pose[i]` multiplies the
+// object matrix (a zero matrix hides the mesh); `shown[i]` says whether mesh
+// i is drawn (the pose's skip flags, for hits). `points`: the LOD's hardpoints.
+void palmPose(int state, size_t meshes, const std::vector<std::array<float, 3>>& points, std::vector<Mat4>& pose,
+              std::vector<bool>& shown);
 
 struct RayHit {
     float t = 1;          // fraction along the segment
@@ -129,7 +171,9 @@ public:
     // not near-vertical, not 0x01000000) under (x, z) no higher than feet +
     // step. People are never surfaces.
     // `owner` (if given) gets the object of the face (DF1 +0x100), -1 the terrain.
-    float faceGround(Vec3 feet, float step, int* owner = nullptr) const;
+    // `skip`: an object left out (its own: the neighbour list 0x487c50 never
+    // holds the mover itself).
+    float faceGround(Vec3 feet, float step, int* owner = nullptr, int skip = -1) const;
     // Riding a platform (DF.EXE 0x43634d..0x43643d, DF2.EXE 0x440876..0x440944,
     // READ): x, y += the platform's +0x3C / +0x40; if its turn is not 0, the
     // position is turned by it about the platform's origin (sin/cos tables
@@ -139,10 +183,12 @@ public:
     // gravity, land on the surface below.
     void personTick(WorldObject& o);
 
-    // Pushes a vertical cylinder (feet at `feet`) out of solid boxes (DF.EXE
-    // 0x437a28). Under Delta Force 2's rules it does nothing: DF2 has no
+    // Pushes the mover box (body origin `originAbove` over `feet`) out of
+    // the objects' collision volumes (GOG Df.exe 0x4889c0, CD 0x437a28),
+    // also up or down; returns the new feet. People are never in the list
+    // (0x436a34). Under Delta Force 2's rules it does nothing: DF2 has no
     // mover box, people are pushed out of the volumes in personTick.
-    Vec3 resolve(Vec3 feet, float radius, float height, float step) const;
+    Vec3 resolve(Vec3 feet, float originAbove) const;
 
     // Delta Force 2 collision volumes (DF2.EXE 0x440f80): `count` cubes of
     // half-size halves[k] centred on pts[k] against object `n`'s LOD 0 plane
@@ -158,8 +204,33 @@ public:
     // The person push-out of the DF2 person move (0x440984..0x440af1): the
     // 0.5 m cubes at the origin and 0.5 m above the feet (feet = origin +
     // feetOffset), against each neighbour; moves `origin`.
-    struct Df2Contact { bool onObject = false; int platform = -1; bool ladder = false, armory = false; std::vector<int> touched; };
+    // `mounts`: the neighbours with a type-7 volume overlapped (GOG
+    // Df2.exe 0x447450 flags 8), in neighbour order.
+    struct Df2Contact { bool onObject = false; int platform = -1; bool ladder = false, armory = false; std::vector<int> touched, mounts; };
     Df2Contact df2PushOut(Vec3& origin, float feetOffset, const std::vector<int>& neighbours, bool mayClimb) const;
+    // GOG Df2.exe emplaced guns. The player's link (its +0x8c; -1 none) and
+    // view angles (+0x30 / +0x34), for the gun's pose; set by the player.
+    int playerMount = -1;
+    float playerYaw = 0, playerPitch = 0;
+    // 0x4145a0(person, gun), single player (host-side): `person` is an
+    // object index or -3 the player; `moveDir` its control direction (+0x74
+    // & 7), `dead` its +0x64 & 4. Gates: the gun has an item with EWeap
+    // and the person mans nothing or this gun. Moving back (direction 3..5)
+    // or either dead/destroyed clears both links; otherwise, unless already
+    // linked or anyone mans this gun, links them. True when it linked (the
+    // caller then places the person, mountOrigin).
+    bool df2Mount(int person, int gun, int moveDir, bool dead);
+    // 0x418300: the gun's position plus its hardpoint 0 turned by the
+    // person's heading: where the manning person's origin goes.
+    Vec3 mountOrigin(int gun, float personHeading, Vec3 ref) const;
+    // 0x416e90: the eye on a manned gun, hardpoint 2 through the gun's
+    // posed mesh 1 (the "ewpn" pose 0x450c60).
+    Vec3 mountEye(int gun, Vec3 ref) const;
+    // The "ewpn" pose (GOG Df2.exe 0x450c60): with a gunner whose link is
+    // this gun, meshes 1 and 2 turn about hardpoint 1 by the gunner's
+    // heading less the gun's and his pitch; otherwise all as mesh 0.
+    std::vector<Mat4> ewpnPose(const WorldObject& gun, size_t meshes) const;
+    void clearMount(int person);
     // DF2.EXE 0x43fb80: the terrain, or the highest volume top a 1/256 m
     // point at `p` overlaps, no higher than p + step (items placed by
     // 0x4520d6 with step 0x4000).
@@ -178,7 +249,9 @@ public:
     // their LOD 0 faces in the pose of their draw routine, not the boxes.
     bool raycast(Vec3 a, Vec3 b, RayHit& hit, bool objects = true, int ignore = -1, bool people = true, bool rounds = false) const;
     // DF.EXE's sight line 0x45be04: <= 0 blocked, else 1 + see-through faces.
-    int sight(Vec3 a, Vec3 b, int looker, int target) const;
+    // `fog` false: no fog-distance cutoff (DF2's line of fire 0x406610,
+    // which blasts use: the terrain and 0x405e20 on decorations and items).
+    int sight(Vec3 a, Vec3 b, int looker, int target, bool fog = true) const;
 
     // The player as a target for others' rounds: body origin, heading and
     // the .CHR hit spheres of the current pose (set by the game each tick).
@@ -191,10 +264,14 @@ public:
     // People take 4 / 2 / 1 hit points within 4 / 8 / radius + 1 m, if the
     // terrain does not block the way; objects max(0, 32 - 4 d), or
     // 128 - 16 d for heavy blasts; armour is not checked.
-    std::vector<std::string> blast(Vec3 at, float radius, bool heavy);
+    // Delta Force 2 (GOG Df2.exe 0x454b60): `owner` (-1 none, -3 the
+    // player) is the victims' killer; objects (not people) on `ownerSide`
+    // are spared when there is an owner.
+    std::vector<std::string> blast(Vec3 at, float radius, bool heavy, int owner = -1, int ownerSide = 0);
     // Delta Force 2's rules (DF2.EXE): explosion damage (0x44d4a0), bullet
     // damage to objects (0x44bff0). Set by the game for DF2 missions.
     bool df2Rules = false;
+    bool df2Gog = false;   // Delta Force 2 rules of the GOG Df2.exe build (set with the weapon tables)
     // Delta Force 2: the terrain's fog_level (0 off); nothing is seen past
     // 2^fog_level m (0x40621d..0x406240).
     int fogLevel = 0;
@@ -237,6 +314,14 @@ public:
     void update(float dt);
     // Objects destroyed (not people) since the last call, for their sounds.
     std::vector<int> takeDestroyed() { std::vector<int> out; out.swap(destroyed_); return out; }
+    // GOG Df.exe's 16-bit generator (0x477860), set by the game for that
+    // build; empty: std::rand.
+    std::function<uint32_t()> rand16;
+    // Delta Force: people who entered a move whose move-table flags +0x18
+    // have bit 0 (GOG Df.exe 0x487827 -> 0x460d20: Death_G_DF..DR 250-253,
+    // Death_Fire 255, static table 0x4ef7c8 +0x30) since the last call; each
+    // gets a Smoke Generator owned by it.
+    std::vector<int> takeSmokeOwners() { std::vector<int> out; out.swap(smokeOwners_); return out; }
 
     // A new object at run time (placed charges): its model, hit points and boxes.
     int spawn(const ItemDef* item, const GpuModel* model, Vec3 pos, float heading);
@@ -254,6 +339,7 @@ public:
     std::vector<std::string> landingMessages_;   // "... destroyed" texts from landing damage, for the game to show
 private:
     std::vector<int> destroyed_;
+    std::vector<int> smokeOwners_;
     std::vector<AnimEvent> animEvents_;
     std::map<std::string, Chr> chrs_;
     std::map<std::string, AnimDefs> anms_;

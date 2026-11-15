@@ -19,7 +19,15 @@
 
 namespace df {
 
-struct AreaBox { double minX = 0, minY = 0, maxX = 0, maxY = 0; bool valid = false; };
+struct AreaBox {
+    double minX = 0, minY = 0, maxX = 0, maxY = 0;
+    bool valid = false;
+    // Delta Force 2 (GOG Df2.exe 0x41b200): the two markers (Mission::objects
+    // indices) and condition flag 8, a height range between their absolute
+    // heights (ground + record z) when either record z is non-zero.
+    int markerA = -1, markerB = -1;
+    bool zRange = false;
+};
 
 // What the script asks of the game.
 class ScriptHost {
@@ -33,9 +41,13 @@ public:
     virtual void showText(int id) = 0;     // campaign "Triggered Text", key ID%03i
     virtual void radio(int id) = 0;        // dialog dlg%03i
     virtual void endMission(int winnerSide) = 0;   // 0 = nobody
+    // Condition class 5: single player with the Squad Members option on.
+    virtual bool squadMembers() const { return true; }
     // AI (0x45c0e4 conditions, 0x46bbe8 / 0x46c444 / 0x46cafc actions).
     virtual bool teamSpotted(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
-    virtual bool teamEngaging(int team) const { (void)team; return false; }
+    // Condition 1.2: team has engaged targetTeam (GOG Df.exe 0x42e550, bit
+    // targetTeam of row team at [0x6d7e50]; GOG Df2.exe 0x41b180 the same).
+    virtual bool teamEngaging(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
     virtual bool teamAlerted(int team) const { (void)team; return false; }
     virtual bool reachedWaypoint(int team, int path, int point) const { (void)team; (void)path; (void)point; return false; }
     virtual void followPath(int team, int path) { (void)team; (void)path; }
@@ -43,6 +55,10 @@ public:
     virtual void teamSpeed(int team, int kmh) { (void)team; (void)kmh; }
     // 0x46ca54: someone of team p1 carries an item whose mission team is p2.
     virtual bool teamCarrying(int team, int itemTeam) const { (void)team; (void)itemTeam; return false; }
+    // Delta Force 2 condition 1/13 (GOG Df2.exe 0x41af30 -> 0x41b150): a
+    // projectile of team `team` has hit an object of `targetTeam` (bit table
+    // 0xabbe00, set by 0x41ac30 from the hit 0x453510, cleared at load 0x41b620).
+    virtual bool teamHit(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
     // Delta Force 2 action 18 (0x416960): every person of `team` to the
     // teleport target (6088) of that team whose record +0x4A is `value`.
     virtual void teleportTeam(int team, int value) { (void)team; (void)value; }
@@ -57,6 +73,13 @@ public:
     void load(const Mission& mission);
     // Call once per 60 Hz tick.
     void tick(ScriptHost& host);
+    // One visit of every event with flag `bit`, in order: 2 = mission start
+    // (GOG Df.exe 0x42eb60, from the mission start 0x404e30 after the start
+    // removals and before the team totals 0x44a110; GOG Df2.exe 0x41aeb0),
+    // 4 = mission end (GOG Df.exe 0x42eba0 from 0x401e70 while [0x67f528],
+    // which the single-player launch sets, 0x4157eb; GOG Df2.exe 0x41aef0
+    // from 0x464140).
+    void visitFlagged(uint32_t bit, ScriptHost& host);
 
     bool goalDone(int n) const { return n >= 0 && n < 32 && (goals_ >> n & 1); }
     bool failDone(int n) const { return n >= 0 && n < 32 && (fails_ >> n & 1); }
@@ -75,20 +98,23 @@ private:
     bool conditions(const Event& e, ScriptHost& host) const;
     void actions(const Event& e, ScriptHost& host);
     void visit(size_t i, ScriptHost& host);
+    bool df2() const { return mission_ && mission_->version >= 0x0F; }
 
     const Mission* mission_ = nullptr;
     std::vector<Event> events_;
     std::vector<AreaBox> conditionAreas_;   // per condition, for class 1.10
     uint64_t ticks_ = 0;
-    int visitCount_ = 0;
     uint32_t goals_ = 0, fails_ = 0;
     int unhandled_ = 0;
 };
 
-// Campaign flags (DF.EXE 0x66f9d8): restored at mission start, saved back
-// when side 1 wins. Kept for the session.
+// Campaign flags (DF.EXE 0x66f9d8, GOG Df.exe [0x67dbec]): restored at
+// mission start (GOG 0x404f16). Kept for the session.
 uint32_t& campaignFlags();
-// The flags a mission starts with (the soldier's); updated when side 1 wins.
+// The flags a mission starts with (the soldier's, GOG [0x67f70c]). The live
+// word is copied here when a single player mission is left with side 1 as
+// the latched winner (GOG Df.exe 0x401e70 at 0x401ea1, GOG Df2.exe 0x45a870),
+// so flags set after the win action are kept.
 uint32_t& savedCampaignFlags();
 
 } // namespace df

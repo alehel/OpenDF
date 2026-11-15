@@ -13,6 +13,10 @@ namespace df {
 
 struct GameOptions {
     std::string mission = "C02M01";
+    // Delta Force 2: a Quick Missions entry from the game folder (flag 1,
+    // GOG Df2.exe [0x4f39f0], 0x442960 / 0x442ad0) is read from this file,
+    // not from the archives.
+    std::filesystem::path missionFile;
     std::filesystem::path gameDir;       // where DF.EXE is looked for
     int width = 1280, height = 720;
     // Testing aids: render after `frames` frames to a .ppm and exit.
@@ -45,6 +49,11 @@ struct GameOptions {
     std::string soldierName;
     bool mixerHook = true;               // DF1: the mixer's mode-3 hook (on from start-up until a mission has ended)
     bool female = false;                 // the soldier's face is a female one (profile +0x640 >= 8)
+    // The player's person variant (organic +0x98): GOG Df.exe 0x407a90 reads
+    // [0x67f430] from the face table 0x4d0490 (stride 0x84) by profile
+    // +0x640, 0x4829f0 stores it; the person draw (0x481330) puts it in the
+    // animated-material slot 1.
+    int faceVariant = 0;
     // GPS icons option ("gpsicon"): 0 no soldiers on the command map,
     // 1 (the original's default) only flagged ones, 2 all.
     int gpsIcons = 1;
@@ -55,11 +64,33 @@ struct GameOptions {
     // AI hard, 0x20 squad members off, 0x80 tracers off, 0x100 friendly-fire
     // warning off (Options3).
     uint32_t df2Attributes = 2;
+    // Delta Force 2: df2.cfg "sp_wind" (GOG Df2.exe [0x67cf4c], 0x43c280):
+    // single player's wind, 0 the mission's, 1 none, 2 random.
+    int df2Wind = 0;
     // df.cfg CONTROLS / MUSIC: crosshairs (0x40200d), flipmouse and
     // mousescale (0x42eba1: turn per count = mousescale << 14 binary angle),
     // dialog_volume (0x472f44).
     bool crosshairs = true, flipMouse = false;
     int mouseScale = 128, dialogVolume = 200;
+    // df.cfg showgun: the view model is drawn only when set (GOG Df.exe
+    // 0x407a90 -> [0x67f514], read by 0x483f30).
+    bool showGun = true;
+    // df.cfg / df2.cfg picinpic: picture-in-picture at mission start (GOG
+    // Df.exe 0x407a90 -> [0x67f510], back by 0x407980; GOG Df2.exe 0x43c280:
+    // [0x67cd10] = [0x4f29a8]).
+    bool picInPic = false;
+    // Delta Force 2: the scope sensitivity [0x67ccfc] (soldier +0x5d8 +
+    // 0x80, GOG Df2.exe 0x43c352), the scoped mouse turn rate (0x41eb50).
+    int df2ScopeSens = 0x80;
+    // Delta Force 2: the scope zeroing [0x67cdac] the mission starts with
+    // (soldier +0x5c4, GOG Df2.exe 0x43c280; CD 0x4371c0).
+    int df2Zeroing = 0;
+    // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
+    // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
+    int displayGamma = 128;
+    // df.cfg DISPLAY window_size: the letterbox, 1 or 2 eighths of the
+    // height per band (GOG Df.exe 0x407a90 -> [0x67f4f8], 0x404ba0 clamps).
+    int letterbox = 1;
     // The soldier's key bindings (profile +0x6a0), applied over the game
     // table at mission start (0x41cca0): DF.EXE name, VK | mouse mask << 16.
     std::vector<std::pair<std::string, uint32_t>> bindings;
@@ -73,6 +104,22 @@ struct MissionOutcome {
     bool won = false;        // side 1 won
     int kills = 0;           // people the player killed
     bool quit = false;       // the window was closed: leave the program (exit code 2)
+    // The in-mission option toggles as the mission ended, copied back to the
+    // menu's settings (GOG Df.exe 0x401e70 -> 0x407980).
+    bool crosshairs = true, showGun = true, picInPic = false;
+    // Delta Force: earlier attempts of this run won and then replayed with
+    // Space (GOG Df.exe 0x404e30 -> 0x401e70 -> 0x407de0 records each one).
+    bool earlierWin = false;
+    int earlierKills = 0;
+    int letterbox = 0;       // the letterbox at the end (0x407980 -> df.cfg window_size); 0 = not played
+    // Runs finished earlier with Space ("replay mission"), in order: GOG
+    // Df2.exe 0x466ad0 records each one (0x464140 -> 0x43c6f0) before the
+    // replay starts.
+    struct Run { bool won = false; int kills = 0, df2Zeroing = 0; };
+    // Delta Force 2: the scope zeroing [0x67cdac] at the end, written back
+    // to the soldier (+0x5c4, GOG Df2.exe 0x43c869; CD 0x437550).
+    int df2Zeroing = 0;
+    std::vector<Run> replayed;
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when

@@ -4,10 +4,12 @@
 #include "../render/Hud.h"
 #include "../render/Models.h"
 #include "../render/Terrain.h"
+#include "../render/Window.h"
 #include "../formats/Rtxt.h"
 #include "../formats/Chr.h"
 #include "../formats/Dlg.h"
 #include "../formats/HudDef.h"
+#include "../formats/Pcx.h"
 #include "../audio/Audio.h"
 #include "Controls.h"
 #include "Player.h"
@@ -16,8 +18,11 @@
 #include "KeyMap.h"
 #include "Ai.h"
 #include "Vehicles.h"
+#include "Wildlife.h"
 #include "Moves.h"
 #include "Weapons.h"
+#include "Tracers.h"
+#include "TracerLines.h"
 #include "Weather.h"
 #include "World.h"
 
@@ -29,7 +34,9 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 
@@ -39,15 +46,19 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
-// HUD colours: DF.EXE builds them at start-up from these RGB values
-// (0x4027b1; nearest palette entries in 8-bit modes).
+// HUD colours: DF.EXE builds them at start-up (0x4027b1, GOG colour init
+// before 0x402cf0): with the 256-colour renderer ([0x67f4e4] == 0) the
+// palette entries nearest (0,0,0), (17,60,253), (1,230,1), ...; with the
+// 16-million-colour one (df.cfg renderer 1, the default) these fixed
+// values, which OpenDF's true-colour renderer uses (GOG Df2.exe 0x465d60
+// has the same black and blue).
 constexpr Color rgb(int r, int g, int b) { return {r / 255.f, g / 255.f, b / 255.f, 1}; }
-const Color kHudWhite = rgb(255, 255, 255);   // 0x66f930
-const Color kHudBlack = rgb(0, 0, 0);         // 0x66f934
+const Color kHudWhite = rgb(255, 255, 255);   // 0x66f930 (GOG [0x67db40])
+const Color kHudBlack = rgb(1, 1, 1);         // 0x66f934 (GOG [0x67db44]): 0x1010101
 const Color kHudPureGreen = rgb(0, 255, 0);   // 0x66f938
-const Color kHudBlue = rgb(17, 60, 253);      // 0x66f93c
+const Color kHudBlue = rgb(16, 64, 255);      // 0x66f93c (GOG [0x67db4c]): 0x1040ff
 const Color kHudRed = rgb(255, 0, 0);         // 0x66f944
-const Color kHudBright = rgb(1, 230, 1);      // 0x66f94c: crosshair, scope, map grid, route
+const Color kHudBright = rgb(1, 224, 1);      // 0x66f94c (GOG [0x67db5c]): 0x4101e001; crosshair, scope, map grid, route
 const Color kHudGreen = rgb(1, 129, 1);       // 0x66f950: HUD text and outlines
 const Color kHudDark = rgb(9, 51, 9);         // 0x66f954: box scanlines, text shadow
 // Message text: each message carries its own colour (0x42f400's second
@@ -138,18 +149,26 @@ std::string missionName(const std::string& title) {
 
 class Game : public ScriptHost {
 public:
-    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o) {}
+    Game(Vfs& vfs, const GameOptions& o) : vfs_(vfs), o_(o), letterbox_(std::clamp(o.letterbox, 1, 2)) {
+        arsenal_.setZeroSetting(o.df2Zeroing);   // kept through Space replays (0x466ba0(1) skips 0x43c280)
+    }
     int run();
 
     // ScriptHost: what the mission's events can see and do.
-    int teamTotal(int team) const override { return teamCount(team, false); }
-    int teamAlive(int team) const override { return teamCount(team, true); }
+    // The team table (GOG Df.exe [0x7936a8] totals, [0x7936ac] alive, 64
+    // teams of 0x40 bytes; GOG Df2.exe [0xd81b28] / [0xd81b2c] the same).
+    int teamTotal(int team) const override { return team > 0 && team < 64 ? teamTotal_[size_t(team)] : 0; }
+    int teamAlive(int team) const override { return team > 0 && team < 64 ? teamAlive_[size_t(team)] : 0; }
     bool teamInArea(int team, const AreaBox& a) const override;
     void killTeam(int team) override;
     void removeTeam(int team) override;
     void showText(int id) override;
     void radio(int id) override;
     void endMission(int winnerSide) override;
+    void leaveMissionFlags();
+    bool squadMembers() const override {
+        return mission_.version >= 0x0F ? !(o_.df2Attributes & 0x20) : !(o_.attributes & 0x200);
+    }
 
 private:
     struct Screen {
@@ -175,19 +194,106 @@ private:
 
     bool loadMission(int index);
     void handleKey(const SDL_KeyboardEvent& k);
-    void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView);
-    void drawViewModel(const Screen& s);
+    // DF1's command gate (GOG Df.exe 0x477d40 entry, CD 0x42d990): the byte
+    // at 0x4fb326 (CD 0x4df51e) + action id * 0x2c (the command table indexed
+    // by the id, not by entry) drops an action with bit 0 while paused
+    // ([0x6e4714]) or dead (player +0x6c & 4). Of the ids OpenDF has, that is
+    // scope (6) and pinp (0x1d, the byte of entry 29, Binoculars) in both
+    // builds and briefing (0x25) in GOG's table only (the CD's entry 37
+    // there, 'polys', has flag 0); everything else still runs.
+    bool df1PauseGated(Action a) const {
+        const bool gated = a == Action::Scope || a == Action::PicInPic ||
+                           (a == Action::Briefing && exe_.build() == ExeBuild::Df1Gog);
+        return gated && (paused_ || playerDead());
+    }
+    // The game commands (DF.EXE 0x42d9c0, GOG Df2.exe 0x41f150); `reverse`
+    // is GOG's bit 31 (Shift held, the wheel forward).
+    void runAction(Action act, bool reverse);
+    // GOG Df2.exe 0x420e10: a mouse button (1 left, 2 right, 0x10 middle)
+    // runs the first one-shot command bound to it; the wheel accumulates
+    // WM_MOUSEWHEEL deltas (0x4799e0, [0xe0ff24]), each 120 a step.
+    void df2MouseButton(int mask);
+    void flushDf2Input();
+    void df2MouseWheel(int delta);
+    int wheelAccum_ = 0;
+    void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
+    void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last);
+    void drawViewModel(const Screen& s, const Mat4* worldProj = nullptr);
+    const Screen* gunInWorld_ = nullptr;   // DF2: drawWorld draws the weapon inside the frame (0x44fa09)
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
+    void drawCameraInset(const Screen& s);
+    // Delta Force's FO camera (GOG Df.exe 0x466d90 / 0x484a50): [0xc23a34]
+    // on/off, the target [0xc23a38]: -1 the player (as at mission start,
+    // 0x4829f0), -2 none, else a world object.
+    bool foOn_ = false;
+    int foTarget_ = -1;
+    // Delta Force's picture-in-picture ([0x67f510], df.cfg picinpic, F8):
+    // in an outside view the scope inset stays and, without it, the
+    // player's own view replaces the FO inset (GOG Df.exe 0x404640 ->
+    // 0x466b70).
+    bool pinp_ = false;
+    // GOG Df.exe's audio-macro box ([0x67db90], AudioMacros, A): drawn by
+    // 0x429810; while it is up 0x4790a0 takes the keys 1..9, 0.
+    bool audioMacros_ = false;
+    void drawAudioMacros(const Screen& s);
+    // GOG Df2.exe's HUD colour: the index [0x67cd08] (hudcolor steps it,
+    // 0x41f150 case 10), [0x67d378] = table [0x67d360] (0x465d60: white,
+    // 0x010101, green, 0x1040ff, yellow, red). 0x43c160 stores the index in
+    // [0x4f2f5c] at a mission's end and 0x43c280 takes it back at the next
+    // start, so it lasts the process. The CD build: white.
+    static inline int df2HudColour_ = 0;
+    Color df2HudColour() const {
+        static const uint32_t kTable[6] = {0xffffff, 0x010101, 0x00ff00, 0x1040ff, 0xffff00, 0xff0000};
+        const uint32_t c = arsenal_.df2Gog() ? kTable[df2HudColour_ % 6] : 0xffffff;
+        return rgb(int(c >> 16 & 255), int(c >> 8 & 255), int(c & 255));
+    }
+    void foNext();
+    void drawFoInset(const Screen& s);
+    const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
+    bool foPlayer_ = false;                     // the FO inset is the player's own view: his body not drawn
+    float insetFocal_ = 0;                      // an inset's own focal length for rings and LODs (0 = none)
+    // GOG Df2.exe's Forward Observer shares them: the inset flag [0x79a6a8]
+    // (foOn_) and its target [0x79a6ac] (foTarget_: -1 the player, 0x44e7f0
+    // sets it so, -2 none, else a world object), the body not drawn
+    // ([0xbf2b44], hideObject_).
+    void df2FoNext();
+    void drawDf2FoInset(const Screen& s);
+    // Delta Force 2's picture-in-picture (pinp_, [0x67cd10]; CD
+    // [0x652fc8]): in an outside view the player's own first-person view in
+    // the inset rectangle (GOG 0x456480, CD 0x44eaf0), ahead of the video
+    // camera and FO insets; it also lets the scope show there (0x455790).
+    bool pinpShown() const { return df2Hud_.on && pinp_ && outsideView() != 0; }
+    void drawDf2PinpInset(const Screen& s);
+    const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
+    const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
     void drawTopBar(const Screen& s);
     void drawBottomBar(const Screen& s);
     void drawCommandMap(const Screen& s);
+    void drawGpsInset(const Screen& s);
+    void drawDf1Map(const Screen& s, float x0, float y0, float x1, float y1, bool full);
+    void trackMapPositions();
     void drawMapMarker(const Screen& s, float x, float y, int type, Color c, float heading, bool dead, float radius = -1);
     void hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right);
     void outlinedText(float x, float y, const std::string& t, Color c, float scale, Color outline);
     float rangeToAim() const;
+    // GOG Df2.exe 0x4642b0 (LAB_0046434a): the crosshair gap in 1/65536 of
+    // the mode width, 0x400 while the player mans a gun (+0x8c), else 0x140
+    // (the CD's 0x45a9e0 has 320 only).
+    int df2CrosshairGap() const { return arsenal_.df2Gog() && world_.playerMount >= 0 ? 0x400 : 0x140; }
+    // GOG Df2.exe 0x4557e0: the depth at the scope view's centre
+    // ([0x735e54]), whose pitch is lowered by the zeroing; out to the view.
+    float df2ScopeRange() const;
     // The scope inset shows while the scope is on; moving turns it off (0x4373ab).
-    bool scopeShown() const { return arsenal_.scopeShown(); }
+    // DF1 0x404640: the scope inset only for the living player, in the
+    // first-person view or with picture-in-picture on ([0x67f510]).
+    bool scopeShown() const { return arsenal_.scopeShown() && (world_.df2Rules || ((outsideView() == 0 || pinp_) && !playerDead())); }
+    // GOG Df2.exe 0x455790: none of the player's +0x64 bits 0x422004 (dead,
+    // airborne, swimming 0x20000, on a ladder 0x400000), the scope flag with
+    // a mode flag 0x1 (0x44eba0), a first-person view ([0xbf2b40] 0) and not
+    // moving (+0x74 & 0x18): the scope inset is up. Arsenal::scopeShown()
+    // holds all but death through setScopeBlocked (each tick).
+    bool df2ScopeActive() const { return arsenal_.scopeShown() && !playerDead(); }
     Vec3 aimDirection() const;
 
     Vfs& vfs_;
@@ -205,9 +311,19 @@ private:
     TextTable campText_;                  // DFCAMPxx.BIN
     TextTable wpnText_;                   // Delta Force 2: DF2WPN.BIN (waypoint names)
     TextTable menuText_;                  // DFMENU.BIN
+    // The loading screen (GOG Df.exe 0x4038b0 at 0x403ae4; GOG Df2.exe
+    // 0x466ba0(0) -> 0x465ed0 at 0x466c59, CD 0x45c550): df_wait.pcx /
+    // df2_wait.pcx, then the "Loading Text" lines one by one as the mission
+    // loads (0x403b4c..0x403ede; Df2.exe from 0x466e4e). Only for the first
+    // load (the Space replay, 0x466ba0(1), shows none).
+    bool loadingScreen_ = false;
+    HudImage loadingWait_;
+    std::vector<std::string> loadingLines_;
+    void loadingLine(const char* key);
     TextTable gameTable_;                 // DFGAME.BIN by section and key
     // Placed charges: satchels (schg), claymores (clay radio, cly2 motion).
-    struct Charge { int object; int item; int fuse; };
+    // `mission`: a satchel the mission placed (not the player's detonator's).
+    struct Charge { int object; int item; int fuse; bool mission = false; };
     std::vector<Charge> charges_;
     // Fire missions (0x4482e0 / 0x448368): strikes left (BMS header +0x84),
     // up to 16 on the way, the lasered point and its 64-tick window.
@@ -220,12 +336,17 @@ private:
     void weaponEvent(const WeaponEvent& e);
     void tickCharges();
     void blowCharge(Charge& c);
-    void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor);
-    // Shrapnel's random numbers: DF.EXE rand()*2 (0x435db4; its seed call
-    // 0x435dbc is a bare ret); DF2.EXE 0x41ac40 (x = rol(x,11) + x, x =
-    // rol(x,4) ^ 1, 16 bits), reseeded to 0x5FC by every burst (0x41ac30).
+    void shrapnel(Vec3 at, float yaw, float pitch, int speedFactor, int owner = -1);
+    // Shrapnel's random numbers: the CD's DF.EXE rand()*2 (0x435db4; its
+    // seed call 0x435dbc is a bare ret); DF2.EXE 0x41ac40 (x = rol(x,11) + x,
+    // x = rol(x,4) ^ 1, 16 bits), reseeded to 0x5FC by every burst (0x41ac30).
+    // GOG Df.exe has the same generator (0x477860, state 0xbd0060, seed
+    // 0x477850) for these and the effects (0x45dc70 / 0x45dab0), ambience
+    // waits (0x45c3a0 / 0x45c400 / 0x45c460) and the binoculars (0x484c20),
+    // reseeded to 0x5FC by its bursts (0x4606b0, 0x460950, 0x460a30).
+    bool gogRand() const { return !world_.df2Rules && exe_.build() == ExeBuild::Df1Gog; }
     uint32_t shrapRand() {
-        if (!world_.df2Rules) return uint32_t(std::uniform_int_distribution<int>(0, 0x7fff)(effectRng_) * 2);
+        if (!world_.df2Rules && !gogRand()) return uint32_t(std::uniform_int_distribution<int>(0, 0x7fff)(effectRng_) * 2);
         auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
         df2Rng_ = rol(df2Rng_, 11) + df2Rng_;
         df2Rng_ = rol(df2Rng_, 4) ^ 1;
@@ -246,7 +367,12 @@ private:
             if (mo.group == 3) continue;
             const WorldObject* w = live[i];
             if (w && w->removed) continue;
-            const int shape = w ? w->radarShape : int(int8_t(mo.raw[19] & 0xFF));
+            // GOG Df2.exe 0x4261e0's decorations loop: an item with S&D
+            // (attrib 0x1000) is skipped once destroyed (+0x64 & 4).
+            if (mo.group == 1 && w && w->item && (w->item->attrib & 0x1000) && !w->alive()) continue;
+            int shape = w ? w->radarShape : int(int8_t(mo.raw[19] & 0xFF));
+            if (!w && !shape)
+                if (const auto it = df2DefaultShape_.find(i); it != df2DefaultShape_.end()) shape = it->second;   // 0x467430
             if (!shape) continue;
             f(Df2Shape{&mo, w, shape, int(int8_t((uint32_t(mo.raw[16]) >> 24) & 0xFF))});
         }
@@ -267,17 +393,24 @@ private:
         // whose item has +0x24 & 4, 0x403740, the light included).
         float perception = 1;
         int alert = 0;                   // AI byte +0xb4, from record byte +0x42 (0x403811)
+        // Delta Force (GOG Df.exe 0x4519a0 / 0x451cb0): its own yaw +0x30 and
+        // pitch +0x34 as DF binary angles, and AI flag 0x40 (target seen dead).
+        uint32_t yaw = 0;
+        int32_t pitch = 0;
+        bool targetDead = false;
     };
     std::vector<Searchlight> lights_;
     void tickDf2Items();
+    void tickDf1Lights();
     void df2Blast(Vec3 at, int fragments, float heading);
     void fragmentBurst(Vec3 at, int fragments, float heading);
     bool df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const;
     void mineContact(int index);
     bool df2ItemDestroyed(int index);
-    // DF2.EXE 0x415490: the big blast (kind 5, 12 m) and 200 fragments, as a
-    // satchel (vehicle deaths, ibom).
-    void bigBlast(Vec3 at);
+    // DF2.EXE 0x415490 (GOG Df2.exe 0x4174d0): the big blast (kind 5, 12 m)
+    // and 200 fragments fanned from `heading` (OpenDF sense), owned by
+    // `owner` (satchels, fire missions, boats, ibom).
+    void bigBlast(Vec3 at, float heading = kPi / 2, int owner = -1);
     // DF2's bld2 collapse (0x4028d0): crush, then 64 steps one per 8 ticks.
     struct Collapse { int object, step, wait, rubble, dust, smoke; float box[4]; };   // box: the 2 m-inset footprint, file axes
     std::vector<Collapse> collapses_;
@@ -290,21 +423,62 @@ public:
         MissionOutcome o;
         o.played = true;
         o.won = missionResult_ == kPlayerSide;
-        for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
+        o.kills = finalKills_ >= 0 ? finalKills_ : playerKills();
         o.quit = quit_;
+        o.crosshairs = crosshair_;
+        o.showGun = gunVisible_;
+        o.picInPic = pinp_;
+        o.earlierWin = earlierWin_;
+        o.earlierKills = earlierKills_;
+        o.letterbox = letterbox_;
+        o.replayed = replayed_;
+        o.df2Zeroing = arsenal_.zeroSetting();
         return o;
     }
+    // The player's kills: counted before the objects are freed at the end
+    // of run() (finalKills_), else from the live list.
+    int playerKills() const {
+        int k = 0;
+        for (const auto& w : world_.objects) k += (w.person && w.dead && w.killer == -3) ? 1 : 0;
+        return k;
+    }
+    int finalKills_ = -1;
+    // Won attempts left with Space (Delta Force), already recorded.
+    bool earlierWin_ = false;
+    int earlierKills_ = 0;
+    std::vector<MissionOutcome::Run> replayed_;   // runs ended by Space (outcome().replayed)
 private:
     bool briefingShown_ = false, helpShown_ = false;   // [0x66f96c], [0x66f968]
     std::string briefing_;                // built at mission load (0x4813c4)
     int briefStart_ = 1, briefLast_ = 1, briefPage_ = 0;   // [0xc73704], [0xc73700], [0x4f30dc]
     void touchPickups();
+    // Delta Force's bird trees (ai `btre`, GOG Df.exe 0x451e70) and
+    // sparrows (ai `spar` 0x451d40, move 0x451dd0): think timer +0xfc,
+    // the tree's cooldown +0xe0, the bird's speed +0x7c, velocity
+    // +0x3c/+0x40 and DF binary yaw +0x30.
+    struct BirdTree { int object = -1; int think = 0; int cooldown = 0; };
+    struct Sparrow { int object = -1; int think = 0; int32_t speed = 0, vx = 0, vy = 0; uint32_t yaw = 0; };
+    std::vector<BirdTree> birdTrees_;
+    std::vector<Sparrow> sparrows_;
+    void tickBirds();
     void dropCarried();
     bool teamCarrying(int team, int itemTeam) const override {
         return team == kPlayerTeam && carried_ >= 0 && world_.objects[size_t(carried_)].team == itemTeam;
     }
     void drawBriefing(const Screen& s);
+    void drawDf1Briefing(const Screen& s);
     void drawHelp(const Screen& s);
+    // GOG Df2.exe's help (F1): the action table (0x4b1710, 0x200 rows of
+    // 0x70) with the mission's bindings, sorted and paged (0x41e5d0 at the
+    // mission start: 0x41e370, 0x41e3c0, 0x41e0f0), drawn by 0x41e620,
+    // PgUp / PgDn step the pages (0x41e240). Empty without GOG's table.
+    struct Df2HelpPage { std::string title; int first = 0, last = 0; };
+    struct Df2HelpRow { std::string name, keys; int category = 0; };
+    std::vector<Df2HelpRow> df2HelpRows_;
+    std::vector<Df2HelpPage> df2HelpPages_;
+    int df2HelpPage_ = 0;   // [0xab2e64]
+    void buildDf2Help();
+    void drawDf2Help(const Screen& s);
     // The player's route (DF.EXE 0x447856 builds it, 0x449a39 advances it,
     // 0x4838ac shows it): points of the first path flagged 2.
     struct RoutePoint { double x, y; float radius; std::string name; const MissionObject* object; };
@@ -312,7 +486,12 @@ private:
     int routeIndex_ = 0;
     void buildRoute();
     void updateRoute();
-    int teamCount(int team, bool aliveOnly) const;
+    std::array<int, 64> teamTotal_{}, teamAlive_{};
+    // Plain globals in the EXEs, so process-wide here too (a Game is built
+    // per mission launch): never reset, they run on across missions.
+    static inline uint32_t teamRecountClock_ = 0;   // GOG Df.exe [0x6e4738], GOG Df2.exe [0x67ffe8]
+    static inline uint32_t endCheckClock_ = 0;      // GOG Df.exe [0x6e474c] (written only in 0x443c50)
+    void countTeams(bool atStart);
     void drawMissionEnd(const Screen& s);
     void drawGoals(const Screen& s);
 
@@ -331,21 +510,48 @@ private:
     MissionScript script_;
     DialogIndex dialogs_;                 // DFDLGnn.DBF
     std::vector<std::string> dialogText_; // DFDLGnn.BIN
+    TextTable df2Text_;                   // DF2: the same .BIN as a section table (GOG Df2.exe [0xa6df94])
     // Ambience (ai_function timers, 0x45a5a8 / 0x45a830 / sndN): objects
     // that repeat their interrupt_sound_id.
     // section: the BMS group (0x436c74 visits 1 every 32 ticks, 2 every 64);
     // slot: the record's index in its group.
-    struct Ambient { int object; int wait; int section; int slot; };
+    // DF2's sound markers (snd0..snd3, no graphic, so no world object) have
+    // object -1 and play at `at`, their record's place.
+    struct Ambient { int object; int wait; int section; int slot; Vec3 at{}; const ItemDef* item = nullptr; };
     // The C runtime's rand (Watcom 0x49153c, never seeded: 1), which DF.EXE
     // draws ambience waits from (shared there with ~150 other callers).
     uint32_t crtSeed_ = 1;
     int crtRand() { crtSeed_ = crtSeed_ * 0x41C64E6Du + 0x3039u; return int((crtSeed_ >> 16) & 0x7FFF); }
     std::vector<Ambient> ambients_;
-    struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; };
+    // GOG Df2.exe 0x403790's think counter ([0x4df9b0], 0 at start, never
+    // reset): every record it creates takes counter % 60 as its first think
+    // wait, then the counter goes up 11. Process-wide, as the EXE's global.
+    static inline int df2ThinkCounter_ = 0;
+    // GOG Df.exe 0x449710's counter [0x4f821c] (0 at start, never reset):
+    // every record that passes the single-player filter, in file order over
+    // the four groups (0x449c70), takes counter % 60 as its think_timer,
+    // then the counter goes up 11. df1FirstThink_: that value per record of
+    // the current mission (-1 for a dropped one). Process-wide (0x449710 is
+    // its only writer), so it carries over between launched missions.
+    static inline int df1ThinkCounter_ = 0;
+    std::vector<int> df1FirstThink_;
+    // DF2's ambient loop markers ("Sound: loop" items): mission record,
+    // sound id, place (GOG Df2.exe 0x465330, attached through 0x4682b0 at
+    // mission load).
+    struct LoopMarker { int record; int id; Vec3 at; };
+    std::vector<LoopMarker> loopMarkers_;
+    struct ActiveDialog { const std::vector<DialogPart>* parts; int next, wait; bool armed; };
     std::vector<ActiveDialog> activeDialogs_;
-    void tickDialogs();
+    void tickDialogs(bool drawn);
     float scriptClock_ = 0;
     uint32_t ticks_ = 0;                  // 60 Hz simulation ticks (DF.EXE 0xc70acc)
+    // GOG Df.exe [0x6e471c]: 0x43f560 adds 1 every tick, paused or not (the
+    // game counters [0x6e4720] / [0x6e4724] only when [0x6e4714] is 0); it
+    // drives Delta Force's blinks (tick bit 0x10: 0x402300, 0x466090,
+    // 0x48e070) and the dead player's orbit (0x404640).
+    uint32_t frameClock_ = 0;
+    float pauseClock_ = 0;
+    uint32_t missionSteps_ = 0;           // DF1 [0x67dbf4]: steps since the mission (re)started, the cloud clock
     // Effect objects (DF.EXE 0x46a214 / 0x436eec / 0x480c70): an item's model,
     // billboarded toward the camera, animated frame by frame, removed after
     // frames x ticks-per-frame.
@@ -356,6 +562,13 @@ private:
         bool smoke = false; float drift = 0, rise = 0, roll = 0;
         // DF2's landed canopy (`para` 0x42c570): heading, tipping 0..90°.
         bool canopy = false; float heading = 0, pitch = 0;
+        // Delta Force's `gdeb` debris pieces (GOG Df.exe 0x453530): velocity
+        // in m a tick (OpenDF axes) and the binary angles yaw +0x30, pitch
+        // +0x34 and roll +0x38.
+        bool debris = false; Vec3 dvel{0, 0, 0}; uint32_t yaw = 0, dpitch = 0, droll = 0;
+        // Delta Force's ef3d effects (SPLASH1/2): drawn upright at `yaw`
+        // (+0x30, set at spawn) instead of facing the camera.
+        bool ef3d = false;
         // DF2's dust clouds (move `smk2` 0x42aaa0, item 107051 SMKT_H): 16.16
         // velocity per tick (DF2 axes x east, y north, z up), size +0x84,
         // growth shift +0xb4, cap +0xb8, alpha +0xac and its step +0xb0, roll
@@ -373,20 +586,48 @@ private:
     std::vector<Effect> effects_;
     // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
     // every 16..23 ticks, 100 puffs.
-    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; };
+    // sgen (GOG Df.exe 0x42a520): owner +0xf8 (world object, -1 none).
+    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; int owner = -1; };
     // Sound: live on the audio device, or mixed in fixed steps into the
     // recording (--record).
     Audio audio_;
     SoundSystem sound_;
     AiSystem ai_;
     VehicleSystem vehicles_;
+    WildlifeSystem wildlife_;   // DF2's vult / peng / prnh
     // ScriptHost: the AI's conditions and actions.
     bool teamSpotted(int team, int targetTeam) const override { return ai_.spotted(team, targetTeam); }
-    bool teamEngaging(int team) const override { return ai_.engaging(team); }
+    // Delta Force 2's "team has hit team" table (GOG Df2.exe 0xabbe00: 64
+    // rows of 64 bits, row = shooter team), cleared at every load (0x41b620).
+    std::array<uint64_t, 64> teamHits_{};
+    bool playerRunning_ = false;   // DF2 +0x74 speed bits 2 (pungi sticks)
+    // Pungi sticks (101066, GOG Df2.exe 0x446050 case 0x42a): a mover is hurt
+    // only airborne (+0x64 & 0x2000) or running ((+0x74 & 0x18) >= 9) without
+    // the crouch bit 0x20; a dead mover only springs it (0x45a270).
+    static bool pungiHurts(bool airborne, bool running, bool crouched) { return airborne || (running && !crouched); }
+    bool teamHit(int team, int targetTeam) const override {
+        return team >= 0 && team < 64 && targetTeam >= 0 && targetTeam < 64 && (teamHits_[size_t(team)] >> targetTeam & 1);
+    }
+    void recordHit(const Impact& hit);
+    bool teamEngaging(int team, int targetTeam) const override { return ai_.engaging(team, targetTeam); }
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
     void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
-    void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
+    // GOG Df.exe 0x4601a0 / Df2.exe 0x4184c0: decorations (searchlights),
+    // organics and items of the team, each with an AI block (0x45ff20 / 0x4185b0).
+    void aiProperty(int team, int subtype, int value) override {
+        // GOG Df.exe 0x4601a0 / Df2.exe 0x4184c0: not for subtype 0 or team 0.
+        if (subtype == 0 || team == 0) return;
+        ai_.property(world_, team, subtype, value);
+        vehicles_.property(world_, team, subtype, value);
+        if (team == 0) return;
+        for (auto& l : lights_) {
+            if (world_.objects[size_t(l.object)].team != team) continue;
+            if (subtype == 5) l.alert = 2;
+            else if (subtype == 6) l.alert = 0;
+            else if (subtype == 9) l.perception = float((value << 16) / 100) / 65536.f;
+        }
+    }
     void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
     void setTeamSide(int team, int side) override {
         if (team == 0) return;   // 0x4133c5: team 0 is left alone
@@ -394,30 +635,43 @@ private:
             if (o.team == team) o.side = side;
     }
     void moveTeam(int team, int newTeam) override {
+        // GOG Df2.exe 0x4151a0: decorations, organics and items of the team
+        // change team, then the alive counts are redone (0x4043e0).
         if (team == 0) return;
         for (auto& o : world_.objects)
             if (o.team == team) o.team = newTeam;
+        countTeams(false);
     }
+    // DF2.EXE's marker pass (GOG Df2.exe 0x45c4b0, CD 0x4544a0): a start or
+    // teleport marker more than 0x62FFFF (just under 99 m, 16.16) above the
+    // ground gets flag 0x20, the parachute, which the start and teleport
+    // copy to whoever is placed there.
+    static bool df2ChuteMarker(float zAboveGround) { return std::lround(double(zAboveGround) * 65536.0) > 0x62FFFF; }
     void teleportTeam(int team, int value) override {
-        // DF2.EXE 0x416960: the target's position and angles to every person
-        // of the team. INFERRED: a target 100 m or more above the ground puts
-        // them on a chute (DF2.EXE 0x4169e2 copies the target's own flag
-        // 0x20, which nothing sets, so its paradrops would kill their teams;
-        // INFERRED from the missions: a target 100 m or more up is a chute
-        // drop, as the soldiers' start rule 0x45bb10).
+        // DF2.EXE 0x416960 (GOG Df2.exe 0x418be0): the target's position and
+        // angles to every person of the team, and the target's flag 0x20
+        // (the parachute, set by the marker pass 0x45c4b0 for markers over
+        // 99 m) ORed into theirs (0x4169e2). Every organic in use (item
+        // index != 0) is moved, the dead too, and for team 1 the player.
         for (const auto& mo : mission_.objects) {
             if (mo.type != 6088 || (mo.raw[18] & 0xFF) != team) continue;
             if (reinterpret_cast<const uint8_t*>(mo.raw)[0x4A] != value) continue;
             const float ext = terrain_.mapExtent();
             const Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
             for (auto& o : world_.objects) {
-                if (!o.person || o.team != team || !o.alive()) continue;
+                if (!o.person || o.team != team || o.removed) continue;
+                const float lift = o.alive() ? o.hip : o.pos.y - o.base;   // a body keeps its lying height
                 o.pos.x = at.x;
                 o.pos.z = at.z;
                 o.heading = mo.heading * kPi / 180.f;
                 o.base = terrain_.heightAt(at.x, at.z) + mo.z;
-                if (mo.z >= 100.f) o.chute = true;   // ORed in (0x4169e8), never cleared; vz is kept
-                o.pos.y = o.base + o.hip;
+                if (df2ChuteMarker(mo.z)) o.chute = true;   // ORed in (0x4169e8), never cleared; vz is kept
+                o.pos.y = o.base + lift;
+            }
+            if (team == kPlayerTeam) {
+                player_.feet = {at.x, terrain_.heightAt(at.x, at.z) + mo.z, at.z};
+                player_.yaw = mo.heading * kPi / 180.f;
+                if (df2ChuteMarker(mo.z)) player_.chute = true;
             }
             break;
         }
@@ -436,6 +690,24 @@ private:
     Vec3 deadShift_{0, 0, 0}, camPivot_{0, 0, 0}, camLag_{0, 0, 0};
     float deadYaw_ = 0, camYaw_ = 0;      // OpenDF heading / DF yaw (anticlockwise), radians
     Vec3 deadBodyOrigin() const;
+    // The outside views. Delta Force (GOG Df.exe 0x42ac10 / 0x42a6e0): the
+    // mode [0x6ba3ec] (0 first person, 1 orbit behind the smoothed body yaw,
+    // 2 orbit at a world yaw, 3 the lookout [0x6ba40c]), its yaw offset
+    // [0x6ba424] (DF sense, radians), pitch [0x6ba428] and distance
+    // [0x6ba42c]; [0xc23a1c]: the mode was forced by death. GOG Df2.exe
+    // (0x414240 / 0x413dd0) the same: [0xbf2b40] 0 first person, 1 chase
+    // (yaw [0xbf2b78] + the eased body yaw), 2 world-fixed, 3 fly-by (the
+    // fixed point [0xbf2b60..68]); pitch [0xbf2b7c], distance [0xbf2b80];
+    // dead, forced to 1 with the yaw tick << 21 ([0x79a68c], 0x465f90).
+    int camMode_ = 0;
+    float camYawOff_ = 0, camPitch_ = float(0x4000000) / 4294967296.f * 6.2831853f, camDist_ = 3.f;
+    Vec3 lookout_{0, 0, 0};
+    bool deadCam_ = false;
+    float camKeyClock_ = 0;
+    void setCamMode(int mode);
+    void placeLookout();
+    // The view drawn: 0 first person, else the outside view (dead: 1).
+    int outsideView() const { return playerDead() ? 1 : camMode_; }
     int damageFlash_ = 0;                 // [0x933554]: red flash strength 0..255
     // Delta Force 2: air used under water (player slot +0xcc, DF2.EXE 0x4587f0).
     int air_ = 0;
@@ -443,7 +715,7 @@ private:
     void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0}, int part = 0);
     // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
     // 0x12-0x16 (0x473f70, slots 7-11) of a body at `origin`.
-    void animEvent(int event, Vec3 origin, int phraseSet, int team = 0);
+    void animEvent(int event, Vec3 origin, int phraseSet, int team = 0, bool airborne = false);
     std::string playerMove_;
     Chr playerChr_;
     Animator playerBody_;
@@ -453,19 +725,64 @@ private:
     static std::vector<Mat4> personPose(const GpuModel& m, int lod, const Chr& chr, const std::vector<std::array<float, 3>>& turns,
                                         float aimPitch = 0);
     Vec3 viewDir() const;
+    // The model shade ramp's highlight: sky palette entry 16 (GOG Df.exe
+    // 0x47b590 -> 0x47eb70); Delta Force night missions (header flag 0x10)
+    // override it with pure green at mission load (0x403e25: 0x47eb70(0,
+    // 0xff, 0)), before the Light CLUT is built.
+    Vec3 modelHighlight() const {
+        if (!world_.df2Rules && (mission_.lightFlags & 0x10)) return {0, 1, 0};
+        return terrain_.highlight();
+    }
     bool playerDead() const { return playerHp_ <= 0; }
-    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f);
+    // effect: the effect slot (0: 3, or 4 in the water); smoke: a smoke
+    // generator on terrain (surface 0); owner: the blast's owner (round
+    // shooter, -3 the player, -1 none), credited with kills and sparing its
+    // side's objects in Delta Force 2.
+    void explode(Vec3 at, int surface, bool heavy = false, float radius = 10.f, bool sound = true, int owner = -1, int effect = 0,
+                 bool smoke = true);
+    // The blast's damage and the player's test (World::blast and below;
+    // GOG Df.exe 0x465830 / 0x465977). GOG queues a blast (0x4657d0: ring
+    // 0x9e2e40, count [0xa15898]) and handles it after its caller has drawn
+    // all its fragments (0x465bd0), so in the seeded Delta Force paths
+    // (detonate, bigBlast, the satchel) explode() only queues it while
+    // deferBlasts_ is set and flushBlasts() runs it after the fragments: the
+    // death draws of anyone 4-8 m away then follow the 0x5FC pattern
+    // instead of shifting it.
+    void blastDamage(Vec3 at, bool heavy, float radius, int owner);
+    struct PendingBlast { Vec3 at; bool heavy; float radius; int owner; };
+    bool deferBlasts_ = false;
+    std::vector<PendingBlast> pendingBlasts_;
+    void flushBlasts() {
+        deferBlasts_ = false;
+        std::vector<PendingBlast> q;
+        q.swap(pendingBlasts_);
+        for (const PendingBlast& b : q) blastDamage(b.at, b.heavy, b.radius, b.owner);
+    }
     void detonate(Vec3 at, int shrapnel, float heading);   // surface: 0 terrain, 1 object, 2 water
+    void gnrcExplode(int index);   // Delta Force: a destroyed gnrc object goes off (0x453270)
+    float effectScale_ = 0;        // > 0: the next spawnEffect's scale (effect +0x7c set by its caller)
     void spawnPuff(Vec3 at);
+    // Delta Force's wooden crates and furniture (`wdsm`, `wdmd`), cacti
+    // (`cact`) and palms (`palm`) at hp <= 0: puffs, `gdeb` debris pieces
+    // and a sound.
+    void woodDebris(int index);
     void tickEffects();
     // Delta Force 2's rain and snow (BMS flag 0x78 bit 3, 0x46ba90).
     Weather weather_;
+    TracerLines tracerLines_;   // DF2 bullet tracers (GOG Df2.exe 0x452610)
     void drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye);
     std::mt19937 effectRng_{1998};
     void spawnImpact(const Impact& hit);
+    int terrainClass(Vec3 at) const;   // the terrain class a hit sounds by, 0..11
     void spawnEffect(int slot, Vec3 pos);
     int missionResult_ = -1;              // winning side once the mission has ended
     int missionNumber_ = 0;               // m of CccMmm
+    // Delta Force 2's wind for the mission (GOG Df2.exe [0x512e60] degrees
+    // it blows from, [0x512e68] kph, shown on the HUD) and whether its
+    // velocity points the other way (the random wind, 0x4763e0).
+    int windDeg_ = 0, windKph_ = 0;
+    bool windFlip_ = false;
+    void setDf2Wind() { arsenal_.setWind(float(windKph_), float(windDeg_ + (windFlip_ ? 180 : 0))); }
     static constexpr int kPlayerTeam = 1, kPlayerSide = 1;
     std::vector<std::string> missions_;
     int current_ = 0;
@@ -491,10 +808,24 @@ private:
     // DF2.EXE 0x45c160: a panel darkened 50 % with a one-pixel orange outline,
     // in the virtual 1024x768 space.
     void df2Panel(const Screen& s, float vx0, float vy0, float vx1, float vy1);
+    // GOG Df.exe 0x401ec0 (CD 0x401b6c) with shade 10 and the outline on:
+    // the virtual 1024x768 corners to mode pixels (0x471af0), x rounded down
+    // to 4, the box darkened and framed by four one-pixel lines in bright
+    // green ([0x67db5c]).
+    void df1Panel(const Screen& s, int vx0, int vy0, int vx1, int vy1);
     // A DF2GAME.BIN string (section, key), or `fallback`.
     std::string df2Text(const char* section, const char* key, const char* fallback) const {
         const std::string* t = gameTable_.find(section, key);
         return t && !t->empty() ? *t : std::string(fallback);
+    }
+    // Delta Force's HUD text. GOG Df.exe looks it up in DFGAME.BIN by
+    // section and key (0x404cf0: the entry's text, even empty, else ""); the
+    // CD build draws literals and its DFGAME.BIN has no such sections, so
+    // without the section the CD build's literal `cdText`.
+    std::string df1Text(const char* section, const char* key, const char* cdText) const {
+        if (!gameTable_.hasSection(section)) return cdText;
+        const std::string* t = gameTable_.find(section, key);
+        return t ? *t : std::string();
     }
     bool nvg_ = false;   // DF2 night vision ([0x765740], forced on for night missions)
     // Delta Force 2's command map (DF2.EXE 0x40b370): a 640x480 mouse UI.
@@ -517,6 +848,18 @@ private:
     Df2Sel df2HudWp_;
     bool df2Elevation_ = false;   // [0x765600]: the radars' elevation picture (D, F9 / F10)
     bool df2KeyFlag_ = false;     // [0x7655fc]: set by F9 / F10, read only by Escape (0x41b59d)
+    // Delta Force: the GPS inset (F10 mapterrain, [0xc23a2c]) and the
+    // elevation picture of both maps (F11 mapelevation, [0xc23a30]), both
+    // cleared at mission init (GOG Df.exe 0x4829f0); the map key lines
+    // under the inset ([0xcc0710], 0x48dd80).
+    bool gpsShown_ = false, gpsElevation_ = false;
+    int mapKeyLines_ = 0;
+    // Each world object's position in the continuous mission space (the
+    // world keeps x/z inside the repeating tile): the map places markers at
+    // the true offset from the player (GOG Df.exe 0x48f5d0, obj+0x24/+0x28),
+    // so each frame's step is added up (OpenDF bookkeeping).
+    struct MapTrack { double x, y; Vec3 last; };
+    std::vector<MapTrack> mapTrack_;
     Df2Loadout df2Loadout_;       // the player's weapon types (controller +0xb6..+0xba)
     struct Df2Map {
         bool loaded = false;
@@ -531,20 +874,33 @@ private:
         int mouseX = 0, mouseY = 0;   // in the 640x480 screen
         int lastX = 0, lastY = 0;     // the mouse the frame before (waypoint drag)
         bool panning = false, leftHeld = false;
+        // The buttons held (bit 1 left, 2 right, 4 middle): GOG Df2.exe
+        // 0x40c1e0 ORs every held button into [0xc0478c] (0x477de3 / 0x477e1a
+        // / 0x477e3d), and the tabs (0x40d860), rows (0x40d790) and widgets
+        // (0x40cae0) test only that it is not 0.
+        int held = 0;
+        bool dragHeld = false;        // [0xc08858]: the left button was held on an earlier map frame
         Df2Sel sel;                   // [0xbcb424]
         Df2Sel drag;                  // 0xbd055c: the waypoint being dragged
         bool wTool = false;           // 0xbd058c (BSS: starts 0, never reset)
         bool wButton = false;         // the W button's state (0 whenever the Map tab is entered)
         bool dButton = false;         // the D button's state (= [0x765600] when the Map tab is entered)
         bool contours = false;        // 0xbd0588 (BSS: starts 0, never reset)
-        int scrollPlayers = 0, scrollTeam = 0;   // [0xbd0594], [0xbd0598]
+        int scrollPlayers = 0, scrollTeam = 0;   // [0xc08894] (VON and Players), [0xc08898] (Team)
+        int scrollBrief = 0, scrollSettings = 0;   // the Mission tab's bars: [0xc088a0], [0xc088a4]
+        int briefLines = 0, settingsLines = 0;     // their texts' segment counts (0x40c310), the bars' max - 1
+        // The list rows (0x40d520 into 0xc088c0, count [0xbfaee4]) of the
+        // last VON / Players / Team draw, in 640 px; hit by 0x40d790.
+        struct Row { int x0, y0, x1, y1; Df2Sel sel; };
+        std::vector<Row> rows;
+        int smlA = 13;   // f_sml's 'A' glyph height (glyph record +4, 0x41b8a0)
         int barWidget = 0, barAnchorY = 0, barCount = 0;
         std::map<int, std::string> planText;
         std::string teamName;                  // the panel's team-name buffer 0x4ca878   // teammates' controller +0x14 (0x403380), by object   // 0x40c040's widget, [0xbcc488], [0xbcc490]
         // A list's scroll-bar record (0x40c3f0) and its thumb (0x40c710) in
         // 640 px: track x0..x1, ty0 (+0x14 = y0 + 16 - 1), ty1 (+0x1c = y1 - 16).
         struct Bar { int x0, x1, ty0, ty1, top, bottom; };
-        static Bar bar(float vx, float vy0, float vy1, int pos, int page) {
+        static Bar bar(float vx, float vy0, float vy1, int pos, int page, int max = 64) {
             auto V = [](float v) { return int(std::floor(v * 0.625f)); };
             Bar b{};
             b.x0 = V(vx);
@@ -552,8 +908,9 @@ private:
             b.ty0 = V(vy0) + 16 - 1;
             b.ty1 = V(vy1) - 16;
             const int L = b.ty1 - (b.ty0 + 3);
-            b.top = pos * L / 64 + b.ty0 + 3;
-            b.bottom = std::min((pos + page) * L / 64 + b.ty0 + 3, b.ty1);
+            const int range = std::max(1, max);   // min 0
+            b.top = pos * L / range + b.ty0 + 3;
+            b.bottom = std::min((pos + page) * L / range + b.ty0 + 3, b.ty1);
             return b;
         }
         int current[5] = {}, request[5] = {};    // Weapons tab: 0xbec6c0, 0xbe72a0
@@ -574,18 +931,28 @@ private:
     void df2MapClick(const Screen& s, int x, int y, bool down, int button);
     void df2MapEnter(int tab);
     void df2MapFrame();
+    struct Df2Tab { std::string label; int x0, x1; };
+    std::array<Df2Tab, 6> df2MapTabs() const;
     void df2MapKey(const SDL_KeyboardEvent& k);
     void df2Select(Df2Sel s) { df2Map_.sel = s; }
     bool df2SelValid(Df2Sel s) const;
     bool df2SelPos(Df2Sel s, double& x, double& y, float* z = nullptr) const;
+    void df2ObjectPos(const WorldObject& o, double& x, double& y) const;
     std::string df2SelName(Df2Sel s) const;
     int df2SelItem(Df2Sel s) const;
-    std::string df2MissionName(size_t index) const;
+    std::string df2RecordName(size_t index) const;
+    // GOG Df2.exe 0x467430 (from 0x466ba0 at mission load): default labels
+    // (+0x54) and radar shapes (+0x6E) of item-list objects; the labels by
+    // mission record index.
+    void df2DefaultLabels();
+    std::map<size_t, std::string> df2Labels_;
+    std::map<size_t, int> df2DefaultShape_;   // 0x467430's shape for a record with no world object
     bool df2SelOnPlayerTeam(Df2Sel s) const;
     std::vector<std::pair<std::string, int>> df2ActionButtons() const;
     void df2Action(int code);
     void df2SetWaypoint(Df2Sel s);
-    void df2NextWaypoint();
+    void df2NextWaypoint(int dir = 1);
+    void df1StepWaypoint(int dir);
     struct Df2WpView { bool ok = false; double x = 0, y = 0; float elev = 0; std::string name; int listIndex = -1; };
     Df2WpView df2CurrentWaypoint() const;
     bool df2HudWpIs(Df2Sel s) const;
@@ -610,9 +977,19 @@ private:
     float missionTime_ = 0;
     // Objects: DF.EXE's depth buffer saturates at 1024 m (inferred cull distance).
     float viewDistance_ = 1024;
+    // The GL far plane (OpenDF): beyond the terrain's farthest band (DF2.EXE
+    // 0x47180e / 0x472440: 256·F/2 m, 12.8 km at F = 320, more in the scope),
+    // since the voxel terrain has no far clip; the depth precision near the
+    // camera depends on the near plane only.
+    static constexpr float kFarPlane = 262144.f;
+    // (OpenDF) Where drawWorld splits the depth buffer between its two
+    // passes, in metres of view depth (balances the precision at the split
+    // against that at 4 km).
+    static constexpr float kDepthSplit = 128.f;
     float scopeFocal_ = 320;
     float mapScale_ = 1.f;   // command map scale (DF.EXE 0x933540, default 1.0)
     bool showMap_ = false, showGoals_ = false, crosshair_ = true, gunVisible_ = true;
+    bool printScreen_ = false;   // Delta Force PrintScreen: write the next drawn frame
     // Binoculars ([0x93367c], 0x44b870): a 22-degree view with a fixed
     // random aim offset chosen as they come up (yaw, pitch radians).
     bool binoculars_ = false;
@@ -622,34 +999,91 @@ private:
     // (0x435c40 / 0x41ab10), times 8: up to 2^25 binary angle (2.8125
     // degrees), the first added to the yaw, the second to the pitch.
     void pickBinocularOffset() {
-        const float r = std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
+        const float r = gogRand() ? float(shrapRand()) / 65536.f * 2 * kPi   // GOG 0x484c20: 0x477860 << 16
+                                  : std::uniform_real_distribution<float>(0.f, 2 * kPi)(effectRng_);
         binoYaw_ = std::sin(r) * 2.8125f * kPi / 180.f;
         binoPitch_ = std::cos(r) * 2.8125f * kPi / 180.f;
     }
     bool paused_ = false;                 // [0xc70ac4] (0x42df53)
+    int wheelDelta_ = 0;                  // DF1 WM_MOUSEWHEEL remainder, 120 per notch (GOG [0xd09364])
+    bool jumpPressed_ = false;            // DF1: a move_jump press since the last player update (GOG Df.exe [0xc23a00] & 0x400)
     bool oldMessages_ = false;            // [0x66f974]
-    bool friendlyTags_ = false;           // [0x66f978]
-    int letterbox_ = 1;                   // lbsize (0x404650): 1 or 2 eighths of the height per band
+    // Delta Force 2's audio macros list (audioMacros_, [0x67d3ac]; CD
+    // [0x65364c]): drawn by 0x4478f0 (CD 0x441410); while it is up the keys
+    // 1..9, 0 send macro 1..10 (0x407160: network message 0x43, nothing
+    // heard by the sender) and close it (0x421940 / CD 0x41d000).
+    void drawDf2AudioMacros(const Screen& s);
+    // "End Mission? (Y/N)": DF.EXE [0x66f95c], DF2.EXE [0x65362c]. Opened by
+    // Escape when nothing else is open (0x42e548 / 0x41b5d1), closed by N,
+    // Escape or Pause; Y leaves the mission. The game keeps running.
+    bool quitBox_ = false;
+    bool quitFreedMouse_ = false;         // (OpenDF) the box released the mouse
+    int flashFrame_ = 0;                  // first-person flash meshes' frame (drawViewModel)
+    int heldFlashFrame_ = 0;              // DF1 third-person flash meshes' frame ([0xc23800], 0x481330)
+    void closeQuitBox();
+    // [0x66f978]; Delta Force 2 [0x67d3a4] (GOG Df2.exe): 0 off, 1 names,
+    // 2 abbreviated (glyph 4).
+    int friendlyTags_ = 0;
+    // lbsize (0x404650): 1 or 2 eighths of the height per band; df.cfg
+    // window_size ([0x4ced38] -> [0x67f4f8] at 0x407a90, clamped by 0x404ba0).
+    int letterbox_ = 1;
     float viewFovY_ = 0;                  // vertical field of view of this frame's 3D view
     std::deque<std::pair<std::string, Color>> history_;   // the 16 latest messages and their colours (ring 0x68a280, +0x78)
     void drawOldMessages(const Screen& s);
-    // Delta Force 2's top strip (DF2.EXE 0x442170): two histories of 40
-    // {text, colour}, newest first; sys at sys_message, chat at chat_message.
+    // Delta Force 2's message histories (GOG Df2.exe 0x4212a0 chat, 0x421440
+    // sys): each message is kept raw (40 x 0x7c ring 0xaab4c0 / 0xaac824, at
+    // most 0x77 characters) and word-wrapped to its HUD.DEF box into a second
+    // 40-line ring (0xaadb88 / 0xaaeeec), newest line first; the top strip
+    // (0x448770), the command map and the message overlay draw the wrapped
+    // lines. A change of display mode re-wraps the raw rings (0x4215e0).
     struct Df2Line { std::string text; Color colour; };
-    std::deque<Df2Line> df2Sys_, df2Chat_;
+    std::deque<Df2Line> df2Sys_, df2Chat_;         // wrapped lines
+    std::deque<Df2Line> df2SysRaw_, df2ChatRaw_;   // raw messages
+    std::vector<std::string> df2Wrap(const std::string& text, bool chat) const;
+    void df2Rewrap();
     // df1Colour: DF.EXE's colour argument to 0x42f400 (see kHudMessage).
     void pushMessage(const std::string& text, Color df2Colour = {1, 1, 1, 1}, bool df2Chat = false, Color df1Colour = kHudMessage) {
         if (df2Hud_.on) {
+            auto& raw = df2Chat ? df2ChatRaw_ : df2SysRaw_;
+            raw.push_front({text.substr(0, 0x77), df2Colour});
+            while (raw.size() > 40) raw.pop_back();
+            // The full text is wrapped (not the 0x77 copy); the first line
+            // ends up deepest, the last line at entry 0.
+            // (GOG Df2.exe 0x41be90; the CD build keeps the one 0x77 line.)
             auto& h = df2Chat ? df2Chat_ : df2Sys_;
-            h.push_front({text.substr(0, 119), df2Colour});
+            if (arsenal_.df2Gog())
+                for (auto& line : df2Wrap(text, df2Chat)) h.push_front({line, df2Colour});
+            else
+                h.push_front({text.substr(0, 0x77), df2Colour});
             while (h.size() > 40) h.pop_back();
         }
-        messages_.push_back({text, 0, df1Colour});
-        history_.push_back({text, df1Colour});
+        // DF.EXE 0x42f400 (GOG 0x479f00): at most 0x77 characters go into
+        // the ring entry, for the message lines and the Messages box alike.
+        messages_.push_back({text.substr(0, 0x77), 0, df1Colour});
+        history_.push_back({text.substr(0, 0x77), df1Colour});
         while (history_.size() > 16) history_.pop_front();
     }
     void drawFriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj);
+    void drawDf2Waypoints3d(const Screen& s, const Mat4& viewProj);
+    // Delta Force 2's name of an object (+0x54): the mission record +4 as
+    // DF2WPN.BIN PeopleNames STRNAME%03i, at most 15 characters (GOG
+    // Df2.exe 0x403790); people only (+0xc, their AI record, is set).
+    std::string df2PersonName(const WorldObject& o) const;
+    // GOG Df2.exe 0x4189b0: the first object on the player's side or side 0
+    // along the aim within `range` and 2 m of the ray, or nullptr.
+    const WorldObject* df2AimPick(float range) const;
+    // The red identification ticks and name (GOG Df2.exe 0x4642b0 crosshair,
+    // 0x455be0 scope): `r` the scope radius, 0 for the crosshair.
+    void drawDf2TargetId(const Screen& s, float cx, float cy, float r);
+    // GOG Df.exe 0x45f740: the first person on the player's side along the
+    // view within `range` and 2 m of the ray, or nullptr.
+    const WorldObject* df1AimPick(float range) const;
+    // Delta Force's "Break X" (GOG Df.exe 0x402300 main view, 0x466090
+    // scope): `r` the scope radius, 0 for the main view.
+    void drawDf1TargetId(const Screen& s, float cx, float cy, float r);
     void drawPaused(const Screen& s);
+    void drawQuitBox(const Screen& s);
     void drawBinoculars(const Screen& s);
     bool captured_ = true;
 };
@@ -658,10 +1092,22 @@ bool Game::loadMission(int index) {
     std::vector<uint8_t> raw;
     std::string err;
     const std::string& name = missions_[index];
-    if (!vfs_.read(name + ".BMS", raw) || !parseMission(raw, mission_, &err)) {
+    loadingLine("STRLTEXT1");   // before the BMS load 0x449c70 (0x403b4c)
+    bool got = false;
+    if (!o_.missionFile.empty() && toUpper(name) == toUpper(o_.mission)) {
+        if (std::ifstream f(o_.missionFile, std::ios::binary); f) {
+            raw.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            got = true;
+        }
+    }
+    if (!got) got = vfs_.read(name + ".BMS", raw);
+    if (!got || !parseMission(raw, mission_, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
     }
+    dropMultiplayerRecords(mission_, items_);   // single player (GOG Df2.exe 0x403790, GOG Df.exe 0x449710)
+    missionSteps_ = 0;   // [0x67dbf4] = 0 (GOG Df.exe 0x404e30 -> 0x405170)
+    loadingLine("STRLTEXT4");   // after it and 0x405210 (0x403bdd)
     {
         // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
@@ -686,11 +1132,13 @@ bool Game::loadMission(int index) {
     terrain_.skyOverride = mission_.sky;
     terrain_.fogLevelOverride = mission_.fogLevel;
     terrain_.fogColorOverride = mission_.fogColor;
+    terrain_.displayGamma = o_.displayGamma;
     if (!terrain_.load(vfs_, trn, &err)) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.c_str());
         return false;
     }
     current_ = index;
+    loadingLine("STRLTEXT5");   // after 0x402ec0 / 0x4633f0 (0x403c36)
     // Testing: OPENDF_HEIGHTSCALE overrides metres per elevation step.
     if (const char* hs = std::getenv("OPENDF_HEIGHTSCALE")) terrain_.scale.heightScale = float(std::atof(hs));
     world_.terrain = &terrain_;
@@ -700,6 +1148,11 @@ bool Game::loadMission(int index) {
     world_.build(vfs_, models_, items_, mission_);
     ai_.df2 = mission_.version >= 0x0F;
     ai_.night = (mission_.lightFlags & 0x10) != 0;
+    // Delta Force's tracers (GOG Df.exe 0x462f20 colour, 0x465273 gate).
+    arsenal_.night = ai_.night;
+    arsenal_.tracersOff = (o_.attributes & 0x1000) != 0;
+    arsenal_.playerSide = kPlayerSide;
+    arsenal_.sameSideSafe = mission_.version < 0x0F && (o_.attributes & 0x4000);
     ai_.playerGear = o_.df2Gear;
     // Squad members off, before the AI lists: DF.EXE 0x402cc5 (attributes
     // 0x200) -> 0x402a38, DF2.EXE 0x45bf44 (df2.cfg attributes 0x20, the
@@ -713,30 +1166,80 @@ bool Game::loadMission(int index) {
             const int id = o.item ? o.item->id - 100000 : 0;
             if (id == 5002 || id == 5038 || id == 5048 || id == 5049) { o.removed = true; o.boxes.clear(); }
         }
-    ai_.init(world_, mission_);
+    df1FirstThink_.clear();
+    if (!df2Mission)
+        for (const MissionObject& mo : mission_.objects) {
+            df1FirstThink_.push_back(mo.omitted ? -1 : df1ThinkCounter_ % 60);
+            if (!mo.omitted) df1ThinkCounter_ += 11;
+        }
+    ai_.init(world_, mission_, df1FirstThink_);
     // Enemy AI hard: DF.EXE attributes 0x80 ([0x66fa88]), DF2.EXE df2.cfg
     // attributes 0x10 ([0x653000], read by the aim 0x415f16).
     ai_.hard = df2Mission ? (o_.df2Attributes & 0x10) != 0 : (o_.attributes & 0x80) != 0;
     vehicles_.init(world_, mission_);
+    wildlife_.init(world_, mission_, ai_.night);
+    loadingLine("STRLTEXT6");   // after the object passes (0x403dd4)
     lights_.clear();
-    if (world_.df2Rules)
-        for (size_t i = 0; i < world_.objects.size(); ++i) {
-            const WorldObject& o = world_.objects[i];
-            if (!o.item || o.item->aiFunction != "slgt") continue;
-            Searchlight l;
-            l.object = int(i);
-            if (o.missionIndex >= 0) {
-                const int32_t v = mission_.objects[size_t(o.missionIndex)].raw[0x24 / 4];
-                l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
-                l.alert = reinterpret_cast<const uint8_t*>(mission_.objects[size_t(o.missionIndex)].raw)[0x42];
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        WorldObject& o = world_.objects[i];
+        if (!o.item || o.item->aiFunction != "slgt") continue;
+        Searchlight l;
+        l.object = int(i);
+        if (o.missionIndex >= 0) {
+            const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
+            const int32_t v = mo.raw[0x24 / 4];
+            l.perception = (v > 0 ? float(v) : 100.f) / 100.f;
+            l.alert = reinterpret_cast<const uint8_t*>(mo.raw)[0x42];
+            if (!world_.df2Rules) {
+                // GOG Df.exe 0x449710 (CD 0x43ff24): yaw (90 - word +0x34) and
+                // pitch word +0x36, degrees / 360 as 16.16 << 16; perception
+                // and alert from +0x24 / +0x42 (no night change); the first
+                // think after load counter % 60, the counter +11 a loaded
+                // record (df1FirstThink_).
+                const int head = int16_t(uint32_t(mo.raw[0x34 / 4]) & 0xFFFF), tilt = int16_t(uint32_t(mo.raw[0x34 / 4]) >> 16);
+                l.yaw = uint32_t((90 - head) * 0x10000 / 0x168) << 16;
+                l.pitch = int32_t(uint32_t(tilt * 0x10000 / 0x168) << 16);
+                l.wait = df1FirstThink_[size_t(o.missionIndex)];
+                o.pitch = float(l.pitch) / 4294967296.f * 2 * kPi;
             }
-            if ((mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
-            lights_.push_back(l);
         }
+        if (world_.df2Rules && (mission_.lightFlags & 0x10) && l.perception > 0.3f) l.perception -= 0.15f;
+        lights_.push_back(l);
+    }
+    birdTrees_.clear();
+    sparrows_.clear();
+    for (size_t i = 0; !world_.df2Rules && i < world_.objects.size(); ++i) {
+        const WorldObject& o = world_.objects[i];
+        if (!o.item) continue;
+        // First think: staggered as the searchlights' (INFERRED).
+        const int wait = o.missionIndex >= 0 ? (mission_.objects[size_t(o.missionIndex)].indexInGroup * 11) % 60 : 0;
+        if (o.item->aiFunction == "btre") birdTrees_.push_back({int(i), wait, 0});
+        else if (o.item->aiFunction == "spar") {
+            Sparrow s;
+            s.object = int(i);
+            s.think = wait;
+            s.yaw = uint32_t(int64_t(std::llround(double(kPi / 2 - o.heading) / (2 * kPi) * 4294967296.0)));
+            sparrows_.push_back(s);
+        }
+    }
     vehicles_.detonate = [this](Vec3 at, int n, float h) { detonate(at, n, h); };
     vehicles_.smoke = [this](Vec3 at) { spawnPuff(at); };
-    vehicles_.bigBlast = [this](Vec3 at) { bigBlast(at); };
+    // GOG Df.exe's blast death type (0x465977) draws from 0x477860.
+    if (gogRand()) world_.rand16 = [this] { return shrapRand(); };
+    else world_.rand16 = nullptr;
+    vehicles_.wreckSmoke = [this](int object) {
+        if (!world_.df2Rules) smokeGens_.push_back({world_.objects[size_t(object)].pos, 0, 0, object});
+    };
+    vehicles_.bigBlast = [this](Vec3 at, float heading, int owner) { bigBlast(at, heading, owner); };
     vehicles_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
+    wildlife_.playSound = [this](int id, Vec3 at) { playSound(id, at); };
+    wildlife_.spawnEffect = [this](int slot, Vec3 at) { spawnEffect(slot, at); };
+    wildlife_.bitePlayer = [this](Vec3 from) { hurtPlayer(1, 1, from, 2); };   // 0x455180: hp - 1, kind 1, part 2
+    wildlife_.spawnObject = [this](int id, Vec3 at, float heading) {   // 0x414850 (a bird tree's sparrows)
+        const ItemDef* it = items_.byId(id);
+        const GpuModel* m = it && !it->graphic.empty() ? models_.get(vfs_, it->graphic) : nullptr;
+        return m ? world_.spawn(it, m, at, heading) : -1;
+    };
     // AI rounds leave from the weapon (0x46ad9c; DF2.EXE 0x414f20 the same):
     // the body (no pitch) x the posed right hand (mesh 7) x the held-weapon
     // turn x the mode's hardpoint (+0x90; DF2 +0x30) of its third-person
@@ -762,14 +1265,35 @@ bool Game::loadMission(int index) {
 
     player_ = Player{};
     player_.moves = &playerMoves_;
+    foOn_ = false;     // 0x4829f0 clears [0xc23820..+0x648)
+    foTarget_ = -1;    // and sets [0xc23a38] to the player
+    if (!world_.df2Rules) {
+        // GOG Df.exe: the same clear drops the dead-cam [0xc23a1c] and the
+        // jump press, then the load calls 0x42ac10(player, 0): first person
+        // with the offsets reset.
+        deadCam_ = false;
+        jumpPressed_ = false;
+        camKeyClock_ = 0;
+        camMode_ = -1;
+        setCamMode(0);
+    }
     std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
     player_.floatOrigin = floatOrigin_;
     player_.swimOrigin = swimOrigin_;
     player_.feet = {512, 0, 512};
     float startLift = 0;
+    // The first loaded start (dropMultiplayerRecords zeroed the network ones).
+    // Delta Force 2 single player (GOG Df2.exe 0x460810 case 0, counts from
+    // 0x45c4b0): slot 0 of the 106094 "start, primary, player" markers if
+    // any are loaded, else of the 106001 ones.
+    int startItem = kItemPlayerStart;
+    if (mission_.version >= 0x0F)
+        for (const auto& obj : mission_.objects)
+            if (const ItemDef* item = items_.byMissionType(obj.type); item && item->id == 106094) { startItem = 106094; break; }
     for (const auto& obj : mission_.objects) {
+        if (obj.omitted || obj.group != 2) continue;
         const ItemDef* item = items_.byMissionType(obj.type);
-        if (item && item->id == kItemPlayerStart) {
+        if (item && item->id == startItem) {
             const float ext = terrain_.mapExtent();
             player_.feet = {obj.x, 0, -obj.y};
             player_.wrap(ext);
@@ -779,20 +1303,17 @@ bool Game::loadMission(int index) {
         }
     }
     player_.feet.y = world_.groundHeight(player_.feet, 0.45f);
-    // Delta Force 2: the player starts at ground + the marker's z (0x457fc0,
-    // 0x458133; no clamp) and drops from there. A start 100 m or more up is
-    // a parachute drop 1 m higher, as for soldiers (0x45bb10). INFERRED for
-    // the player: in DF2.EXE (1999-10-19) only the soldiers' start pass sets
-    // the chute flag and markers never carry it (df2_parachute.md), so the
-    // player would free-fall and die at the ten missions that start 100-160 m
-    // up (D03M04, D03M11, D03M15, D05M03, D05M12, D06M03, D06M05, D06M06,
-    // D06M14, D06M16); the start heights sit on the 100 m test, the D06M06
-    // briefing says the player will paradrop, and the Land Warrior mission
-    // editor manual gives the rule: a "Start, Player" Z of 100.00..300.00
-    // parachutes the player in (also AI units).
-    player_.chute = mission_.version >= 0x0F && startLift >= 100.f;
-    if (player_.chute) player_.feet.y += startLift + 1.f;
-    else if (mission_.version >= 0x0F && startLift > 0) player_.feet.y = terrain_.heightAt(player_.feet.x, player_.feet.z) + startLift;
+    // Delta Force 2: the player starts at the marker's absolute height,
+    // ground + its z (0x465490 adds the terrain height to every marker; the
+    // start 0x460810 copies the position, GOG Df2.exe; CD 0x457fc0), with
+    // no clamp and no extra metre, and drops from there. The marker pass
+    // GOG Df2.exe 0x45c4b0 (CD 0x4544a0, run after 0x465490 via 0x45c270)
+    // flags every start and teleport marker whose height above the ground
+    // exceeds 0x62FFFF (99 m) with 0x20, and 0x460810 copies that flag to
+    // the player: a parachute drop (D03M04, D03M11, D03M15, D05M03, D05M12,
+    // D06M03, D06M05, D06M06, D06M14, D06M16 start 100-160 m up).
+    player_.chute = mission_.version >= 0x0F && df2ChuteMarker(startLift);
+    if (mission_.version >= 0x0F && startLift > 0) player_.feet.y = terrain_.heightAt(player_.feet.x, player_.feet.z) + startLift;
     {
         Loadout lo;
         if (const int r = loadoutRow(o_.sidearm); r >= 0) lo.sidearm = r;
@@ -800,6 +1321,30 @@ bool Game::loadMission(int index) {
         if (const int r = loadoutRow(o_.secondary); r >= 0) lo.kit = r;
         bool df2Weapons = false;
         if (mission_.version >= 0x0F) {
+            // The wind (GOG Df2.exe 0x466ba0, single player by sp_wind): 0 the
+            // mission's (0x4762e0(header +0xEC, +0xE8)), 1 none (0x4762e0(0, 0)),
+            // 2 random (0x4763e0): r1, r2 from 0x41ea20, seeded 0x10101010 at
+            // the start of the load (0x41ea10) and not drawn from before it,
+            // deg = r1 * 360 >> 16, kph = r2 >> 11 (12 degrees, 18 kph); its
+            // sin/cos are taken without 0x4762e0's half turn, so the drift
+            // vector is reversed while the HUD shows deg.
+            windDeg_ = mission_.windDeg;
+            windKph_ = mission_.windKph;
+            windFlip_ = false;
+            if (o_.df2Wind == 1) windDeg_ = windKph_ = 0;
+            else if (o_.df2Wind == 2) {
+                uint32_t x = 0x10101010;
+                auto next = [&x] {
+                    auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+                    const uint32_t u = rol(x, 11) + x;
+                    x = rol(u, 4) ^ 1;
+                    return x & 0xFFFF;
+                };
+                const uint32_t r1 = next(), r2 = next();
+                windDeg_ = int((uint64_t(r1) * 360) >> 16);
+                windKph_ = int(r2 >> 11);
+                windFlip_ = true;
+            }
             // Delta Force 2: its own tables from DF2.EXE, its loadout by weapon
             // type (WeaponNames2); --loadout PRIMARY,SECONDARY,SIDEARM.
             Df2Loadout d2;
@@ -825,19 +1370,28 @@ bool Game::loadMission(int index) {
                 const std::string* t = gameTable_.find("HudGuns", key);
                 hudGuns.push_back(t ? *t : std::string());
             }
+            arsenal_.clearMagnification();   // GOG Df2.exe 0x44e7f0
             df2Weapons = arsenal_.initDf2(hudGuns, df2Exe_, &items_, d2);
             df2Loadout_ = d2;
+            world_.df2Gog = arsenal_.df2Gog();
+            df2DefaultLabels();
             if (const ItemDef* soldier = items_.byId(playerItem_)) arsenal_.playerArmourClass = soldier->damageClass;
             if (!df2Weapons) std::fprintf(stderr, "DF2.EXE weapon tables not usable; using Delta Force's\n");
-            arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+            setDf2Wind();
         }
         weather_.start(mission_.version >= 0x0F ? mission_.weather : 0);
         if (!df2Weapons) arsenal_.init(gameText_, &exe_, &items_, lo);
+        // GOG Df.exe's spread (0x45ea00) takes the shared 0x477860.
+        if (!df2Weapons && exe_.build() == ExeBuild::Df1Gog) arsenal_.setSharedRand([this] { return shrapRand(); });
+        else arsenal_.setSharedRand(nullptr);
         arsenal_.modelPoints = [this](const std::string& name) -> const std::vector<std::array<float, 3>>* {
             const GpuModel* m = name.empty() ? nullptr : models_.get(vfs_, name);
             return m ? &m->points : nullptr;
         };
+        arsenal_.df2Seed = [this](uint32_t v) { df2Rng_ = v; };
+        arsenal_.df2Rand = [this]() { return shrapRand(); };
     }
+    loadingLine("STRLTEXT7");   // 0x403e32
     // Hit points: ITEMS.DEF "player01" `hp` (4) (DF.EXE 0x469c76).
     {
         const ItemDef* soldier = items_.byId(mission_.version >= 0x0F ? playerItem_ : kItemPlayerSoldier);
@@ -855,6 +1409,9 @@ bool Game::loadMission(int index) {
         // DF2.EXE 0x44781e: night missions (header flag 0x100000) start with
         // the night vision on.
         nvg_ = mission_.version >= 0x0F && (mission_.lightFlags & 0x10);
+        // GOG Df2.exe 0x44e7f0: the Forward Observer off, its target the player.
+        foOn_ = false;
+        foTarget_ = -1;
     }
     // The mission's display name ("Insurrection") is in the campaign text file:
     // DFCAMPcc.BIN, entry m-1 for CccMmm.
@@ -870,8 +1427,18 @@ bool Game::loadMission(int index) {
                 !campText_.text()[m - 1].empty())
                 missionName_ = campText_.text()[m - 1];
         }
+        // GOG Df.exe 0x48dd80: one line for each nonzero header key id that
+        // has a "Map Keys" entry.
+        mapKeyLines_ = 0;
+        if (mission_.version < 0x0F)
+            for (int id : mission_.mapKeyIds) {
+                char key[16];
+                std::snprintf(key, sizeof key, "MKEY%03d", id);
+                if (id != 0 && campText_.find("Map Keys", key)) ++mapKeyLines_;
+            }
     }
     buildRoute();
+    loadingLine("STRLTEXT8");   // 0x403e71
     // Powerups (attrib 0x20: ammo and medical crates) are removed at the start
     // in single player (0x402aa4, unless option bit 8).
     if (!(o_.attributes & 0x800))
@@ -879,7 +1446,17 @@ bool Game::loadMission(int index) {
             if (o.item && (o.item->attrib & 0x20)) o.removed = true;
     carried_ = -1;
     briefingShown_ = helpShown_ = false;
+    // GOG Df.exe 0x429740 (from the mission start 0x4038b0 at 0x403f65) also
+    // shuts the Messages box [0x67db84] and the goals [0x67db8c].
+    if (!world_.df2Rules) oldMessages_ = showGoals_ = false;
+    buildDf2Help();   // GOG Df2.exe only (its action table)
     charges_.clear();
+    // Delta Force: satchels the mission places share the satchel's handler
+    // (`schg`, GOG Df.exe 0x45c110): at hp <= 0 they blow up as the player's do.
+    if (!world_.df2Rules)
+        for (size_t i = 0; i < world_.objects.size(); ++i)
+            if (const auto& o = world_.objects[i]; o.item && o.item->aiFunction == "schg" && !o.removed)
+                charges_.push_back({int(i), 4020, -1, true});
     strikes_.clear();
     collapses_.clear();
     fireMissions_ = mission_.fireMissions;
@@ -895,20 +1472,27 @@ bool Game::loadMission(int index) {
         const std::string* t = campText_.find(sec, key);
         briefing_ = t ? *t : "UNABLE TO FIND MISSION BRIEFING";
         // {ADD}<key> appends another key; {CV:n}<key> / {CV:!n}<key> append it
-        // only if campaign flag n is set / clear (0x412620 / 0x4125c8).
+        // only if campaign flag n is set / clear (0x412620 / 0x4125c8). The
+        // flags are the profile's (GOG 0x42adc0 -> 0x414520: profile +0x70 +
+        // camp * 0x44), i.e. savedCampaignFlags(); the live word is only
+        // loaded from them by the script load further down.
         for (int guard = 0; guard < 64; ++guard) {
             size_t a = briefing_.find("{ADD}"), c = briefing_.find("{CV:");
             if (a == std::string::npos && c == std::string::npos) break;
             bool include = true;
             size_t tagEnd;
-            if (c != std::string::npos && (a == std::string::npos || c < a)) {
+            const bool isCv = c != std::string::npos && (a == std::string::npos || c < a);
+            if (isCv) {
                 a = c;
                 tagEnd = briefing_.find('}', c);
                 if (tagEnd == std::string::npos) break;
                 std::string cond = briefing_.substr(c + 4, tagEnd - c - 4);
                 const bool neg = !cond.empty() && cond[0] == '!';
                 const int flag = std::atoi(cond.c_str() + (neg ? 1 : 0));
-                const bool set = flag >= 0 && flag < 32 && (campaignFlags() >> flag & 1);
+                // GOG Df.exe 0x414520 tests the soldier record's campaign
+                // flags (+0x70 of its campaign), which 0x407980 sets from the
+                // saved word at every mission start and exit.
+                const bool set = flag >= 0 && flag < 32 && (savedCampaignFlags() >> flag & 1);
                 include = neg ? !set : set;
                 ++tagEnd;
             } else {
@@ -917,59 +1501,178 @@ bool Game::loadMission(int index) {
             size_t e = tagEnd;
             while (e < briefing_.size() && !std::isspace(static_cast<unsigned char>(briefing_[e]))) ++e;
             const std::string* more = include ? campText_.find(sec, briefing_.substr(tagEnd, e - tagEnd)) : nullptr;
-            briefing_.replace(a, e - a, more ? *more : "");
+            // GOG 0x414520: after a {CV:n} key the space is dropped when a '{'
+            // follows it ({ADD} keeps its space).
+            const size_t cut = isCv && e + 1 < briefing_.size() && briefing_[e] == ' ' && briefing_[e + 1] == '{' ? e + 1 : e;
+            briefing_.replace(a, cut - a, more ? *more : "");
         }
         briefStart_ = briefLast_ = 1;
         briefPage_ = 0;
     }
     {
-        // Radio dialogs: the mission header names the set ("dfdlg02").
+        // Radio dialogs: the mission header names the set ("dfdlg02"). DF2
+        // replaces whatever follows the first '.' with "dbf" (GOG Df2.exe
+        // 0x4679c0 -> 0x46a920) and cuts the name there for the .pwf / .bin
+        // (0x4191a0), so a header "Dfdlgco.scr" loads DFDLGCO.
         std::vector<uint8_t> raw;
-        const std::string set = toUpper(mission_.dialogue);
+        const std::string set = toUpper(mission_.version >= 0x0F ? mission_.dialogue.substr(0, mission_.dialogue.find('.')) : mission_.dialogue);
         dialogs_ = DialogIndex{};
         dialogText_.clear();
+        df2Text_ = TextTable{};
         activeDialogs_.clear();
         sound_.stopAll();
+        if (mission_.version >= 0x0F) sound_.reserveLoopVoices(true);   // GOG Df2.exe 0x4679c0
         ambients_.clear();
         for (size_t i = 0; i < world_.objects.size(); ++i) {
             const auto& o = world_.objects[i];
             if (!o.item || o.item->interruptSound <= 0) continue;
             const std::string& f = o.item->aiFunction;
-            // Delta Force 2 adds snd3 (random ambient markers, 0x402730) and
-            // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0).
-            if ((f == "dec0" || f == "tree" || f == "palm" || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
+            // Delta Force 2 adds snd3 (random ambient markers, GOG Df2.exe
+            // 0x402910; graphic-less ones are handled below) and
+            // bld2 (collapsing buildings, their sound as dec0's, 0x4028d0) and
+            // oakt (the regional oaks, 0x42e8b0: alive, the item's sound 4 m
+            // up, the next wait ((r >> 14) + 5) << 6 with r from the shared
+            // 0x41ea20; destroyed (flag 4 / hp <= 0) the wait 0x400).
+            if ((f == "dec0" || f == "tree" || f == "palm" || (f == "oakt" && world_.df2Rules) || f == "snd0" || f == "snd1" || f == "snd2" || f == "snd3" || f == "bld2") &&
                 o.missionIndex >= 0) {
-                // First wait (0x440071): a counter mod 60, the counter going
-                // up 11 per object loaded, in file order.
+                // First wait: the think_timer GOG Df.exe 0x449710 gives
+                // (df1FirstThink_); Delta Force 2 sets its own below.
                 const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
-                ambients_.push_back({int(i), (11 * o.missionIndex) % 60, mo.group, mo.indexInGroup});
+                const int wait = size_t(o.missionIndex) < df1FirstThink_.size() ? df1FirstThink_[size_t(o.missionIndex)] : (11 * o.missionIndex) % 60;
+                ambients_.push_back({int(i), wait, mo.group, mo.indexInGroup});
+            }
+        }
+        // DF2's sound markers ("Sound: ..." items, ai_function snd0..snd3,
+        // GOG Df2.exe name table 0x4af120): no graphic, so not in
+        // world_.objects. 0x403e20 creates the records in file order (items,
+        // decorations, markers, organics), 0x403790 skipping the dropped ones
+        // and giving each created one its callback (item +0x84) and the
+        // first wait counter % 60; 0x446550 visits markers[tick & 63] in
+        // steps of 64. The sound plays at the record's absolute place
+        // (terrain + z, 0x465490).
+        if (world_.df2Rules) {
+            std::vector<bool> hasObject(mission_.objects.size(), false);
+            for (const auto& o : world_.objects)
+                if (o.missionIndex >= 0 && size_t(o.missionIndex) < hasObject.size()) hasObject[size_t(o.missionIndex)] = true;
+            const float ext = world_.extent();
+            for (size_t i = 0; i < mission_.objects.size(); ++i) {
+                const MissionObject& mo = mission_.objects[i];
+                if (mo.omitted) continue;
+                const int wait = df2ThinkCounter_ % 60;
+                df2ThinkCounter_ += 11;
+                if (hasObject[i]) continue;
+                const ItemDef* it = items_.byMissionType(mo.type);
+                if (!it || it->interruptSound <= 0) continue;
+                const std::string& f = it->aiFunction;
+                if (f != "snd0" && f != "snd1" && f != "snd2" && f != "snd3") continue;
+                Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
+                at.y = terrain_.heightAt(at.x, at.z) + mo.z;
+                ambients_.push_back({-1, wait, mo.group, mo.indexInGroup, at, it});
+            }
+        }
+        // DF2 attaches a LOOP.DEF loop to every loop marker item (GOG Df2.exe
+        // 0x465330, called from the mission load 0x466ba0): item type ->
+        // sound id (antloop1/2, zaireloop1/2, nigerloop1/2, iranloop1/2,
+        // kazloop1 for both Kaz markers, nightloop1/2, waterloop1/2). 0x4682b0
+        // keeps only ids with the loop flag and a loadable wav, never the
+        // same object and loop twice, in 1024 slots. The markers have no
+        // graphic, so they are not in world_.objects: the loop sits at the
+        // record's place (terrain + z, as World::build places objects).
+        loopMarkers_.clear();
+        if (sound_.df2()) {
+            const float ext = world_.extent();
+            for (size_t i = 0; i < mission_.objects.size() && loopMarkers_.size() < 0x400; ++i) {
+                const MissionObject& mo = mission_.objects[i];
+                const ItemDef* it = items_.byMissionType(mo.type);
+                if (!it) continue;
+                int id = 0;
+                switch (it->id - 100000) {
+                case 6045: id = 605; break;
+                case 6051: id = 615; break;
+                case 6057: id = 625; break;
+                case 6063: id = 635; break;
+                case 6069: case 6086: id = 645; break;
+                case 6070: id = 650; break;
+                case 6071: id = 651; break;
+                case 6081: id = 666; break;
+                case 6082: id = 606; break;
+                case 6083: id = 616; break;
+                case 6084: id = 626; break;
+                case 6085: id = 636; break;
+                case 6087: id = 667; break;
+                default: break;
+                }
+                if (!id || !sound_.loopReady(id)) continue;
+                Vec3 at{std::fmod(std::fmod(mo.x, ext) + ext, ext), 0, std::fmod(std::fmod(-mo.y, ext) + ext, ext)};
+                at.y = terrain_.heightAt(at.x, at.z) + mo.z;
+                loopMarkers_.push_back({int(i), id, at});
             }
         }
         if (!set.empty()) {
             if (vfs_.read(set + ".DBF", raw)) dialogs_.parse(raw);
-            if (vfs_.read(set + ".BIN", raw)) parseRtxt(raw, dialogText_);
+            if (vfs_.read(set + ".BIN", raw)) {
+                parseRtxt(raw, dialogText_);
+                // Delta Force 2 (GOG Df2.exe 0x465980): the header +0x64 name
+                // with "bin" after the '.' (0x46a920) is also the mission's
+                // section table (0x476a90), read by "Triggered Text".
+                if (mission_.version >= 0x0F) df2Text_.parse(raw);
+            }
             sound_.loadDialogBank(vfs_, set + ".PWF");
         }
         int c = 0;
         missionNumber_ = 0;
         std::sscanf(name.c_str(), "C%dM%d", &c, &missionNumber_);
     }
+    loadingLine("STRLTEXT9");   // 0x403eaf, the last one
+    loadingScreen_ = false;
     script_.load(mission_);
+    teamHits_.fill(0);   // GOG Df2.exe 0x41b620
     scriptClock_ = 0;
     missionResult_ = -1;
     missionTime_ = 0;
+    // DF.EXE 0x403b13 / 0x404ba0, DF2.EXE 0x45d8f1: the box is shut at mission start.
+    quitBox_ = false;
     messages_.clear();
+    // GOG Df.exe 0x479e90 (from the mission loader 0x404e30 at 0x404f2c):
+    // the 40-entry message ring 0xbd34b0 cleared, so the Messages box too.
+    history_.clear();
+    // GOG Df2.exe 0x41ede0 (from 0x466ba0, a fresh start and a replay): the
+    // raw and wrapped chat and system rings emptied (not in the CD build).
+    if (arsenal_.df2Gog()) {
+        df2SysRaw_.clear();
+        df2ChatRaw_.clear();
+        df2Sys_.clear();
+        df2Chat_.clear();
+    }
     // DF2: the waypoint pool is cleared at mission load (0x403520); the
     // HUD waypoint and the elevation view at mission start (0x447810/0x447816).
     for (auto& w : df2Wps_) w = Df2Waypoint{};
     df2HudWp_ = Df2Sel{};
     df2Elevation_ = df2KeyFlag_ = false;
+    gpsShown_ = gpsElevation_ = false;
+    if (!world_.df2Rules) {
+        // GOG Df.exe 0x4829f0: the map scale [0xc23a28] = 1.0; 0x429740
+        // closes the map [0x67db80], the goals [0x67db8c] and the old
+        // messages (with [0x67db78] / [0x67db7c] / [0x67db84]).
+        mapScale_ = 1.f;
+        showMap_ = showGoals_ = oldMessages_ = false;
+    }
+    mapTrack_.clear();
     df2Map_.sel = df2Map_.drag = Df2Sel{};
     df2Map_.prompt = false;
     df2Map_.entered = false;
+    df2Map_.panX = df2Map_.panZ = 0;   // 0x40c550 (0x46735d): [0xc08868] / [0xc0886c], any tab
+    // The mission-start events (flag 2), visited once after the start
+    // removals: GOG Df.exe 0x404e30 -> 0x42eb60, then the team totals
+    // 0x44a110; GOG Df2.exe 0x41aeb0 (single player sets [0x67cd34]).
+    script_.visitFlagged(2, *this);
+    countTeams(true);
+    // 0x40c550 (from the mission start 0x466ba0) zeroes the list and the
+    // settings scroll positions; the briefing's [0xc088a0] is never reset.
+    df2Map_.scrollPlayers = df2Map_.scrollTeam = df2Map_.scrollSettings = 0;
     if (exe_.loaded() && !arsenal_.fromExe())
         std::fprintf(stderr, "DF.EXE is not the expected version; using built-in weapon values\n");
-    else if (arsenal_.fromExe()) std::printf(arsenal_.df2() ? "weapon tables read from DF2.EXE\n" : "weapon tables read from DF.EXE\n");
+    else if (arsenal_.fromExe()) std::printf("weapon tables read from %s\n", (arsenal_.df2() ? df2Exe_ : exe_).buildName());
     std::printf("mission %s: \"%s\" on %s, %zu objects\n", name.c_str(), mission_.title.c_str(), trn.c_str(),
                 world_.objects.size());
     return true;
@@ -982,7 +1685,10 @@ void Game::buildRoute() {
     for (const auto& p : mission_.paths)
         if (p.flags & 2) { path = &p; break; }
     if (!path) return;
-    for (size_t i = 0; i < path->points.size() && i < 8; ++i) {
+    // DF.EXE keeps 8 points; DF2 clamps the count to 16 (GOG Df2.exe
+    // 0x459740, the first path with flag 2).
+    const size_t maxPoints = mission_.version >= 0x0F ? 16 : 8;
+    for (size_t i = 0; i < path->points.size() && i < maxPoints; ++i) {
         const MissionObject* o = mission_.inGroup(2, path->points[i]);
         if (!o) continue;
         RoutePoint rp{o->x, o->y, float(o->raw[7]), {}, o};   // record +0x1C: arrival radius, metres
@@ -1053,6 +1759,7 @@ bool Game::loadInputScript(const std::string& path) {
     //   turn DEG/S     keep turning (negative = left); "turn 0" stops
     //   look DEG/S     keep pitching (positive = up)
     //   face DEG       turn smoothly to a compass heading (0 = north, 90 = east)
+    //   wheel N        turn the mouse wheel N notches (positive = forward)
     //   end            finish the run
     std::ifstream f(path);
     if (!f) return false;
@@ -1064,7 +1771,7 @@ bool Game::loadInputScript(const std::string& path) {
         if (!(ls >> c.t >> c.op)) continue;
         std::string rest, word;
         while (ls >> word) rest += (rest.empty() ? "" : " ") + word;
-        if (c.op == "turn" || c.op == "look" || c.op == "face") c.value = float(std::atof(rest.c_str()));
+        if (c.op == "turn" || c.op == "look" || c.op == "face" || c.op == "wheel") c.value = float(std::atof(rest.c_str()));
         else c.arg = rest;
         inputCmds_.push_back(c);
     }
@@ -1087,15 +1794,38 @@ void Game::runInputScript(float dt) {
             k.keysym.scancode = sc;
             k.keysym.sym = SDL_GetKeyFromScancode(sc);
             if (held(SDL_SCANCODE_LSHIFT)) k.keysym.mod = KMOD_LSHIFT;
+            if (held(SDL_SCANCODE_LCTRL)) k.keysym.mod = SDL_Keymod(k.keysym.mod | KMOD_LCTRL);
             handleKey(k);
+        } else if (c.op == "click" && arsenal_.df2() && controls_.df2Table()) {
+            df2MouseButton(c.arg == "Left" ? 1 : c.arg == "Right" ? 2 : 0x10);
+        } else if (c.op == "wheel" && arsenal_.df2() && controls_.df2Table()) {
+            df2MouseWheel(int(c.value) * 120);
         } else if (c.op == "hold") {
-            inputHeld_.push_back(c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc);
+            const SDL_Scancode h = c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc;
+            // A held key is pressed first (its key-down event), as on a keyboard.
+            if (h != SDL_SCANCODE_UNKNOWN && !held(h)) {
+                SDL_KeyboardEvent k{};
+                k.type = SDL_KEYDOWN;
+                k.keysym.scancode = h;
+                k.keysym.sym = SDL_GetKeyFromScancode(h);
+                if (held(SDL_SCANCODE_LSHIFT) || h == SDL_SCANCODE_LSHIFT) k.keysym.mod = KMOD_LSHIFT;
+                if (held(SDL_SCANCODE_LCTRL) || h == SDL_SCANCODE_LCTRL) k.keysym.mod = SDL_Keymod(k.keysym.mod | KMOD_LCTRL);
+                handleKey(k);
+            }
+            inputHeld_.push_back(h);
         } else if (c.op == "release") {
             const SDL_Scancode r = c.arg == "Fire" ? SDL_SCANCODE_LCTRL : sc;
             inputHeld_.erase(std::remove(inputHeld_.begin(), inputHeld_.end(), r), inputHeld_.end());
         } else if (c.op == "turn") turnRate_ = c.value;
         else if (c.op == "look") lookRate_ = c.value;
         else if (c.op == "face") { faceTarget_ = c.value; turnRate_ = 0; }
+        else if (c.op == "wheel") {
+            SDL_Event w{};
+            w.type = SDL_MOUSEWHEEL;
+            w.wheel.y = int(c.value);
+            w.wheel.preciseY = c.value;
+            SDL_PushEvent(&w);
+        }
         else if (c.op == "end") inputDone_ = true;
         else std::fprintf(stderr, "input script: unknown command \"%s %s\"\n", c.op.c_str(), c.arg.c_str());
     }
@@ -1139,7 +1869,51 @@ void Game::useHudMode(int modeW) {
     weaponIcons_ = hud_.loadImage(vfs_, name);
     std::snprintf(name, sizeof name, "F_SML%d.PCX", std::min(modeW, 800));
     std::string err;
-    if (!hud_.loadFont(vfs_, name, &err)) std::fprintf(stderr, "%s\n", err.c_str());
+    // DF2 (GOG Df2.exe 0x465a20): f_sml%i through the band scanner
+    // 0x41ba90(font, name, 2, 0), e.g. F_SML640 (277x240) on the command map.
+    const bool ok = df2Hud_.on ? hud_.loadSheetHudFont(vfs_, name, &err) : hud_.loadFont(vfs_, name, &err);
+    if (!ok) std::fprintf(stderr, "%s\n", err.c_str());
+    if (df2Hud_.on && arsenal_.df2Gog()) df2Rewrap();   // GOG Df2.exe 0x4215e0 after a mode change (0x41f150 case 7)
+}
+
+void Game::loadingLine(const char* key) {
+    // GOG Df.exe 0x4038b0: df_wait.pcx scaled nearest to the display mode
+    // (0x4037b0) and presented; then each step draws its 'Loading Text'
+    // line in green at (50, 150 + 20 k) display pixels and presents
+    // (0x472b70, 0x496c50). OpenDF shows the mode's 4:3 area centred.
+    // Delta Force 2 (GOG Df2.exe 0x466ba0, single player): df2_wait.pcx
+    // scaled to the mode (0x465ed0 -> 0x465210) and presented (0x424c90);
+    // its lines (DF2GAME.BIN, 0x464f20) in the mode's f_sml (0x465a20) and
+    // 0xff8000 at (50, 150 + 20 k) of 1024 x 768 (0x4577a0 -> 0x456b90).
+    if (!loadingScreen_) return;
+    const bool df2 = df2Hud_.on;
+    if (!loadingWait_.texture) {
+        loadingWait_ = hud_.loadImage(vfs_, df2 ? "DF2_WAIT.PCX" : "DF_WAIT.PCX", false);
+        if (!loadingWait_.texture) { loadingScreen_ = false; return; }
+        glBindTexture(GL_TEXTURE_2D, loadingWait_.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        loadingLines_.clear();
+    }
+    const std::string* t = gameTable_.find("Loading Text", key);   // DFGAME.BIN (0x404cf0)
+    loadingLines_.push_back(t ? *t : std::string());
+    int dw, dh;
+    SDL_GL_GetDrawableSize(win_, &dw, &dh);
+    const float u = float(dh) / 480.f, x0 = (float(dw) - 640.f * u) * 0.5f;
+    const int modeW = dh >= 768 ? 1024 : dh >= 600 ? 800 : 640;
+    useHudMode(modeW);
+    const float px = u * 640.f / float(modeW);   // one display-mode pixel
+    glViewport(0, 0, dw, dh);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    hud_.begin(dw, dh);
+    hud_.image(loadingWait_.texture, x0, 0, 640.f * u, 480.f * u);
+    for (size_t k = 0; k < loadingLines_.size(); ++k) {
+        if (df2) hud_.text(x0 + 50.f * 640.f * u / 1024.f, (150.f + 20.f * float(k)) * 480.f * u / 768.f, loadingLines_[k], kDf2Amber, px);
+        else hud_.text(x0 + 50.f * px, (150.f + 20.f * float(k)) * px, loadingLines_[k], kHudPureGreen, px);
+    }
+    hud_.end();
+    SDL_GL_SwapWindow(win_);
 }
 
 // Effect slots (DF.EXE table 0xab3400) -> ITEMS.DEF items.
@@ -1149,6 +1923,15 @@ void Game::spawnEffect(int slot, Vec3 pos) {
                                    // Delta Force 2 (table 0xbb8b20, built at 0x414500): 17 rain poink,
                                    // 18 snow, 19 gex5, 20 boomd, 21 parachut, 22 pararnd, 23-27.
                                    107017, 107018, 107030, 107023, 107037, 107038, 107044, 105311, 105310, 105313, 105312};
+    // Delta Force 2 (GOG Df2.exe 0x4156b0, CD 0x413850; the terrain hit
+    // 0x415a60 inlines it): every effect takes two numbers from the shared
+    // generator 0x41ea20 (shrapRand), the yaw rand << 16 (effects are not
+    // turned in OpenDF) and the scale rand + 0x8000, whatever it makes.
+    float df2Scale = 1.f;
+    if (world_.df2Rules) {
+        (void)shrapRand();
+        df2Scale = float(shrapRand() + 0x8000) / 65536.f;
+    }
     const int count = mission_.version >= 0x0F ? 27 : 16;
     if (slot < 1 || slot > count) return;
     const ItemDef* item = items_.byId(kItems[slot]);
@@ -1156,9 +1939,26 @@ void Game::spawnEffect(int slot, Vec3 pos) {
     const GpuModel* m = models_.get(vfs_, item->graphic);
     if (!m || m->lods.empty()) return;
     const auto& l = m->lods[0];
-    // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5.
+    // Scale rand·2 + 0x8000 in 16.16: 0.5..1.5. GOG Df.exe (0x45dc70 /
+    // 0x45dab0): the yaw +0x30 from 0x477860 << 16 first (drawn only by
+    // ef3d, 0x480e80), then the scale 0x477860 + 0x8000.
     std::uniform_real_distribution<float> u(0.5f, 1.5f);
-    effects_.push_back({m, pos, u(effectRng_), 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
+    float scale;
+    const bool ef3d = mission_.version < 0x0F && m->lodCodes[0] == "ef3d";
+    uint32_t yaw = 0;
+    if (gogRand()) {
+        yaw = uint32_t(shrapRand()) << 16;   // +0x30, the heading an ef3d draw uses
+        scale = float(shrapRand() + 0x8000) / 65536.f;
+    } else if (world_.df2Rules) {
+        scale = df2Scale;
+    } else {
+        if (ef3d) yaw = uint32_t(std::uniform_int_distribution<int>(0, 0xffff)(effectRng_)) << 16;
+        scale = u(effectRng_);
+    }
+    if (effectScale_ > 0) scale = effectScale_;
+    effects_.push_back({m, pos, scale, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames});
+    effects_.back().ef3d = ef3d;
+    effects_.back().yaw = yaw;
     if (std::getenv("OPENDF_DEBUGHITS"))
         std::fprintf(stderr, "effect slot %d %s: %d frames x %d ticks at (%.2f %.2f %.2f) radius %.2f\n", slot, item->graphic.c_str(),
                      l.frames, l.ticksPerFrame, pos.x, pos.y, pos.z, m->radius);
@@ -1167,37 +1967,100 @@ void Game::spawnEffect(int slot, Vec3 pos) {
 
 // Explosion (DF.EXE 0x44f776 terrain, 0x44f90a / 0x44fb78 object or person,
 // 0x44fc20 water; barrels 0x46cb64): effect 3 "ground exp" (4 "water exp" in
-// water), blast type 1 with radius 10 m, and on terrain a smoke generator.
+// water), blast type 1 with radius 10 m, and on terrain a smoke generator
+// (`smoke`). Delta Force (GOG Df.exe) makes Smoke Generators (item 0xfce,
+// 0x460d20 / 0x447610) only for an armed round on the terrain (0x465242),
+// a barrel (0x45bfe0, at its origin), a ground vehicle (0x429d22, attached),
+// a gnrc object (0x4533d5), a stepped-on mine (0x48900a) and a person's
+// smoking move (0x487827); the blasts 0x4606b0 / 0x4607e0 / 0x460950 make
+// none, so helicopters, satchels, claymores and fire missions leave none.
 // Sound 0x32 (0x35 in the water). The LAW out of the water is blast
 // type 3 (`heavy`: objects lose 128 - 16 d).
-void Game::explode(Vec3 at, int surface, bool heavy, float radius) {
-    spawnEffect(surface == 2 ? 4 : 3, at);
+void Game::explode(Vec3 at, int surface, bool heavy, float radius, bool sound, int owner, int effect, bool smoke) {
+    spawnEffect(effect > 0 ? effect : surface == 2 ? 4 : 3, at);
     // Delta Force 2 sends these through its speed-of-sound queue (0x45E910).
-    sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
-    for (auto& m : world_.blast(at, radius, heavy)) pushMessage(m);
-    // The player is a character like the others (0x785b60): body origin
-    // within radius + 1 m, terrain line of sight, 4 / 2 / 1 hit points.
-    if (!playerDead()) {
+    if (sound) sound_.playDelayed(surface == 2 ? SoundSystem::ExploWater : SoundSystem::ExploM240HE, at);
+    if (deferBlasts_) pendingBlasts_.push_back({at, heavy, radius, owner});
+    else blastDamage(at, heavy, radius, owner);
+    if (surface == 0 && smoke) smokeGens_.push_back({at, 0, 0});
+}
+
+void Game::blastDamage(Vec3 at, bool heavy, float radius, int owner) {
+    const int ownerSide = owner == -3 ? kPlayerSide : owner >= 0 && size_t(owner) < world_.objects.size() ? world_.objects[size_t(owner)].side : 0;
+    for (auto& m : world_.blast(at, radius, heavy, owner, ownerSide)) pushMessage(m);
+    // The player is a character like the others (0x785b60).
+    if (!playerDead() && mission_.version < 0x0F) {
+        // Delta Force (GOG Df.exe 0x465830, the player in the people list
+        // 0x7cca80): per axis within R + 1 m, then DF.EXE's approximate
+        // length (0x477670) within R + 1 m; the sight lines 0x42e2b0 from the
+        // origin and 0.5 m above it to the blast + 0.5 m (objects shield);
+        // both blocked: nothing for type 1, else double the distance.
+        const Vec3 p = world_.nearest(player_.origin(), at);
+        const float r = radius + 1.f;
+        float x = std::abs(p.x - at.x), y = std::abs(p.y - at.y), z = std::abs(p.z - at.z);
+        if (x <= r && y <= r && z <= r) {
+            const float mx = std::max({x, y, z}), mn = std::min({x, y, z}), md = x + y + z - mx - mn;
+            float d = mx + md * 11.f / 32.f + mn * 0.25f;
+            const Vec3 target = at + Vec3{0, 0.5f, 0};
+            const bool blocked = world_.sight(p, target, -3, -1) <= 0 && world_.sight(p + Vec3{0, 0.5f, 0}, target, -3, -1) <= 0;
+            if (d <= r && (!blocked || heavy)) {
+                if (blocked) d *= 2;
+                // Blast deaths: type 2 under 4 m; 4-8 m type 3 when the 16-bit
+                // random (0x477860, GOG 0x465977) is below 0x4000, else 2; farther type 2.
+                const bool three = d >= 4 && d < 8 &&
+                                   (gogRand() ? shrapRand() < 0x4000 : std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0);
+                const int type = three ? 3 : 2;
+                hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
+            }
+        }
+    } else if (!playerDead()) {
         const Vec3 p = world_.nearest(player_.origin(), at);
         const Vec3 v = p - at;
-        const float d = std::sqrt(dot(v, v));
         RayHit h;
         const Vec3 target = at + Vec3{0, 0.5f, 0};
-        const bool blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
+        // Delta Force 2: the player is an organics record like the others
+        // (GOG Df2.exe 0x455200 -> 0x454b60): distance by 0x41e880 (largest
+        // + 11/32 middle + 1/4 smallest), the line of fire 0x406610 (terrain,
+        // decorations and items, no fog cutoff) from the origin and 0.5 m up.
+        float d = std::sqrt(dot(v, v));
+        bool blocked;
+        if (world_.df2Rules) {
+            float a = std::abs(v.x), b = std::abs(v.y), c = std::abs(v.z);
+            if (a < b) std::swap(a, b);
+            if (a < c) std::swap(a, c);
+            if (b < c) std::swap(b, c);
+            d = a + b * 11.f / 32.f + c * 0.25f;
+            blocked = world_.sight(p, target, -1, -1, false) <= 0 && world_.sight(p + Vec3{0, 0.5f, 0}, target, -1, -1, false) <= 0;
+        } else {
+            blocked = world_.raycast(p, target, h, false) && world_.raycast(p + Vec3{0, 0.5f, 0}, target, h, false);
+        }
         // Blast deaths (0x44fda8): type 2 under 4 m; 4-8 m type 3 one time in
         // four, else 2; farther type 2.
         const int type = d < 4 ? 2 : d < 8 ? (std::uniform_int_distribution<int>(0, 3)(effectRng_) == 0 ? 3 : 2) : 2;
-        if (mission_.version >= 0x0F) {
-            // DF2.EXE 0x44d4a0: base 8 (32 for the 12 m charge), full under
-            // 4 m, half under 8 m, a quarter beyond; blocked sight cancels
-            // type 1 and doubles the distance for the others.
-            const int base = radius > 11.f ? 32 : 8;
-            const float dd = blocked ? 2 * d : d;
-            if (d <= radius + 1.f && (!blocked || heavy))
-                hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
-        } else if (d <= radius + 1.f && !blocked) hurtPlayer(d < 4 ? 4 : d < 8 ? 2 : 1, type, at);
+        // DF2.EXE 0x44d4a0: base 8 (32 for the 12 m charge), full under
+        // 4 m, half under 8 m, a quarter beyond; blocked sight cancels
+        // type 1 and doubles the distance for the others.
+        const int base = radius > 11.f ? 32 : 8;
+        const float dd = blocked ? 2 * d : d;
+        if (d <= radius + 1.f && (!blocked || heavy))
+            hurtPlayer(dd < 4 ? base : dd < 8 ? base / 2 : base / 4, type, at);
     }
-    if (surface == 0) smokeGens_.push_back({at, 0, 0});
+}
+
+// Delta Force 2 (GOG Df2.exe 0x451090, the person pose handler): a person
+// airborne (+0x64 & 0x2000) and not +0x64 & 0x40 (no writer in single
+// player: only the network update copies the low byte) is drawn in frame 0
+// of the animation its move table maps move 130 (Jumping_1HW, +0xe3c) to,
+// whatever move it plays. False (turns untouched) otherwise.
+static bool df2AirbornePose(const Chr& chr, const AnimDefs* moves, std::vector<std::array<float, 3>>& turns) {
+    const AnimMove* mv = moves && chr.ksa() ? moves->find("Jumping_1HW") : nullptr;
+    const ChrAnimation* a = mv ? chr.animation(mv->animation) : nullptr;
+    if (!a || a->frames.empty()) return false;
+    const ChrFrame& f = a->frames.front();
+    turns.assign(f.angles.size(), {0, 0, 0});
+    for (size_t p = 0; p < f.angles.size(); ++p)
+        for (int k = 0; k < 3; ++k) turns[p][size_t(k)] = f.angles[p][size_t(k)] / 256.f;
+    return true;
 }
 
 // A person's pose (0x44ca34): per 3DI mesh (= .CHR part), the part's
@@ -1245,7 +2108,7 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
     return out;
 }
 
-void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
+void Game::animEvent(int event, Vec3 origin, int phraseSet, int team, bool airborne) {
     event &= 0xFF;
     // Delta Force 2 (DF2.EXE 0x43f480): 0x10 DEATH_WATER (400), 0x11 UW_IDLE
     // (804), 0x17 UW_SWIM (805).
@@ -1258,6 +2121,9 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
         return;
     }
     if (event < 0x40 || event > 0x43) return;
+    // GOG Df2.exe 0x445750 cases 0x40..0x43: the footstep 0x415780 runs only
+    // while the body is not airborne (+0x64 & 0x2000 clear).
+    if (mission_.version >= 0x0F && airborne) return;
     // 0x46a680: the sound set by the event's low bit; in water (level above
     // origin - 0.8 m) a splash (effect 2) and 0x88 / 0x89 on the surface;
     // else by the ground's surface type.
@@ -1265,7 +2131,9 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
     const float water = terrain_.waterLevel();
     if (water != 0 && origin.y - 0.8f < water) {
         const Vec3 at{origin.x, water, origin.z};
-        spawnEffect(2, at);
+        // GOG Df2.exe 0x415780 (0x4157bb push 0x17, CD 0x413920): Delta
+        // Force 2 shows slot 0x17, 107044 sploosh.
+        spawnEffect(mission_.version >= 0x0F ? 0x17 : 2, at);
         playSound(set1 ? SoundSystem::FsWaterR : SoundSystem::FsWaterL, at);
         // DF2.EXE 0x413975/0x413985: a +-10 m noise with the walker's team, flags 0.
         if (mission_.version >= 0x0F) ai_.noise(origin, 10.f, team, 0);
@@ -1278,9 +2146,13 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
         // 0x8b/0x8c, 3 snow 0x86/0x87, 4 rock and 6 0x82/0x83, each with a
         // +-5 m noise; 5 sand 0x82/0x83 with +-2 m (0x413a3e); class 0 or 7+
         // (no .CAL, unmatched names): no sound and no noise. The noise goes
-        // to 0x412840 with the walker's team and flags 0.
-        if (surface < 1 || surface > 6) return;
-        static const int a[7] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82}, b[7] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83};
+        // to 0x412840 (GOG 0x414660) with the walker's team and flags 0.
+        // GOG Df2.exe 0x415780 (jump tables after 0x415858) goes on to 7
+        // 0x88/0x89, 8 and 11 (road, QS) and 9 (mud) 0x82/0x83, 10 (ice)
+        // 0x86/0x87, each with +-5 m; the CD build stops at 6.
+        if (surface < 1 || surface > (df2Exe_.build() == ExeBuild::Df2Cd ? 6 : 11)) return;
+        static const int a[12] = {0, 0x82, 0x8B, 0x86, 0x82, 0x82, 0x82, 0x88, 0x82, 0x82, 0x86, 0x82},
+                         b[12] = {0, 0x83, 0x8C, 0x87, 0x83, 0x83, 0x83, 0x89, 0x83, 0x83, 0x87, 0x83};
         playSound((set1 ? a : b)[surface], origin);
         ai_.noise(origin, surface == 5 ? 2.f : 5.f, team, 0);
         return;
@@ -1324,7 +2196,7 @@ void Game::touchPickups() {
             const Vec3 l{c * dd.x - sn * dd.z, dd.y, sn * dd.x + c * dd.z};
             bool touch = false;
             for (const auto& b : o.model->collision) {
-                if (b.type != 1 && b.type != 3) continue;
+                if ((b.type != 1 && b.type != 3) || b.mesh < 0) continue;   // 0x4889c0: only the meshes' volumes (+0x1C)
                 if (!(l.x + 0.75f >= b.min[0] && l.x - 0.75f <= b.max[0] && l.z + 0.75f >= b.min[2] && l.z - 0.75f <= b.max[2] &&
                       l.y + 1.0f >= b.min[1] && l.y - 0.75f <= b.max[1]))
                     continue;
@@ -1352,20 +2224,36 @@ void Game::touchPickups() {
             o.boxes.clear();
             break;
         case 4010: case 4055:
-            arsenal_.refill();
-            pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
+        case 4082: case 4089: case 4118:
+            // DF2 (GOG Df2.exe 0x446050: 0xfaa, 0xfd7, 0xff2, 0xff9 -> 0x45b9d0
+            // message 0x1d -> 0x44dfc0; 0x1016 -> 0x45ba20 message 0x1f ->
+            // 0x44e310 the grenades only; 0x409610 then shows Misc STRMSIC17
+            // in [0x67d37c] = 0xff8000 and plays 0x164). The key is misspelt in
+            // both builds (0x4af790; DF2GAME.BIN has STRMISC17 "Ammo
+            // reloaded."), so 0x464f20 finds nothing and returns its empty
+            // string (0x4f7a50): an empty line goes into the system messages.
+            // DF1 has 4010 / 4055 only.
+            if (!world_.df2Rules && id != 4010 && id != 4055) break;
+            if (id == 4118) arsenal_.refillGrenades();
+            else arsenal_.refill();
+            // GOG Df.exe (client message 0x1d, 0x46d9f0) looks up the same
+            // misspelt Misc STRMSIC17 (0x4cccd4; DFGAME.BIN has STRMISC17),
+            // so it too pushes an empty line; the CD build the literal.
+            if (world_.df2Rules) pushMessage(df2Text("Misc", "STRMSIC17", ""), rgb(0xff, 0x80, 0));
+            else pushMessage(df1Text("Misc", "STRMSIC17", "Ammo reloaded"), {1, 1, 1, 1}, false, kHudBright);   // CD 0x42b57f: colour 0x66f94c
             sound_.play2D(0x164);
             o.removed = true;
             o.boxes.clear();
             break;
         case 4054:
-            if (world_.df2Rules) { mineContact(int(i)); break; }   // DF2 0x43ff93
-            if (o.hp > 0) {
-                o.hp = 0;
-                o.removed = true;
-                o.boxes.clear();
-                detonate(o.pos + Vec3{0, 1, 0}, 60, o.heading);
-            }
+            mineContact(int(i));   // DF2 0x43ff93, GOG Df.exe 0x488f00 case 0xfd6
+            break;
+        case 1066:
+            // DF2 pungi sticks, every tick in contact: hp -= 2, killer the
+            // stake, hit move 0x417170(.., 4) = 0xD2, the damage event, and
+            // the red flash += 0x78 (0x44f320, in hurtPlayer).
+            if (world_.df2Rules && pungiHurts(player_.airborne(), playerRunning_, player_.stance == Stance::Crouch))
+                hurtPlayer(2, 4, o.pos);
             break;
         default: break;
         }
@@ -1374,17 +2262,22 @@ void Game::touchPickups() {
 
 // One shrapnel round (0x44d730): speed ((rand*2) | 0x100) * factor >> 6 in
 // 16.16 m per tick; flags 0x20, 400 ticks, power 1, falloff 64.
-void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor) {
+// Delta Force 2 (GOG Df2.exe 0x452120): the shooter is the blast's owner;
+// fragments (ammo flag 0x200000, CD 0x20) never skip it (0x453860), so
+// it credits kills and team hits (0x453510) and can be hit by its own.
+void Game::shrapnel(Vec3 at, float yaw, float pitch, int speedFactor, int owner) {
     const float speed = float(int((shrapRand() | 0x100) * uint32_t(speedFactor)) >> 6) / 65536.f * 60.f;
     Projectile p;
     p.pos = at;
     p.from = at;
-    p.shooter = -1;
+    p.shooter = world_.df2Rules ? owner : -1;
     p.vel = Vec3{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)} * speed;
     p.lifetime = 0x190;
     p.power = 1;
     p.falloff = 0x40;
     p.flags = 0x20;
+    p.tracer = 0x01010101;   // 0x463200: dark streaks
+    p.tracerSet = true;
     if (world_.df2Rules) p.gun = 31;   // DF2 0x44ac70: ammo 31 (100 grains; water drag)
     arsenal_.addProjectile(p);
 }
@@ -1409,7 +2302,21 @@ void Game::weaponEvent(const WeaponEvent& e) {
             const float margin = item->type == "vehicle" ? 20.f : item->type == "object" || item->type == "person" ? 10.f : 0.f;
             at.y = world_.df2Surface(at, 0x4000 / 65536.f, world_.df2Neighbours(at, margin));
         } else {
-            at.y = world_.groundHeight({at.x, player_.feet.y + 0.25f, at.z}, 0.25f);
+            // GOG Df.exe 0x483b10 cases 7/9 send the player object's z (the
+            // body origin, +0x2c) and the host create (0x4473f0, CD 0x447fd8)
+            // snaps it with 0x486fd0(obj, pos, 0x4000): the highest floor up
+            // to 0.25 m above the origin.
+            at.y = world_.groundHeight({at.x, player_.origin().y, at.z}, 0x4000 / 65536.f);
+        }
+        if (e.item == 4138) {
+            // GOG Df2.exe 0x459b80: a video camera first removes the
+            // player's others (0x418190 -> 0x45e420); the new one becomes
+            // the camera with its yaw and pitch (0x414850).
+            for (WorldObject& o : world_.objects)
+                if (o.item && o.item->id == 104138 && !o.removed) { o.removed = true; o.boxes.clear(); }
+            const int obj = world_.spawn(item, m, at, e.heading);
+            arsenal_.setCamera(obj, e.heading, 0.f);
+            break;
         }
         const int obj = world_.spawn(item, m, at, e.heading);
         charges_.push_back({obj, e.item, -1});
@@ -1417,9 +2324,11 @@ void Game::weaponEvent(const WeaponEvent& e) {
         break;
     }
     case WeaponEvent::Detonate:
+        // DF2: the click, 2D sound 0x7c, first (GOG Df2.exe 0x407400, CD 0x407000).
+        if (world_.df2Rules) sound_.play2D(0x7c);
         // 0x447db4: every satchel and radio claymore of the player, at once.
         for (auto& c : charges_)
-            if ((c.item == 4020 || c.item == 4040) && !world_.objects[size_t(c.object)].removed) world_.objects[size_t(c.object)].hp = 0;
+            if ((c.item == 4020 || c.item == 4040) && !c.mission && !world_.objects[size_t(c.object)].removed) world_.objects[size_t(c.object)].hp = 0;
         break;
     case WeaponEvent::LaserPressed:
         sound_.play2D(0x1AE);
@@ -1444,15 +2353,40 @@ void Game::weaponEvent(const WeaponEvent& e) {
 // A placed charge goes off (0x447d28 -> 0x46cdfc satchel: blast type 5,
 // radius 12, 200 shrapnel all round and upward; 0x447cac -> 0x46cc90
 // claymore: blast type 1 and a fan of 160 pieces).
-// Delta Force 2 (0x4572d0 -> 0x415490): 0.2 m higher, seeded.
-void Game::bigBlast(Vec3 at) {
-    if (world_.df2Rules) { at.y += 0x3333 / 65536.f; shrapSeed(); }
-    explode(at, 0, true, 12.f);
+// Delta Force 2 (GOG Df2.exe 0x45f910 -> 0x4174d0; the +0x3333 there goes
+// only into the network packet, 0x40ad36 runs it at the sent height):
+// seeded 0x5FC; effect 0x13 (gex5) whose yaw and scale (rand + 0x8000)
+// take the generator's first two numbers (0x4156b0); blast kind 5 of 12 m
+// with the owner; sound 0x32; a +-200 m noise; no smoke generator; 200
+// fragments at yaw = the object's yaw (pos +0x0C) + rand << 16, pitch
+// rand << 14, speed (rand | 0x100) * 0x1E (0x452120), owned by the owner.
+void Game::bigBlast(Vec3 at, float heading, int owner) {
+    if (world_.df2Rules) {
+        shrapSeed();
+        explode(at, 1, true, 12.f, true, owner, 0x13, false);   // the effect draws its yaw and scale (spawnEffect)
+        ai_.noise(at, 200.f, 0, 0);
+        // DF2's binary yaw runs anticlockwise from east: OpenDF heading = pi/2 - yaw.
+        const uint32_t base = uint32_t(int64_t(std::llround(double(kPi / 2 - heading) / (2 * kPi) * 4294967296.0)));
+        for (int k = 0; k < 200; ++k) {
+            const uint32_t yawBits = base + (shrapRand() << 16);
+            const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
+            shrapnel(at, kPi / 2 - float(yawBits) / 4294967296.f * 2 * kPi, pitch, 0x1E, owner);
+        }
+        return;
+    }
+    // GOG Df.exe (0x4477f0 -> 0x4470c0 -> 0x460950): seeded before the
+    // effect; the blast handled after the fragments (blastDamage).
+    if (gogRand()) shrapSeed();
+    deferBlasts_ = true;
+    explode(at, 0, true, 12.f, true, -1, 0, false);   // no smoke generator (0x460950)
     for (int k = 0; k < 200; ++k) {
-        const float yaw = float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+        // DF yaw (0x4477f0: 0, so OpenDF's heading pi/2, which the strike
+        // passes) + rand << 16, anticlockwise: heading - rand here.
+        const float yaw = heading - float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
         const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
         shrapnel(at, yaw, pitch, 0x1E);
     }
+    flushBlasts();
 }
 
 void Game::startCollapse(int index) {
@@ -1463,13 +2397,20 @@ void Game::startCollapse(int index) {
     // flat radius (the header is read verbatim into the entry, 0x43e591);
     // +0x68 is then overwritten with the LOD 0 header +0x24, the height
     // (0x43e6aa..0x43e6ad): GpuModel::height.
+    // GOG Df2.exe 0x45cd80 (from bld2 0x402ab0): the three lists, the box
+    // inclusive: people, every item-list object (group 0, any type) and
+    // every decoration (group 1) whose item kind is not 5 (building) lose
+    // 100 hp, no killer; crates and barrels then go the hp <= 0 way.
     const float R = o.model ? o.model->flatRadius : 5.f, Hh = o.model ? o.model->height : 5.f;
     for (size_t j = 0; j < world_.objects.size(); ++j) {
         WorldObject& t = world_.objects[j];
-        if (int(j) == index || !t.alive() || !(t.person || (t.item && t.item->type == "vehicle"))) continue;
+        if (int(j) == index || !t.alive() || t.missionGroup == 2) continue;
+        if (!t.person && t.missionGroup == 1 && t.item && t.item->type == "building") continue;
         const Vec3 p = world_.nearest(t.pos, o.pos);
-        if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh)
-            if (auto m = world_.damage(int(j), 100, 0x7fff, world_.deathMove(int(j), 2, 0, o.pos)); !m.empty()) pushMessage(m);
+        if (std::abs(p.x - o.pos.x) <= R && std::abs(p.z - o.pos.z) <= R && std::abs(p.y - o.pos.y) <= Hh) {
+            const int move = t.person ? world_.deathMove(int(j), 2, 0, o.pos) : -1;
+            if (auto m = world_.damage(int(j), 100, 0x7fff, move); !m.empty()) pushMessage(m);
+        }
     }
     {
         const Vec3 p = world_.nearest(player_.origin(), o.pos);
@@ -1543,11 +2484,13 @@ Game::Effect* Game::spawnSmk2(Vec3 at, bool dust, float dx, float dz, int t) {
         e.maxSize = 0x20000;
     }
     // Colour: lerp((0x73, 0x58, 0x39) -> 0, t / 256) | 1 (0x413e40), plus
-    // (rand · 17) & 0x0f0f0f (0x4141dd); then 0x411f70: the scene colour
-    // grade 0x411ec0 (y = (R + 2G + B) >> 2, saturation [0xbba8ac] about y,
-    // then the per-channel tables built by 0x411d50; the grade the terrain
-    // and the model colours get, 0x43f27d). OpenDF applies that grade when
-    // drawing (the model shader's post() on the replacing colour).
+    // (rand · 17) & 0x0f0f0f (0x4141dd); then 0x411f70 (GOG Df2.exe
+    // 0x413c50 from 0x415de0 / 0x415f70): the runtime colour grade (y =
+    // (R + 2G + B) >> 2, saturation about y, the per-channel tables). After
+    // the load that is no longer the TRN grade: 0x466ba0 resets it to the
+    // df2.cfg gamma with saturation and filters 0x80 (0x4658f0 -> 0x4666c0),
+    // so at saturation 128 only the gamma table applies. Graded here, drawn
+    // raw.
     const int tt = std::clamp(t, 0, 255);
     uint32_t c = (uint32_t(0x73 - 0x73 * tt / 256) << 16) | (uint32_t(0x58 - 0x58 * tt / 256) << 8) | uint32_t(0x39 - 0x39 * tt / 256) | 1u;
     const uint32_t r = shrapRand();
@@ -1555,6 +2498,8 @@ Game::Effect* Game::spawnSmk2(Vec3 at, bool dust, float dx, float dz, int t) {
     e.tint[0] = uint8_t(c >> 16);
     e.tint[1] = uint8_t(c >> 8);
     e.tint[2] = uint8_t(c);
+    if (const auto& lut = terrain_.df2RuntimeTable(); lut.size() == 256 * 3)
+        for (int ch = 0; ch < 3; ++ch) e.tint[ch] = lut[size_t(e.tint[ch]) * 3 + size_t(ch)];
     if (std::getenv("OPENDF_DEBUGHITS")) std::fprintf(stderr, "smk2 %s size %.2f at (%.1f %.1f %.1f) frames %d tint %d %d %d\n", dust ? "dust" : "smoke", e.size / 65536.f, at.x, at.y, at.z, e.frames, e.tint[0], e.tint[1], e.tint[2]);
     effects_.push_back(e);
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());
@@ -1580,6 +2525,10 @@ void Game::tickCollapses() {
             return lo + float((int64_t(shrapRand()) * int64_t((hi - lo) * 65536.f)) >> 16) / 65536.f;
         };
         const float* b = c.box;
+        // GOG Df2.exe 0x402ab0: each rubble step first draws one number for
+        // an unused sine/cosine (0x41e8c0(rand << 16)); the effects draw two
+        // each (0x4156b0, spawnEffect).
+        if (c.step < c.rubble) (void)shrapRand();
         if (c.step < c.rubble)
             for (int k = 0; k < 2; ++k) {
                 // Two rubble bursts on the inset edges: odd steps the x edges at
@@ -1604,7 +2553,11 @@ void Game::tickCollapses() {
                 default: y = b[3]; break;
                 }
                 const Vec3 at = world(x, y);
-                spawnSmk2(at, true, at.x - o.pos.x, at.z - o.pos.z, 0);
+                Effect* e = spawnSmk2(at, true, at.x - o.pos.x, at.z - o.pos.z, 0);
+                // GOG Df2.exe 0x402f54: the oil rigs' clouds (items 3072 / 3073 /
+                // 3102) rise at (rand & 0x3ff) a tick; no draw when none was made.
+                if (e && o.item && (o.item->id == 103072 || o.item->id == 103073 || o.item->id == 103102))
+                    e->vel[2] = int32_t(shrapRand() & 0x3ff);
             }
             // Smoke only on a step that spawned no dust (0x402d7e): up to 6
             // puffs, a random angle, radius (rand·R >> 16) / 2, height up to
@@ -1656,27 +2609,58 @@ void Game::blowCharge(Charge& c) {
     WorldObject& o = world_.objects[size_t(c.object)];
     o.removed = true;
     o.boxes.clear();
-    const Vec3 at = o.pos + Vec3{0, 0.2f, 0};
+    // Delta Force (GOG Df.exe): both charges go off at the object's origin
+    // (the satchel's +0x3333 in 0x4470c0 goes only into the network packet);
+    // only the claymore's fragments start 0.2 m up (0x460857, [0x4ccb5c]).
+    // DF's yaw runs anticlockwise, OpenDF's heading clockwise: DF yaw +
+    // offset is heading - offset here. No Smoke Generator (0x460950 /
+    // 0x4607e0 make none).
+    const bool df2 = world_.df2Rules;
+    const Vec3 at = df2 ? o.pos + Vec3{0, 0.2f, 0} : o.pos;
     if (c.item == 4020) {
-        if (world_.df2Rules) shrapSeed();
-        explode(at, 0, true, 12.f);
+        // Delta Force 2's satchel (GOG Df2.exe 0x402660 -> 0x45f910): the
+        // big blast at the charge itself, its yaw, owned by the placer.
+        if (df2) { bigBlast(o.pos, o.heading, -3); return; }
+        if (gogRand()) shrapSeed();   // GOG Df.exe 0x460950: before the effect
+        deferBlasts_ = true;   // the blast after the fragments (blastDamage)
+        explode(at, 0, true, 12.f, true, -1, 0, false);
+        // GOG Df.exe 0x460950 (from the schg handler 0x45c110 via 0x4470c0):
+        // also an AI noise of 200 m (0x45fcf0).
+        ai_.noise(at, 200.f, 0, 0);
         for (int k = 0; k < 200; ++k) {
-            const float yaw = o.heading + float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
+            const float yaw = o.heading - float(shrapRand() << 16) / 4294967296.f * 2 * kPi;
             const float pitch = float(shrapRand() << 14) / 4294967296.f * 2 * kPi;
             shrapnel(at, yaw, pitch, 0x1E);
         }
-    } else {
-        explode(at, 0);
-        // Yaw heading - 30 degrees + k x 1.8 (DF.EXE's loop adds k x 0.3 to
-        // its 1.5-degree steps, so the fan is lopsided), pitch -2, 3, 8, 13.
+        flushBlasts();
+    } else if (world_.df2Rules) {
+        // Delta Force 2's claymore (GOG Df2.exe 0x415520): effect 3, blast
+        // type 1, sound 0x32 and a +-200 m noise (0x414660) at the charge
+        // itself, no smoke generator, no reseed; the fragments from 0x3333
+        // (0.2 m) above it at the binary yaw Y + (-30 + 1.8 k) degrees, k
+        // 0..39 (Y anticlockwise from east, so OpenDF's heading minus the
+        // offset: 30 degrees to the right, 40.2 to the left), pitch -2, 3,
+        // 8, 13; speed (rand | 0x100) * 0x3c (0x452120), owned by the placer.
+        explode(o.pos, 1, false, 10.f, true, -3);
+        ai_.noise(o.pos, 200.f, 0, 0);
         for (int k = 0; k < 40; ++k)
             for (int p = 0; p < 4; ++p)
-                shrapnel(at, o.heading + (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C);
+                shrapnel(at, o.heading - (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C, -3);
+    } else {
+        explode(at, 0, false, 10.f, true, -1, 0, false);
+        // GOG Df.exe 0x4607e0 (not seeded): DF yaw heading - 30 degrees +
+        // k x 1.8 (its loop adds k x 0.3 to the 1.5-degree steps, so the fan
+        // is lopsided: 40.2 degrees to the left, 30 to the right), pitch -2,
+        // 3, 8, 13.
+        const Vec3 from = o.pos + Vec3{0, 0x3333 / 65536.f, 0};
+        for (int k = 0; k < 40; ++k)
+            for (int p = 0; p < 4; ++p)
+                shrapnel(from, o.heading - (-30.f + 1.8f * float(k)) * kPi / 180.f, (-2.f + 5.f * float(p)) * kPi / 180.f, 0x3C);
     }
 }
 
 // Per tick: charges hit or set off blow up; motion claymores (cly2, every
-// 0x20 ticks, 0x46cf48) sense anyone within 15 m ahead (+-33.75 degrees),
+// 0x20 ticks, 0x46cf48) sense anyone under 16 m ahead (about +-34 degrees),
 // in sight and moving at least 1.1 m/s (vehicles 0.2), and go off 32 ticks
 // later. Fire missions count down; while the laser is on a point the strike
 // is pulled toward it 1 m a tick; at 0 a satchel-sized shell lands.
@@ -1688,50 +2672,145 @@ void Game::tickCharges() {
         if (c.fuse > 0) { if (--c.fuse == 0) blowCharge(c); continue; }
         if (c.item != 4014 || (ticks_ & 0x1f)) continue;
         const Vec3 sensor = o.pos + Vec3{0, 0.3f, 0};
-        auto sees = [&](Vec3 at, float speed, float need) {
-            const Vec3 v = world_.nearest(at, sensor) - sensor;
+        // GOG Df.exe 0x460aa0 (CD 0x46cf48): the octagonal distance from the
+        // claymore's origin to the target's, accepted while its whole metres
+        // are under 16 (0x460b94 / 0x460c70); the bearing less the heading in
+        // 1/256 turns ((x >> 24), folded 0x100 - x above 0x7f) at most 0x18,
+        // about -33.75..+35.2 degrees in the EXE's angle sense; then the
+        // sight line from the raised sensor to `ray` (a vehicle's z + 1 m).
+        const uint32_t headingBits = uint32_t(int64_t(std::llround(double(kPi / 2 - o.heading) / (2 * kPi) * 4294967296.0)));
+        auto sees = [&](Vec3 at, Vec3 ray, float speed, float need) {
+            const Vec3 v = world_.nearest(at, o.pos) - o.pos;
             float a = std::abs(v.x), b = std::abs(v.y), cc = std::abs(v.z);
             if (a < b) std::swap(a, b);
             if (a < cc) std::swap(a, cc);
             if (b < cc) std::swap(b, cc);
-            if (a + b * 11.f / 32.f + cc * 0.25f > 15.f || speed < need) return false;
-            float rel = std::atan2(v.x, -v.z) - o.heading;
-            rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
-            if (std::abs(rel) > 0x18 / 256.f * 2 * kPi) return false;
+            if (a + b * 11.f / 32.f + cc * 0.25f >= 16.f || speed < need) return false;
+            const double bearing = kPi / 2 - std::atan2(double(v.x), double(-v.z));
+            uint32_t step = (uint32_t(int64_t(std::llround(bearing / (2 * kPi) * 4294967296.0))) - headingBits) >> 24;
+            if (step > 0x7f) step = 0x100 - step;
+            if (step > 0x18) return false;
             RayHit h;
-            return !world_.raycast(sensor, sensor + v, h, true, c.object, false);
+            return !world_.raycast(sensor, world_.nearest(ray, sensor), h, true, c.object, false);
         };
-        bool hit = !playerDead() && sees(player_.origin(), player_.speed(), 1.1f);
+        bool hit = !playerDead() && sees(player_.origin(), player_.origin(), player_.speed(), 1.1f);
         for (const auto& q : world_.objects) {
             if (hit) break;
             if (!q.person || !q.alive() || !q.moves) continue;
             const char* n = moveName(q.moveNumber);
             const AnimMove* mv = n ? q.moves->find(n) : nullptr;
-            hit = sees(q.pos, mv ? mv->velocity : 0.f, 1.1f);
+            hit = sees(q.pos, q.pos, mv ? mv->velocity : 0.f, 1.1f);
         }
-        // Vehicles moving at 0.2 m/s or more (target z + 1 m).
+        // Vehicles moving at 0.2 m/s or more (only the sight line aims at
+        // z + 1 m).
         for (const auto& [obj, speed] : vehicles_.moving()) {
             if (hit) break;
-            hit = sees(world_.objects[size_t(obj)].pos + Vec3{0, 1, 0}, speed, 0.2f);
+            const Vec3 p = world_.objects[size_t(obj)].pos;
+            hit = sees(p, p + Vec3{0, 1, 0}, speed, 0.2f);
         }
         if (hit) c.fuse = 32;
     }
-    if (laserWindow_ > 0) --laserWindow_;
     for (auto& st : strikes_) {
+        // While the dot is lased the aim point steps 1 m toward it whenever
+        // it is off at all (GOG Df.exe 0x4478df / Df2.exe 0x461850: only a
+        // zero length is skipped), so it jitters around the dot.
         if (laserWindow_ > 0) {
             const Vec3 d = world_.nearest(laserPoint_, st.target) - st.target;
             const float dx = std::abs(d.x), dz = std::abs(d.z), len = std::max(dx, dz) + std::min(dx, dz) * 0.5f;
-            if (len > 1.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
+            if (len > 0.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
         }
         if (--st.timer == 0) {
-            // DF2 0x458a56: ground + 0x1999; below the water, water + 0x4000;
-            // then the big blast (+0.2 m, 0x4572d0).
-            Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0x1999 / 65536.f, st.target.z};
-            if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
-            bigBlast(at);
+            // DF2 0x458a56 (GOG 0x461850): ground + 0x1999; below the water,
+            // water + 0x4000; then the big blast (0x45f910) with yaw 0, owned
+            // by the requester. Delta Force (GOG Df.exe 0x447848..0x44786d,
+            // CD 0x448368): ground + 6553.6 rounded (0x199a), no water test.
+            Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z), st.target.z};
+            if (world_.df2Rules) {
+                at.y += 0x1999 / 65536.f;
+                if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
+            } else {
+                at.y += 0x199a / 65536.f;
+            }
+            bigBlast(at, kPi / 2, -3);
         }
     }
+    // The window counts down once after all strikes (GOG Df.exe 0x447888,
+    // Df2.exe 0x461850 end).
+    if (laserWindow_ > 0) --laserWindow_;
     strikes_.erase(std::remove_if(strikes_.begin(), strikes_.end(), [](const Strike& s) { return s.timer <= 0; }), strikes_.end());
+}
+
+// Delta Force's birds, per tick. A bird tree's think (GOG Df.exe 0x451e70,
+// every 0x40 ticks): a cooldown above 0 counts down; else the score
+// 0x44fba0 above 0x100000 sets the cooldown to 10 and, if ITEMS.DEF has
+// item 0xfd3 (sparrow), plays sound 0x4c at the tree and makes 3 sparrows
+// (0x45d970) 4 m above its origin: two draws, the second << 16 the base
+// yaw; each bird yaw base + ((draw << 16) & 0x0f000000), the base then a
+// quarter turn on. A sparrow's think (0x451d40, every 0x10 ticks): speed
+// +0x4000 while under 0x30000; velocity speed x (cos, sin)(yaw) >> 6 (the
+// 2048-entry sine table 0xbd0068, 1.0 = 0x400000); above 100 m it is
+// removed (0x45da30). Its move (0x451dd0, every tick): x, y += velocity,
+// z += speed >> 7. (The move's +0xe0 swing, +-0x18000000 in steps of
+// 0x3000000 / 0x2000000, is not drawn.)
+void Game::tickBirds() {
+    auto draw = [this]() { return gogRand() ? shrapRand() : uint32_t(crtRand() * 2); };
+    for (auto& t : birdTrees_) {
+        WorldObject& tree = world_.objects[size_t(t.object)];
+        if (tree.removed || --t.think > 0) continue;
+        t.think = 0x40;
+        if (t.cooldown > 0) { --t.cooldown; continue; }
+        AiSystem::PlayerView pv;
+        pv.alive = !playerDead();
+        pv.origin = player_.origin();
+        const int mn = moveNumber(player_.move());
+        pv.moveNumber = mn >= 0 ? mn : 2;
+        pv.side = kPlayerSide;
+        pv.team = kPlayerTeam;
+        if (ai_.birdScoreDf1(world_, tree.pos, tree.side, pv) <= 0x100000) continue;
+        t.cooldown = 10;
+        const ItemDef* bird = items_.byId(104051);
+        const GpuModel* m = bird && !bird->graphic.empty() ? models_.get(vfs_, bird->graphic) : nullptr;
+        if (!bird) continue;
+        playSound(0x4c, tree.pos);
+        (void)draw();
+        uint32_t base = draw() << 16;
+        const Vec3 at = tree.pos + Vec3{0, 4.f, 0};
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t yaw = ((draw() << 16) & 0x0f000000u) + base;
+            base += 0x40000000u;
+            if (!m) continue;
+            Sparrow s;
+            s.object = world_.spawn(bird, m, at, kPi / 2 - float(yaw) / 4294967296.f * 2 * kPi);
+            world_.objects[size_t(s.object)].missionGroup = 0;
+            s.yaw = yaw;
+            sparrows_.push_back(s);
+        }
+    }
+    auto sine = [](uint32_t a) { return int32_t(std::lround(std::sin(double(a >> 21) / 2048.0 * 2 * kPi) * 0x400000)); };
+    for (auto& s : sparrows_) {
+        WorldObject& o = world_.objects[size_t(s.object)];
+        if (o.removed) continue;
+        if (--s.think <= 0) {
+            if (s.speed < 0x30000) s.speed += 0x4000;
+            s.vx = int32_t((int64_t(s.speed) * sine(s.yaw + 0x40000000u)) >> 22) >> 6;
+            s.vy = int32_t((int64_t(s.speed) * sine(s.yaw)) >> 22) >> 6;
+            if (o.pos.y > 100.f) {
+                o.removed = true;
+                world_.refreshBoxes(o);
+                continue;
+            }
+            s.think = 0x10;
+        }
+        o.pos.x += float(s.vx) / 65536.f;
+        o.pos.z -= float(s.vy) / 65536.f;
+        o.pos.y += float(s.speed >> 7) / 65536.f;
+        const float ext = world_.extent();
+        o.pos.x -= std::floor(o.pos.x / ext) * ext;
+        o.pos.z -= std::floor(o.pos.z / ext) * ext;
+        o.base = o.pos.y;
+    }
+    sparrows_.erase(std::remove_if(sparrows_.begin(), sparrows_.end(), [this](const Sparrow& s) { return world_.objects[size_t(s.object)].removed; }),
+                    sparrows_.end());
 }
 
 // Drop (0x46c9c0): 2 m ahead on the ground, or where the body lies.
@@ -1743,6 +2822,9 @@ void Game::dropCarried() {
     const float ext = world_.extent();
     at.x -= std::floor(at.x / ext) * ext;
     at.z -= std::floor(at.z / ext) * ext;
+    // Delta Force (GOG Df.exe 0x4604c0): z is the bare terrain height
+    // (0x47df40) at the drop point; the record's height is not added again.
+    if (!world_.df2Rules) o.lift = 0;
     o.pos = {at.x, terrain_.heightAt(at.x, at.z) + o.lift, at.z};
     o.base = o.pos.y - o.lift;
     o.removed = false;
@@ -1801,8 +2883,7 @@ void Game::hurtPlayer(int amount, int deathType, Vec3 from, int part) {
 }
 
 Vec3 Game::deadBodyOrigin() const {
-    const ChrFrame* f = playerBody_.currentFrame(playerChr_);
-    return player_.feet + deadShift_ + Vec3{0, f ? Chr::originHeight(*f) : 0.f, 0};
+    return player_.feet + deadShift_ + Vec3{0, playerBody_.originHeight(playerChr_), 0};
 }
 
 // Dead (0x404104 -> 0x481224): third-person orbit around the body, yaw
@@ -1813,24 +2894,62 @@ Vec3 Game::deadBodyOrigin() const {
 // smoothed body yaw + tick << 21 and pitch 0x4000000 (3.03 m behind, 0.20 m
 // up), at least 1 m above the ground (less while the pivot still lags by
 // under 0.5 m); it looks at the pivot raised 0.5 m (0x4810ec).
+// GOG Df.exe 0x42a6e0, the outside views: mode 1 as above with yaw =
+// smoothed body yaw + [0x6ba424], pitch [0x6ba428], distance [0x6ba42c];
+// mode 2 the same at the world yaw [0x6ba424] alone, at least 1 m above the
+// ground, looking at the pivot + 0.5 m (no lag terms); mode 3 from the
+// lookout at the pivot + 0.5 m.
+// GOG Df2.exe 0x413dd0 is the same for its chase view (mode 1, the yaw
+// [0xbf2b78] + the eased body yaw, pitch [0xbf2b7c], (-[0xbf2b80], 0, 0.5)),
+// the world-fixed view (2: the yaw [0xbf2b78] alone, at least 1 m above the
+// ground) and the fly-by (3: the fixed point); each looks at the pivot
+// raised 0.5 m (lowered with the slow-pivot rule only in mode 1).
 Vec3 Game::viewDir() const {
-    if (!playerDead()) return player_.forward();
+    if (dirOverride_) return *dirOverride_;
+    const int mode = outsideView();
+    if (mode == 0) return player_.forward();
     const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
-    const Vec3 target = camPivot_ + Vec3{0, 0.5f + (s < 0.5f ? (s - 0.5f) * 0.5f : 0.f), 0};
+    const Vec3 target = camPivot_ + Vec3{0, 0.5f + (mode == 1 && s < 0.5f ? (s - 0.5f) * 0.5f : 0.f), 0};
     return normalize(target - viewEye());
 }
 
 Vec3 Game::viewEye() const {
-    if (!playerDead()) return player_.eye();
-    const float th = camYaw_ + float(uint32_t(ticks_) << 21) / 4294967296.f * 2 * kPi;
-    const float p = float(0x4000000) / 4294967296.f * 2 * kPi;
-    const float back = -3.f * std::cos(p) - 0.5f * std::sin(p), up = -3.f * std::sin(p) + 0.5f * std::cos(p);
+    if (eyeOverride_) return *eyeOverride_;
+    const int mode = outsideView();
+    if (mode == 0) return player_.eye();
+    if (mode == 3) return lookout_;
+    // Dead: [0x6ba424] = [0x6e471c] << 21 every frame (GOG Df.exe 0x404640).
+    const uint32_t clock = world_.df2Rules ? ticks_ : frameClock_;
+    const float off = playerDead() ? float(clock << 21) / 4294967296.f * 2 * kPi : camYawOff_;
+    const float th = mode == 1 ? camYaw_ + off : off;
+    const float p = camPitch_, d = camDist_;
+    const float back = -d * std::cos(p) - 0.5f * std::sin(p), up = -d * std::sin(p) + 0.5f * std::cos(p);
     Vec3 e = camPivot_ + Vec3{std::cos(th) * back, up, -std::sin(th) * back};
     const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
     float floor = terrain_.heightAt(e.x, e.z) + 1.f;
-    if (s < 0.5f) floor += s - 0.5f;
+    if (mode == 1 && s < 0.5f) floor += s - 0.5f;
     e.y = std::max(e.y, floor);
     return e;
+}
+
+// GOG Df.exe 0x42ac10 for the player: a new mode resets the offsets (yaw 0,
+// pitch 0x4000000, 3 m); mode 3 places the lookout anew every time and
+// keeps them.
+void Game::setCamMode(int mode) {
+    if (mode == 3) { placeLookout(); camMode_ = 3; return; }
+    if (mode == camMode_) return;
+    camMode_ = mode;
+    camYawOff_ = 0;
+    camPitch_ = float(0x4000000) / 4294967296.f * 2 * kPi;
+    camDist_ = 3.f;
+}
+
+// The lookout (0x42ac10 / 0x42a6e0): the pivot + 8 x its lag + 4 m at the
+// body's yaw + 0x30000000 (67.5 degrees), 1.5 m above the terrain there.
+void Game::placeLookout() {
+    const float a = kPi * 0.5f - player_.yaw + 0.375f * kPi;
+    lookout_ = camPivot_ + camLag_ * 8.f + Vec3{4.f * std::cos(a), 0, -4.f * std::sin(a)};
+    lookout_.y = terrain_.heightAt(lookout_.x, lookout_.z) + 1.5f;
 }
 
 // New puff (0x480aac): item 107016, no speed yet, random roll, scale
@@ -1841,12 +2960,138 @@ void Game::spawnPuff(Vec3 at) {
     if (!m || m->lods.empty()) return;
     const auto& l = m->lods[0];
     std::uniform_int_distribution<int> r(0, 0x7fff);
-    Effect e{m, at, float((r(effectRng_) * 2 + 0x20000) >> 4) / 65536.f, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame,
-             l.frames};
+    // GOG Df.exe 0x42a440: roll 0x477860 << 16 (a full turn) first, then the
+    // scale (0x477860 + 0x20000) >> 4.
+    float roll = 0;
+    if (gogRand()) roll = float(shrapRand()) / 65536.f;
+    const float scale = gogRand() ? float((shrapRand() + 0x20000) >> 4) / 65536.f : float((r(effectRng_) * 2 + 0x20000) >> 4) / 65536.f;
+    Effect e{m, at, scale, 0, l.frames * l.ticksPerFrame, l.ticksPerFrame, l.frames};
     e.smoke = true;
-    e.roll = float(r(effectRng_)) / 65536.f;   // rand << 16: 0..180 degrees (0x480aac)
+    e.roll = gogRand() ? roll : float(r(effectRng_)) / 65536.f;   // CD: rand << 16, 0..180 degrees (0x480aac)
     effects_.push_back(e);
     if (effects_.size() > 0x400) effects_.erase(effects_.begin());
+}
+
+// GOG Df.exe wdsm 0x453810 -> 0x44ed40, wdmd 0x4538a0 -> 0x44efc0, cact
+// 0x4534a0 -> 0x44df90 (each ai handler at hp <= 0 with flag 4 clear, then
+// flags |= 0xc, the husk). Puffs are 0x42a440 (spawnPuff); every piece is
+// a `gdeb` object (0x45d970) at a random offset with velocity v (16.16 m
+// a tick) and yaw rand << 16 (its +0x7c, rand & 0x7fff + 0x20000, is not
+// drawn); the random numbers are 0x477860's 16 bits.
+//   wdsm: a puff at z + 0.5 m; 6 pieces, wooddebris1 (104069) when bit 8 of
+//     the draw is set, else wooddebris2 (104070), x +-0x2000, y +-0x1000,
+//     z + 1 m, vx, vy +-0x800, vz 0x600 + 0..0xfff; sound 0x139.
+//   wdmd: 10 puffs at z + 0.5 m, y then x + (r << 2) - 0x20000; 32 pieces,
+//     x, y + ((r & 0x7fff) << 2) - 0x10000, z + 0.5 m + 0..0xffff, vx, vy
+//     +-0x1000, vz 0x800 + 0..0x1fff; sound 0x13A.
+//   cact: 8 puffs at z + 1 m, + 0.75 m each; 48 pieces, one of 104058..62
+//     by (r * 5) >> 16, at z + 1 m + k/8 m, x +-0x2000, y +-0x1000, vx, vy
+//     +-0x800, vz 0x800 + 0..0x1fff; sound 0x130.
+// (wdsm / wdmd then make the items stacked on them fall, 0x44fcb0: items
+// whose +0x72 matches, within the flat radius and above; not done here.)
+// The pieces are effects here, not objects: rounds do not hit them.
+void Game::woodDebris(int index) {
+    const WorldObject& o = world_.objects[size_t(index)];
+    const std::string& f = o.item->aiFunction;
+    auto r = [this]() { return int32_t(std::uniform_int_distribution<int>(0, 0xffff)(effectRng_)); };
+    auto m = [](int32_t v) { return float(v) / 65536.f; };
+    // DF (x east, y north, z up) offsets and velocities to OpenDF axes.
+    auto piece = [&](int id, int32_t dx, int32_t dy, float z, int32_t vx, int32_t vy, int32_t vz) {
+        const uint32_t yaw = uint32_t(r()) << 16;
+        r();   // +0x7c
+        const ItemDef* it = items_.byId(100000 + id);
+        const GpuModel* g = it && !it->graphic.empty() ? models_.get(vfs_, it->graphic) : nullptr;
+        if (!g || g->lods.empty()) return;
+        Effect e{g, Vec3{o.pos.x + m(dx), z, o.pos.z - m(dy)}, 1.f, 0, 1 << 30, 1, 1};
+        e.debris = true;
+        e.dvel = {m(vx), m(vz), -m(vy)};
+        e.yaw = yaw;
+        effects_.push_back(e);
+        if (effects_.size() > 0x400) effects_.erase(effects_.begin());
+    };
+    // GOG Df.exe 0x44efa5 (wdsm) / 0x44f257 (wdmd) -> 0x44fcb0: every item
+    // (BMS group 0) of the crate's team (+0x72) whose origin is within +-R
+    // (the crate's flat radius, model +0x64) across, both bounds inclusive,
+    // and above the crate's origin gets the falling mover 0x4546b0, speed 0.
+    if (f == "wdsm" || f == "wdmd") {
+        const float R = o.intact ? o.intact->flatRadius : o.model ? o.model->flatRadius : 0.f;
+        for (auto& q : world_.objects) {
+            if (&q == &o || q.removed || q.missionGroup != 0 || q.team != o.team) continue;
+            const Vec3 p = world_.nearest(q.pos, o.pos);
+            if (p.x < o.pos.x - R || p.x > o.pos.x + R || p.z < o.pos.z - R || p.z > o.pos.z + R || p.y <= o.pos.y) continue;
+            q.dropping = true;
+            q.dropVz = 0;
+        }
+    }
+    if (f == "wdsm") {
+        spawnPuff(o.pos + Vec3{0, 0.5f, 0});
+        for (int k = 0; k < 6; ++k) {
+            const int id = (r() & 0x100) ? 4069 : 4070;
+            const int32_t dx = (r() & 0x3fff) - 0x2000, dy = (r() & 0x1fff) - 0x1000;
+            const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0xfff) + 0x600;
+            piece(id, dx, dy, o.pos.y + 1.f, vx, vy, vz);
+        }
+        playSound(0x139, o.pos);
+    } else if (f == "wdmd") {
+        for (int k = 0; k < 10; ++k) {
+            const int32_t dy = ((r() & 0xffff) << 2) - 0x20000, dx = ((r() & 0xffff) << 2) - 0x20000;
+            spawnPuff(o.pos + Vec3{m(dx), 0.5f, -m(dy)});
+        }
+        for (int k = 0; k < 32; ++k) {
+            const int id = (r() & 0x100) ? 4069 : 4070;
+            const int32_t dx = ((r() & 0x7fff) << 2) - 0x10000, dy = ((r() & 0x7fff) << 2) - 0x10000;
+            // z + 0.5 m + 0..0xffff: the object copy at 0x44f0bd overwrote the
+            // puffs' z + 0x8000 with the object's own z (0x44f12a..0x44f142).
+            const float z = o.pos.y + m((r() & 0xffff) + 0x8000);
+            const int32_t vx = (r() & 0x1fff) - 0x1000, vy = (r() & 0x1fff) - 0x1000, vz = (r() & 0x1fff) + 0x800;
+            piece(id, dx, dy, z, vx, vy, vz);
+        }
+        playSound(0x13A, o.pos);
+    } else if (f == "cact") {
+        for (int k = 0; k < 8; ++k) spawnPuff(o.pos + Vec3{0, 1.f + 0.75f * float(k), 0});
+        for (int k = 0; k < 48; ++k) {
+            const int id = 4058 + ((r() * 5) >> 16);
+            const int32_t dx = (r() & 0x3fff) - 0x2000, dy = (r() & 0x1fff) - 0x1000;
+            const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0x1fff) + 0x800;
+            piece(id, dx, dy, o.pos.y + 1.f + float(k) / 8.f, vx, vy, vz);
+        }
+        playSound(0x130, o.pos);
+    } else if (f == "palm") {
+        // GOG Df.exe palm 0x453c20 at hp <= 0 -> 0x44e6b0(palm, -1): pieces
+        // up the trunk by the palm's state +0xE0 (0: 48, 1: 16, 2: 40),
+        // starting 1 m up and stepping 0x3400 up and (cos, sin)(yaw + a) ·
+        // k >> 22 across (palm2, item 1018: a 0x70000000, k 0x1000; others
+        // a 0x80000000, k 0x400; sine table 1.0 = 0x400000); each one of
+        // palmdebris1..4 (104064..67) by (r * 4) >> 16, x +-0x2000, y
+        // +-0x1000, vx, vy +-0x800, vz 0x800 + 0..0x1fff. A palm never hit
+        // before (state 0) also throws 20 palmdebris5 (104068) from the top,
+        // x, y + (r << 2) - 0x20000, z +-0x2000. Sound 0x12C.
+        const bool palm2 = o.item->id == 101018;
+        const double yaw = kPi * 0.5 - double(o.heading);   // DF yaw, anticlockwise from east
+        const double a = yaw + (palm2 ? 0x70000000 : 0x80000000) / 4294967296.0 * 2 * kPi;
+        const int k = palm2 ? 0x1000 : 0x400;
+        const int32_t sx = int32_t((int64_t(k) * std::lround(std::cos(a) * 0x400000)) >> 22);
+        const int32_t sy = int32_t((int64_t(k) * std::lround(std::sin(a) * 0x400000)) >> 22);
+        const int n = world_.objects[size_t(index)].palmState == 0 ? 48 : world_.objects[size_t(index)].palmState == 1 ? 16
+                    : world_.objects[size_t(index)].palmState == 2 ? 40 : 0;
+        int32_t cx = 0, cy = 0;
+        float cz = o.pos.y + 1.f;
+        for (int i = 0; i < n; ++i) {
+            const int id = 4064 + ((r() * 4) >> 16);
+            const int32_t dx = (r() & 0x3fff) - 0x2000, dy = (r() & 0x1fff) - 0x1000;
+            const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0x1fff) + 0x800;
+            piece(id, cx + dx, cy + dy, cz, vx, vy, vz);
+            cx += sx, cy += sy, cz += 0x3400 / 65536.f;
+        }
+        if (world_.objects[size_t(index)].palmState == 0)
+            for (int i = 0; i < 20; ++i) {
+                const int32_t dx = ((r() & 0xffff) << 2) - 0x20000, dy = ((r() & 0xffff) << 2) - 0x20000;
+                const float z = cz + m((r() & 0x3fff) - 0x2000);
+                const int32_t vx = (r() & 0xfff) - 0x800, vy = (r() & 0xfff) - 0x800, vz = (r() & 0x1fff) + 0x800;
+                piece(4068, cx + dx, cy + dy, z, vx, vy, vz);
+            }
+        playSound(0x12C, o.pos);
+    }
 }
 
 // Per 60 Hz tick: effects age; smoke puffs move (0x480bfc): x += v, north
@@ -1920,6 +3165,20 @@ void Game::tickEffects() {
             else e.spin = e.spin < 0 ? -0x400000 : 0x400000;
             continue;
         }
+        if (e.debris) {
+            // gdeb (GOG Df.exe 0x453530; Df2.exe 0x42e6a0 the same):
+            // position += velocity; the yaw's top byte +1, the pitch's high
+            // word + 0x380, the roll's top byte +7;
+            // while the ground (0x47df40) is below it, vz -= 0x134; at or
+            // above it the piece is deleted (0x45da30).
+            e.pos = e.pos + e.dvel;
+            e.yaw += 1u << 24;
+            e.dpitch += 0x380u << 16;
+            e.droll += 7u << 24;
+            if (terrain_.heightAt(e.pos.x, e.pos.z) < e.pos.y) e.dvel.y -= 0x134 / 65536.f;
+            else e.age = e.life;
+            continue;
+        }
         if (!e.smoke) continue;
         e.pos.x += e.drift;
         e.pos.z -= e.drift * 0.25f;
@@ -1932,9 +3191,19 @@ void Game::tickEffects() {
     effects_.erase(std::remove_if(effects_.begin(), effects_.end(), [](const Effect& e) { return e.age >= e.life; }),
                    effects_.end());
     std::uniform_int_distribution<int> r(0, 0x7fff);
+    if (!world_.df2Rules)
+        for (int i : world_.takeSmokeOwners()) smokeGens_.push_back({world_.objects[size_t(i)].pos, 0, 0, i});
     for (auto& g : smokeGens_) {
         if (--g.wait > 0) continue;
-        spawnPuff(g.pos);
+        // 0x42a520: no owner, a puff at its own position; an owner not dead
+        // (+0x6c & 4 clear) removes it; else a puff at the owner's origin.
+        Vec3 at = g.pos;
+        if (g.owner >= 0) {
+            const WorldObject& w = world_.objects[size_t(g.owner)];
+            if (!(w.dead || w.wrecked)) { g.puffs = 100; continue; }
+            at = w.pos;
+        }
+        spawnPuff(at);
         ++g.puffs;
         g.wait = ((r(effectRng_) * 2) >> 13) + 16;
     }
@@ -1943,18 +3212,94 @@ void Game::tickEffects() {
     for (auto& o : world_.objects)
         if (o.detonate > 0 && --o.detonate == 0) {
             o.detonate = -1;
+            if (!world_.df2Rules && !o.removed) {
+                // GOG Df.exe 0x45bfe9 -> 0x4471d0: the record is cleared; the
+                // queued blast (0x4657d0) meets it gone.
+                o.removed = true;
+                world_.refreshBoxes(o);
+            }
             detonate(o.pos, 10, o.heading);
+            // GOG Df.exe 0x45bfe0: a Smoke Generator at the barrel's origin, no owner.
+            if (!world_.df2Rules) smokeGens_.push_back({o.pos, 0, 0});
         }
+    // GOG Df.exe 0x4546b0, the falling mover: with the origin above the
+    // ground + 1/16 m it moves by vz and vz loses 0x134; at or below it, the
+    // origin goes onto it and vz = -vz / 2 (arithmetic); under 0x268 the
+    // item stops and gets its own mover back (item +0x90).
+    for (auto& o : world_.objects) {
+        if (!o.dropping) continue;
+        if (o.removed || o.carried) { o.dropping = false; continue; }
+        const float g = terrain_.heightAt(o.pos.x, o.pos.z) + 0x1000 / 65536.f;
+        if (g < o.pos.y) {
+            o.pos.y += float(o.dropVz) / 65536.f;
+            o.dropVz -= 0x134;
+        }
+        if (g >= o.pos.y) {
+            o.pos.y = g;
+            o.dropVz = -o.dropVz >> 1;
+            if (o.dropVz < 0x268) {
+                o.dropVz = 0;
+                o.dropping = false;
+            }
+        }
+        o.base = o.pos.y;
+        world_.refreshBoxes(o);
+    }
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        WorldObject& o = world_.objects[i];
+        if (o.gnrcTimer > 0) --o.gnrcTimer;
+        if (o.gnrcTimer == 0) gnrcExplode(int(i));
+    }
+}
+
+// Delta Force's explosion noise (GOG Df.exe 0x4606b0, 0x4607e0, 0x460950,
+// 0x460a30, 0x46524e): 0x45fcf0(x, y, z, 200, 0, 0) stores the box
+// [p - 200, p + 200] in raw 16.16 units and its reader 0x45fd90 compares
+// object positions with it directly, so the box is +-200/65536 m (about
+// 3 mm): explosions effectively alert no one (gunshots pass range << 16).
+// The entry still takes a slot of the 200-entry queue.
+static constexpr float kDf1BlastNoise = 200.f / 65536.f;
+
+// A destroyed Delta Force gnrc object goes off (GOG Df.exe 0x4533f0 with
+// flag 4 -> 0x453270, CD 0x47ee6c -> 0x47ecf0): the item's sound, then
+// 0x460a30(owner 0, origin + 1 m, scale n << 14): effect 3 with +0x7c =
+// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a noise (kDf1BlastNoise);
+// a Smoke Generator at origin + 0.5 m (0x447610); then flags |= 8, the husk.
+// The blast is queued in DF.EXE and so meets the husk; here the husk goes
+// first. The table's n: 1001 1, 1002 3, 1039 4, 1040 1, 1041 3, 1042 3,
+// 1044 7, 1046 8, 1048 1, 1049 8, 3008 8, 4015 5, 4019 4. Other gnrc
+// items (3062 vwal crack) leave EBX holding the object's address, an
+// undefined scale; they keep the effect's own random one.
+void Game::gnrcExplode(int index) {
+    WorldObject& o = world_.objects[size_t(index)];
+    o.gnrcTimer = -1;
+    static const std::pair<int, int> kScale[] = {{1001, 1}, {1002, 3}, {1039, 4}, {1040, 1}, {1041, 3}, {1042, 3}, {1044, 7},
+                                                 {1046, 8}, {1048, 1}, {1049, 8}, {3008, 8}, {4015, 5}, {4019, 4}};
+    int n = 0;
+    for (const auto& s : kScale)
+        if (o.item && o.item->id - 100000 == s.first) n = s.second;
+    const Vec3 at = o.pos + Vec3{0, 1.f, 0};
+    const Vec3 smoke = o.pos + Vec3{0, 0.5f, 0};
+    world_.applyHusk(index);   // flags |= 8; the destroyed loop plays the 0x453270 sound
+    effectScale_ = n / 4.f;
+    if (gogRand()) shrapSeed();   // GOG Df.exe 0x460a30: before the effect
+    explode(at, 1, false, 10.f, false);   // surface 1: effect 3, no smoke generator
+    effectScale_ = 0;
+    ai_.noise(at, kDf1BlastNoise, 0, 0);
+    smokeGens_.push_back({smoke, 0, 0});
 }
 
 // DF2.EXE 0x4524d0 -> 0x412b00, the common blast: effect 3 (0x413850),
 // blast type 1 of 10 m (0x44d460), sound 0x32 (0x45e910), a +-200 m noise
 // with flags 0 (0x412b5c), then `fragments` seeded rounds; no smoke
-// generator of its own.
+// generator of its own. GOG Df2.exe 0x414960 (from 0x45a1e0: vehicles,
+// helicopters 0x42c120 with 40 + 10 + 10, barrels, mines, ...): the seed
+// 0x5FC comes first, so the effect (0x4156b0) takes the first two numbers
+// and the fragments start at the third.
 void Game::df2Blast(Vec3 at, int fragments, float heading) {
+    shrapSeed();
     explode(at, 1);   // surface 1: effect 3, no smoke generator
     ai_.noise(at, 200.f, 0, 0);
-    shrapSeed();
     fragmentBurst(at, fragments, heading);
 }
 
@@ -1979,6 +3324,10 @@ bool Game::df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const {
     return world_.df2Overlap(o, pts, halves, 2, push, flags);
 }
 
+// Delta Force's touch (GOG Df.exe 0x488f00 case 0xfd6, CD 0x437f60) does
+// the same: 0x446fb0(toucher, the mine's origin, 0 fragments) -> 0x4606b0
+// (effect 3, blast type 1, sound 0x32, a 3 mm noise), a Smoke Generator
+// at +0.5 m (0x447610), hp and +0x76 = 0, flags |= 4; the mine stays drawn.
 // A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
 // its hp is above 0, the common blast at the mine with no fragments (owned
 // by the mover), a Smoke Generator 104046 0.5 m above it (0x4531e0 ->
@@ -1991,8 +3340,16 @@ void Game::mineContact(int index) {
     o.hp = 0;
     o.wrecked = true;
     o.radarShape = 0;
-    df2Blast(o.pos, 0, o.heading);
-    smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+    if (world_.df2Rules) df2Blast(o.pos, 0, o.heading);
+    else {
+        if (gogRand()) shrapSeed();   // GOG Df.exe 0x446fb0 -> 0x4606b0: 0x477850(0x5FC) before the effect
+        explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
+        ai_.noise(o.pos, kDf1BlastNoise, 0, 0);
+    }
+    // DF1 0x488f00: 0x447610(the mine, origin + 0.5 m) owned by the mine,
+    // whose flags get 4 at once: the puffs rise from the mine's origin.
+    if (world_.df2Rules) smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+    else smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0, index});
 }
 
 // Delta Force 2's destruction of the section-8 items (the ai functions
@@ -2095,16 +3452,31 @@ void Game::tickDf2Items() {
             l.wait = 0x10;
             if (!l.init) {
                 // First think: home yaw = heading | 1, home pitch, sweep
-                // 0x20000000 (45 degrees), aiming at home + 45.
+                // 0x20000000 (45 degrees), aiming at home + 45; it goes on
+                // into the rest of the think (GOG Df2.exe 0x42ccf0, no return).
                 l.init = true;
                 l.homeYaw = yaw | 1;
                 l.homePitch = uint32_t(pitch);
                 l.sweep = 0x20000000;
                 l.targetYaw = l.homeYaw + uint32_t(l.sweep);
                 l.targetPitch = l.homePitch;
-            } else {
-                const bool targetDead = l.target == -3 ? playerDead() : l.target >= 0 && !world_.objects[size_t(l.target)].alive();
-                if (--l.counter > 0 && l.target != -1 && !targetDead) {
+            }
+            {
+                // GOG Df2.exe 0x42ccf0: with a target, AI +0x48 - 1 > 0 and
+                // AI flag 0x40 clear it tracks; a target first seen dead
+                // (flags & 4) sets 0x40 and is still aimed at this think;
+                // with 0x40 already set the target is dropped (AI +0x54 = 0)
+                // and the scan runs.
+                bool track = false;
+                if (l.target != -1 && --l.counter > 0) {
+                    if (!l.targetDead) {
+                        track = true;
+                        if (l.target == -3 ? playerDead() : !world_.objects[size_t(l.target)].alive()) l.targetDead = true;
+                    } else {
+                        l.target = -1;
+                    }
+                }
+                if (track) {
                     // Tracking: aim at the target with a +-0x200000 jitter,
                     // the yaw within +-45 degrees of home, the pitch within
                     // +-11.25 degrees; think 0x20.
@@ -2120,8 +3492,10 @@ void Game::tickDf2Items() {
                     l.wait = 0x20;
                 } else {
                     // Scan (0x425c70); seen when score · perception > a 16-bit
-                    // draw: the "spotted" mark 0x418960(target team, own team)
-                    // (argument order as read), the target kept for 8 thinks.
+                    // draw: the "spotted" mark (light team, target team) as
+                    // org1's (GOG Df2.exe 0x42ce2f..0x42ce39 -> 0x41ac00: row
+                    // [light +0x6a], bit [target +0x6a]), the target kept for
+                    // 8 thinks.
                     AiSystem::PlayerView pv;
                     pv.alive = !playerDead();
                     pv.origin = player_.origin();
@@ -2131,15 +3505,17 @@ void Game::tickDf2Items() {
                     pv.team = kPlayerTeam;
                     int id = -1;
                     Vec3 at{0, 0, 0};
-                    const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.team, pv, id, at);
-                    l.target = -1;
+                    const float score = ai_.lightScan(world_, l.object, o.pos, yaw, pitch, o.side, pv, id, at);   // by side (GOG 0x42aa10)
                     // score · perception, a quarter when AI byte +0xb4 is 0
-                    // (0x425e8f..0x425eb8).
+                    // (0x425e8f..0x425eb8). No candidate clears AI +0x54; a
+                    // failed draw leaves it as it was (0x42ce0b..0x42ce4f).
                     const float seen = score * l.perception * (l.alert == 0 ? 0.25f : 1.f);
-                    if (id != -1 && seen * 65536.f > float(shrapRand())) {
+                    if (id == -1) l.target = -1;
+                    else if (seen * 65536.f > float(shrapRand())) {
                         l.target = id;
                         l.counter = 8;
-                        ai_.markSpotted(id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team, o.team);
+                        l.targetDead = false;
+                        ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
                     }
                     l.wait = 0x10;
                 }
@@ -2159,6 +3535,161 @@ void Game::tickDf2Items() {
                 break;
             }
     }
+    // People onto pungi sticks (101066; the person mover 0x4467d0 -> 0x446050
+    // case 0x42a, AI as the player): hp -= 2 a tick in contact, the stake the
+    // killer, the hit move 0xD2 (0x417170 kind 4). INFERRED for the AI's
+    // control word: running = a Running move (60..95).
+    std::vector<size_t> people;
+    for (size_t j = 0; j < world_.objects.size(); ++j)
+        if (world_.objects[j].person && world_.objects[j].alive()) people.push_back(j);
+    if (!people.empty())
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            WorldObject& s = world_.objects[i];
+            if (!s.item || s.item->id != 101066 || s.removed || !s.model) continue;
+            for (size_t j : people) {
+                WorldObject& q = world_.objects[j];
+                if (!q.alive()) continue;
+                const Vec3 at = world_.nearest(q.pos, s.pos);
+                const float reach = s.model->flatRadius + 2.f;   // a quick reject before the volume test
+                if (std::abs(at.x - s.pos.x) > reach || std::abs(at.z - s.pos.z) > reach) continue;
+                const bool running = q.moveNumber >= 60 && q.moveNumber <= 95;
+                if (!pungiHurts(q.airborne, running, false) || !df2Touch(s, q.pos, Vec3{q.pos.x, q.base, q.pos.z})) continue;
+                world_.damage(int(j), 2, 0x7fff, World::deathMoveNumber(true, terrain_.waterLevel() != 0 && terrain_.waterLevel() >= q.pos.y, 4, 0, 0),
+                              int(i));
+            }
+        }
+}
+
+// Delta Force's searchlights (glight, ai and move function `slgt`), group-0
+// objects: every tick the think when its timer is below 1 (GOG Df.exe
+// 0x4519a0, CD 0x47d46c), then the move (0x451cb0, CD 0x47d77c), then the
+// timer -1 (the group-0 object loop in GOG 0x487ea0).
+void Game::tickDf1Lights() {
+    auto rnd = [this]() {   // GOG Df.exe 0x477860: x = rol(x,11) + x, x = rol(x,4) ^ 1, 16 bits
+        auto rol = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+        df2Rng_ = rol(df2Rng_, 11) + df2Rng_;
+        df2Rng_ = rol(df2Rng_, 4) ^ 1;
+        return df2Rng_ & 0xFFFF;
+    };
+    auto ang = [](double y, double x) { return uint32_t(int64_t(std::llround(std::atan2(y, x) / (2 * kPi) * 4294967296.0))); };
+    auto fx = [](float m) { return int32_t(std::lround(double(m) * 65536.0)); };
+    for (auto& l : lights_) {
+        WorldObject& o = world_.objects[size_t(l.object)];
+        if (l.dead) continue;
+        if (o.removed) { l.dead = true; continue; }
+        // 0x4519a0, at its think: hp below 1 -> flags |= 0x10c, the turn
+        // stopped and 0x446fb0(killer, origin + 1 m, 0 fragments) -> 0x4606b0:
+        // effect 3, blast type 1, sound 0x32 and a +-200 (raw units, 0x45fcf0)
+        // noise box (0x451b7c); the light stops for good.
+        if (l.wait < 1 && o.hp <= 0) {
+            l.dead = true;
+            const Vec3 at = o.pos + Vec3{0, 1.f, 0};
+            explode(at, 1);
+            ai_.noise(at, 200.f / 65536.f, 0, 0);
+            continue;
+        }
+        if (l.wait < 1) {
+            l.wait = 0x10;
+            if (!l.init) {
+                // First think: home yaw = yaw | 1 (+0xe0), home pitch (+0xe4),
+                // sweep 0x20000000 (+0xe8), aiming at home + sweep; it goes on
+                // into the rest of the think.
+                l.init = true;
+                l.homeYaw = l.yaw | 1;
+                l.homePitch = uint32_t(l.pitch);
+                l.sweep = 0x20000000;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+            bool done = false;
+            if (l.target != -1 && --l.counter > 0) {
+                if (!l.targetDead) {
+                    // Tracking (AI +0x38 > 0): aim at the target's origin, each
+                    // angle + (rand << 6) - 0x200000, the yaw within
+                    // +-0x20000000 of home and the pitch +-0x8000000; think 0x20.
+                    // A target seen dead sets AI flag 0x40 (dropped next think).
+                    const bool isPlayer = l.target == -3;
+                    if (isPlayer ? playerDead() : !world_.objects[size_t(l.target)].alive()) l.targetDead = true;
+                    const Vec3 tp = world_.nearest(isPlayer ? player_.origin() : world_.objects[size_t(l.target)].pos, o.pos);
+                    const int32_t dx = fx(tp.x - o.pos.x), dy = fx(o.pos.z - tp.z), dz = fx(tp.y - o.pos.y);
+                    const int64_t hx = dx >> 16, hy = dy >> 16;
+                    const int64_t horiz = std::llround(std::sqrt(double(hx * hx + hy * hy))) << 16;
+                    const int32_t wantY = int32_t(ang(dy, dx) - l.homeYaw) + int32_t(rnd() * 0x40) - 0x200000;
+                    l.targetYaw = l.homeYaw + uint32_t(std::clamp(wantY, -0x20000000, 0x20000000));
+                    const int32_t wantP = int32_t(ang(dz, double(horiz)) - l.homePitch) + int32_t(rnd() * 0x40) - 0x200000;
+                    l.targetPitch = l.homePitch + uint32_t(std::clamp(wantP, -0x8000000, 0x8000000));
+                    l.wait = 0x20;
+                    done = true;
+                } else {
+                    l.target = -1;
+                }
+            }
+            if (!done) {
+                // The scan (0x44f540): best score x perception (AI +0x74), a
+                // quarter when AI byte +0x9c is 0; seen when above a 16-bit
+                // draw: the spotted mark 0x42edd0(light team, target team),
+                // tracked for 8 thinks. A failed draw keeps the old target.
+                AiSystem::PlayerView pv;
+                pv.alive = !playerDead();
+                pv.origin = player_.origin();
+                const int mn = moveNumber(player_.move());
+                pv.moveNumber = mn >= 0 ? mn : 2;
+                pv.side = kPlayerSide;
+                pv.team = kPlayerTeam;
+                int id = -1;
+                float score = ai_.lightScanDf1(world_, l.object, o.pos, l.yaw, l.pitch, o.side, pv, id);
+                int32_t s = int32_t(int64_t(std::lround(double(score) * 65536.0)) * int64_t(std::lround(double(l.perception) * 65536.0)) >> 16);
+                if (l.alert == 0) s >>= 2;
+                if (id == -1) l.target = -1;
+                else if (s > int32_t(rnd())) {
+                    ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
+                    l.counter = 8;
+                    l.target = id;
+                    l.targetDead = false;
+                    if (std::getenv("OPENDF_DEBUGAI")) std::fprintf(stderr, "searchlight %d spots %d, score %.3f\n", l.object, id, s / 65536.f);
+                }
+            }
+        }
+        if (l.init) {
+            // 0x451850: the yaw speed (+0xec, 1/65536 turn a tick) rises by
+            // R >> 3 while more than 8R away and below R, else falls by R >> 3
+            // while above R >> 3 (R = item +0xe0, turn_rate); the yaw snaps
+            // when closer than the speed, else moves by it (+0x90). The snap
+            // test and the step use the speed from before this tick's change
+            // (read into esi at 0x451885; the ramp writes +0xec at 0x4518c2 /
+            // 0x45190a; cmp at 0x4518cf, step 0x451912..0x451946), so the
+            // step lags the ramp by a tick. The first move tick (speed 0)
+            // steps 0 and leaves +0x90 at 0, so the move flips the sweep at
+            // once and the light first heads for home - 45 degrees; the same
+            // zero step follows every snap. The pitch moves R a tick and
+            // snaps within R.
+            const int R = std::max(1, int(o.item->turnRate));
+            l.moving = 0;
+            if (l.yaw != l.targetYaw) {
+                const int d = int32_t(l.targetYaw - l.yaw) >> 16, ad = std::abs(d);
+                const int v = l.speed;
+                if (ad > 8 * R) { if (l.speed < R) l.speed += R >> 3; }
+                else if ((R >> 3) < l.speed) l.speed -= R >> 3;
+                if (ad < v) l.yaw = l.targetYaw;
+                else { l.moving = d > 0 ? (v << 16) : -(v << 16); l.yaw += uint32_t(l.moving); }
+            }
+            if (uint32_t(l.pitch) != l.targetPitch) {
+                const int dp = int32_t(l.targetPitch - uint32_t(l.pitch)) >> 16;
+                if (std::abs(dp) < R) l.pitch = int32_t(l.targetPitch);
+                else l.pitch += dp > 0 ? (R << 16) : -(R << 16);
+            }
+            // 0x451cb0: with no target and the turn done, the sweep swings to
+            // the other side of home.
+            if (l.target == -1 && l.moving == 0) {
+                l.sweep = -l.sweep;
+                l.targetYaw = l.homeYaw + uint32_t(l.sweep);
+                l.targetPitch = l.homePitch;
+            }
+        }
+        --l.wait;
+        o.heading = kPi * 0.5f - float(l.yaw) / 4294967296.f * 2 * kPi;
+        o.pitch = float(l.pitch) / 4294967296.f * 2 * kPi;
+    }
 }
 
 // 0x46cb64: a blast (effect 3, blast type 1, sound 0x32) and smoke
@@ -2167,38 +3698,97 @@ void Game::tickDf2Items() {
 // rand<<16 (a full turn) for the second; speed ((rand*2) | 0x100) * 20 >> 6
 // (16.16 m per tick, up to 18.75 m/s); flags 0x20, 400 ticks, power 1,
 // falloff 64. Barrels n = 10, vehicles 60, helicopters 40 + 10 + 10.
+// Delta Force 2 (GOG Df2.exe 0x45a1e0 -> 0x414960, CD 0x4524d0 -> 0x412b00):
+// the common blast (df2Blast), with no smoke generator.
 void Game::detonate(Vec3 at, int shrapnel, float heading) {
-    explode(at, 0);
-    if (world_.df2Rules) {
-        shrapSeed();   // DF2 0x412b00
-        ai_.noise(at, 200.f, 0, 0);   // 0x412b5c: +-200 m, flags 0
-    }
+    if (world_.df2Rules) { df2Blast(at, shrapnel, heading); return; }
+    if (gogRand()) shrapSeed();   // GOG Df.exe 0x4606b0: before the effect
+    deferBlasts_ = true;   // the blast after the fragments (blastDamage)
+    explode(at, 0, false, 10.f, true, -1, 0, false);   // Delta Force: the callers make the smoke
     fragmentBurst(at, shrapnel, heading);
+    flushBlasts();
 }
 
 void Game::fragmentBurst(Vec3 at, int shrapnel, float heading) {
+    const uint32_t headingBits = uint32_t(int64_t(std::lround(heading / (2 * kPi) * 4294967296.0)));
     for (int group = 0; group < 2; ++group)
         for (int k = 0; k < shrapnel / 2; ++k) {
-            const uint32_t yawBits = uint32_t(int64_t(std::lround(heading / (2 * kPi) * 4294967296.0))) + (shrapRand() << 16);
+            const uint32_t turn = shrapRand() << 16;
             const uint32_t pitchBits = shrapRand() << (group ? 16 : 15);
-            const float yaw = float(yawBits) / 4294967296.f * 2 * kPi;
+            // GOG Df.exe 0x4606b0, GOG Df2.exe 0x414960: DF yaw + rand << 16
+            // runs anticlockwise (DF yaw = pi/2 - OpenDF heading), so the
+            // random turn is taken off OpenDF's clockwise heading (the seeded
+            // pattern keeps its side).
+            const float yaw = float(headingBits - turn) / 4294967296.f * 2 * kPi;
             const float pitch = float(pitchBits) / 4294967296.f * 2 * kPi;
             this->shrapnel(at, yaw, pitch, 20);
         }
 }
 
+// The terrain class for an impact: DF1 and the DF2 CD build know 1..6
+// (classes above 6 make nothing in DF2 CD 0x413b70, dirt in DF1's clamp);
+// GOG Df2.exe 0x415a60 goes on to 11.
+int Game::terrainClass(Vec3 at) const {
+    const int s = terrain_.surfaceAt(at.x, at.z);
+    if (world_.df2Rules) return (s < 0 || s > (df2Exe_.build() == ExeBuild::Df2Cd ? 6 : 11)) ? 0 : s;
+    return std::clamp(s, 0, 6);
+}
+
 void Game::spawnImpact(const Impact& hit) {
+    if (hit.noise > 0) ai_.noise(hit.pos, hit.noise, 0, 0);   // DF2 rounds on object faces and people (GOG Df2.exe 0x453860)
+    const bool df2 = world_.df2Rules;
+    if (hit.glass && hit.object >= 0) {
+        // GOG Df2.exe 0x414a90: a mesh (not mesh 0) not yet shattered (obj
+        // +0x78) breaks once with GLASS_SMASH (800); no impact effect.
+        // (Its min(100, area * 20) shards 107047..107049 thrown along the
+        // round, ai `gdeb`, are not made yet.)
+        WorldObject& o = world_.objects[size_t(hit.object)];
+        if (hit.mesh > 0 && hit.mesh < 32 && !(o.brokenMeshes & (1u << hit.mesh))) playSound(800, hit.pos);
+        if (hit.mesh >= 0 && hit.mesh < 32) o.brokenMeshes |= 1u << hit.mesh;
+        return;
+    }
     if (hit.explosive && hit.armed) {
         const int surface = hit.object == -2 ? 2 : hit.object == -1 ? 0 : 1;
+        if (df2) {
+            // GOG Df2.exe 0x453860: on the ground effect 0x13 (gex5) and a
+            // smoke generator (0x453c84 / 0x453d1f / 0x453d9f), none for an
+            // impact round with the ammo's 0x20000000 bit (0x453d36: CD bit
+            // 0x2000); on objects and people 0x14 (boomd, 0x453e8b /
+            // 0x453f4a / 0x453f88 / 0x4543bf / 0x454468) and the delay
+            // grenade's fuse 0x14 (0x4546b2), no smoke; in the water 4 and
+            // sound 0x35 (0x45459a). Then a +-200 m noise (0x453cae ...).
+            const bool impactRound = !(hit.flags & 0x840) && (hit.flags & 0x11);
+            const int fx = surface == 2 ? 4 : surface == 0 && !hit.timer ? 0x13 : 0x14;
+            explode(hit.pos, hit.timer ? 1 : surface, hit.law && surface != 2, 10.f, true, hit.shooter, fx,
+                    !(impactRound && (hit.flags & 0x2000)));
+            ai_.noise(hit.pos, 200.f, 0, 0);
+            return;
+        }
         explode(hit.pos, surface, hit.law && surface != 2);
         return;
     }
     // An M203 round before it is armed (0x44f3e0): like a bullet on the
     // ground or water; effect 5 on an object or person.
     if (hit.explosive && (hit.object >= 0 || hit.object == -3)) {
+        // DF2: on a person (0x45442c) effect 0x10, sound 0x39 and a +-5 m
+        // noise; on an object (0x453f15) effect 5.
+        const bool person = hit.object == -3 || world_.objects[size_t(hit.object)].person;
+        if (df2 && person) {
+            spawnEffect(16, hit.pos);
+            playSound(SoundSystem::BulletFlesh, hit.pos);
+            ai_.noise(hit.pos, 5.f, 0, 0);
+            return;
+        }
+        // Delta Force (GOG Df.exe 0x464eb0 case 3, people): an unarmed
+        // explosive round breaks out with no effect, sound or noise (only
+        // 0x464c50's damage); effect 5 only on objects (cases 1 / 2).
+        if (!df2 && person) return;
         spawnEffect(5, hit.pos);
         return;
     }
+    // Delta Force 2 in the water (GOG Df2.exe 0x45454a / 0x4545d2): effect
+    // 2, sound 0x3B and a +-10 m noise (on the ground: by the class, below).
+    if (df2 && hit.object == -2) ai_.noise(hit.pos, 10.f, 0, 0);
     // Terrain (0x46a054): surface 1..6 -> dirt, grass, snow, stone, sand,
     // heavy dirt. People (0x44f9e3): flesh. Objects: by the hit material's
     // +0x12 bits (metal, wood, stone, foliage; armour, cloth), else dirt.
@@ -2210,9 +3800,14 @@ void Game::spawnImpact(const Impact& hit) {
         if (hit.object == -2) id = SoundSystem::BulletWater;
         else if (hit.object == -3) id = SoundSystem::BulletFlesh;   // the player
         else if (hit.object < 0) {
-            static const int bySurface[7] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
-                                             SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt};
-            id = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+            // GOG Df2.exe 0x415a60 adds 7 dirt, 8 (road) metal 0x37, 9 (mud)
+            // dirt, 10 (ice) sand 0x3a, 11 (QS) dirt; DF1 and the CD build
+            // (0x413b70) stop at 6.
+            static const int bySurface[12] = {0, SoundSystem::BulletDirt, SoundSystem::BulletGrass, SoundSystem::BulletSand,
+                                              SoundSystem::BulletStone, SoundSystem::BulletSand, SoundSystem::BulletDirt,
+                                              SoundSystem::BulletDirt, SoundSystem::BulletMetal, SoundSystem::BulletDirt,
+                                              SoundSystem::BulletSand, SoundSystem::BulletDirt};
+            id = bySurface[terrainClass(hit.pos)];
         } else {
             const auto& o = world_.objects[size_t(hit.object)];
             if (o.person) id = SoundSystem::BulletFlesh;
@@ -2236,8 +3831,13 @@ void Game::spawnImpact(const Impact& hit) {
     if (hit.object == -2) slot = 2;   // water: "water splash" (0x44fc20)
     else if (hit.object == -3) slot = 16;   // the player: flesh
     else if (hit.object < 0) {
-        static const int bySurface[7] = {0, 5, 7, 9, 13, 8, 6};
-        slot = bySurface[std::clamp(terrain_.surfaceAt(hit.pos.x, hit.pos.z), 0, 6)];
+        static const int bySurface[12] = {0, 5, 7, 9, 13, 8, 6, 5, 11, 5, 9, 5};   // 7..11: GOG 0x415a60
+        const int c = terrainClass(hit.pos);
+        slot = bySurface[c];
+        // DF2's terrain hit (GOG Df2.exe 0x415a60 -> 0x414660, CD 0x413b70
+        // -> 0x412840): a +-r m AI noise, flags 0, by the class.
+        static const float noise[12] = {0, 5, 2, 2, 10, 5, 10, 10, 10, 5, 5, 2};
+        if (world_.df2Rules && noise[c] > 0) ai_.noise(hit.pos, noise[c], 0, 0);
     } else {
         const auto& o = world_.objects[size_t(hit.object)];
         if (o.person || (o.item && (o.item->attrib & 0x40))) slot = 16;
@@ -2250,19 +3850,105 @@ void Game::spawnImpact(const Impact& hit) {
     spawnEffect(slot, hit.pos);
 }
 
-int Game::teamCount(int team, bool aliveOnly) const {
-    // DF.EXE 0x440904/0x4409f4 counts the players and every object of a team
-    // in file groups 0 (moving objects), 1 (scenery and props) and 3 (people);
-    // markers (group 2) are not counted.
-    if (team == 0) return 0;
-    int n = team == kPlayerTeam ? 1 : 0;   // the player (cannot be killed yet)
-    for (const auto& o : world_.objects)
-        if (o.team == team && o.missionGroup != 2 && (!aliveOnly || o.alive())) ++n;
-    return n;
+// Delta Force's team table. At the start (GOG Df.exe 0x44a110, after the
+// start removals and the flag-2 events) every decoration, organic and item
+// of a team is its total and alive count: the player is an organic of team
+// 1; deleted objects (squad members off, powerups) are zeroed, so team 0,
+// and team 0 itself is cleared. Every 63 ticks (0x44a200 from 0x443c50) the
+// alive count is redone over the objects not destroyed (flags & 4 clear);
+// objects removed later are zeroed and drop out of it but not of the total.
+void Game::countTeams(bool atStart) {
+    teamAlive_.fill(0);
+    if (atStart) teamTotal_.fill(0);
+    for (const auto& o : world_.objects) {
+        if (o.team <= 0 || o.team >= 64 || o.missionGroup == 2 || (o.removed && !o.carried)) continue;
+        if (atStart) ++teamTotal_[size_t(o.team)];
+        if (atStart || o.alive() || o.carried) ++teamAlive_[size_t(o.team)];
+    }
+    // Delta Force 2 (GOG Df2.exe 0x404310, called in 0x466ba0 after the
+    // flag-2 events 0x41aeb0 and before the player spawn 0x45c150): the
+    // totals leave the player out and alive is a copy of them; the recount
+    // (0x4043e0) takes the player's organic while it is not destroyed.
+    if (atStart && !world_.df2Rules) ++teamTotal_[kPlayerTeam];
+    if (atStart ? !world_.df2Rules : !playerDead()) ++teamAlive_[kPlayerTeam];
 }
+
+// Delta Force 2 (GOG Df2.exe 0x453510 -> 0x41ac30): a projectile with a
+// shooter (+0xF8) hitting an object whose item's second hp value (+0x98) is
+// not negative sets bit (target team) of row (shooter team), before any
+// other test (teammates and the dead too).
+void Game::recordHit(const Impact& hit) {
+    if (!world_.df2Rules || hit.shooter == -1 || (hit.object < 0 && hit.object != -3)) return;
+    auto teamOf = [&](int obj) { return obj == -3 ? kPlayerTeam : obj >= 0 && size_t(obj) < world_.objects.size() ? world_.objects[size_t(obj)].team : -1; };
+    const ItemDef* target = hit.object == -3 ? items_.byId(playerItem_) : world_.objects[size_t(hit.object)].item;
+    if (!target || target->damageClass < 0) return;
+    const int from = teamOf(hit.shooter), to = teamOf(hit.object);
+    if (from >= 0 && from < 64 && to >= 0 && to < 64) teamHits_[size_t(from)] |= uint64_t(1) << to;}
 
 bool Game::teamInArea(int team, const AreaBox& a) const {
     auto inside = [&](double x, double y) { return x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY; };
+    if (!world_.df2Rules) {
+        // GOG Df.exe 0x460330 (CD 0x46c848): team 0 never; the people list
+        // (group 3, the player and squad among them) and then group 0
+        // (vehicles, crates, barrels) at their current positions, the dead
+        // too; group 1 is not looked at. A carried goal item (+0x6c |= 0x102)
+        // is not zeroed, so it counts at the carrier's origin.
+        if (team == 0) return false;
+        if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
+        const double ext = terrain_.mapExtent();
+        // The world keeps x/z inside the repeating tile; the mission space is
+        // continuous, so unwrap the live position around the BMS one.
+        auto unwrap = [&](double wrapped, double mission) {
+            double d = std::fmod(wrapped - mission, ext);
+            if (d > ext / 2) d -= ext;
+            else if (d < -ext / 2) d += ext;
+            return mission + d;
+        };
+        for (int group : {3, 0})
+            for (const auto& o : world_.objects)
+                if (o.team == team && o.missionGroup == group && (!o.removed || o.carried) &&
+                    inside(unwrap(o.pos.x, o.missionX), unwrap(-o.pos.z, o.missionY)))
+                    return true;
+        return false;
+    }
+    if (world_.df2Rules) {
+        // GOG Df2.exe 0x4152a0: every organic (group 3, the player among
+        // them as team 1) and item (group 0) of the team, at its live
+        // position, alive or not; flag 8 adds the height range between the
+        // markers' absolute heights (ground + record z, 0x465490).
+        if (team == 0 || a.markerA < 0 || a.markerB < 0) return false;
+        float zLo = -16384.f, zHi = 16384.f;   // -0x40000000 .. 0x40000000
+        if (a.zRange) {
+            const float ext = terrain_.mapExtent();
+            auto absZ = [&](const MissionObject& m) {
+                return terrain_.heightAt(std::fmod(std::fmod(m.x, ext) + ext, ext), std::fmod(std::fmod(-m.y, ext) + ext, ext)) + m.z;
+            };
+            const float za = absZ(mission_.objects[size_t(a.markerA)]), zb = absZ(mission_.objects[size_t(a.markerB)]);
+            zLo = std::min(za, zb);
+            zHi = std::max(za, zb);
+        }
+        auto in3 = [&](double x, double y, float z) { return inside(x, y) && z >= zLo && z <= zHi; };
+        if (team == kPlayerTeam && in3(player_.missionX(), player_.missionY(), player_.origin().y)) return true;
+        const float ext = terrain_.mapExtent();
+        for (const auto& o : world_.objects) {
+            if (o.team != team || (o.missionGroup != 0 && o.missionGroup != 3) || o.missionIndex < 0) continue;
+            // Removed (action 4, 0x418ce0 -> 0x45e420 -> 0x418110) zeroes the
+            // record, so its team is 0.
+            if (o.removed && !o.carried) continue;
+            // Mission coordinates of the live position: the spawn's plus the
+            // wrapped move since.
+            const MissionObject& mo = mission_.objects[size_t(o.missionIndex)];
+            auto moved = [&](double now, double spawn) {
+                double d = std::fmod(now - std::fmod(std::fmod(spawn, double(ext)) + ext, double(ext)), double(ext));
+                if (d > ext * 0.5) d -= ext;
+                if (d < -ext * 0.5) d += ext;
+                return d;
+            };
+            const double x = mo.x + moved(o.pos.x, mo.x), y = mo.y - moved(o.pos.z, -double(mo.y));
+            if (in3(x, y, o.pos.y)) return true;
+        }
+        return false;
+    }
     if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
     // Other teams stand where the mission placed them until OpenDF has AI.
     for (const auto& o : world_.objects)
@@ -2272,21 +3958,65 @@ bool Game::teamInArea(int team, const AreaBox& a) const {
 }
 
 void Game::killTeam(int team) {
-    for (size_t i = 0; i < world_.objects.size(); ++i) {
-        auto& o = world_.objects[i];
-        if (o.team == team && o.missionGroup == 3 && o.alive()) world_.damage(int(i), 1000);
+    if (world_.df2Rules) {
+        // GOG Df2.exe 0x416380: for team != 0 every decoration, organic and
+        // item of the team gets hp -50, damage 0 and its ai function with
+        // event 1 (+0x110), which destroys it on hp <= 0: buildings,
+        // vehicles, barrels, invisible booms, people. Two ignore it: `null`
+        // (table entry 0 at 0x4af030, also for items with no ai_function:
+        // 0x401230 only sets the think timer) and `dec0` (0x4026e0 returns
+        // on any event but 0).
+        if (team == 0) return;
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            auto& o = world_.objects[i];
+            if (o.team != team || o.missionGroup == 2 || !o.alive() || !o.item) continue;
+            const std::string& f = o.item->aiFunction;
+            if (f.empty() || f == "null" || f == "dec0") continue;
+            if (!o.person && o.hp <= 0) o.hp = 1;   // hp is set, not reduced: an hp-0 item goes too
+            world_.damage(int(i), o.person ? 1000 : o.hp + 50, 0x7fff);        }
+        // The player is an organic of team 1 (0x4146f0) with `plyr`
+        // (0x401fc0): at hp <= 0 it dies on any event, with the death move
+        // of kind 1, part 0, direction 0 (0x417170(obj, 0, 0, 1)), and no
+        // red flash.
+        if (team == kPlayerTeam && !playerDead()) {
+            const int flash = damageFlash_;
+            hurtPlayer(playerHp_ + 50, 1, player_.feet + player_.forward());
+            damageFlash_ = flash;
+        }
+        return;
     }
+    // GOG Df.exe 0x45f4c0 (CD 0x46ba38): for a non-zero team, every object
+    // of group 1 (scenery, props), group 3 (people) and group 0 (vehicles,
+    // crates, barrels) gets hit points -50 and its own damage handler, so
+    // people die, vehicles wreck and explosive barrels go off (GOG DF2.exe
+    // 0x416380 does the same over its object lists). Here: through
+    // World::damage with what takes the object below 0 (no damage class).
+    // A satchel's handler (schg, 0x45c110) blows it up at hp <= 0: it gets
+    // hp -50 and tickCharges sets it off.
+    if (team == 0) return;
+    for (int group : {1, 3, 0})
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            auto& o = world_.objects[i];
+            if (o.team != team || o.missionGroup != group || o.removed || o.dead) continue;
+            if (o.item && o.item->aiFunction == "schg") { o.hp = -50; continue; }
+            world_.damage(int(i), std::max(o.hp, 0) + 50, 0x7fff);
+        }
 }
 
 void Game::removeTeam(int team) {
     for (auto& o : world_.objects)
-        if (o.team == team && o.missionGroup != 2) o.removed = true;
+        if (o.team == team && o.missionGroup != 2) o.removed = true, o.blown = false;   // freed (0x45f5b0 -> 0x4471d0 -> 0x45da30)
 }
 
 void Game::showText(int id) {
     char key[16];
     std::snprintf(key, sizeof key, "ID%03d", id);
-    if (const std::string* t = campText_.find("Triggered Text", key)) pushMessage(*t);
+    // Delta Force 2 (GOG Df2.exe 0x465cc0 -> 0x464ea0): from the mission's
+    // own table, shown (0x421440) when not empty. 0x464ea0 returns an empty
+    // string while [0x67d3e8] & 0x2000, a bit nothing sets (0x466ba0 zeroes
+    // the word).
+    const TextTable& table = mission_.version >= 0x0F ? df2Text_ : campText_;
+    if (const std::string* t = table.find("Triggered Text", key); t && (mission_.version < 0x0F || !t->empty())) pushMessage(*t);
 }
 
 void Game::radio(int id) {
@@ -2294,22 +4024,46 @@ void Game::radio(int id) {
     char name[16];
     std::snprintf(name, sizeof name, "dlg%03d", id);
     if (const auto* parts = dialogs_.find(name); parts && !parts->empty() && activeDialogs_.size() < 16)
-        activeDialogs_.push_back({parts, 0, 0});
+        activeDialogs_.push_back({parts, 0, 0, false});
 }
 
-// Per 60 Hz tick: each queued dialog plays its lines in order (all queued
-// dialogs advance at once); a line shows its subtitle as it starts
-// (0x472f7c -> 0x42f400) and the next follows the line's length plus its
-// gap byte x 62 / 10 ticks.
-void Game::tickDialogs() {
+// Per 60 Hz tick (GOG Df.exe 0x4562a0, CD 0x477f70; GOG Df2.exe 0x4197b0
+// is the same), all queued dialogs at once. A slot whose wait is 0 plays
+// line `next` with its subtitle (0x456110, 0x447c60); if more lines follow,
+// next++ and wait = the played line's gap byte (+0x35) x 62 / 10 (the 62
+// from 0x456070(0x3e), Df2.exe 0x419590(0x3e)), disarmed; on the last line
+// the dialog leaves the queue at once (0x456000). A waiting slot first arms
+// on a tick that follows a drawn frame, then counts its wait down, so the
+// next line starts W + 2 ticks after this one (1 if W = 0). The clip's
+// length is never read: the gap byte is the line's whole duration.
+void Game::tickDialogs(bool drawn) {
     for (auto& d : activeDialogs_) {
-        if (d.wait > 0 && --d.wait > 0) continue;
-        if (d.next >= int(d.parts->size())) { d.next = -1; continue; }
-        const DialogPart& p = (*d.parts)[size_t(d.next++)];
-        sound_.playDialogLine(p.clip);
-        if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
-            pushMessage(dialogText_[size_t(p.subtitle)]);
-        d.wait = sound_.dialogLineTicks(p.clip) + p.gap * 62 / 10 + 1;
+        if (d.wait != 0) {
+            if (!d.armed) d.armed = drawn;
+            else --d.wait;
+            continue;
+        }
+        const int n = int(d.parts->size());
+        const DialogPart& p = (*d.parts)[size_t(d.next)];
+        // GOG Df.exe 0x456110: the line goes through the gate [0x8e3d68] =
+        // 0x43e430, 0 when dialog_volume [0x67f51c] is 0; only then are
+        // the sample (0x494dd0) and the subtitle ([0x8e3d6c] = 0x43e470)
+        // given, whether or not the clip or a sound device is there. Df2.exe
+        // 0x419650 the same: the play callback 0x467950 returns 0 when the
+        // dialog volume [0x67cd1c] is 0, and then neither the clip nor the
+        // subtitle (0x467990) is started. The line still advances.
+        if (sound_.dialogEnabled()) {
+            sound_.playDialogLine(p.clip);
+            if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
+                pushMessage(dialogText_[size_t(p.subtitle)]);
+        }
+        if (d.next < n - 1) {
+            ++d.next;
+            d.wait = p.gap * 62 / 10;
+            d.armed = false;
+        } else {
+            d.next = -1;
+        }
     }
     activeDialogs_.erase(std::remove_if(activeDialogs_.begin(), activeDialogs_.end(), [](const ActiveDialog& d) { return d.next < 0; }),
                          activeDialogs_.end());
@@ -2319,15 +4073,98 @@ void Game::endMission(int winnerSide) {
     if (missionResult_ < 0) missionResult_ = winnerSide;
 }
 
+// Leaving a mission (GOG Df.exe 0x401e70, from the mission loop's end 0x40420a
+// and the Space replay 0x404ed2; GOG Df2.exe 0x464140): in single player the
+// live campaign flags become the saved ones when side 1 has won ([0x67f718]
+// == 1). The flag-4 event pass runs first in both games: Delta Force's
+// (0x42eba0) is gated on [0x67f528], which the single-player launch sets to
+// 1 (0x4157eb / 0x422df6; 0x41e2e0 only resets it), Delta Force 2's
+// (0x41aef0) on [0x67cd34], which single player sets too.
+void Game::leaveMissionFlags() {
+    script_.visitFlagged(4, *this);
+    if (missionResult_ == kPlayerSide) savedCampaignFlags() = campaignFlags();
+}
+
+void Game::closeQuitBox() {
+    quitBox_ = false;
+    if (quitFreedMouse_) {   // (OpenDF) take the mouse back
+        quitFreedMouse_ = false;
+        captured_ = true;
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+    }
+}
+
 void Game::handleKey(const SDL_KeyboardEvent& k) {
     const bool shift = (k.keysym.mod & KMOD_SHIFT) != 0;
-    if (missionResult_ >= 0) {
+    if (quitBox_) {
+        // The key handler runs before the game's commands (DF.EXE 0x42ea59 ->
+        // 0x42e8f4, DF2.EXE 0x41d000). With the box open, Y runs command 3
+        // "exit" (DF.EXE 0x42e91a -> 0x42e40e: [0x66f9a8] = 1, the mission
+        // loop ends into the Post Menu, as Enter on the end panel), N shuts
+        // the box. The CD DF.EXE compares the virtual keys 'Y' / 'N' (GOG:
+        // below); DF2.EXE the first characters of DF2GAME.BIN Misc STRMISC09 / STRMISC10
+        // ([0xa75380] / [0xa75384], default 'Y' / 'N', 0x41c76b). Any other
+        // key is not taken: it goes on to the commands (Escape, Pause), and
+        // the end panel's Enter / Space (0x42e964) are not reached.
+        auto keyOf = [&](const char* key, char def) {
+            if (exe_.build() == ExeBuild::Df1Gog) {
+                // GOG Df.exe 0x47a300: [0xbd4820] / [0xbd4824] 'Y' / 'N', each
+                // replaced by the first byte of DFGAME.BIN Misc STRMISC09 /
+                // STRMISC10 when there is one; 0x4790a0 compares the VK.
+                const std::string* t = gameTable_.find("Misc", key);
+                return t && !t->empty() ? (*t)[0] : def;
+            }
+            const std::string t = df2Hud_.on ? df2Text("Misc", key, "") : std::string();
+            return t.empty() ? def : char(std::toupper(static_cast<unsigned char>(t[0])));
+        };
+        const SDL_Keycode sym = k.keysym.sym;
+        const int c = sym >= 'a' && sym <= 'z' ? int(sym - 'a' + 'A') : int(sym);
+        if (c == keyOf("STRMISC09", 'Y')) {
+            leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
+            return;
+        }
+        if (c == keyOf("STRMISC10", 'N')) { closeQuitBox(); return; }
+    } else if (audioMacros_) {
+        // With the audio macros up, 1..9 and 0 send macro 1..10 and shut
+        // them; nothing else is taken here and other keys go on to the
+        // commands (the end panel's Enter / Space are not reached). GOG
+        // Df.exe 0x4790a0 (0x4717e0: network packet 0x43, a voice played by
+        // the receivers, 0x471760); GOG Df2.exe 0x421940 (CD 0x41d000),
+        // after the End Mission box (0x407160, a network message only).
+        // OpenDF has no network, so nothing is sent.
+        const SDL_Keycode sym = k.keysym.sym;
+        if (sym >= SDLK_0 && sym <= SDLK_9) {
+            audioMacros_ = false;
+            return;
+        }
+    } else if (missionResult_ >= 0 && !(briefingShown_ && !world_.df2Rules)) {
         // "Hit Enter to end mission." / "Hit Space Bar to replay mission".
+        // Delta Force's chain (GOG 0x4790a0, CD 0x42e8f4) looks at the
+        // End Mission box, the audio macros and the briefing (PgUp / PgDn)
+        // first: with the briefing open Enter and Space are not taken here.
         if (k.keysym.sym == SDLK_RETURN || k.keysym.sym == SDLK_KP_ENTER) {
             leaveMission_ = true;   // exit code 1: to the Post Menu / debriefing
             return;
         }
-        if (k.keysym.sym == SDLK_SPACE) { loadMission(current_); return; }
+        if (k.keysym.sym == SDLK_SPACE) {
+            // Delta Force: the replay goes through the mission start 0x404e30,
+            // whose 0x401e70 records the finished attempt in the soldier
+            // file (0x407de0: a win marks the mission done and adds its
+            // kills) before the next one starts.
+            if (!world_.df2Rules && missionResult_ == kPlayerSide) {
+                const MissionOutcome o = outcome();
+                earlierWin_ = true;
+                earlierKills_ += o.kills;
+            }
+            leaveMissionFlags();
+            if (world_.df2Rules) {
+                const MissionOutcome o = outcome();
+                replayed_.push_back({o.won, o.kills, o.df2Zeroing});   // GOG Df2.exe 0x466ad0 -> 0x464140: this run is recorded
+            }
+            loadMission(current_);
+            if (world_.df2Rules) flushDf2Input();   // the replay's mission setup 0x466ba0 -> 0x420800
+            return;
+        }
     }
     // DF2's command-map name prompt takes the keyboard while it is open.
     if (df2Hud_.on && showMap_ && df2Map_.prompt) { df2MapKey(k); return; }
@@ -2335,8 +4172,18 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     // is the night vision).
     if (k.keysym.sym == SDLK_n && (!df2Hud_.on || (k.keysym.mod & KMOD_CTRL))) { player_.fly = !player_.fly; return; }
     (void)shift;
-    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time.
-    if (briefingShown_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
+    // GOG Df2.exe 0x421b9e: with the help up, PgUp / PgDn turn its pages
+    // (0x41e240: back / on, wrapping) and are taken.
+    if (df2Hud_.on && helpShown_ && !df2HelpPages_.empty() &&
+        (k.keysym.sym == SDLK_PAGEUP || k.keysym.sym == SDLK_PAGEDOWN)) {
+        const int n = int(df2HelpPages_.size());
+        if (k.keysym.sym == SDLK_PAGEDOWN) df2HelpPage_ = df2HelpPage_ + 1 >= n ? 0 : df2HelpPage_ + 1;
+        else df2HelpPage_ = df2HelpPage_ < 1 ? n - 1 : df2HelpPage_ - 1;
+        return;
+    }
+    // Briefing scrolling (0x42e938 -> 0x481360): a page at a time (not
+    // reached with GOG's audio-macro box up, 0x4790a0).
+    if (briefingShown_ && !audioMacros_ && (k.keysym.sym == SDLK_PAGEDOWN || k.keysym.sym == SDLK_PAGEUP)) {
         if (k.keysym.sym == SDLK_PAGEDOWN) {
             if (briefStart_ != briefLast_) {
                 briefPage_ = std::max(briefPage_, briefLast_ - briefStart_);
@@ -2347,26 +4194,105 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         }
         return;
     }
-    const Action act = controls_.actionFor(k.keysym.scancode);
-    // While paused, the game's commands (flag 0x10000) are ignored (0x42d9e3).
-    if (paused_ && act != Action::Pause && act != Action::Escape) return;
+    // GOG Df2.exe 0x421be0: the table's first one-shot record for the key
+    // that passes the Shift / Ctrl test, with bit 31 when Shift is down.
+    const bool df2Keys = arsenal_.df2() && controls_.df2Table();
+    Action act = df2Keys ? controls_.df2KeyAction(k.keysym.scancode, shift, (k.keysym.mod & KMOD_CTRL) != 0)
+                         : controls_.actionFor(k.keysym.scancode);
+    // GOG Df.exe 0x479380 (CD 0x42ea10): with Shift or Ctrl down (the key
+    // event's 0x1000000 / 0x4000000 bits, [0xd093c0] / [0xd093c1] in
+    // 0x498a70) a press entry fires only if it asks for that modifier (+0x2a
+    // & 0x40 Shift, +0x2b & 1 Ctrl) or its key is Shift / Ctrl itself; the
+    // others are passed over (of OpenDF's DF1 actions only PrintScreen asks
+    // for Shift; debug_hud is not done). The held entries (+0x2a & 4:
+    // map zoom here) are not in that search.
+    if (!world_.df2Rules && (k.keysym.mod & (KMOD_SHIFT | KMOD_CTRL)) && act != Action::MapZoomIn && act != Action::MapZoomOut) {
+        const SDL_Scancode sc = k.keysym.scancode;
+        if (sc != SDL_SCANCODE_LSHIFT && sc != SDL_SCANCODE_RSHIFT && sc != SDL_SCANCODE_LCTRL && sc != SDL_SCANCODE_RCTRL)
+            act = (k.keysym.mod & KMOD_SHIFT) ? controls_.shiftActionFor(sc) : Action::Count;   // PrintScreen (flag 0x40)
+    }
+    // GOG Df2.exe: zoomin / zoomout (0x168 / 0x169) are held commands (table
+    // 0x4b1710 flags 4), polled each tick with the held camera commands
+    // instead (0x420670).
+    if (df2Keys && (act == Action::MapZoomIn || act == Action::MapZoomOut)) return;
+    runAction(act, df2Keys && shift);
+}
+
+// GOG Df2.exe 0x420800 (mission setup 0x466ba0 -> 0x420a30): the key queue
+// and table are reset (0x479950 / 0x479930), the command state [0xaab0a0]
+// cleared, and the mouse recentred (0x479b80), so what was pressed or moved
+// while the mission loaded is dropped.
+void Game::flushDf2Input() {
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_KEYDOWN, SDL_MOUSEWHEEL);
+    SDL_GetRelativeMouseState(nullptr, nullptr);
+    jumpPressed_ = false;
+}
+
+void Game::df2MouseButton(int mask) {
+    const Action act = controls_.df2MouseAction(mask);
+    // attack_1 (mouse 1) is the trigger, polled every tick (0x41eb50's
+    // tail, 0x420db0): its one-shot command adds nothing here.
+    if (act != Action::Fire) runAction(act, false);
+}
+
+void Game::df2MouseWheel(int delta) {
+    // 0x420e10 with [0x67cd00] = 0 (never written): back (0x200) the
+    // zeroing down (scopedec 0xc1) while 0x455790 holds, else cycle
+    // (0xbf); forward (0x100) scopeinc (0xc0), else cycle reversed
+    // (0x800000bf -> 0x44d3c0(-1)).
+    wheelAccum_ += delta;
+    while (wheelAccum_ >= 120) {
+        wheelAccum_ -= 120;
+        if (df2ScopeActive()) runAction(Action::ScopeInc, false);
+        else runAction(Action::Cycle, true);
+    }
+    while (wheelAccum_ <= -120) {
+        wheelAccum_ += 120;
+        if (df2ScopeActive()) runAction(Action::ScopeDec, false);
+        else runAction(Action::Cycle, false);
+    }
+}
+
+void Game::runAction(Action act, bool reverse) {
+    if (df2Hud_.on) {
+        // DF2: while paused only Pause and Escape are taken (0x42d9e3's flag 0x10000).
+        if (paused_ && act != Action::Pause && act != Action::Escape) return;
+    } else if (df1PauseGated(act)) {
+        return;
+    }
     switch (act) {
     case Action::Escape:
-        // Esc closes the first overlay open (0x42e964): pause, old messages,
-        // map / goals; else (OpenDF) frees the mouse or quits.
+        // Esc closes the first overlay open (DF.EXE 0x42e1c1: pause, old
+        // messages, the End Mission box, briefing, ...; DF2.EXE 0x41b52a:
+        // pause, old messages, the box, [0x7655fc], the command map); with
+        // none open it opens "End Mission? (Y/N)" (0x42e548 / 0x41b5d1).
         if (paused_) { paused_ = false; break; }
+        // The audio macros close before the old messages (GOG Df.exe; GOG
+        // Df2.exe 0x41f150 case 0x11, CD 0x41b1e0).
+        if (audioMacros_) { audioMacros_ = false; break; }
+        if (oldMessages_) { oldMessages_ = false; break; }
+        if (quitBox_) { closeQuitBox(); break; }
         // DF2 0x41b59d: with [0x7655fc] set (F9 / F10), Escape only clears it.
         if (df2Hud_.on && df2KeyFlag_) { df2KeyFlag_ = false; break; }
-        if (oldMessages_) { oldMessages_ = false; break; }
         if (briefingShown_) { briefingShown_ = false; break; }
         if (helpShown_) { helpShown_ = false; break; }
-        if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
-        if (captured_) { captured_ = false; SDL_SetRelativeMouseMode(SDL_FALSE); }
-        else leaveMission_ = true;   // (OpenDF) leave the mission
+        // GOG Df.exe 0x477d40: the GPS inset ([0xc23a2c]) closes before the
+        // command map ([0x67db80]); it never closes the goals ([0x67db8c]).
+        if (!df2Hud_.on) {
+            if (gpsShown_) { gpsShown_ = false; break; }
+            if (showMap_) { showMap_ = false; break; }
+        } else if (showMap_ || showGoals_) { showMap_ = showGoals_ = false; break; }
+        quitBox_ = true;
+        // (OpenDF) the box frees the mouse; N / Escape take it back.
+        if (captured_) { captured_ = false; quitFreedMouse_ = true; SDL_SetRelativeMouseMode(SDL_FALSE); }
         break;
-    case Action::Stand: player_.stance = Stance::Stand; break;
-    case Action::Crouch: player_.stance = Stance::Crouch; break;
-    case Action::Prone: player_.stance = Stance::Prone; break;
+    // Latched toggles: DF1 takes them in the player's ground branch (GOG
+    // Df.exe 0x477d40 -> 0x488200), DF2 on the next odd tick (GOG Df2.exe
+    // 0x41f150 -> 0x447120).
+    case Action::Stand: player_.requestStance(Stance::Stand); break;
+    case Action::Crouch: player_.requestStance(Stance::Crouch); break;
+    case Action::Prone: player_.requestStance(Stance::Prone); break;
     // Weapon keys select the original's slots (DF.EXE 0x42de85 -> 0x44aa74):
     // 0 laser designator, 1 knife (neither done yet), 2 sidearm, 3-5 the
     // primary's modes, 6-8 the kit's, 9 frag grenade.
@@ -2380,38 +4306,105 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
     case Action::Weapon7: arsenal_.select(7); break;
     case Action::Weapon8: arsenal_.select(8); break;
     case Action::Weapon9: arsenal_.select(9); break;
-    case Action::Cycle: arsenal_.cycle(); break;
+    case Action::Cycle: arsenal_.cycle(reverse ? -1 : 1); break;   // GOG Df2.exe 0x41f150 case 0x5e
+    // GOG Df.exe 0x477d40: 0xc0 cycleb -> 0x484b70(-1); the cheat commands
+    // (flag 0x100000: single player only; the CD's table has them too, CD
+    // 0x42d9c0) 0x78 -> 0x4848c0, 0x79 -> 0x484960 with Misc STRMISC26
+    // ("Pansy."; the CD the literal, 0x42dfbd) in white when it turns on,
+    // 0x7c -> 0x447970(1, 8).
+    case Action::CycleBack: if (!df2Hud_.on) arsenal_.cycleBack(); break;
+    // GOG Df2.exe 0x41f150 case 10: [0x67cd08] + 1, past 5 back to 0, and
+    // [0x67d378] = table [0x67d360][that].
+    case Action::HudColor: if (df2Hud_.on && arsenal_.df2Gog()) df2HudColour_ = (df2HudColour_ + 1) % 6; break;
+    case Action::CheatRefill: if (!df2Hud_.on) arsenal_.refill(); break;
+    case Action::CheatInfiniteAmmo:
+        if (!df2Hud_.on && arsenal_.toggleInfiniteAmmo())
+            pushMessage(exe_.build() == ExeBuild::Df1Gog ? df2Text("Misc", "STRMISC26", "") : std::string("Pansy."));
+        break;
+    case Action::CheatFireMissions: if (!df2Hud_.on) fireMissions_ = 8; break;
+    case Action::VCam: arsenal_.toggleCameraView(); break;   // GOG Df2.exe 0x41f150 case 0x28
+    // GOG Df.exe 0x477d40: 0x1e flips [0xc23a34]; 0x1f cycles (0x484a50) only while it is on.
     case Action::Magazine: arsenal_.reload(); break;
     case Action::Scope: arsenal_.toggleZoom(); break;
     case Action::NextWaypoint:
-        if (df2Hud_.on) df2NextWaypoint();
-        else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+        if (df2Hud_.on) df2NextWaypoint(reverse ? -1 : 1);   // GOG Df2.exe case 0x16: 0x44d280(+-1)
+        else if (exe_.build() == ExeBuild::Df1Gog) df1StepWaypoint(1);   // GOG 0x484c80
+        else if (!route_.empty()) routeIndex_ = (routeIndex_ + 1) % int(route_.size());   // CD DF.EXE
+        break;
+    case Action::PrevWaypoint:   // GOG Df.exe only (E, command 0x2f -> 0x484d00); DF2: not traced, nothing
+        if (!df2Hud_.on) df1StepWaypoint(-1);
         break;
     // DF2 0x41bdf4 (mapterrain, F9): elevation on -> off and the flag set,
     // else the flag toggled. 0x41be2e (mapelevation, F10): elevation on ->
     // the flag toggled (elevation stays on), else the flag set and elevation
     // on. The map's D button keeps its picture until the tab is entered again.
+    // Delta Force (GOG Df.exe 0x477d40 commands 0x16a / 0x16b, F10 / F11):
+    // mapterrain with the elevation picture on turns it off and shows the
+    // inset, else toggles the inset; mapelevation with it off turns it on
+    // and shows the inset, else toggles the inset.
     case Action::MapTerrain:
+        if (!df2Hud_.on) {
+            if (gpsElevation_) { gpsElevation_ = false; gpsShown_ = true; }
+            else gpsShown_ = !gpsShown_;
+            break;
+        }
         if (df2Elevation_) { df2Elevation_ = false; df2KeyFlag_ = true; }
         else df2KeyFlag_ = !df2KeyFlag_;
         break;
     case Action::MapElevation:
+        if (!df2Hud_.on) {
+            if (!gpsElevation_) { gpsElevation_ = true; gpsShown_ = true; }
+            else gpsShown_ = !gpsShown_;
+            break;
+        }
         if (df2Elevation_) df2KeyFlag_ = !df2KeyFlag_;
         else { df2KeyFlag_ = true; df2Elevation_ = true; }
         break;
-    case Action::Pause: paused_ = !paused_; break;
+    // Pause shuts the End Mission box and toggles (DF.EXE 0x42df53, DF2.EXE 0x41b6c8).
+    case Action::Pause: closeQuitBox(); paused_ = !paused_; break;
     case Action::Drop: if (!playerDead()) dropCarried(); break;
     case Action::Briefing: briefingShown_ = !briefingShown_; break;
     case Action::Help: helpShown_ = !helpShown_; break;
     case Action::OldMessages: oldMessages_ = !oldMessages_; break;
     case Action::ShowFriendly:
+        if (df2Hud_.on) {
+            // GOG Df2.exe 0x41f150 command 0x28 (case 0x1d): 0 -> 1 -> 2 -> 0,
+            // STRMISC05 "Off" / STRMISC04 "On" / STRMISC33 "On, Abbreviated".
+            friendlyTags_ = (friendlyTags_ + 1) % 3;
+            static const char* const kKey[3] = {"STRMISC05", "STRMISC04", "STRMISC33"};
+            static const char* const kDef[3] = {"Friendly Tags: Off", "Friendly Tags: On", "Friendly Tags: On, Abbreviated"};
+            pushMessage(df2Text("Misc", kKey[friendlyTags_], kDef[friendlyTags_]));
+            break;
+        }
         friendlyTags_ = !friendlyTags_;
-        pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
+        // GOG Df.exe 0x477d40: Misc STRMISC04 / STRMISC05.
+        pushMessage(friendlyTags_ ? df1Text("Misc", "STRMISC04", "Friendly Tags: On") : df1Text("Misc", "STRMISC05", "Friendly Tags: Off"));
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
+
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
-    case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
+    // DF2 action 51, [0x765740]; GOG Df2.exe 0x41f150 case 0x27 also turns
+    // the Forward Observer off.
+    case Action::NightVision: if (df2Hud_.on) { foOn_ = false; nvg_ = !nvg_; } break;
+    // GOG Df2.exe 0x41f150 case 0x14 (fo, F11): night vision off, the
+    // Forward Observer toggled; case 0x15 (tab, Tab): the next team-mate
+    // while it is on (0x44e590; single player).
+    // fo / tab: Delta Force's FO camera (GOG Df.exe 0x477d40 ids 0x1e / 0x1f
+    // -> 0x484a50); Delta Force 2's Forward Observer (GOG Df2.exe 0x41f150
+    // cases 0x14 / 0x15 -> 0x44e590), which also turns the night vision off.
+    case Action::FoCamera:
+        if (df2Hud_.on) nvg_ = false;
+        foOn_ = !foOn_;
+        break;
+    case Action::FoNext:
+        if (foOn_) { if (df2Hud_.on) df2FoNext(); else foNext(); }
+        break;
+    // GOG Df2.exe 0x41f150 case 0x61 -> 0x44c7e0: E steps the scope
+    // magnification up, Shift+E down.
+    // GOG Df2.exe 0x41f150 case 0x61: 0x44c7e0(Shift ? -1 : +1) when
+    // 0x455790 holds (the binding has flag 0x200, so Shift does not block it).
+    case Action::ScopeMag: if (arsenal_.df2() && df2ScopeActive()) arsenal_.scopeMagStep(reverse ? -1 : 1); break;
     case Action::Binoculars:
         // DF2.EXE 0x41b6e3: the binoculars are slot 10 (mode 47); their view
         // follows the raised move, set each tick (Game::run, 0x45c7e2).
@@ -2421,21 +4414,59 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         arsenal_.setBinoculars(binoculars_);
         break;
     case Action::BigMap:
+        // GOG Df.exe 0x477d40 cmd 0x26 only flips [0x67db80]; the goals
+        // ([0x67db8c], cmd 0x29) stay up over the map, and the reverse.
         showMap_ = !showMap_;
-        showGoals_ = false;
+        if (df2Hud_.on) showGoals_ = false;
         // DF2's command map takes the mouse (its own cursor is drawn).
         if (df2Hud_.on && captured_) {
             SDL_SetRelativeMouseMode(showMap_ ? SDL_FALSE : SDL_TRUE);
             SDL_ShowCursor(SDL_DISABLE);
         }
+        if (df2Hud_.on) {
+            // GOG Df2.exe 0x4673b0 ends with 0x479b80: the queued mouse
+            // messages are taken, then SetCursorPos(the client centre), so the
+            // map's pointer starts at (320, 240) of its 640x480 screen and the
+            // view does not turn on close (the look reads the offset from the
+            // centre). The buttons' held state is the real one in GOG (a
+            // release while the map was shut is not missed).
+            if (captured_) {
+                int ww = 0, wh = 0;
+                SDL_GetWindowSize(win_, &ww, &wh);
+                SDL_WarpMouseInWindow(win_, ww / 2, wh / 2);
+            }
+            SDL_FlushEvent(SDL_MOUSEMOTION);
+            df2Map_.mouseX = df2Map_.lastX = 320;
+            df2Map_.mouseY = df2Map_.lastY = 240;
+            df2Map_.held = 0;
+            df2Map_.leftHeld = df2Map_.panning = false;
+        }
         break;
-    case Action::MissionGoals: showGoals_ = !showGoals_; showMap_ = false; break;
+    case Action::MissionGoals:
+        showGoals_ = !showGoals_;
+        if (df2Hud_.on) showMap_ = false;
+        break;
     // DF.EXE 0x42ddbf: the map scale (metres per pixel) x0.9 / x1.1, 0.25..3.6.
     case Action::MapZoomIn: mapScale_ = std::max(0.25f, mapScale_ * 0.9f); break;
     case Action::MapZoomOut: mapScale_ = std::min(3.6f, mapScale_ * 1.1f); break;
     case Action::Crosshairs: crosshair_ = !crosshair_; break;
+    case Action::PicInPic: pinp_ = !pinp_; break;   // GOG Df.exe 0x477d40 id 0x1d, GOG Df2.exe 0x41f150 case 0x13
+    case Action::AudioMacros: audioMacros_ = !audioMacros_; break;   // GOG Df.exe 0x477d40 id 0x2b, GOG Df2.exe 0x41f150 case 0x20
     case Action::ShowGun: gunVisible_ = !gunVisible_; break;
+    case Action::PrintScreen: printScreen_ = !world_.df2Rules; break;   // GOG Df.exe 0x477d40 cmd 2 -> 0x473eb0
     case Action::CenterView: player_.pitch = 0; break;
+    // DF1 outside views (GOG Df.exe 0x477d40 cmds 0x190..0x193 -> 0x42ac10).
+    // GOG Df2.exe 0x41f150 cases 0x6f..0x72 -> 0x414240(player, 0..3): flag 1,
+    // refused while dead (0x41f16d).
+    case Action::FirstPerson: if (!(world_.df2Rules && playerDead())) setCamMode(0); break;
+    case Action::ThirdPersonP: if (!(world_.df2Rules && playerDead())) setCamMode(1); break;
+    case Action::ThirdPersonW: if (!(world_.df2Rules && playerDead())) setCamMode(2); break;
+    case Action::ThirdPersonL: if (!(world_.df2Rules && playerDead())) setCamMode(3); break;
+    // GOG Df.exe 0x477d40: cmd 0x1e (fo) toggles [0xc23a34]; cmd 0x1f (tab)
+    // picks the next observer while it is on (0x484a50).
+    // DF1: move_jump is a press command (GOG Df.exe 0x477d40 cmd 0x90:
+    // [0xc23a00] |= 0x400 for one poll); DF2 polls it held.
+    case Action::Jump: if (!world_.df2Rules) jumpPressed_ = true; break;
     default: break;
     }
 }
@@ -2449,46 +4480,224 @@ float Game::rangeToAim() const {
     Vec3 eye = player_.eye();
     RayHit hit;
     const float maxRange = 2000.f;
-    if (!world_.raycast(eye, eye + aimDirection() * maxRange, hit)) return -1;
+    if (!world_.raycast(eye, eye + aimDirection() * maxRange, hit, true, -3)) return -1;   // not the player (nor his gun)
     return hit.t * maxRange;
 }
 
-void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
+float Game::df2ScopeRange() const {
+    // The inset's camera (0x4557e0): the player's pitch less the type's
+    // elevation for the zeroing; the depth reaches what the view draws (to
+    // the corner of the drawn square), never past the "10km+" limit.
+    const Vec3 f = aimDirection();
+    const float pitch = std::asin(std::clamp(f.y, -1.f, 1.f)) - arsenal_.zeroElevation();
+    const float h = std::sqrt(f.x * f.x + f.z * f.z);
+    const Vec3 dir = h > 0 ? Vec3{f.x / h * std::cos(pitch), std::sin(pitch), f.z / h * std::cos(pitch)} : f;
+    const float maxRange = std::min(10000.f, viewDistance_ * 1.41422f);
+    const Vec3 eye = player_.eye();
+    RayHit hit;
+    if (!world_.raycast(eye, eye + dir * maxRange, hit, true, -3)) return -1;
+    return hit.t * maxRange;
+}
+
+void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset) {
     const Vec3 eye = viewEye();
     // Terrain rings scale with the original's focal length: F = 320 per 640
     // pixels of its display mode, or the scope view's own focal length.
-    terrain_.ringScale = zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
-    terrain_.df2FovDeg = binoculars_ && !playerDead() ? 22.f : 90.f;   // view+0x4c (0x40423d binoculars)
+    terrain_.ringScale = insetFocal_ > 0 ? insetFocal_ / 320.f : zoomView ? scopeFocal_ / 320.f : float(hudMode_ ? hudMode_ : 640) / 640.f;
+    // view+0x4c (0x40423d binoculars); Delta Force 2: 22.5 in 16.16 (GOG Df2.exe 0x465f90 stores 0x168000; CD 22).
+    terrain_.df2FovDeg = binoculars_ && !playerDead() ? (arsenal_.df2Gog() ? 22.5f : 22.f) : 90.f;
+    terrain_.skyTicks = arsenal_.df2() ? -1.f : float(missionSteps_);   // DF1 cloud drift (GOG Df.exe 0x489980)
+    // DF1 sky gradient (GOG Df.exe 0x48c990): the view's FOV +0x4c and width
+    // (+0x3c - +0x34 + 1) set the step per row, its focal the horizon row;
+    // here at 640 scale. Main view 90 degrees across 640; binoculars 22
+    // (0x40423d); the scope inset 28 / power across 200 (0x466090).
+    {
+        const float modeK = 640.f / float(hudMode_ ? hudMode_ : 640);
+        if (scopeInset) {
+            terrain_.df1SkyFov = 28 / std::max(1, int(arsenal_.zoom()));
+            terrain_.df1SkyW = 200;
+            terrain_.df1SkyF = scopeFocal_ * modeK;
+        } else if (insetFocal_ > 0) {
+            terrain_.df1SkyFov = 90;
+            terrain_.df1SkyF = insetFocal_ * modeK;
+            terrain_.df1SkyW = std::max(1, int(std::lround(2.f * terrain_.df1SkyF)));
+        } else if (zoomView) {
+            terrain_.df1SkyFov = 22;
+            terrain_.df1SkyW = 640;
+            terrain_.df1SkyF = scopeFocal_ * modeK;
+        } else {
+            terrain_.df1SkyFov = 90;
+            terrain_.df1SkyW = 640;
+            terrain_.df1SkyF = 320.f;
+        }
+    }
+    // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
+    // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
+    // inset 2.5 under magnification 5, else 5.0, and 2.5 (0x466090). Delta
+    // Force 2 (GOG Df2.exe 0x465f90 -> 0x44f8d0): 2.0 / 2.0 in the main view,
+    // 3.2 / 3.2 in the binocular moves, the scope the same as Delta Force's
+    // (0x4557e0), 2.2 / 2.2 in the picture-in-picture views (0x456480,
+    // 0x456670, 0x4568a0).
+    const float mainP = !world_.df2Rules ? 2.2f : eyeOverride_ ? 2.2f : 2.f;
+    terrain_.ringP1 = scopeInset ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : zoomView ? 3.2f : mainP;
+    terrain_.ringP2 = scopeInset ? 2.5f : zoomView ? 3.2f : mainP;
+    // (OpenDF) The depth buffer in two passes, so nothing z-fights: Delta
+    // Force 2 keeps objects out to 4080 m and the terrain runs to 12.8 km,
+    // and with the 0.1 m near plane a 24-bit buffer resolves only ~9.5 m at
+    // 4 km. The far pass (view depth kDepthSplit .. far plane) goes to depth
+    // range 0.5..1, then the near pass (near plane .. kDepthSplit) to
+    // 0..0.5, each with its own projection; the same scene is drawn by both
+    // and clipped at the split, so what is drawn does not change and every
+    // near fragment stays in front of every far one. About 2 cm at the split
+    // and at 4 km. The near pass reaches a hair past the split (no cracks).
+    const float zn = proj.m[14] / (proj.m[10] - 1.f), zf = proj.m[14] / (proj.m[10] + 1.f);
+    auto withRange = [&](float n, float f) {
+        Mat4 p = proj;
+        p.m[10] = (f + n) / (n - f);
+        p.m[14] = 2 * f * n / (n - f);
+        return p;
+    };
+    const Mat4 projFar = withRange(kDepthSplit, zf), projNear = withRange(zn, kDepthSplit * 1.001f);
+    // Delta Force 2 (GOG Df2.exe 0x44f8d0): the water with the camera above
+    // it, 0x470aa0(0), after both object lists (0x44f490, 0x44f570) and
+    // before the translucent faces (0x44c480); with the camera at or below
+    // it, 0x470aa0(1) after them.
+    const bool waterMid = terrain_.df2Water() && eye.y > terrain_.waterLevel();
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool last = pass == 1;
+        glDepthRange(last ? 0.0 : 0.5, last ? 0.5 : 1.0);
+        terrain_.pass = last ? Terrain::Pass::Near : Terrain::Pass::Far;
+        terrain_.passSplit = kDepthSplit;
+        drawWorldPass(view, last ? projNear : projFar, eye, waterMid, last);
+    }
+    terrain_.pass = Terrain::Pass::All;
+    // Delta Force 2: the first-person weapon inside the frame (GOG Df2.exe
+    // 0x44f8d0 -> 0x44ea10 at 0x44fa09, after the objects and the water,
+    // before the fog, the weather and the under-water tint), depth-tested
+    // against the world: it can sink into a wall pressed against it.
+    if (gunInWorld_) {
+        glDepthRange(0.0, 0.5);
+        drawViewModel(*gunInWorld_, &projNear);
+        gunInWorld_ = nullptr;
+    }
+    glDepthRange(0.0, 1.0);
+    // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
+    // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
+    terrain_.drawFog(projNear, &projFar);
+    for (int pass = 0; pass < 2; ++pass) {
+        glDepthRange(pass ? 0.0 : 0.5, pass ? 0.5 : 1.0);
+        drawWeather(view, pass ? projNear : projFar, eye);
+    }
+    // Delta Force under water (GOG Df.exe 0x48d570, before the tracers in
+    // 0x485610): the r = 0 tint and the surface overhead; the phase runs on
+    // the 20 Hz timer (OpenDF: game ticks / 3).
+    if (!world_.df2Rules) terrain_.drawUnderwater(view, projNear, projFar, eye, float(ticks_ / 3));
+    // Delta Force's round tracers, the last of the 3D view (GOG Df.exe
+    // 0x485731 -> 0x4634d0).
+    arsenal_.tracers().age(ticks_, paused_);
+    for (int pass = 0; pass < 2; ++pass) {
+        glDepthRange(pass ? 0.0 : 0.5, pass ? 0.5 : 1.0);
+        arsenal_.tracers().draw(view, pass ? projNear : projFar, [&](Vec3 p) { return world_.nearest(p, eye); });
+    }
+    glDepthRange(0.0, 1.0);
+    terrain_.drawWaterTint(eye);   // Delta Force 2, camera under water (0x44fcb0)
+}
+
+// One depth pass of drawWorld: the terrain, the objects, the effects and
+// the water, with that pass's projection; `last` for the second (near) pass.
+void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last) {
     terrain_.draw(view, proj, eye, viewDistance_);
-    // Delta Force 2: the water before the objects while the camera is above
-    // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
-    const bool waterFirst = terrain_.df2Water() && eye.y > terrain_.waterLevel();
-    if (waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
-    // beyond 1020 m (either horizontal axis, or view depth + radius); LOD by
+    // beyond 1020 m in Delta Force (either horizontal axis, or view depth +
+    // radius; Delta Force 2's limits below); LOD by
     // projected radius F·R/depth against the model's thresholds.
     const float focal = 320.f * terrain_.ringScale;
     SceneLighting light;
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
-    light.highlight = terrain_.highlight();
+    light.gradeLut = terrain_.gradeLutTexture();
+    light.df2 = world_.df2Rules;
+    light.gradeSaturation = terrain_.gradeSaturation();
+    light.highlight = modelHighlight();
     const Vec3 fwd = viewDir();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
+    models_.setDeferTranslucent(!world_.df2Rules);   // drawn after the water below
     struct Visible { const WorldObject* o; Vec3 at; int lod; };
     std::vector<Visible> visible;
+    // Delta Force 2 (GOG Df2.exe 0x4501b0, for people, objects and the
+    // effects): D = 2^fog_level m from the fog getter 0x46e400, 4080 m with
+    // the fog off; kept while |dx|, |dy| <= D + 256 m and |depth| < D + r
+    // (r = 2 m for people, else the model's +0x60), then the sphere test
+    // 0x404c70: depth >= -r and depth + r <= 4080 m (r = 1 m for people).
+    const bool df2Cull = df2Hud_.on;
+    const float df2D = terrain_.fogLevel() ? terrain_.fogDistance() : 4080.f;
+    auto df2Keep = [&](Vec3 d, float depth, float r, bool person) {
+        if (std::abs(d.x) > df2D + 256.f || std::abs(d.z) > df2D + 256.f) return false;
+        if (std::abs(depth) >= df2D + (person ? 2.f : r)) return false;
+        const float sr = person ? 1.f : r;
+        return depth >= -sr && depth + sr <= 4080.f;
+    };
     for (const auto& o : world_.objects) {
-        if (o.removed) continue;
+        if (o.removed || &o == hideObject_) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
-        if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
         const float depth = dot(d, fwd);
-        if (depth < -o.model->radius || depth + o.model->headerRadius > 1020.f) continue;
+        if (df2Cull) {
+            if (!df2Keep(d, depth, o.model->headerRadius, o.person)) continue;
+        } else {
+            if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
+            if (depth < -o.model->radius || depth + o.model->headerRadius > 1020.f) continue;
+        }
         const int lod = ModelRenderer::chooseLod(*o.model, std::max(depth, 0.01f), focal, o.person);
         if (lod < 0) continue;
         visible.push_back({&o, at, lod});
     }
+    // The view's yaw in heading sense (DF [0x8cfa30], view +0x10).
+    const float viewYaw = std::atan2(fwd.x, -fwd.z);
+    // Delta Force LOD-code draws posed per mesh (both passes through
+    // drawPosed; Delta Force 2 keeps the plain draw):
+    //  palm (GOG Df.exe 0x44d5e0): the meshes of the palm state (palmPose).
+    //  tree (GOG Df.exe 0x4817a0): mesh 0 with the object matrix; mesh i >= 1
+    //  turned about the LOD's hardpoint i-1 by (view yaw - object yaw)
+    //  (0x45d400 with -hp and that yaw), so the foliage faces the view's
+    //  heading. DF yaw is anticlockwise, OpenDF heading clockwise.
+    auto codePose = [&](const Visible& v, std::vector<Mat4>& pose) {
+        const GpuModel& m = *v.o->model;
+        if (arsenal_.df2() || v.lod >= 4 || v.lod >= int(m.lods.size())) return false;
+        const std::string& code = m.lodCodes[v.lod];
+        const auto& l = m.lods[size_t(v.lod)];
+        const size_t meshes = l.meshParent.size();
+        if (code == "palm") {
+            std::vector<bool> shown;
+            palmPose(v.o->palmState, meshes, l.points, pose, shown);
+            return true;
+        }
+        if (code == "tree") {
+            pose.assign(meshes, Mat4{});
+            const Mat4 turn = rotateY(v.o->heading - viewYaw);
+            for (size_t i = 1; i < meshes && i - 1 < l.points.size(); ++i) {
+                const auto& p = l.points[i - 1];
+                pose[i] = translate({p[0], p[1], p[2]}) * turn * translate({-p[0], -p[1], -p[2]});
+            }
+            return true;
+        }
+        return false;
+    };
+    // Delta Force gnrc (GOG Df.exe 0x481060): when LOD +0x5a is not 0, every mesh at
+    // frame (global ticks / ticks per frame) % frames, looping forever.
+    auto codeFrame = [&](const Visible& v) {
+        const GpuModel& m = *v.o->model;
+        if (arsenal_.df2() || v.lod >= 4 || v.lod >= int(m.lods.size()) || m.lodCodes[v.lod] != "gnrc") return 0;
+        const auto& l = m.lods[size_t(v.lod)];
+        return l.animated ? int((ticks_ / uint32_t(l.ticksPerFrame)) % uint32_t(std::max(1, l.frames))) : 0;
+    };
+    std::vector<Mat4> codeMeshes;
     for (auto& v : visible) {
+        if (codePose(v, codeMeshes)) {
+            models_.drawPosed(*v.o->model, v.lod, v.o->matrix(v.at), codeMeshes);
+            continue;
+        }
         if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "helo" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
             // 0x478114: mesh 0 and 6 static; mesh 1 (blades) or 2 (disc) at
             // rotor speed >= 0x0C000000, about file +Z through hardpoint 0;
@@ -2523,6 +4732,77 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
         }
+        if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 5) {
+            // DF2's BRDM (GOG Df2.exe 0x4295f0): mesh 0 and 3 as is; mesh 1
+            // (turret) about hardpoint 0 by the turret yaw; mesh 2 (gun) that
+            // and then pitched about hardpoint 4 minus hardpoint 0 (as the EXE
+            // builds it); front wheels mesh 4 about hardpoint 2 and mesh 5
+            // about hardpoint 3 by the steering angle; mesh 6 (muzzle flash)
+            // with the gun while obj+0xC8 is set, which drawing clears.
+            const GpuModel& m = *v.o->model;
+            const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
+            Mat4 hide;
+            for (float& x : hide.m) x = 0;
+            auto aboutAt = [&](float x, float y, float z, const Mat4& r) { return translate({x, y, z}) * r * translate({-x, -y, -z}); };
+            auto about = [&](int hp, const Mat4& r) {
+                const auto& p = m.points[size_t(hp)];
+                return aboutAt(p[0], p[1], p[2], r);
+            };
+            Mat4 gp;
+            const float c = std::cos(v.o->gunPitch), sn = std::sin(v.o->gunPitch);
+            gp.at(0, 0) = c; gp.at(0, 1) = -sn; gp.at(1, 0) = sn; gp.at(1, 1) = c;
+            const auto& h0 = m.points[0];
+            const auto& h4 = m.points[4];
+            const Mat4 turret = about(0, rotateY(v.o->gunYaw));
+            const Mat4 gun = turret * aboutAt(h4[0] - h0[0], h4[1] - h0[1], h4[2] - h0[2], gp);
+            const Mat4 steer = rotateY(-v.o->steer);   // DF yaw is anticlockwise
+            std::vector<Mat4> pose(meshes, Mat4{});
+            if (meshes > 1) pose[1] = turret;
+            if (meshes > 2) pose[2] = gun;
+            if (meshes > 4) pose[4] = about(2, steer);
+            if (meshes > 5) pose[5] = about(3, steer);
+            if (meshes > 6) pose[6] = v.o->shotFlash ? gun : hide;
+            for (size_t k = 7; k < meshes; ++k) pose[k] = hide;
+            models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
+            if (last) v.o->shotFlash = 0;
+            continue;
+        }
+        if (v.lod < 4 && (v.o->model->lodCodes[v.lod] == "hind" || v.o->model->lodCodes[v.lod] == "ka29") &&
+            v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
+            // Delta Force 2's two other rotor draws; only meshes 0..4 are drawn.
+            // hind (GOG Df2.exe 0x427ed0): mesh 0; mesh 1 (blades) or 2 (disc,
+            // main rotor speed >= 0x0C000000) turned by the main angle about
+            // file +Z through hardpoint 1; mesh 3 or 4 (tail speed) by the
+            // tail angle about file +Y through hardpoint 2.
+            // ka29 (GOG Df2.exe 0x428120): coaxial rotors about file +Z through
+            // hardpoint 0: mesh 1 or 3 by +main angle, mesh 2 or 4 by -main angle.
+            // (OpenDF keeps one rotor speed for both, as for helo.)
+            const GpuModel& m = *v.o->model;
+            const size_t meshes = m.lods[size_t(v.lod)].meshParent.size();
+            const bool fast = v.o->rotorSpeed >= float(0x0C000000);
+            Mat4 hide;
+            for (float& x : hide.m) x = 0;
+            auto about = [&](int hp, const Mat4& r) {
+                const auto& p = m.points[size_t(hp)];
+                return translate({p[0], p[1], p[2]}) * r * translate({-p[0], -p[1], -p[2]});
+            };
+            // File +Z (up) is OpenDF +Y; file +Y (left) is OpenDF -Z.
+            const float main = float(v.o->rotorAngle[0]) / 4294967296.f * 2 * kPi;
+            std::vector<Mat4> pose(meshes, hide);
+            if (meshes > 0) pose[0] = Mat4{};
+            if (m.lodCodes[v.lod] == "hind") {
+                const float tail = float(v.o->rotorAngle[1]) / 4294967296.f * 2 * kPi;
+                Mat4 rz;
+                { const float c = std::cos(tail), s = std::sin(tail); rz.at(0, 0) = c; rz.at(0, 1) = -s; rz.at(1, 0) = s; rz.at(1, 1) = c; }
+                if (meshes > (fast ? 2u : 1u)) pose[fast ? 2 : 1] = about(1, rotateY(main));
+                if (meshes > (fast ? 4u : 3u)) pose[fast ? 4 : 3] = about(2, rz);
+            } else {
+                if (meshes > (fast ? 3u : 1u)) pose[fast ? 3 : 1] = about(0, rotateY(main));
+                if (meshes > (fast ? 4u : 2u)) pose[fast ? 4 : 2] = about(0, rotateY(-main));
+            }
+            models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
+            continue;
+        }
         if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "tire" && v.lod < int(v.o->model->lods.size()) && v.o->model->points.size() >= 3) {
             // 0x4808fc: mesh 0 as is, mesh 1 (shadow) not drawn, front wheels
             // mesh 2 about hardpoint 2 and mesh 3 about hardpoint 1, turned
@@ -2546,8 +4826,17 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             models_.drawPosed(m, v.lod, v.o->matrix(v.at), pose);
             continue;
         }
+        if (v.lod < 4 && v.o->model->lodCodes[v.lod] == "ewpn" && v.lod < int(v.o->model->lods.size())) {
+            // GOG Df2.exe 0x450c60: a manned emplaced gun turns meshes 1 and
+            // 2 by its gunner's view (World::ewpnPose).
+            models_.drawPosed(*v.o->model, v.lod, v.o->matrix(v.at),
+                              world_.ewpnPose(*v.o, v.o->model->lods[size_t(v.lod)].meshParent.size()));
+            continue;
+        }
         if (v.o->chr && !v.o->anim.angles().empty()) {
-            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
+            std::vector<std::array<float, 3>> air;
+            const bool inAir = world_.df2Rules && v.o->airborne && df2AirbornePose(*v.o->chr, v.o->moves, air);   // GOG 0x451090
+            const auto pose = personPose(*v.o->model, v.lod, *v.o->chr, inAir ? air : v.o->anim.angles(), v.o->dead ? 0.f : v.o->aimPitch);
             const Mat4 body = v.o->matrix(v.at);
             models_.drawPosed(*v.o->model, v.lod, body, pose);
             // DF2: the parachute over a falling person (0x4153b0): `parachut`
@@ -2558,21 +4847,42 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             // The held weapon (0x44cc34): the mode's third-person item (+0x68),
             // its LOD's first mesh, at the right hand (mesh 7) turned by the
             // fixed offset 0x44d3c0 (-30, -65, -30 degrees as yaw, pitch, roll).
+            // Delta Force (GOG Df.exe 0x481330, 0x481520..0x48152a): not drawn
+            // once the person's LOD is at or past the weapon's LOD count, and
+            // only mesh 0 of it (the flash meshes 1 / 2 need +0x6d & 8 / 0x10,
+            // 0x481571 / 0x4815c6, not modelled for other people).
+            const bool df1Held = !arsenal_.df2();
             if (const int item = arsenal_.heldItemAt(v.o->weaponMode); item > 0 && pose.size() > 7 && !v.o->dead)
                 if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
-                    if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty()) {
+                    if (const GpuModel* wm = models_.get(vfs_, wi->graphic);
+                        wm && !wm->lods.empty() && !(df1Held && v.lod >= int(wm->lods.size()))) {
                         const Mat4& offset = heldWeaponOffset();
                         const auto& l = v.o->model->lods[size_t(std::clamp(v.lod, 0, int(v.o->model->lods.size()) - 1))];
                         const auto& pv = l.meshPivot[7];
                         const Mat4 hand = pose[7] * translate({pv[0], pv[1], pv[2]});
-                        models_.draw(*wm, std::min(v.lod, int(wm->lods.size()) - 1), body * hand * offset);
+                        const int wl = std::min(v.lod, int(wm->lods.size()) - 1);
+                        models_.draw(*wm, wl, body * hand * offset, df1Held);
+                        if (df1Held) models_.drawTranslucent(*wm, wl, body * hand * offset, true);
                     }
             continue;
         }
-        models_.draw(*v.o->model, v.lod, v.o->matrix(v.at));
+        models_.draw(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     }
+    // Delta Force 2 (GOG Df2.exe 0x44bc00 -> 0x861ec0, flushed by 0x44c480):
+    // the translucent faces of the objects and the effects are drawn after
+    // all of them, far first (0x44c480 shell-sorts by z0 + z1 + z2,
+    // descending). Here per draw, by its view depth; faces within one model
+    // keep their order.
+    std::vector<std::pair<float, std::function<void()>>> translucent;
     for (auto& v : visible)
-        if (!(v.o->chr && !v.o->anim.angles().empty())) models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at));
+        if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes) &&
+            !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm")) {   // the BRDM's are posed above
+            const GpuModel* tm = v.o->model;
+            const int lod = v.lod, frame = codeFrame(v);
+            const Mat4 mm = v.o->matrix(v.at);
+            if (df2Cull) translucent.push_back({dot(v.at - eye, fwd), [this, tm, lod, mm, frame] { models_.drawTranslucent(*tm, lod, mm, false, false, frame); }});
+            else models_.drawTranslucent(*tm, lod, mm, false, false, frame);
+        }
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920).
     if (playerDead() && !playerBody_.angles().empty())
@@ -2582,19 +4892,89 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
                 body.model = bm;
                 body.pos = deadBodyOrigin();
                 body.heading = deadYaw_;
-                models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()));
+                models_.drawPosed(*bm, 0, body.matrix(world_.nearest(body.pos, eye)), personPose(*bm, 0, playerChr_, playerBody_.angles()),
+                                  arsenal_.df2() ? 0 : o_.faceVariant);   // +0x98 (0x4829f0 -> 0x481356)
+            }
+    // The outside views (GOG Df.exe 0x404640 passes "first person" only for
+    // mode 0; GOG Df2.exe 0x44f4d0 skips the player only in mode 0): the
+    // living player's body, posed by its move, with the held weapon
+    // (0x44cc34) as any soldier's. Also in a team-mate's FO inset (0x466d90
+    // renders with [0x6ba3f0] = the observer, mode 0), not in his own.
+    if (!playerDead() && (outsideView() != 0 || hideObject_ != nullptr) && !foPlayer_ && !playerBody_.angles().empty())
+        if (const ItemDef* it = items_.byId(playerModelItem_ ? playerModelItem_ : playerItem_); it && !it->graphic.empty())
+            if (const GpuModel* bm = models_.get(vfs_, it->graphic); bm && !bm->lods.empty()) {
+                WorldObject body;
+                body.model = bm;
+                body.pos = player_.inWater() ? player_.origin() : player_.feet + Vec3{0, playerBody_.originHeight(playerChr_), 0};
+                body.heading = player_.yaw;
+                const Mat4 m = body.matrix(world_.nearest(body.pos, eye));
+                std::vector<std::array<float, 3>> air;
+                const bool inAir = world_.df2Rules && player_.airborne() && !player_.chute && !player_.inWater() &&
+                                   df2AirbornePose(playerChr_, &playerMoves_, air);   // GOG 0x451090
+                const auto pose = personPose(*bm, 0, playerChr_, inAir ? air : playerBody_.angles(), player_.pitch);
+                models_.drawPosed(*bm, 0, m, pose);
+                if (const int item = arsenal_.heldItemAt(arsenal_.modeIndex()); item > 0 && pose.size() > 7)
+                    if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
+                        if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty() && bm->lods[0].meshPivot.size() > 7) {
+                            const auto& pv = bm->lods[0].meshPivot[7];
+                            const Mat4 wmm = m * pose[7] * translate({pv[0], pv[1], pv[2]}) * heldWeaponOffset();
+                            if (arsenal_.df2()) {
+                                models_.draw(*wm, 0, wmm);
+                            } else {
+                                // GOG Df.exe 0x481330: mesh 0, then mesh 1 while +0x6d & 8
+                                // (0x481571) and mesh 2 while +0x6d & 0x10 (0x4815c6), the
+                                // player's flash bits as in the first-person draw; each flash
+                                // mesh steps the counter [0xc23800] 1, 2, 0 into slot 1
+                                // ([0xad3cf4]). Bit 4 of the flash argument leaves mesh 0 out.
+                                const int fl = arsenal_.flash();
+                                int c = heldFlashFrame_;   // stepped once per frame drawn (the last pass keeps it)
+                                auto step = [&] { c = (c + 1) % 3; if (last) heldFlashFrame_ = c; return c; };
+                                const int f1 = (fl & 1) ? step() : 0;
+                                models_.draw(*wm, 0, wmm, true, fl & 1, f1);
+                                models_.drawTranslucent(*wm, 0, wmm, true, fl & 1, f1);
+                                if (fl & 2) {
+                                    const int f2 = step();
+                                    models_.draw(*wm, 0, wmm, true, 2 | 4, f2);
+                                    models_.drawTranslucent(*wm, 0, wmm, true, 2 | 4, f2);
+                                }
+                            }
+                        }
             }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.
     const float camYaw = std::atan2(fwd.x, -fwd.z);
     for (const auto& e : effects_) {
         const Vec3 at = world_.nearest(e.pos, eye);
         const Vec3 d = at - eye;
-        if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f || dot(d, fwd) < 0.5f) continue;
+        // Delta Force (GOG Df.exe 0x485040, as the objects): within 1020 m on
+        // both horizontal axes, the sphere (+0x60) between the eye plane and
+        // 1020 m of view depth (0x44acf0), and a LOD by projected radius
+        // (0x46b780: none under half a pixel).
+        int elod = 0;
+        if (df2Cull) {
+            if (!df2Keep(d, dot(d, fwd), e.model->headerRadius, false)) continue;
+        } else {
+            const float depth = dot(d, fwd), r = e.model->headerRadius;
+            if (std::abs(d.x) > 1020.f || std::abs(d.z) > 1020.f) continue;
+            if (depth < -r || depth + r > 1020.f) continue;
+            elod = ModelRenderer::chooseLod(*e.model, std::max(depth, 0.01f), focal, false);
+            if (elod < 0) continue;
+        }
         if (e.canopy) {
             WorldObject body;
             body.heading = e.heading;
             body.pitch = e.pitch;
             models_.draw(*e.model, 0, body.matrix(at));
+            continue;
+        }
+        if (e.debris) {
+            // An ordinary object (items list), drawn by its three angles and
+            // unscaled (the object draw does not read +0x7c).
+            const float turn = 2 * kPi / 4294967296.f;
+            WorldObject body;
+            body.heading = kPi * 0.5f - float(e.yaw) * turn;
+            body.pitch = float(e.dpitch) * turn;
+            body.roll = float(e.droll) * turn;
+            models_.draw(*e.model, elod, body.matrix(at));
             continue;
         }
         if (e.smk2) {
@@ -2617,23 +4997,51 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
             sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.size / 65536.f;
             m = m * sc;
             const float a = e.alpha > 0xff0000 ? 1.f : float(std::max(e.alpha >> 16, 1)) / 255.f;
-            models_.setTint(e.tint[0] / 255.f, e.tint[1] / 255.f, e.tint[2] / 255.f, a, true, e.fireball);
-            glEnable(GL_BLEND);
-            // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
-            // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
-            // colour to the screen with saturation (paddusb, 0x4850a1):
-            // additive. (The Direct3D back end [0xa7b6b4] is outside DF2.EXE.)
-            // Their colours skip the scene grade (0x42abc0 has no 0x411f70).
-            glBlendFunc(GL_SRC_ALPHA, e.fireball ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
-            models_.draw(*e.model, 0, m, false, false, frame);
-            models_.drawTranslucent(*e.model, 0, m, false, false, frame);
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-            models_.setTint(1, 1, 1, 1);
+            auto draw = [this, m, a, frame, tint = std::array<uint8_t, 3>{e.tint[0], e.tint[1], e.tint[2]}, fireball = e.fireball,
+                         model = e.model] {
+                // The dust and smoke colours were graded at spawn (0x413c50),
+                // the fireballs' never are (0x42abc0): both drawn raw.
+                models_.setTint(tint[0] / 255.f, tint[1] / 255.f, tint[2] / 255.f, a, true, true);
+                glEnable(GL_BLEND);
+                // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
+                // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
+                // colour to the screen with saturation (paddusb, 0x4850a1):
+                // additive. (The Direct3D back end [0xa7b6b4] is outside DF2.EXE.)
+                // Their colours skip the scene grade (0x42abc0 has no 0x411f70).
+                glBlendFunc(GL_SRC_ALPHA, fireball ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                models_.draw(*model, 0, m, false, false, frame);
+                models_.drawTranslucent(*model, 0, m, false, false, frame);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+                models_.setTint(1, 1, 1, 1);
+            };
+            if (df2Cull) translucent.push_back({dot(d, fwd), draw});
+            else draw();
             continue;
         }
-        const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
+        // The frame (GOG Df.exe efct 0x42a610, ef3d 0x480e80): on an animated
+        // LOD (+0x5a) age / ticks per frame of the drawn LOD, 0 once past its
+        // frames; otherwise 0.
+        int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
+        if (!df2Cull && elod < int(e.model->lods.size())) {
+            const auto& el = e.model->lods[size_t(elod)];
+            const int f = e.age / std::max(1, el.ticksPerFrame);
+            frame = el.animated && f < el.frames ? f : 0;
+        }
+        if (e.ef3d) {
+            // Delta Force ef3d (SPLASH1/2, GOG Df.exe 0x480e80 -> 0x45d2f0):
+            // upright at the spawn's random heading +0x30, scaled by +0x7c, no
+            // camera facing; every mesh.
+            WorldObject body;
+            body.heading = kPi * 0.5f - float(e.yaw) * (2 * kPi / 4294967296.f);
+            Mat4 sc;
+            sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
+            const Mat4 m = body.matrix(at) * sc;
+            models_.draw(*e.model, elod, m, false, false, frame);
+            models_.drawTranslucent(*e.model, elod, m, false, false, frame);
+            continue;
+        }
         // Model +X faces the heading; the quad's normal is +X, turned to the camera.
         Mat4 m = translate(at) * rotateY(kPi * 0.5f - (camYaw + kPi));
         // Puffs (efct draw 0x480c70 with +0x3C set) also take the camera's
@@ -2648,37 +5056,86 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView) {
         Mat4 sc;
         sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
         m = m * sc;
-        models_.draw(*e.model, 0, m, false, false, frame);
-        models_.drawTranslucent(*e.model, 0, m, false, false, frame);
+        models_.draw(*e.model, elod, m, false, false, frame);
+        if (df2Cull) translucent.push_back({dot(d, fwd), [this, m, frame, model = e.model] { models_.drawTranslucent(*model, 0, m, false, false, frame); }});
+        else models_.drawTranslucent(*e.model, elod, m, false, false, frame);
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
-    // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
+    // 4033 (DF2's delay grenade, CD 0x1000, too: GOG Df2.exe 0x451ae0 gives
+    // GOG 0x10000000 the model [0x735e78], item 0xfc1), 0x01 the M203's
+    // 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
     // at the launch yaw and pitch for the whole flight (gnrc draw:
     // T * Rz(yaw) * Ry(pitch), the record's angles never change).
+    // Delta Force 2 (GOG Df2.exe 0x451ae0, models from 0x452560): first
+    // 0x01 (CD bits) m406, then 0x10 and the delay grenade's 0x1000 the
+    // grenade 4033, then 0x40 the LAW's rocket.
+    const bool df2Rounds = world_.df2Rules;
     for (const auto& p : arsenal_.projectiles()) {
-        const int id = (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
+        const int id = df2Rounds ? ((p.flags & 0x01) ? 104001 : (p.flags & 0x1010) ? 104033 : (p.flags & 0x40) ? 104042 : 0)
+                                 : (p.flags & 0x10) ? 104033 : (p.flags & 0x40) ? 104042 : (p.flags & 0x01) ? 104001 : 0;
         const ItemDef* gi = id ? items_.byId(id) : nullptr;
         const GpuModel* gm = gi && !gi->graphic.empty() ? models_.get(vfs_, gi->graphic) : nullptr;
         if (!gm) continue;
         const Vec3 at = world_.nearest(p.pos, eye);
+        // DF2's rounds keep the fixed limits (GOG Df2.exe 0x44fb20): |dx|,
+        // |dy| < 4081 m, |depth| < 4080 m, then the sphere test 0x404c70.
+        int rlod = 0;
+        if (df2Cull) {
+            const Vec3 d = at - eye;
+            const float depth = dot(d, fwd), r = gm->headerRadius;
+            if (std::abs(d.x) >= 4081.f || std::abs(d.z) >= 4081.f || std::abs(depth) >= 4080.f) continue;
+            if (depth < -r || depth + r > 4080.f) continue;
+        } else {
+            // Delta Force (GOG Df.exe 0x485290): whole metres within 1020 of
+            // the camera on both horizontal axes (0x485346..0x485374), |view
+            // depth| under 1020 m (0x485391), the sphere test 0x44acf0 with
+            // +0x60, then the LOD by projected radius (0x46b780).
+            const float depth = dot(at - eye, fwd), r = gm->headerRadius;
+            if (std::abs(std::floor(at.x) - std::floor(eye.x)) > 1020.f || std::abs(std::floor(at.z) - std::floor(eye.z)) > 1020.f) continue;
+            if (std::abs(std::floor(depth)) >= 1020.f) continue;
+            if (depth < -r || depth + r > 1020.f) continue;
+            rlod = ModelRenderer::chooseLod(*gm, std::max(depth, 0.01f), focal, false);
+            if (rlod < 0) continue;
+        }
         Mat4 pitch;
         const float c = std::cos(p.pitch), sn = std::sin(p.pitch);
         pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
-        models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
+        models_.draw(*gm, rlod, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
     }
+    // DF2, camera above the water: the plane after every opaque world draw
+    // (the bodies, effects and rounds in flight included: GOG Df2.exe
+    // 0x44f570 -> 0x470aa0(0)), under the queued translucent faces (0x44c480).
+    if (waterMid) {
+        models_.end();
+        terrain_.drawWater(view, proj, eye, float(ticks_));
+        models_.begin(proj * view, light);
+    }
+    std::stable_sort(translucent.begin(), translucent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& t : translucent) t.second();
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
-    if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
-    // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
-    // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
-    terrain_.drawFog(proj);
-    drawWeather(view, proj, eye);
+    if (!waterMid) terrain_.drawWater(view, proj, eye, float(ticks_));
+    // Delta Force: the blended faces after the water (GOG Df.exe 0x485610:
+    // 0x48d040 water, then 0x46bf60 / 0x46bf10), so the water does not
+    // tint them.
+    if (!world_.df2Rules) {
+        models_.begin(proj * view, light);
+        models_.setDeferTranslucent(false);
+        models_.drawDeferred();
+        models_.end();
+    }
+    // DF2's tracers, after the scene (GOG Df2.exe 0x44f8d0 -> 0x452610).
+    if (world_.df2Rules) {
+        arsenal_.ageTracers(ticks_);
+        tracerLines_.draw(proj * view, arsenal_.df2Tracers(), [&](Vec3 p) { return world_.nearest(p, eye); });
+    }
 }
 
-// DF2.EXE 0x46b780, drawn only by the software frame (0x448930, after the
-// fog pass, so unfogged); the D3D frame 0x448980 has no call to it, so in
-// D3D mode DF2 drew no rain or snow (the simulation and the splashes still
-// ran). OpenDF draws what the software renderer showed.
+// GOG Df2.exe 0x475e40 (DF2.EXE 0x46b780), drawn by both frames: the
+// software frame 0x44f8d0 after the fog pass (so unfogged) and the D3D frame
+// 0x44fa80 after the tracers 0x452610. Snow is scaled 0x20000 (2.0) in
+// software and 0x100000 in D3D ([0xa6de88] == 2); the CD build's D3D frame
+// (0x448980) had no call to it. OpenDF draws the software look.
 void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     if (!weather_.type()) return;
     if (weather_.type() == 1) {
@@ -2710,7 +5167,10 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     SceneLighting light;
     light.lut = terrain_.lutTexture();
     light.saturation = terrain_.saturationFactor();
-    light.highlight = terrain_.highlight();
+    light.gradeLut = terrain_.gradeLutTexture();
+    light.df2 = world_.df2Rules;
+    light.gradeSaturation = terrain_.gradeSaturation();
+    light.highlight = modelHighlight();
     light.viewer = fwd * -1.f;
     models_.begin(proj * view, light);
     weather_.forEachFlake([&](Vec3 p) {
@@ -2733,13 +5193,14 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     models_.end();
 }
 
-void Game::drawViewModel(const Screen& s) {
+void Game::drawViewModel(const Screen& s, const Mat4* worldProj) {
     // The original hides the weapon while the zoom inset is up.
     // Nor is it drawn once the player is dead (0x4042df).
-    if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_) return;   // 0x4042ff
+    if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_ || outsideView() != 0) return;   // 0x4042ff; DF1 0x404640: first person only
+    if (!arsenal_.viewModelShown()) return;   // DF2 mode flag 0x100 (GOG Df2.exe 0x44ea10)
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
-    glClear(GL_DEPTH_BUFFER_BIT);
+    if (!worldProj) glClear(GL_DEPTH_BUFFER_BIT);
 
     // As in the original engine: the P* model is drawn unrotated (aligned with
     // the view) at the weapon's offset from DF.EXE's player weapon table, with
@@ -2761,6 +5222,13 @@ void Game::drawViewModel(const Screen& s) {
     // relative to the centre of the view (in screen heights); the extra width
     // only shows more of the world, so ultrawide screens look natural.
     Mat4 proj = perspective(viewFovY_ > 0 ? viewFovY_ : kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
+    // Inside the DF2 frame: the world's near-pass projection (the same view
+    // and FOV; the gun is hidden with the binoculars up), with depth clamping
+    // so the parts nearer than its near plane stay, in front of everything.
+    if (worldProj) {
+        proj = *worldProj;
+        glEnable(GL_DEPTH_CLAMP);
+    }
     // The world light (DF.EXE 0x44bea4) rotated into view space, as the gun
     // is drawn there; the viewer looks along -Z.
     SceneLighting light;
@@ -2773,12 +5241,21 @@ void Game::drawViewModel(const Screen& s) {
         light.viewer = {0, 0, 1};
         light.lut = terrain_.lutTexture();
         light.saturation = terrain_.saturationFactor();
-        light.highlight = terrain_.highlight();
+        light.gradeLut = terrain_.gradeLutTexture();
+        light.df2 = world_.df2Rules;
+        light.gradeSaturation = terrain_.gradeSaturation();
+        light.highlight = modelHighlight();
     }
+    // The flash meshes' animation frame (DF.EXE [0x933980] -> [0xb7a874],
+    // DF2.EXE [0x4d2990] -> [0x765a04]): stepped 1, 2, 0, ... each time a
+    // flash mesh is drawn; mesh 0 at frame 0.
+    const int flash = arsenal_.flash();
+    if (flash) flashFrame_ = (flashFrame_ + 1) % 3;
     models_.begin(proj, light);
-    models_.draw(*m, 0, model, true, arsenal_.flash() > 0);
-    models_.drawTranslucent(*m, 0, model, true, arsenal_.flash() > 0);
+    models_.draw(*m, 0, model, true, flash, flashFrame_);
+    models_.drawTranslucent(*m, 0, model, true, flash, flashFrame_);
     models_.end();
+    if (worldProj) glDisable(GL_DEPTH_CLAMP);
 }
 
 // The zoom view is a magnified circle on the right of the 3D view (the main
@@ -2802,32 +5279,321 @@ void Game::drawZoomInset(const Screen& s, const Mat4& view, float fovY) {
     glStencilFunc(GL_EQUAL, 1, 0xFF);
     glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 
-    // DF.EXE 0x450600 / 0x440ff0: the scope view's FOV parameter is 28 /
+    // DF.EXE 0x450600 / 0x440ff0 (DF1): the scope view's FOV parameter is 28 /
     // magnification (integer), its half-angle (fov + 1) >> 1 whole degrees,
     // and the focal length round(r / tan(half) + 0.5) in pixels of the
     // 640-wide original (r = 100), across the inset's width.
     (void)fovY;
     const float size = 2 * r;
-    const int fovParam = 28 / std::max(1, int(arsenal_.zoom()));
-    const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
-    const float focal = std::floor(100.f / std::tan(half) + 0.5f);
-    scopeFocal_ = focal * 640.f / 200.f;   // per 640 pixels of view width
+    // GOG Df2.exe 0x4557e0 takes the scope power through 0x44e6a0.
+    const int mag = std::max(1, arsenal_.df2Gog() ? arsenal_.df2Zoom() : int(arsenal_.zoom()));
+    float focal;
+    if (df2Hud_.on) {
+        // GOG Df2.exe 0x4557e0 (at 0x455830): the FOV is 0x46500000 /
+        // (mag * 640) in 16.16 degrees (28.125 / mag), and the camera
+        // (0x4048b0, 0x404992..0x4049bd) takes half of it with the fraction
+        // kept, focal = trunc((w * 0.5) / tan(half) + 0.5).
+        const int fov16 = 0x46500000 / (mag * 640);
+        const double half = double(fov16 >> 1) * (3.14159265358979323846 / (180.0 * 65536.0));
+        focal = float(std::trunc(100.0 / std::tan(half) + 0.5));
+    } else {
+        const int fovParam = 28 / mag;
+        const float half = float((fovParam + 1) >> 1) * kPi / 180.f;
+        focal = std::floor(100.f / std::tan(half) + 0.5f);
+    }
+    // The terrain rings and object LODs use the inset view's own focal
+    // length (GOG Df.exe 0x466090: the view 0x8cfa20 over the inset, W·100/640
+    // pixels each side of the centre, 0x465f30; ring table 0x489440): the
+    // 640-mode focal scaled by the mode's width. (Delta Force 2: as before.)
+    scopeFocal_ = df2Hud_.on ? focal * 640.f / 200.f : focal * float(hudMode_ ? hudMode_ : 640) / 640.f;
     const float insetFov = 2 * std::atan(100.f / focal);
     glViewport(int(cx - r), int(s.h - cy - r), int(size), int(size));
     glClear(GL_DEPTH_BUFFER_BIT);
     // DF2.EXE 0x44e0a0: the scope camera's pitch lowered by the zeroing
     // elevation (the shot keeps the player's pitch, so the bore rises).
-    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * view : view, perspective(insetFov, 1.f, 0.1f, viewDistance_ * 1.1f), true);
+    // In an outside view (picture-in-picture keeps the scope up) the scope
+    // still looks from the player's eye along his aim: GOG Df.exe 0x466090
+    // (+0x24.. raised by [0xc23a18], his yaw / pitch / roll); GOG Df2.exe
+    // (0x455790) 0x4557e0 builds its camera from the player, his body left
+    // out.
+    const bool outside = outsideView() != 0;
+    const Vec3 fpEye = player_.eye(), fpDir = player_.forward();
+    const Mat4 insetView = outside ? lookDir(fpEye, fpDir, {0, 1, 0}) : view;
+    if (outside) {
+        eyeOverride_ = &fpEye;
+        dirOverride_ = &fpDir;
+        foPlayer_ = df2Hud_.on;
+    }
+    drawWorld(df2Hud_.on ? rotateX(arsenal_.zeroElevation()) * insetView : insetView, perspective(insetFov, 1.f, 0.1f, kFarPlane), true, true);
+    if (outside) {
+        eyeOverride_ = nullptr;
+        dirOverride_ = nullptr;
+        foPlayer_ = false;
+    }
     glDisable(GL_STENCIL_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
-    // DF2.EXE 0x44e2a0: on night missions the scope image is green only, ×4.
-    if (df2Hud_.on && (mission_.lightFlags & 0x10)) {
+    // GOG Df2.exe 0x455be0 (at 0x455c50): with night vision on ([0x79a7fc])
+    // the scope image is green only, ×4 (paddusb twice, & 0xff00); the CD's
+    // 0x44e2a0 tests the mission's night flag (header 0x100000) instead.
+    if (df2Hud_.on && (arsenal_.df2Gog() ? nvg_ : (mission_.lightFlags & 0x10) != 0)) {
         hud_.begin(int(s.w), int(s.h));
         hud_.nightVision(cx, cy, r, 1.f);
         hud_.end();
     }
 }
 
+// GOG Df2.exe 0x465f90 -> 0x4568a0, the video camera's inset (not while
+// the scope shows): without a camera the flag [0x79a6b4] is cleared;
+// otherwise, unless the player is dead (+0x64 & 4), the view from the
+// camera's position 0x8000 (0.5 m) up with the camera's yaw and pitch
+// ([0x79a6c0] / [0x79a6bc]), FOV 0x5a0000 (90 degrees across), into x
+// 0x2c0..0x3c0, y view top + 0x40..+0x100 of the 1024x768 frame.
+void Game::drawCameraInset(const Screen& s) {
+    if (!arsenal_.cameraView() || scopeShown() || showMap_ || pinpShown()) return;
+    const int c = arsenal_.camera();
+    if (c < 0 || size_t(c) >= world_.objects.size() || world_.objects[size_t(c)].removed) {
+        arsenal_.clearCameraView();
+        return;
+    }
+    if (playerDead()) return;
+    const float x0 = s.vx(0x2c0), x1 = s.vx(0x3c0), y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const Vec3 eye = world_.objects[size_t(c)].pos + Vec3{0, 0x8000 / 65536.f, 0};
+    const float yaw = arsenal_.cameraYaw(), pitch = arsenal_.cameraPitch();
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    // 0x4568a0 hands the renderer the camera's eye and its yaw / pitch
+    // (local_3c / local_38), so culling, LOD and lighting go by the camera.
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+}
+
+void Game::foNext() {
+    // GOG Df.exe 0x484a50: the next people slot after the target's with an
+    // item, on the player's side, item attrib FO (def +0x24 & 8), not hidden
+    // (+0x6c & 2); else from the first slot through the target's; else
+    // none. INFERRED: the player's own slot (chosen by its BMS id, 0x4829f0)
+    // is taken to come before every other person.
+    auto eligible = [&](int i) {
+        if (i < 0) {
+            const ItemDef* it = items_.byId(playerItem_);
+            return it && (it->attrib & 8);
+        }
+        const WorldObject& o = world_.objects[size_t(i)];
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int cur = foTarget_ >= -1 ? foTarget_ : -1;
+    for (int i = cur + 1; i < n; ++i)
+        if (eligible(i)) { foTarget_ = i; return; }
+    for (int i = -1; i <= cur; ++i)
+        if (eligible(i)) { foTarget_ = i; return; }
+    foTarget_ = -2;
+}
+
+void Game::drawFoInset(const Screen& s) {
+    // GOG Df.exe 0x466d90, from 0x404640 when the scope inset is not up: no
+    // target clears [0xc23a34]; nothing while the player is dead (+0x6c &
+    // 4). The world from the target's position raised by the player's eye
+    // height ([0xc23a18]) and its yaw / pitch / roll (+0x30..+0x38) at FOV
+    // 90 (0x5a) in (0x2c0, top + 0x40)-(0x3c0, top + 0x100) virtual, x
+    // rounded down to 4 pixels, with the target not drawn ([0x6ba3f0]);
+    // a one-pixel border in [0x67db5c] (0x472610) and the target's name at
+    // (0x2d4, top + 0x114), left-aligned, in [0x67db5c]. With the player as
+    // the observer his own body (drawn in the outside views) is left out too.
+    // With picture-in-picture in an outside view 0x404640 draws 0x466b70
+    // instead: nothing while dead, else the player's own view (his eye,
+    // yaw, pitch and roll, FOV 90, himself not drawn: [0x6ba3f0] = the
+    // player, [0x6ba3ec] = 0) in the same box and border, with no name.
+    if (df2Hud_.on || scopeShown() || showMap_) return;
+    const bool pinp = pinp_ && outsideView() != 0;
+    if (!pinp) {
+        if (!foOn_) return;
+        if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
+            foOn_ = false;
+            return;
+        }
+    }
+    if (playerDead()) return;
+    const float x0 = float(int(s.vx(0x2c0)) & ~3), x1 = float(int(s.vx(0x3c0)) & ~3);
+    const float y0 = std::floor(s.playY + s.vy(0x40)), y1 = std::floor(s.playY + s.vy(0x100));
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeUp = player_.eye().y - player_.origin().y;
+    Vec3 eye;
+    float yaw, pitch;
+    std::string name;
+    const WorldObject* target = nullptr;
+    if (pinp || foTarget_ < 0) {
+        eye = player_.origin() + Vec3{0, eyeUp, 0};
+        yaw = player_.yaw;
+        pitch = player_.pitch;
+        if (!pinp) name = o_.soldierName;
+    } else {
+        target = &world_.objects[size_t(foTarget_)];
+        eye = target->pos + Vec3{0, target->hip + eyeUp, 0};   // its body origin (+0x24..), not its feet
+        yaw = target->heading;
+        pitch = target->aimPitch;
+        if (target->missionIndex >= 0)
+            if (const int id = int(mission_.objects[size_t(target->missionIndex)].raw[1]); id != 0) {
+                char key[24];
+                std::snprintf(key, sizeof key, "NAMEID%03d", id);
+                if (const std::string* t = campText_.find("People Names", key)) name = *t;
+            }
+    }
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hideObject_ = target;
+    foPlayer_ = target == nullptr;
+    // Rings and object LODs at the inset's own focal length: (box width / 2)
+    // / tan 45 in mode pixels.
+    insetFocal_ = 0.5f * (w / s.u) * float(hudMode_ ? hudMode_ : 640) / 640.f;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    insetFocal_ = 0;
+    foPlayer_ = false;
+    hideObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float t = s.px();
+    hud_.rect(x0, y0, w, t, kHudBright);
+    hud_.rect(x0, y1, w + t, t, kHudBright);
+    hud_.rect(x0, y0, t, h, kHudBright);
+    hud_.rect(x1, y0, t, h, kHudBright);
+    if (!name.empty()) hud_.text(s.vx(0x2d4), s.playY + s.vy(0x114), name, kHudBright, s.text());
+    hud_.end();
+}
+
+// GOG Df2.exe 0x44e590 (Tab with the Forward Observer on): from the entry
+// after the current target (the start when there is none) to the end of
+// the organics table, then from the start up to the current one, the
+// first person in use on the player's side whose item has attrib 8 (FO)
+// and not +0x64 & 2; none: no target. INFERRED: the player's own entry
+// counts as before the first world person.
+void Game::df2FoNext() {
+    auto ok = [&](const WorldObject& o) {
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int cur = foTarget_ >= 0 && foTarget_ < n && !world_.objects[size_t(foTarget_)].removed ? foTarget_ : -1;
+    for (int i = cur + 1; i < n; ++i)
+        if (ok(world_.objects[size_t(i)])) { foTarget_ = i; return; }
+    for (int i = 0; i <= cur; ++i)
+        if (ok(world_.objects[size_t(i)])) { foTarget_ = i; return; }
+    foTarget_ = -2;
+}
+
+// GOG Df2.exe 0x465fde -> 0x456670 / 0x4559d0(1): the Forward Observer
+// inset, not on the scoped path and not while the video camera's inset is
+// on ([0x79a6b4] first). No target (or one no longer in use) turns it off.
+// Unless the player is dead (+0x64 & 4) or the target is on another side:
+// the target's view from its origin raised by the player's own eye offset
+// ([0x79a688]) with its yaw and pitch (+0x30 / +0x34), FOV 0x5a0000 (90
+// degrees across), into x 0x2c0..0x3c0, y view top + 0x40..+0x100 of the
+// 1024x768 frame, x rounded down to 4 pixels, the target itself not drawn
+// ([0xbf2b44]); then a one-pixel 0xff8000 outline and the target's name
+// (+0x54) at (x0 + 10, y1 + 10) in frame pixels (0x4577f0 flag 0).
+// GOG Df2.exe 0x465f90 -> 0x456480 (CD 0x45c610 -> 0x44eaf0), composited by
+// 0x4559d0(.., 0): unless the scope shows, in an outside view with
+// picture-in-picture on and the player alive (+0x64 & 4), the view from the
+// player's eye ([0x79a688] above the origin) with his yaw and pitch, FOV
+// 0x5a (90 degrees across), as the main first-person view ([0xbf2b40] 0,
+// the player the camera object: his body not drawn, no weapon), in x
+// 0x2c0..0x3c0 (rounded down to 4 pixels), y view top + 0x40..+0x100;
+// outlined in [0x67d37c], no name.
+void Game::drawDf2PinpInset(const Screen& s) {
+    if (!pinpShown() || scopeShown() || showMap_ || playerDead()) return;
+    const float k = s.art();
+    const float x0 = std::floor(std::floor(s.vx(0x2c0) / k) / 4.f) * 4.f * k, x1 = std::floor(std::floor(s.vx(0x3c0) / k) / 4.f) * 4.f * k;
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const Vec3 eye = player_.eye(), fwd = player_.forward();
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    foPlayer_ = true;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    foPlayer_ = false;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float px = std::max(1.f, k);
+    hud_.rect(x0, y0, w, px, kDf2Amber);
+    hud_.rect(x1, y0, px, h + px, kDf2Amber);
+    hud_.rect(x0, y1, w, px, kDf2Amber);
+    hud_.rect(x0, y0, px, h, kDf2Amber);
+    hud_.end();
+}
+
+void Game::drawDf2FoInset(const Screen& s) {
+    if (!foOn_ || arsenal_.cameraView() || scopeShown() || showMap_ || pinpShown()) return;
+    const WorldObject* t = nullptr;
+    if (foTarget_ >= 0) {
+        if (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed) { foOn_ = false; return; }
+        t = &world_.objects[size_t(foTarget_)];
+    } else if (foTarget_ != -1) {
+        foOn_ = false;
+        return;
+    }
+    if (playerDead() || (t && t->side != kPlayerSide)) return;
+    const float k = s.art();
+    const float x0 = std::floor(std::floor(s.vx(0x2c0) / k) / 4.f) * 4.f * k, x1 = std::floor(std::floor(s.vx(0x3c0) / k) / 4.f) * 4.f * k;
+    const float y0 = s.playY + s.vy(0x40), y1 = s.playY + s.vy(0x100);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeUp = player_.eye().y - player_.origin().y;
+    const Vec3 eye = t ? t->pos + Vec3{0, t->hip + eyeUp, 0} : player_.eye();   // the target's origin, not its feet
+    const float yaw = t ? t->heading : player_.yaw, pitch = t ? t->aimPitch : player_.pitch;
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hideObject_ = t;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    hideObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float px = std::max(1.f, k);
+    hud_.rect(x0, y0, w, px, kDf2Amber);
+    hud_.rect(x1, y0, px, h + px, kDf2Amber);
+    hud_.rect(x0, y1, w, px, kDf2Amber);
+    hud_.rect(x0, y0, px, h, kDf2Amber);
+    const std::string name = t ? df2PersonName(*t) : o_.soldierName;
+    hud_.text(x0 + 10.f * k, y1 + 10.f * k, name, kDf2Amber, s.text());
+    hud_.end();
+}
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
     // DF.EXE 0x401de4: no fill; dark green scanlines every 2 pixels from
     // y1 + 2, then a one-pixel outline in the HUD green.
@@ -2865,16 +5631,39 @@ void Game::drawTopBar(const Screen& s) {
         hud_.imageUV(stanceIcons_.texture, s.lx(50) - w / 2, s.y(3.75f), w, h, 0, frame / 3.f, 1, (frame + 1) / 3.f);
     }
 
-    // Weapon name (0x483444) at (75, 10); red while reloading or with no
-    // ammunition left at all (0x44b0a0 / 0x44b164).
+    // Health gauge (GOG Df.exe 0x426c30 -> 0x427780; CD 0x482dd0 -> 0x483834):
+    // single player with Player Health: Easy only (attributes 0x100). A bar
+    // x 16..26, y 16..76 virtual (640 units 10..16.25, 10..47.5): red lines
+    // (0x402270) from 60 - floor(hp * 60 / 16) below the top down to the
+    // bottom line inclusive, then the one-pixel HUD-green outline (0x402140,
+    // no scanlines), which covers the one red line left at 0 hp.
+    if ((o_.attributes & 0x100) && mission_.version < 0x0F) {
+        const int fillV = (std::max(playerHp_, 0) * 60) >> 4;   // hp * 3.75, virtual lines
+        const float X0 = s.lx(10), X1 = s.lx(16.25f), Y0 = s.y(10), Y1 = s.y(47.5f);
+        const float top = s.y(float(16 + 60 - fillV) * 0.625f);
+        hud_.rect(X0, top, X1 - X0 + t, Y1 + t - top, kHudRed);
+        hud_.rect(X0, Y0, X1 - X0 + t, t, kHudGreen);
+        hud_.rect(X0, Y1, X1 - X0 + t, t, kHudGreen);
+        hud_.rect(X0, Y0, t, Y1 - Y0 + t, kHudGreen);
+        hud_.rect(X1, Y0, t, Y1 - Y0 + t, kHudGreen);
+    }
+
+    // Weapon name (0x483444) at (75, 10), its colour from GOG Df.exe 0x4843b0
+    // (jump table 0x484380 on the fire type): guns red while reloading
+    // ([0xc23834]) or with no spares, magazine or chambered round; types
+    // 2 / 6 / 7 / 9 / 11 red while the refire time runs ([0xc23830]) or with
+    // no spares and nothing chambered (the magazine is not looked at); 8
+    // never; 10 with no fire missions left ([0xc23b78]); other types no name.
     const ModeDef& md = arsenal_.mode();
-    // Red (0x44b074): types 7 / 9 also while the cooldown runs; 8 never; 10
-    // with no fire missions left.
-    const bool outOfAmmo = md.type == 8 ? false
-                         : md.type == 10 ? fireMissions_ <= 0
-                         : (arsenal_.spares() <= 0 && arsenal_.rounds() <= 0 && !arsenal_.chambered()) ||
-                               ((md.type == 7 || md.type == 9) && arsenal_.firing());
-    hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), arsenal_.reloading() || outOfAmmo ? kHudRed : kHudGreen, ts);
+    bool nameRed = false, nameShown = true;
+    switch (md.type) {
+    case 1: nameRed = arsenal_.reloading() || (arsenal_.spares() == 0 && arsenal_.rounds() == 0 && !arsenal_.chambered()); break;
+    case 2: case 6: case 7: case 9: case 11: nameRed = arsenal_.firing() || (arsenal_.spares() == 0 && !arsenal_.chambered()); break;
+    case 8: break;
+    case 10: nameRed = fireMissions_ == 0; break;
+    default: nameShown = false; break;
+    }
+    if (nameShown) hud_.text(s.lx(75), s.y(10), arsenal_.modeName(), nameRed ? kHudRed : kHudGreen, ts);
 
     // Ammunition (0x483447, by fire type, jump table 0x483418), y 28.75-47.5:
     // guns: spare magazines with the magazine glyph (font character 1) at
@@ -2945,26 +5734,30 @@ void Game::drawTopBar(const Screen& s) {
     std::string grid = gridName(player_.missionX(), player_.missionY());
     hud_.text(s.rx(450) - hud_.textWidth(grid, ts) / 2, s.y(13.1f), grid, kHudGreen, ts);
     {
-        // 0x48375b: the carried item's name by id.
-        std::string what = "Nothing";
+        // 0x48375b: the carried item's name by id (GOG Df.exe 0x427640:
+        // the whole line from Overlays STROVER8..17).
+        const char* key = "STROVER8";
+        const char* what = "Nothing";
         if (carried_ >= 0 && world_.objects[size_t(carried_)].item) {
             switch (world_.objects[size_t(carried_)].item->id - 100000) {
-            case 4008: what = "Metal Case"; break;
-            case 4018: what = "Case"; break;
-            case 4021: what = "Black Box"; break;
-            case 4034: what = "Laptop"; break;
-            case 4035: what = "Red Flag"; break;
-            case 4036: what = "Blue Flag"; break;
-            case 4038: what = "Code Book"; break;
-            case 4077: what = "Bomb!"; break;
-            default: what = "Unknown"; break;
+            case 4008: key = "STROVER13"; what = "Metal Case"; break;
+            case 4018: key = "STROVER12"; what = "Case"; break;
+            case 4021: key = "STROVER9"; what = "Black Box"; break;
+            case 4034: key = "STROVER10"; what = "Laptop"; break;
+            case 4035: key = "STROVER15"; what = "Red Flag"; break;
+            case 4036: key = "STROVER16"; what = "Blue Flag"; break;
+            case 4038: key = "STROVER11"; what = "Code Book"; break;
+            case 4077: key = "STROVER14"; what = "Bomb!"; break;
+            default: key = "STROVER17"; what = "Unknown"; break;
             }
         }
-        hud_.text(s.rx(490.6f), s.y(13.1f), "Carrying: " + what, kHudGreen, ts);
+        hud_.text(s.rx(490.6f), s.y(13.1f), df1Text("Overlays", key, (std::string("Carrying: ") + what).c_str()), kHudGreen, ts);
     }
     // "WP%i: %s (%s)", distance "%im" or "%ikm+" (0x4838ac): whole metres of
-    // x and y difference, integer square root; "None" without a route.
-    std::string wp = "None";
+    // x and y difference, integer square root; "None" without a route. GOG
+    // Df.exe 0x427800: Overlays STROVER18 for "None", "%s%i: %s (%s)" with
+    // STROVER55 for "WP".
+    std::string wp = df1Text("Overlays", "STROVER18", "None");
     if (!route_.empty()) {
         const RoutePoint& p = route_[size_t(routeIndex_)];
         const long dx = long(std::floor(p.x - player_.missionX())), dy = long(std::floor(p.y - player_.missionY()));
@@ -2972,7 +5765,7 @@ void Game::drawTopBar(const Screen& s) {
         char dist[32], line[128];
         if (d < 1000) std::snprintf(dist, sizeof dist, "%ldm", d);
         else std::snprintf(dist, sizeof dist, "%ldkm+", d / 1000);
-        std::snprintf(line, sizeof line, "WP%d: %s (%s)", routeIndex_ + 1, p.name.c_str(), dist);
+        std::snprintf(line, sizeof line, "%s%d: %s (%s)", df1Text("Overlays", "STROVER55", "WP").c_str(), routeIndex_ + 1, p.name.c_str(), dist);
         wp = line;
     }
     hud_.text(s.rx(425), s.y(38.1f), wp, kHudGreen, ts);
@@ -3018,11 +5811,16 @@ void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, f
         hud_.line(x - r, y - r, x + r, y - r, t, c); hud_.line(x + r, y - r, x + r, y + r, t, c);
         hud_.line(x + r, y + r, x - r, y + r, t, c); hud_.line(x - r, y + r, x - r, y - r, t, c);
         break;
-    case 7:                                                                   // circle with X
+    case 7: {                                                                 // circle with X
+        // The circle, then the X to the square's corners (+-r): GOG Df.exe
+        // 0x48f5d0 -> 0x474730; GOG Df2.exe 0x4273b0 case 7 -> 0x4586f0, as
+        // a dead soldier's.
+        const float d = r;
         hud_.ring(x, y, r, t, c);
-        hud_.line(x - r * 0.7f, y - r * 0.7f, x + r * 0.7f, y + r * 0.7f, t, c);
-        hud_.line(x - r * 0.7f, y + r * 0.7f, x + r * 0.7f, y - r * 0.7f, t, c);
+        hud_.line(x - d, y - d, x + d, y + d, t, c);
+        hud_.line(x - d, y + d, x + d, y - d, t, c);
         break;
+    }
     case 8:                                                                   // triangle pointing east
         hud_.line(x - r, y - r, x + r, y, t, c); hud_.line(x + r, y, x - r, y + r, t, c);
         hud_.line(x - r, y + r, x - r, y - r, t, c);
@@ -3031,82 +5829,202 @@ void Game::drawMapMarker(const Screen& s, float x, float y, int type, Color c, f
     }
 }
 
+void Game::trackMapPositions() {
+    if (mapTrack_.size() > world_.objects.size()) mapTrack_.clear();
+    const double ext = terrain_.mapExtent();
+    auto unwrap = [&](double wrapped, double mission) {
+        double d = std::fmod(wrapped - mission, ext);
+        if (d > ext / 2) d -= ext;
+        else if (d < -ext / 2) d += ext;
+        return mission + d;
+    };
+    for (size_t i = 0; i < world_.objects.size(); ++i) {
+        const WorldObject& o = world_.objects[i];
+        if (i >= mapTrack_.size()) {
+            // A mission object starts at its record's position; one spawned
+            // later where it is seen from the player.
+            if (o.missionIndex >= 0) {
+                mapTrack_.push_back({unwrap(o.pos.x, o.missionX), unwrap(-o.pos.z, o.missionY), o.pos});
+            } else {
+                const Vec3 d = world_.nearest(o.pos, player_.feet) - player_.feet;
+                mapTrack_.push_back({player_.missionX() + d.x, player_.missionY() - d.z, o.pos});
+            }
+            continue;
+        }
+        MapTrack& m = mapTrack_[i];
+        const Vec3 d = world_.nearest(o.pos, m.last) - m.last;
+        m.x += d.x;
+        m.y -= d.z;
+        m.last = o.pos;
+    }
+}
+
 void Game::drawCommandMap(const Screen& s) {
-    // DF.EXE 0x43cfc8: the terrain colour map over the whole 3D view, centred
-    // on the player, north up. Scale [0x933540] (default 1) is world metres
+    // GOG Df.exe 0x48f9b0 -> 0x48e070(x 0..0x400, the 3D view's rows, grid 1,
+    // border 0, double 1); CD 0x43cfc8.
+    drawDf1Map(s, 0, s.playY, s.w, s.playY + s.playH, true);
+}
+
+void Game::drawGpsInset(const Screen& s) {
+    // GOG Df.exe 0x48e010 (CD 0x43cf6c) while [0xc23a2c] is set:
+    // 0x48e070(32, 16, 350, 340, grid 0, border 1, double 0) in 1024x768
+    // units from the 3D view's top ([0x67dba0]); the bottom grows by 25 for
+    // each map key line ([0xcc0710] * 0x19). Left-anchored in wider windows
+    // (OpenDF).
+    const float k = s.vy(1);
+    const float y1 = std::min(s.playY + s.playH, s.playY + (340.f + 25.f * float(mapKeyLines_)) * k);
+    drawDf1Map(s, 32.f * k, s.playY + 16.f * k, 350.f * k, y1, false);
+}
+
+void Game::drawDf1Map(const Screen& s, float x0, float y0, float x1, float y1, bool full) {
+    // GOG Df.exe 0x48e070 (CD 0x43cfc8): the terrain colour map, centred on
+    // the player, north up. Scale [0xc23a28] (default 1) is world metres
     // per pixel x 1024 / W, i.e. 0.625 / scale pixels per metre at 640.
-    const float x0 = 0, y0 = s.playY, w = s.w, h = s.playH, t = s.px();
+    // [0xc23a30] (F11) draws the elevation ramp (0x48df90) instead.
+    const float w = x1 - x0, h = y1 - y0, t = s.px();
+    if (w <= 0 || h <= 0) return;
+    trackMapPositions();
     const float pxPerM = s.u * 0.625f / mapScale_;
     const float ext = terrain_.mapExtent();
     const float halfW = w / pxPerM * 0.5f, halfH = h / pxPerM * 0.5f;
     const Vec3 c = player_.feet;
     const float u0 = (c.x - halfW) / ext, u1 = (c.x + halfW) / ext;
     const float v0 = (c.z - halfH) / ext, v1 = (c.z + halfH) / ext;
-    hud_.imageUV(terrain_.colorTexture(), x0, y0, w, h, u0, v0, u1, v1);
+    // The colour picture: point-sampled, water tinted (Terrain::mapTexture).
+    const GLuint colour = terrain_.mapTexture() ? terrain_.mapTexture() : terrain_.colorTexture();
+    const GLuint picture = gpsElevation_ && terrain_.elevationTexture() ? terrain_.elevationTexture() : colour;
+    hud_.imageUV(picture, x0, y0, w, h, u0, v0, u1, v1);
 
+    const float midX = x0 + w / 2, midY = y0 + h / 2;
     const double mx = player_.missionX(), my = player_.missionY();
     auto toScreen = [&](double x, double y) {
-        return std::pair<float, float>{x0 + w / 2 + float(x - mx) * pxPerM, y0 + h / 2 + float(my - y) * pxPerM};
+        return std::pair<float, float>{midX + float(x - mx) * pxPerM, midY + float(my - y) * pxPerM};
     };
+    // Markers are drawn within the map's rectangle (0x473ca0 .. 0x473c70),
+    // 5 units of 1024 across, doubled on the command map ([0xcc0730]).
+    hud_.clip(x0, y0, w, h);
+    const float markR = s.vy(full ? 10.f : 5.f);
 
-    // Grid (0x43e16c / 0x43e258): 100 m, one pixel, bright green; labels
-    // white with a black outline: columns centred at the top, rows at the left.
-    const float sq = float(kGridSquare) * pxPerM, ts = s.text();
-    for (double gx = std::ceil((mx - halfW) / kGridSquare) * kGridSquare; gx <= mx + halfW; gx += kGridSquare) {
-        const float sx = toScreen(gx, my).first;
-        hud_.rect(sx, y0, t, h, kHudBright);
-        const std::string label = gridColumn(gx + kGridSquare / 2);
-        outlinedText(sx + sq * 0.5f - hud_.textWidth(label, ts) / 2, y0 + t, label, kHudWhite, ts, kHudBlack);
-    }
-    for (double gy = std::floor((my + halfH) / kGridSquare) * kGridSquare; gy >= my - halfH; gy -= kGridSquare) {
-        const float sy = toScreen(mx, gy).second;
-        hud_.rect(x0, sy, w, t, kHudBright);
-        outlinedText(x0 + 2 * t, sy + sq * 0.5f - s.y(4), std::to_string(gridRow(gy - kGridSquare / 2)), kHudWhite, ts,
-                     kHudBlack);
+    if (full) {
+        // Grid (0x43e16c / 0x43e258): 100 m, one pixel, bright green; labels
+        // white with a black outline: columns centred at the top, rows at the left.
+        // A label is left out when its centre is within 16 (columns) or 5
+        // (rows) display-mode pixels of the map's edges (0x48f2f0 / 0x48f3e0
+        // against the clip rectangle +0x1814..+0x1820).
+        const float sq = float(kGridSquare) * pxPerM, ts = s.text(), mp = s.art();
+        for (double gx = std::ceil((mx - halfW) / kGridSquare) * kGridSquare; gx <= mx + halfW; gx += kGridSquare) {
+            const float sx = toScreen(gx, my).first;
+            hud_.rect(sx, y0, t, h, kHudBright);
+            const float lx = sx + sq * 0.5f;
+            if (lx - 16 * mp < x0 || lx + 16 * mp > x1) continue;
+            const std::string label = gridColumn(gx + kGridSquare / 2);
+            outlinedText(lx - hud_.textWidth(label, ts) / 2, y0 + t, label, kHudWhite, ts, kHudBlack);
+        }
+        for (double gy = std::floor((my + halfH) / kGridSquare) * kGridSquare; gy >= my - halfH; gy -= kGridSquare) {
+            const float sy = toScreen(mx, gy).second;
+            hud_.rect(x0, sy, w, t, kHudBright);
+            const float ly = sy + sq * 0.5f;
+            if (ly - 5 * mp < y0 || ly + 5 * mp > y1) continue;
+            outlinedText(x0 + 2 * t, ly - s.y(4), std::to_string(gridRow(gy - kGridSquare / 2)), kHudWhite, ts, kHudBlack);
+        }
     }
 
-    // Route lines between the player's waypoints (0x43e340), bright green.
+    // Map objects (GOG Df.exe 0x48e070, CD 0x43cfc8): the live objects of
+    // groups 0, 1 and 2 (0x7dde80 / 0x867e80 / 0x8ace80) whose marker type
+    // (+0x76, record byte +0x4C) is nonzero, in their side's colour (0 green,
+    // 1 blue, 2 red), each at its current position (0x48f5d0: +0x24/+0x28),
+    // so a driving convoy moves on the map; a soldier shape takes the
+    // object's heading (+0x30) and is an X once dead (+0x6C & 4). Removed
+    // and never-created objects are zeroed there and not drawn; a carried
+    // goal item is only flagged (+0x6c |= 0x102), so it stays on the map at
+    // the carrier's origin (C02M02's code book moves with you); records with
+    // no world object here (bare markers) are at their file position. Only
+    // the group-2 object that is the current route point blinks: drawn while
+    // tick bit 0x10 is set ([0x6e471c]; 16 ticks on, 16 off).
+    auto sideColour = [](int side) { return side == 1 ? kHudBlue : side == 2 ? kHudRed : kHudPureGreen; };
+    const MissionObject* current = nullptr;
+    if (!route_.empty()) current = route_[size_t(routeIndex_)].object;
+    std::vector<const WorldObject*> live(mission_.objects.size(), nullptr);
+    for (const auto& o : world_.objects)
+        if (o.missionIndex >= 0 && size_t(o.missionIndex) < live.size()) live[size_t(o.missionIndex)] = &o;
+    // 0x48f5d0 places each at its true offset from the player (no wrap) and
+    // skips it when either offset is more than the half width plus a pixel
+    // step ([0xcc0728], the horizontal half width for both axes).
+    const double reach = double(halfW) + 1.0 / double(pxPerM);
+    auto place = [&](double x, double y, float& sx, float& sy) {
+        if (std::abs(x - mx) > reach || std::abs(y - my) > reach) return false;
+        const auto p = toScreen(x, y);
+        sx = p.first;
+        sy = p.second;
+        return true;
+    };
+    // GOG Df.exe 0x48e070 draws, in order: the soldiers, groups 0, 1 and 2,
+    // the route lines, then the player.
+    // Soldiers by the GPS option (0x43d445): 0 none, 1 (default) those whose
+    // record +0x4C is set, 2 all; drawn as soldier markers, an X once dead.
+    if (o_.gpsIcons > 0)
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const WorldObject& o = world_.objects[i];
+            if (o.missionGroup != 3 || !o.person || o.removed) continue;
+            if (o_.gpsIcons == 1 && !o.mapMarker) continue;
+            float sx, sy;
+            if (!place(mapTrack_[i].x, mapTrack_[i].y, sx, sy)) continue;
+            drawMapMarker(s, sx, sy, 5, sideColour(o.side), o.heading, o.dead, markR);
+        }
+    for (int g = 0; g < 3; ++g) {
+        for (size_t i = 0; i < mission_.objects.size(); ++i) {
+            const MissionObject& o = mission_.objects[i];
+            const int type = o.raw[19] & 0xFF;
+            if (!type || o.group != g || o.omitted) continue;
+            const WorldObject* wo = live[i];
+            if (wo && wo->removed && !wo->carried) continue;
+            if (o.group == 2 && &o == current && !(frameClock_ & 16)) continue;
+            float sx, sy;
+            const MapTrack* tr = wo ? &mapTrack_[size_t(wo - world_.objects.data())] : nullptr;
+            if (!place(tr ? tr->x : o.x, tr ? tr->y : o.y, sx, sy)) continue;
+            drawMapMarker(s, sx, sy, type, sideColour((uint32_t(o.raw[16]) >> 24) & 0xFF), wo ? wo->heading : 0,
+                          wo && wo->dead, markR);
+        }
+    }
+    // Route lines between the player's waypoints (0x43e340, GOG 0x48f4d0),
+    // over the markers, bright green.
     for (size_t i = 0; i + 1 < route_.size(); ++i) {
         auto [ax, ay] = toScreen(route_[i].x, route_[i].y);
         auto [bx, by] = toScreen(route_[i + 1].x, route_[i + 1].y);
         hud_.line(ax, ay, bx, by, t, kHudBright);
     }
 
-    // Map objects: anything in file groups 0-2 whose record +0x4C is nonzero
-    // is drawn with that marker type in its side's colour (0 green, 1 blue,
-    // 2 red). The current waypoint blinks: drawn while tick bit 4 is set
-    // (0x43d975; 16 ticks on, 16 off).
-    auto sideColour = [](int side) { return side == 1 ? kHudBlue : side == 2 ? kHudRed : kHudPureGreen; };
-    const MissionObject* current = nullptr;
-    if (!route_.empty()) current = route_[size_t(routeIndex_)].object;
-    for (const auto& o : mission_.objects) {
-        const int type = o.raw[19] & 0xFFFF;
-        if (!type || o.group == 3) continue;
-        if (&o == current && !(ticks_ & 16)) continue;
-        auto [sx, sy] = toScreen(o.x, o.y);
-        if (sx < x0 - 20 || sx > x0 + w + 20 || sy < y0 - 20 || sy > y0 + h + 20) continue;
-        drawMapMarker(s, sx, sy, type, sideColour((uint32_t(o.raw[16]) >> 24) & 0xFF), 0, false);
-    }
-    // Soldiers by the GPS option (0x43d445): 0 none, 1 (default) those whose
-    // record +0x4C is set, 2 all; drawn as soldier markers, an X once dead.
-    if (o_.gpsIcons > 0)
-        for (const auto& o : world_.objects) {
-            if (o.missionGroup != 3 || !o.person || o.removed) continue;
-            if (o_.gpsIcons == 1 && !o.mapMarker) continue;
-            Vec3 at = world_.nearest(o.pos, c);
-            const float sx = x0 + w / 2 + (at.x - c.x) * pxPerM, sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
-            drawMapMarker(s, sx, sy, 5, sideColour(o.side), o.heading, o.dead);
-        }
     // The player: a soldier marker in the team colour (side 1, blue).
-    drawMapMarker(s, x0 + w / 2, y0 + h / 2, 5, kHudBlue, player_.yaw, false);
+    drawMapMarker(s, midX, midY, 5, kHudBlue, player_.yaw, false, markR);
+    hud_.unclip();
 
-    // Compass rose (0x43dec0): centre (560, 315), arms 40, inner points 5;
-    // the main cross, a small X, and a four-pointed star (0x42529c lines in
-    // [0x66f94c]); N in [0x66f930] (white), E S W in [0x66f94c], the lines'
-    // own colour (0x43e0c7 / 0x43e0f2 / 0x43e118 / 0x43e13e, through 0x43ddf4
-    // with flag 2), black-outlined.
+    if (!full) {
+        // The inset's north arrow (0x48e070, flag 0): in 1024x768 units from
+        // its right edge x1 and top y0, lines (x1-50, y0+20) to (x1-50,
+        // y0+70), (x1-40, y0+40) and (x1-60, y0+40), "N" centred at (x1-70,
+        // y0+20), all in [0x67db5c] (bright green); then a one-pixel border
+        // round the rectangle in the same colour.
+        const float k = s.vy(1), ax = x1 - 50 * k, ay = y0 + 20 * k, ts = s.text();
+        hud_.line(ax, ay, ax, ay + 50 * k, t, kHudBright);
+        hud_.line(ax, ay, ax + 10 * k, ay + 20 * k, t, kHudBright);
+        hud_.line(ax, ay, ax - 10 * k, ay + 20 * k, t, kHudBright);
+        hud_.text(x1 - 70 * k - hud_.textWidth("N", ts) / 2, ay, "N", kHudBright, ts);
+        hud_.rect(x0, y0, w, t, kHudBright);
+        hud_.rect(x0, y1 - t, w, t, kHudBright);
+        hud_.rect(x0, y0, t, h, kHudBright);
+        hud_.rect(x1 - t, y0, t, h, kHudBright);
+        return;
+    }
+
+    // Compass rose (0x43dec0, GOG 0x48f040): centre (W * 7/8, 3D rows * 7/8
+    // from the screen's top: (560, 315) with the default letterbox), arms
+    // W/16, inner points W/128; labels at x + 1 and y - 4, offset by arm +
+    // inner point; the main cross, a small X, and a four-pointed star
+    // (0x42529c lines in [0x66f94c]); N in [0x66f930] (white), E S W in
+    // [0x66f94c], the lines' own colour (0x43e0c7 / 0x43e0f2 / 0x43e118 /
+    // 0x43e13e, through 0x43ddf4 with flag 2), black-outlined.
     {
-        const float rx = s.rx(560), ry = s.y(315), a = s.y(40), i = s.y(5);
+        const float rx = s.rx(560), ry = s.playH * 7.f / 8.f, a = s.y(40), i = s.y(5), ts = s.text();
         hud_.line(rx - a, ry, rx + a, ry, t, kHudBright);
         hud_.line(rx, ry - a, rx, ry + a, t, kHudBright);
         hud_.line(rx - i, ry - i, rx + i, ry + i, t, kHudBright);
@@ -3120,13 +6038,13 @@ void Game::drawCommandMap(const Screen& s) {
             hud_.line(tx, ty, rx + ax, ry + ay, t, kHudBright);
             hud_.line(tx, ty, rx + bx, ry + by, t, kHudBright);
         }
-        auto label = [&](const char* l, float x, float y, Color col) {
-            outlinedText(s.rx(x) - hud_.textWidth(l, ts) / 2, s.y(y), l, col, ts, kHudBlack);
+        auto label = [&](const char* l, float dx, float dy, Color col) {
+            outlinedText(rx + s.y(1 + dx) - hud_.textWidth(l, ts) / 2, ry + s.y(dy - 4), l, col, ts, kHudBlack);
         };
-        label("N", 561, 266, kHudWhite);
-        label("E", 606, 311, kHudBright);
-        label("S", 561, 356, kHudBright);
-        label("W", 516, 311, kHudBright);
+        label("N", 0, -45, kHudWhite);
+        label("E", 45, 0, kHudBright);
+        label("S", 0, 45, kHudBright);
+        label("W", -45, 0, kHudBright);
     }
 }
 
@@ -3140,35 +6058,93 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         hud_.end();
         return;
     }
-    if (showMap_) drawCommandMap(s);
-    else if (crosshair_ && df2Hud_.on) {
-        // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
-        // W*640/65536 mode pixels from the centre of the 3D rows.
-        const float a = float(s.modeW * 320 / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
-        hud_.rect(cx - a - b, cy, b, t, kDf2Amber);
-        hud_.rect(cx + a, cy, b, t, kDf2Amber);
-        hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
-        hud_.rect(cx, cy + a, t, b, kDf2Amber);
-    } else if (crosshair_) {
-        // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to the
-        // left/top and 5..11 to the right/bottom of the centre.
-        hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
-        hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
-        hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
-        hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
+    // GOG Df2.exe 0x465fde: the friendly tags (0x44fe70) before the
+    // crosshair and target identification (0x4642b0).
+    // GOG Df2.exe 0x455be0 then copies the scope image over the frame, so
+    // tags inside the scope disc (the stencil drawZoomInset left at 1) are
+    // covered by it.
+    if (!showMap_ && friendlyTags_ && df2Hud_.on) {
+        const bool underScope = scopeShown();
+        if (underScope) {
+            hud_.end();
+            glEnable(GL_STENCIL_TEST);
+            glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            hud_.begin(int(s.w), int(s.h));
+        }
+        drawDf2FriendlyTags(s, viewProj);
+        if (underScope) {
+            hud_.end();
+            glDisable(GL_STENCIL_TEST);
+            hud_.begin(int(s.w), int(s.h));
+        }
     }
+    if (showMap_) drawCommandMap(s);
+    else if (df2Hud_.on && outsideView() == 0) {   // GOG Df2.exe 0x465fde: [0x79a7fc] and mode 0
+        // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
+        // W*640/65536 mode pixels from the centre of the 3D rows. GOG
+        // Df2.exe 0x4642b0 (LAB_0046434a): the gap W*1024/65536 while the
+        // player mans a gun (+0x8c); at LAB_00464776 the laser designator
+        // (mode 0x1b) ignores the Crosshairs option ([0x67cd04]): the lines
+        // while its scope flag holds (0x44eba0), else Overlays STROVER90
+        // blinking (tick bit 0x10) centred W*0x380/65536 above the centre,
+        // in [0x67d37c] (the CD's 0x45a9e0 the same, with a literal "No Target").
+        const float a = float(s.modeW * df2CrosshairGap() / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
+        const bool designator = arsenal_.modeIndex() == 0x1b;
+        if (designator && !arsenal_.zoomed()) {
+            if (ticks_ & 0x10) {
+                const std::string nt = arsenal_.df2Gog() ? df2Text("Overlays", "STROVER90", "No Target") : std::string("No Target");
+                hud_.text(cx - hud_.textWidth(nt, s.text()) / 2, cy - float(s.modeW * 0x380 / 65536) * s.art(), nt, kDf2Amber, s.text());
+            }
+        } else if (designator || crosshair_) {
+            hud_.rect(cx - a - b, cy, b, t, kDf2Amber);
+            hud_.rect(cx + a, cy, b, t, kDf2Amber);
+            hud_.rect(cx, cy - a - b, t, b, kDf2Amber);
+            hud_.rect(cx, cy + a, t, b, kDf2Amber);
+        }
+    } else if (!df2Hud_.on && !playerDead() && outsideView() == 0) {
+        // GOG Df.exe 0x402300 (nothing in an outside view, [0x6ba3ec]): with
+        // the laser designator (mode 0x1b) the Crosshairs option
+        // ([0x67f504]) is not looked at: the arms while its scope is up
+        // (0x484740), else STRMISC15 "No Target" blinking (tick bit 0x10,
+        // [0x6e471c]) centred at (512, 370) in [0x67db5c] (0x4026b4).
+        const bool designator = arsenal_.modeIndex() == 0x1b;
+        if (designator && !scopeShown()) {
+            if (frameClock_ & 0x10) {
+                const std::string nt = df2Text("Misc", "STRMISC15", "No Target");
+                hud_.text(cx - hud_.textWidth(nt, s.text()) / 2, cy - s.vy(14), nt, kHudBright, s.text());
+            }
+        } else if (designator || crosshair_) {
+            // DF.EXE 0x401f94: four one-pixel arms in bright green, 4..10 to
+            // the left/top and 5..11 to the right/bottom of the centre.
+            hud_.rect(cx - s.y(10), cy, s.y(6), t, kHudBright);
+            hud_.rect(cx + s.y(5), cy, s.y(6), t, kHudBright);
+            hud_.rect(cx, cy - s.y(10), t, s.y(6), kHudBright);
+            hud_.rect(cx, cy + s.y(5), t, s.y(6), kHudBright);
+        }
+    }
+    // GOG Df2.exe 0x4642b0: friend / neutral identification, with the
+    // crosshairs on or off; none in an outside view (returns after the pick
+    // while [0xbf2b40] is set).
+    if (!showMap_ && df2Hud_.on && outsideView() == 0) drawDf2TargetId(s, cx, cy, 0);
+    // GOG Df.exe 0x402300: the same-side mark, with the crosshairs on or
+    // off; nothing outside the first-person view ([0x6ba3ec] != 0).
+    if (!showMap_ && !df2Hud_.on && !playerDead() && outsideView() == 0) drawDf1TargetId(s, cx, cy, 0);   // 0x402300 returns in an outside view
 
     // Scope inset (0x450600): centre (480, 240), radius 100, a one-pixel
     // bright green border, ticks from r/4 to r/2 in the four directions, the
     // range "%3im" at (500, 312.5).
     if (scopeShown() && !showMap_ && df2Hud_.on) {
         // DF2.EXE 0x44e2a0: a black ring; posts solid black from the edge to
-        // r/2, the inner ±r/2 segments half blended with 0x000080; the range
-        // "%4im" at (780, 500) in orange ("10km+", "1m-"); the zeroing "%4im"
-        // (setting × 100 m, keys X/Z 0x445ff0) at (700, 500) in
-        // yellow, not for the LAW; the laser designator's square of r/8.
+        // r/2, the inner ±r/2 segments halved (GOG Df2.exe 0x457480 / CD
+        // 0x44f940 with colour 0: pixel / 2 + 0; the 0x80 after it is an
+        // unused argument); the range "%4im" at (780, 500) in orange
+        // ("10km+", "1m-"); the zeroing "%4im" (setting × 100 m, keys X/Z
+        // 0x445ff0) at (700, 500) in yellow, not for the LAW; the laser
+        // designator's diamond (GOG 0x455be0: vertices on the axes r/8 out,
+        // 0x41e8c0(0)).
         const float zx = s.cx(160), zy = s.h * 0.5f, r = s.y(100);
-        const Color black{0.004f, 0.004f, 0.004f, 1}, navy{0, 0, 0.5f, 0.5f};
+        const Color black{0.004f, 0.004f, 0.004f, 1}, half{0.5f, 0.5f, 0.5f, 1};
         hud_.ring(zx, zy, r, t, black);
         const bool laser = arsenal_.mode().type == 10;
         if (!laser) {
@@ -3176,16 +6152,16 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             hud_.rect(zx + r / 2, zy, r / 2, t, black);
             hud_.rect(zx, zy - r, t, r / 2, black);
             hud_.rect(zx, zy + r / 2, t, r / 2, black);
-            hud_.rect(zx - r / 2, zy, r, t, navy);
-            hud_.rect(zx, zy - r / 2, t, r, navy);
+            hud_.multiply(zx - r / 2, zy, r, t, half);
+            hud_.multiply(zx, zy - r / 2, t, r, half);
         } else {
             const float d = r / 8;
-            hud_.rect(zx - d, zy - d, 2 * d, t, kDf2Amber);
-            hud_.rect(zx - d, zy + d, 2 * d, t, kDf2Amber);
-            hud_.rect(zx - d, zy - d, t, 2 * d, kDf2Amber);
-            hud_.rect(zx + d, zy - d, t, 2 * d, kDf2Amber);
+            hud_.line(zx - d, zy, zx, zy - d, t, kDf2Amber);
+            hud_.line(zx, zy - d, zx + d, zy, t, kDf2Amber);
+            hud_.line(zx + d, zy, zx, zy + d, t, kDf2Amber);
+            hud_.line(zx, zy + d, zx - d, zy, t, kDf2Amber);
         }
-        const float range = rangeToAim();
+        const float range = df2ScopeRange();
         char buf[32];
         if (laser) {
             if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
@@ -3193,7 +6169,7 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             hud_.text(s.vx(770) - hud_.textWidth(buf, s.text()) / 2, s.vy(450), buf, kDf2Amber, s.text());
             const bool target = range >= 0 && range <= 999;
             const char* status = target ? "Laser Active" : "No Target";
-            if (target || (ticks_ & 0x10))
+            if (target || (frameClock_ & 0x10))
                 hud_.text(s.vx(770) - hud_.textWidth(status, s.text()) / 2, s.vy(300), status, kDf2Amber, s.text());
         } else {
             if (range < 0 || range > 9999) std::snprintf(buf, sizeof buf, "10km+");
@@ -3203,8 +6179,16 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the magnification "%2ix" ([0x79a698],
+                // 0x4cc418) at (700, 480) in the same yellow ([0x67d370]); the
+                // CD build has none.
+                if (arsenal_.df2Gog()) {
+                    std::snprintf(buf, sizeof buf, "%2dx", arsenal_.df2Magnification());
+                    hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
+                }
             }
         }
+        drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
     } else if (scopeShown() && !showMap_) {
         const float zx = s.cx(160), zy = cy, r = s.y(100);
         hud_.ring(zx, zy, r, t, kHudBright);
@@ -3227,12 +6211,14 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             hud_.line(zx, zy - d, zx + d, zy, t, kHudBright);
             hud_.line(zx + d, zy, zx, zy + d, t, kHudBright);
             hud_.line(zx, zy + d, zx - d, zy, t, kHudBright);
-            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "Range: 1km+");
-            else std::snprintf(buf, sizeof buf, "Range: %3im", int(range));
+            // GOG Df.exe 0x466090: Misc STRMISC13 / "%s %3im" with STRMISC14,
+            // STRMISC16 / STRMISC15.
+            if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "%s", df1Text("Misc", "STRMISC13", "Range: 1km+").c_str());
+            else std::snprintf(buf, sizeof buf, "%s %3im", df1Text("Misc", "STRMISC14", "Range:").c_str(), int(range));
             hud_.text(s.vx(770) - hud_.textWidth(buf, s.text()) / 2, s.vy(450), buf, kHudBright, s.text());
             const bool target = range >= 0 && range <= 999;
-            const char* status = target ? "Laser Active" : "No Target";
-            if (target || (ticks_ & 0x10))
+            const std::string status = target ? df1Text("Misc", "STRMISC16", "Laser Active") : df1Text("Misc", "STRMISC15", "No Target");
+            if (target || (frameClock_ & 0x10))
                 hud_.text(s.vx(770) - hud_.textWidth(status, s.text()) / 2, s.vy(300), status, kHudBright, s.text());
         } else {
             if (range < 0 || range > 999) std::snprintf(buf, sizeof buf, "1km+");
@@ -3240,25 +6226,44 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             else std::snprintf(buf, sizeof buf, "%3dm", int(range));
             hud_.text(s.cx(180), s.y(312.5f), buf, kHudBright, s.text());
         }
+        drawDf1TargetId(s, zx, zy, r);   // GOG Df.exe 0x466090 (0x46662c)
+    }
+
+    // GOG Df2.exe 0x448fd0: the top (0x448770) and bottom (0x448620) panels
+    // first, then the breath bar, dead text, goals, help, boxes, messages
+    // and pause over them.
+    if (df2Hud_.on) {
+        drawDf2Strips(s);
+        drawDf2Top(s);
+        drawDf2Bottom(s);
     }
 
     if (showGoals_) drawGoals(s);
-    if (missionResult_ >= 0) drawMissionEnd(s);
+    // The end panel is not drawn while the End Mission box is open (DF.EXE
+    // 0x48309b, DF2.EXE 0x441660).
+    if (missionResult_ >= 0 && !quitBox_) drawMissionEnd(s);
     // 0x482f02: dead, until the mission is over: "You Are Dead" centred at
     // x 512, top + 0x14 (as the end panel), in the message colour
     // ([0x66f948]: colour table entry [0x66fa48], white by default).
     if (playerDead() && missionResult_ < 0 && df2Hud_.on) {
         // DF2.EXE: STRMISC11 centred at (512, top+20) in the HUD colour
-        // ([0x653618], white by default).
+        // ([0x653618], white by default; GOG Df2.exe 0x448fd0: [0x67d378],
+        // the hudcolor choice).
         const std::string dead = df2Text("Misc", "STRMISC11", "You are dead.");
-        hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudWhite, s.text());
+        hud_.text(s.vx(512) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, df2HudColour(), s.text());
     } else if (playerDead() && missionResult_ < 0) {
-        const char* dead = "You Are Dead";
-        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.y(72.5f), dead, kHudMessage, s.text());
+        // GOG Df.exe 0x426c30: at the view's top ([0x67dba0]) + 20, DFGAME.BIN
+        // Misc STRMISC11 ("You are dead."); the CD build's text is in the
+        // EXE (0x4c051c). (STRMISC12 "Respawn allowed in:" below it
+        // only in multiplayer: 0x471900 returns 0 with [0x67f520] clear.)
+        const std::string dead = df1Text("Misc", "STRMISC11", "You Are Dead");
+        hud_.text(s.cx(0) - hud_.textWidth(dead, s.text()) / 2, s.playY + s.vy(20), dead, kHudMessage, s.text());
     }
 
-    if (friendlyTags_) drawFriendlyTags(s, viewProj);
-    if (binoculars_ && !playerDead()) drawBinoculars(s);
+    // GOG Df.exe: the tags (0x485a90) and the binocular texts (0x402300) are
+    // in the 3D frame 0x404640 only, not in the map frame 0x48f9b0.
+    if (friendlyTags_ && !df2Hud_.on && !showMap_) drawFriendlyTags(s, viewProj);
+    if (binoculars_ && !playerDead() && (df2Hud_.on || (outsideView() == 0 && !showMap_))) drawBinoculars(s);   // DF1 0x402300: first person only
     // Delta Force 2's breath bar (0x441540) while the air count is not 0, in
     // the virtual 1024x768 space: half-width w = 100 - air*100/2880 about
     // x 512, 10 high, 20 below the 3D view's top; cyan, red over 2240;
@@ -3270,18 +6275,34 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
         if (w > 0) hud_.rect(s.vx(512.f - float(w)), top, s.vx(512.f + float(w)) - s.vx(512.f - float(w)), s.vy(10), c);
         hud_.text(s.vx(512) - hud_.textWidth("Breath", s.text()) / 2, top + s.vy(20), "Breath", c, s.text());
     }
+    // GOG Df.exe 0x426c30 -> 0x48e010: the GPS inset, every frame (the map
+    // frame 0x48f9b0 runs this pass too), before the overlays.
+    if (!df2Hud_.on && gpsShown_) drawGpsInset(s);
     if (oldMessages_) drawOldMessages(s);
+    if (audioMacros_ && !df2Hud_.on) drawAudioMacros(s);   // GOG 0x426c30: after the Messages box
+    if (df2Hud_.on && audioMacros_) drawDf2AudioMacros(s);   // GOG Df2.exe 0x448fd0: after 0x448e40
     if (briefingShown_) drawBriefing(s);
     if (helpShown_) drawHelp(s);
     if (paused_) drawPaused(s);
+    if (quitBox_) drawQuitBox(s);
 
-    if (df2Hud_.on) {
-        drawDf2Strips(s);
-        drawDf2Top(s);
-        drawDf2Bottom(s);
-    } else {
+    if (!df2Hud_.on) {
+        // Letterbox 2 (GOG Df.exe 0x404ba0 / 0x429580 / 0x426c30): the bars
+        // move in with the view, the top bar to H/8..H/4 and the bottom bar
+        // to 3H/4..7H/8 with their contents and the message lines (placed
+        // from [0x67dbac] / [0x67dbb0] / [0x67dba8], 96 virtual further in);
+        // the outer bands stay black. Drawn here by moving the viewport.
+        const int off = (letterbox_ - 1) * (int(s.h) >> 3);
+        auto shift = [&](int dy) {
+            hud_.end();
+            glViewport(0, dy, int(s.w), int(s.h));
+            hud_.begin(int(s.w), int(s.h));
+        };
+        if (off) shift(-off);
         drawTopBar(s);
+        if (off) shift(off);
         drawBottomBar(s);
+        if (off) shift(0);
     }
     // Damage flash (drawn after the HUD, 0x4043a8 / 0x44c1c0): the 3D view
     // multiplied by (255, 255 - v, 255 - v) / 256, a red tint of strength v.
@@ -3324,6 +6345,24 @@ void Game::df2Panel(const Screen& s, float vx0, float vy0, float vx1, float vy1)
     hud_.rect(x1 - t, y0, t, y1 - y0, kDf2Amber);
 }
 
+void Game::df1Panel(const Screen& s, int vx0, int vy0, int vx1, int vy1) {
+    // 0x471af0: x * mode width / 1024, y * mode height / 768. The 32-bit
+    // path (renderer 1, OpenDF's true colour) halves every channel,
+    // ((p & 0xfefefefe) >> 1), x0 .. x1 - 1 on rows y0 .. y1, whatever the
+    // shade level; the 8-bit one would map through shade table 10 instead.
+    const int mw = s.modeW, mh = s.modeW * 3 / 4;
+    const int px0 = (vx0 * mw / 1024) & ~3, px1 = (vx1 * mw / 1024) & ~3, py0 = vy0 * mh / 768, py1 = vy1 * mh / 768;
+    const float k = s.art(), ox = s.cx(-320), t = std::max(1.f, k);
+    const float x0 = ox + float(px0) * k, x1 = ox + float(px1) * k, y0 = float(py0) * k, y1 = float(py1) * k;
+    hud_.multiply(x0, y0, x1 - x0, y1 - y0 + k, {0.5f, 0.5f, 0.5f, 1});
+    // 0x472610 lines (x0,y0)-(x1,y0), (x1,y0)-(x1,y1), (x1,y1)-(x0,y1),
+    // (x0,y1)-(x0,y0), end points included.
+    hud_.rect(x0, y0, x1 - x0 + t, t, kHudBright);
+    hud_.rect(x0, y1, x1 - x0 + t, t, kHudBright);
+    hud_.rect(x0, y0, t, y1 - y0 + t, kHudBright);
+    hud_.rect(x1, y0, t, y1 - y0 + t, kHudBright);
+}
+
 void Game::drawDf2Strips(const Screen& s) {
     // DHT copied to the top rows (0x442170), DHB to the bottom rows
     // (0x442020), opaque.
@@ -3347,6 +6386,24 @@ void Game::drawDf2Strips(const Screen& s) {
     hud_.setBlend(0);
 }
 
+// A blip's colour on the command map and the HUD radar (GOG Df2.exe
+// 0x4273b0, 0x4274e6..0x427520; the radar runs the same 0x4261e0): a person
+// (item kind 3) of the player's side is 0xff8000 when it is the player
+// itself, else [0x67d368] green; a person of any other side [0x67d374] red.
+// Anything else by its side: 0 green, 1 0x1040ff, 2 red, 3 0xffff00, 4
+// 0xff027f, other sides the caller's colour (0, black, from 0x4261e0).
+static Color df2BlipColour(bool person, int side, bool player = false) {
+    if (person) return side == 1 ? (player ? rgb(0xff, 0x80, 0) : rgb(0, 0xff, 0)) : rgb(0xff, 0, 0);
+    switch (side) {
+    case 0: return rgb(0, 0xff, 0);
+    case 1: return rgb(0x10, 0x40, 0xff);
+    case 2: return rgb(0xff, 0, 0);
+    case 3: return rgb(0xff, 0xff, 0);
+    case 4: return rgb(0xff, 0x02, 0x7f);
+    default: return rgb(0, 0, 0);
+    }
+}
+
 void Game::drawDf2Bottom(const Screen& s) {
     // DF2.EXE 0x442020, in this order: radar, weapon block, waypoint block,
     // extras, stance icon, carried item. Text in the HUD font, 0xff8000.
@@ -3362,8 +6419,9 @@ void Game::drawDf2Bottom(const Screen& s) {
     };
 
     // Radar (0x421510, 0x4226c0): the terrain colour map north-up in the
-    // `map` rectangle at (scale << 10) / W m a pixel (1.6 m at 640), then
-    // rad%i.pcx added over it, then the blips (size 5W/1024 pixels).
+    // `map` rectangle at (scale << 10) / W m a pixel (1.6 m at 640) and the
+    // blips (size 5W/1024 pixels), then rad%i.pcx added over them (GOG
+    // Df2.exe 0x448620: 0x4261e0 first, then 0x458750; CD 0x442020 alike).
     const float mx0 = X("map", 0), my0 = Y("map", 1), mx1 = X("map", 2), my1 = Y("map", 3);
     const float mcx = (mx0 + mx1) * 0.5f, mcy = (my0 + my1) * 0.5f;
     const float mPerPx = 1024.f / float(n) * mapScale_ / k;   // metres per window pixel
@@ -3380,18 +6438,14 @@ void Game::drawDf2Bottom(const Screen& s) {
         hud_.imageUV(terrain_.radarTexture() ? terrain_.radarTexture() : terrain_.colorTexture(), mx0, my0, mx1 - mx0, my1 - my0, (c.x - hw) / ext, (c.z - hh) / ext, (c.x + hw) / ext,
                      (c.z + hh) / ext);
     }
-    if (df2Hud_.rad.texture) {
-        hud_.setBlend(5);
-        const float w = float(df2Hud_.rad.width) * k, h = float(df2Hud_.rad.height) * k;
-        const float cx = (df2X(s, def.value(n, "map", 0), true) + df2X(s, def.value(n, "map", 2), true)) * 0.5f;
-        hud_.image(df2Hud_.rad.texture, std::floor(cx - w / 2), std::floor(mcy - h / 2), w, h);
-        hud_.setBlend(0);
-    }
     {
         hud_.clip(mx0, my0, mx1 - mx0, my1 - my0);
         const float blip = float(std::max(1, 5 * n / 1024)) * k;
-        auto teamColour = [](int side) {
-            return side == 1 ? rgb(0x10, 0x40, 0xff) : side == 2 ? rgb(0xff, 0, 0) : side == 3 ? rgb(0xff, 0xff, 0) : side == 4 ? rgb(0xff, 0xff, 0xff) : rgb(0, 0xff, 0);
+        auto teamColour = [](int side) { return df2BlipColour(false, side); };
+        // People (item kind 3) by df2BlipColour's person rule.
+        auto shapeColour = [&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
+            return df2BlipColour(d.world ? d.world->person : it && it->type == "person", d.side);
         };
         const double px = player_.missionX(), py = player_.missionY();
         auto toRadar = [&](double x, double y) {
@@ -3408,9 +6462,10 @@ void Game::drawDf2Bottom(const Screen& s) {
             for (const auto& o : world_.objects) {
                 if (o.missionGroup != 3 || !o.person || o.removed) continue;
                 if (o_.gpsIcons == 1 && !o.mapMarker) continue;
-                const Vec3 at = world_.nearest(o.pos, c);
-                drawMapMarker(s, mcx + (at.x - c.x) / mPerPx, mcy + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead,
-                              blip);
+                double ox = 0, oy = 0;
+                df2ObjectPos(o, ox, oy);
+                auto [bx, by] = toRadar(ox, oy);
+                drawMapMarker(s, bx, by, 5, df2BlipColour(true, o.side), o.heading, o.dead, blip);
             }
         // Objects with a radar shape (obj+0x6E, 0x421d2f): at their live
         // positions; the current waypoint blinks.
@@ -3419,11 +6474,11 @@ void Game::drawDf2Bottom(const Screen& s) {
             if (d.mission == current && !(ticks_ & 16)) return;
             float bx, by;
             if (d.world) {
-                const Vec3 at = world_.nearest(d.world->pos, c);
-                bx = mcx + (at.x - c.x) / mPerPx;
-                by = mcy + (at.z - c.z) / mPerPx;
+                double ox = 0, oy = 0;
+                df2ObjectPos(*d.world, ox, oy);
+                std::tie(bx, by) = toRadar(ox, oy);
             } else std::tie(bx, by) = toRadar(d.mission->x, d.mission->y);
-            drawMapMarker(s, bx, by, d.shape, teamColour(d.side), 0, false, blip);
+            drawMapMarker(s, bx, by, d.shape, shapeColour(d), 0, false, blip);
         });
         // Player waypoints (pool loop 0x421e48): diamonds in team 0's green;
         // the HUD waypoint blinks (0x421e60).
@@ -3432,9 +6487,16 @@ void Game::drawDf2Bottom(const Screen& s) {
             auto [bx, by] = toRadar(df2Wps_[i].x, df2Wps_[i].y);
             drawMapMarker(s, bx, by, 3, teamColour(0), 0, false, blip);
         }
-        // The player: shape 5 in its team colour (green).
-        drawMapMarker(s, mcx, mcy, 5, teamColour(0), player_.yaw, false, blip);
+        // The player: shape 5 in 0xff8000 (0x4274f9).
+        drawMapMarker(s, mcx, mcy, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, blip);
         hud_.unclip();
+    }
+    if (df2Hud_.rad.texture) {
+        hud_.setBlend(5);
+        const float w = float(df2Hud_.rad.width) * k, h = float(df2Hud_.rad.height) * k;
+        const float cx = (df2X(s, def.value(n, "map", 0), true) + df2X(s, def.value(n, "map", 2), true)) * 0.5f;
+        hud_.image(df2Hud_.rad.texture, std::floor(cx - w / 2), std::floor(mcy - h / 2), w, h);
+        hud_.setBlend(0);
     }
     // The next waypoint (0x443850): a filled dot of radius 3 on the ring of
     // map_radius in its compass bearing.
@@ -3473,6 +6535,9 @@ void Game::drawDf2Bottom(const Screen& s) {
     case 11: showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;   // 0x447584[10] = 0x447521
     // Binoculars: red unless they are up (a *_BIN move: 104, 114, 5).
     case 12: ok = binoculars_; break;
+    // The video camera (GOG Df2.exe 0x44e390 case 0xd): not ready while
+    // cycling ([0x79a2cc]) or with no clip and nothing chambered.
+    case 13: showRounds = showChamber = clipText = true; ok = !arsenal_.firing() && (clips || chamber); break;
     default: if (kind > 12) showRounds = showChamber = clipText = true; break;
     }
     std::string name = arsenal_.modeName();
@@ -3528,8 +6593,8 @@ void Game::drawDf2Bottom(const Screen& s) {
     {
         static const char* kDir[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
         char wind[48];
-        if (mission_.windKph == 0) std::snprintf(wind, sizeof wind, "Wind: None");
-        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((mission_.windDeg + 22) % 360 + 360) % 360 / 45], mission_.windKph);
+        if (windKph_ == 0) std::snprintf(wind, sizeof wind, "Wind: None");
+        else std::snprintf(wind, sizeof wind, "Wind: %s, %ikph", kDir[((windDeg_ + 22) % 360 + 360) % 360 / 45], windKph_);
         hud_.text(X("extra2"), Y("extra2"), wind, kDf2Amber, ts);
     }
 
@@ -3552,6 +6617,60 @@ void Game::drawDf2Bottom(const Screen& s) {
         if (f >= 0) frameOf(df2Hud_.itm, 7, f, X("carrying_icon"), Y("carrying_icon"));
     }
     hud_.setBlend(0);
+}
+
+// GOG Df2.exe 0x41be90 (HUD font 0xa6e068, box width x2 - (x1 - 4) of
+// chat_message / sys_message): a line that measures under the width (plus
+// the indent) stays whole; otherwise it breaks at the last space reached
+// before the advance (indent + glyph width + 1 per character) passes the
+// width, and the rest is wrapped again with the indent of two space glyphs.
+// No space before the overflow keeps the rest as one line. Continuation
+// lines get the "  " prefix (0x4bf834); each line is at most 0x77
+// characters (the ring entry).
+std::vector<std::string> Game::df2Wrap(const std::string& text, bool chat) const {
+    const char* key = chat ? "chat_message" : "sys_message";
+    const int n = hudMode_;
+    const float width = float(df2Hud_.def.value(n, key, 2) - (df2Hud_.def.value(n, key, 0) - 4));
+    const float glyph = std::max(0.f, hud_.textWidth(" ") - 1);
+    std::vector<std::string> lines;
+    std::string rest = text;
+    float indent = 0;
+    for (int guard = 0; guard < 256; ++guard) {
+        if (hud_.textWidth(rest) < width + indent) { lines.push_back(rest); break; }
+        size_t space = std::string::npos;
+        float adv = indent;
+        bool unbreakable = false;
+        for (size_t i = 0; i < rest.size(); ++i) {
+            if (std::isspace(static_cast<unsigned char>(rest[i]))) space = i;
+            adv += hud_.textWidth(std::string(1, rest[i]));
+            if (adv > width) {
+                if (space == std::string::npos) { unbreakable = true; break; }
+                lines.push_back(rest.substr(0, space));
+                rest = rest.substr(space + 1);
+                break;
+            }
+        }
+        if (unbreakable) { lines.push_back(rest); break; }
+        // (Reaching the end without overflowing measures the same rest again with the indent.)
+        indent = 2 * glyph;
+    }
+    for (size_t i = 0; i < lines.size(); ++i) lines[i] = (i ? "  " : "") + lines[i].substr(0, 0x77);
+    return lines;
+}
+
+// GOG Df2.exe 0x4215e0: both wrapped rings rebuilt from the raw ones,
+// newest message first, until 40 lines are filled.
+void Game::df2Rewrap() {
+    auto rewrap = [&](const std::deque<Df2Line>& raw, std::deque<Df2Line>& out, bool chat) {
+        out.clear();
+        for (const auto& m : raw) {
+            if (out.size() >= 40) break;
+            const auto lines = df2Wrap(m.text, chat);
+            for (auto it = lines.rbegin(); it != lines.rend() && out.size() < 40; ++it) out.push_back({*it, m.colour});
+        }
+    };
+    rewrap(df2ChatRaw_, df2Chat_, true);
+    rewrap(df2SysRaw_, df2Sys_, false);
 }
 
 void Game::drawDf2Top(const Screen& s) {
@@ -3591,19 +6710,34 @@ const uint8_t kDf2ElevRamp[256] = {
     217, 217, 218, 219, 220, 221, 222, 222, 223, 224, 225, 226, 227, 227, 228, 229, 230, 231, 232, 232, 233, 234, 235, 236, 236, 237,
     238, 239, 240, 240, 241, 242, 243, 244, 245, 245, 246, 247, 248, 249, 249, 250, 251, 252, 253, 253, 254, 255};
 // 0x4434e0 (byte table 0x443614, jump table 0x4435b4): a weapon TYPE's
-// WEAP frame, -1 none (type 9 M4/M203 has no picture: READ).
+// WEAP frame, -1 none (type 9 M4/M203 has no picture in the CD build: READ;
+// GOG Df2.exe 0x449b50 gives it frame 4 as type 8, byte table 0x449c84[9] =
+// 5 -> 0x449b8a, see kDf2Type9FrameGog).
 const signed char kDf2TypeFrame[39] = {-1, 18, 12, 12, -1, 7,  10, -1, 4,  -1, 13, 8,  3, -1, -1, 11, -1, -1, -1, 1,
                                        5,  2,  -1, 9,  6,  -1, 0,  0,  15, 16, -1, 19, 21, 20, -1, 14, 17, 0,  0};
+const int kDf2Type9FrameGog = 4;
 // 0x4a4c88: the categories (type +0x94) each Weapons slot accepts, as bits.
 const int kDf2SlotMask[5] = {8, 0x10, 0x30, 4, 0x40};
-// Grid name of a point (0x422d60): columns (x + 1000) / 100 as the map's
-// letters, rows (1000 - y) / 100 + 1.
+// A grid column's letters (GOG Df2.exe 0x427a60 / 0x4261e0): a negative
+// index wraps by 702 (the 26 + 26 * 26 one- and two-letter columns), then
+// 'A' + i below 26, else '@' + i / 26, 'A' + i % 26.
+std::string df2GridColumn(int i) {
+    if (i < 0) i += int((uint32_t(701) - uint32_t(i)) / 702u * 702u);
+    if (i < 26) return std::string(1, char('A' + i));
+    return std::string(1, char('@' + i / 26)) + char('A' + i % 26);
+}
+// Grid name of a point (GOG Df2.exe 0x427a60 = CD 0x422d60), in the 16.16
+// position: column c = (x + 1000 m) >> 16, wrapped by 70200 m when negative,
+// / 100 (then the letters above); row r = 1000 m - y, wrapped by 10000 m
+// when negative, r / 100 m + 1. 32-bit arithmetic as in the EXE.
 std::string df2GridName(double x, double y) {
-    const int i = (int(std::floor(x)) + 1000) / 100, row = (1000 - int(std::floor(y))) / 100 + 1;
-    std::string col;
-    if (i >= 0 && i < 26) col = std::string(1, char('A' + i));
-    else if (i >= 26) col = std::string(1, char('@' + i / 26)) + char('A' + i % 26);
-    return col + std::to_string(row);
+    const int32_t X = int32_t(uint32_t(std::llround(x * 65536.0))), Y = int32_t(uint32_t(std::llround(y * 65536.0)));
+    int32_t c = int32_t(uint32_t(X) + 0x3e80000u) >> 16;
+    if (c < 0) c = int32_t(uint32_t(c) + (0x11237u - uint32_t(c)) / 0x11238u * 0x11238u);
+    c /= 100;
+    int32_t r = int32_t(0x3e80000u - uint32_t(Y));
+    if (r < 0) r = int32_t(uint32_t(r) + (0x270fffffu - uint32_t(r)) / 0x27100000u * 0x27100000u);
+    return df2GridColumn(c) + std::to_string(r / 0x640000 + 1);
 }
 } // namespace
 
@@ -3628,19 +6762,17 @@ bool Game::df2SelPos(Df2Sel s, double& x, double& y, float* z) const {
         y = player_.missionY();
         if (z) *z = player_.feet.y;
     } else if (s.kind == 2) {
-        // The copy nearest the player on the repeating map (as drawn).
-        const Vec3 at = world_.nearest(world_.objects[size_t(s.index)].pos, player_.feet);
-        x = at.x;
-        y = -at.z;
-        if (z) *z = at.y;
+        // Absolute mission metres (objects +0x24/+0x28 are absolute 16.16
+        // mission coordinates: GOG Df2.exe 0x44ebd0, grid reference 0x427a60).
+        const WorldObject& o = world_.objects[size_t(s.index)];
+        df2ObjectPos(o, x, y);
+        if (z) *z = o.pos.y;
     } else if (s.kind == 3) {
         const MissionObject& mo = mission_.objects[size_t(s.index)];
         for (const auto& o : world_.objects)
             if (o.missionIndex == s.index) {
-                const Vec3 at = world_.nearest(o.pos, player_.feet);
-                x = at.x;
-                y = -at.z;
-                if (z) *z = at.y;
+                df2ObjectPos(o, x, y);
+                if (z) *z = o.pos.y;
                 return true;
             }
         x = mo.x;
@@ -3655,28 +6787,124 @@ bool Game::df2SelPos(Df2Sel s, double& x, double& y, float* z) const {
     return true;
 }
 
-std::string Game::df2MissionName(size_t index) const {
-    const MissionObject& mo = mission_.objects[index];
-    for (const auto& rp : route_)
-        if (rp.object == &mo) return rp.name;
-    const ItemDef* it = items_.byMissionType(mo.type);
-    if (it && it->type == "marker") {
-        // Waypoint markers name themselves: record +0x58 -> STRWPNAME%03i (0x403afe).
-        char key[24];
-        std::snprintf(key, sizeof key, "STRWPNAME%03d", mo.raw[0x58 / 4]);
-        if (const std::string* n = wpnText_.find("WPNames", key); n && !n->empty()) return *n;
+// The object name +0x54 as GOG Df2.exe 0x403790 (CD 0x403590) fills it from
+// the mission record: PeopleNames STRNAME%03i of record +4 when that is not 0,
+// then, for item 6005 (0x1775) only, WPNames STRWPNAME%03i of record +0x58;
+// each cut to 15 characters. No display path reads the ITEMS.DEF name, so an
+// object with neither stays empty (the command map's lists show
+// CMAP_ITEM_UNKNOWN for it, 0x40d520; its info panels a blank line).
+// An object's absolute mission position (+0x24 / +0x28): GOG Df2.exe never
+// wraps it, and the radar / command map (0x4273b0) and the info panels
+// (0x40ecb0, 0x40f430, 0x40f4f0) place it from there, so an object more than
+// half a wrap period away shows where it really is. OpenDF's world keeps x / z
+// inside the repeating tile, so the per-tick sum of its steps (mapTrack_) is
+// used; the copy nearest the player before the first tick.
+void Game::df2ObjectPos(const WorldObject& o, double& x, double& y) const {
+    const size_t i = size_t(&o - world_.objects.data());
+    if (i < mapTrack_.size()) {
+        x = mapTrack_[i].x;
+        y = mapTrack_[i].y;
+        return;
     }
-    return it ? it->name : std::string();
+    const Vec3 at = world_.nearest(o.pos, player_.feet);
+    x = at.x + (player_.missionX() - double(player_.feet.x));
+    y = -at.z + (player_.missionY() + double(player_.feet.z));
 }
 
+std::string Game::df2RecordName(size_t index) const {
+    if (index >= mission_.objects.size()) return {};
+    const MissionObject& mo = mission_.objects[index];
+    std::string name;
+    char key[24];
+    if (mo.raw[1] != 0) {
+        std::snprintf(key, sizeof key, "STRNAME%03d", mo.raw[1]);
+        if (const std::string* n = wpnText_.find("PeopleNames", key)) name = n->substr(0, 15);
+    }
+    if (mo.type == 6005) {
+        std::snprintf(key, sizeof key, "STRWPNAME%03d", mo.raw[0x58 / 4]);
+        if (const std::string* n = wpnText_.find("WPNames", key)) name = n->substr(0, 15);
+    }
+    if (const auto it = df2Labels_.find(index); it != df2Labels_.end()) name = it->second;   // GOG Df2.exe 0x467430
+    return name;
+}
+
+// GOG Df2.exe 0x467430 (0x466ba0, mission load; not in the CD build): over
+// 0xe00 records of 0x114 bytes from items[0] (0xc834e0, +0x54 at 0xc83534),
+// that is the items (0x400), spawned (0x400), decorations (0x400) and
+// markers (0x200) tables as 0x403e20 lays them out; only organics (group 3)
+// are left out. Each placed record with an item, by item id (+0x20) unless
+// the item is S&D (attrib 0x1000): 0x1028 STROVER68, 0x1029 STROVER67,
+// 0xfc3 STROVER19, 0xfc4 STROVER20, 0xfcb STROVER21, 0xfcc STROVER22,
+// 0x1020 STROVER60; 0xc1b / 0xc24 (the armories) STROVER66 and radar shape
+// 6 when it is 0; 0x178a..0x178c STROVER23..25, 0x17cc STROVER69, 0x17cd
+// STROVER70, each with shape 3 when 0. An S&D item gets shape 6 (a
+// building, item kind 5) or 4 when 0, and STROVER71 on side 1, STROVER72
+// on side 2. The text is copied into the name +0x54 whole; the shape is
+// +0x6E. Driven by the mission records, so a record with no world object
+// (a marker item without a model) gets its label and default shape too
+// (df2DefaultShape_, read by forDf2Shapes); a live object takes the shape
+// and the command-map flag (mapMarker).
+void Game::df2DefaultLabels() {
+    df2Labels_.clear();
+    df2DefaultShape_.clear();
+    if (!arsenal_.df2Gog()) return;
+    std::vector<WorldObject*> live(mission_.objects.size(), nullptr);
+    for (WorldObject& o : world_.objects)
+        if (o.missionIndex >= 0 && size_t(o.missionIndex) < live.size() && !o.removed) live[size_t(o.missionIndex)] = &o;
+    for (size_t i = 0; i < mission_.objects.size(); ++i) {
+        const MissionObject& mo = mission_.objects[i];
+        if (mo.group < 0 || mo.group > 2 || mo.omitted) continue;
+        WorldObject* w = live[i];
+        const ItemDef* item = w && w->item ? w->item : items_.byMissionType(mo.type);
+        if (!item) continue;
+        const int side = w ? w->side : int(int8_t((uint32_t(mo.raw[16]) >> 24) & 0xFF));
+        const char* key = nullptr;
+        int shape = 0;   // the default shape, 0 none
+        if (item->attrib & 0x1000) {
+            shape = item->type == "building" ? 6 : 4;
+            key = side == 1 ? "STROVER71" : side == 2 ? "STROVER72" : nullptr;
+        } else {
+            switch (item->id - 100000) {
+            case 0x1028: key = "STROVER68"; break;
+            case 0x1029: key = "STROVER67"; break;
+            case 0xfc3: key = "STROVER19"; break;
+            case 0xfc4: key = "STROVER20"; break;
+            case 0xfcb: key = "STROVER21"; break;
+            case 0xfcc: key = "STROVER22"; break;
+            case 0x1020: key = "STROVER60"; break;
+            case 0xc1b: case 0xc24: key = "STROVER66"; shape = 6; break;
+            case 0x178a: key = "STROVER23"; shape = 3; break;
+            case 0x178b: key = "STROVER24"; shape = 3; break;
+            case 0x178c: key = "STROVER25"; shape = 3; break;
+            case 0x17cc: key = "STROVER69"; shape = 3; break;
+            case 0x17cd: key = "STROVER70"; shape = 3; break;
+            default: break;
+            }
+        }
+        if (shape) {
+            if (w && w->radarShape == 0) {
+                w->radarShape = shape;
+                w->mapMarker = true;
+            } else if (!w && int8_t(mo.raw[19] & 0xFF) == 0) {
+                df2DefaultShape_[i] = shape;
+            }
+        }
+        if (key) {
+            const std::string* t = gameTable_.find("Overlays", key);
+            df2Labels_[i] = t ? *t : std::string();
+        }
+    }
+}
+
+// The selection's name, object +0x54 as is: the info panels (GOG Df2.exe
+// 0x40ecb0, 0x40f260, 0x40f430, 0x40f4f0) and the HUD waypoint line
+// (0x4492d0) copy it with no fallback.
 std::string Game::df2SelName(Df2Sel s) const {
-    std::string n;
-    if (!df2SelValid(s)) return n;
-    if (s.kind == 1) n = o_.soldierName;
-    else if (s.kind == 2) n = world_.objects[size_t(s.index)].item ? world_.objects[size_t(s.index)].item->name : std::string();
-    else if (s.kind == 3) n = df2MissionName(size_t(s.index));
-    else n = df2Wps_[size_t(s.index)].name;
-    return n.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : n;
+    if (!df2SelValid(s)) return {};
+    if (s.kind == 1) return o_.soldierName;
+    if (s.kind == 2) return df2PersonName(world_.objects[size_t(s.index)]);
+    if (s.kind == 3) return df2RecordName(size_t(s.index));
+    return df2Wps_[size_t(s.index)].name;
 }
 
 int Game::df2SelItem(Df2Sel s) const {
@@ -3699,26 +6927,23 @@ bool Game::df2SelOnPlayerTeam(Df2Sel s) const {
     return o.person && o.side == kPlayerSide && o.missionGroup == 3;
 }
 
-// The action buttons for the selection (0x40dd50), the first at (688, 696),
-// each next 32 higher. Codes: 1 Bozo Filter, 2 Send Message to (both no-ops,
-// 0x4015e0), 3 Set as my Waypoint (0x411630), 4 Delete (0x411680), 5 Rename
-// (0x411700). Set Voice Channel / Send to... / Make Permanent need voice or
-// network players (multiplayer only).
+// The action buttons for the selection (GOG Df2.exe 0x40e800; CD 0x40dd50
+// also had Send Message to, which GOG dropped), the first at (688, 696),
+// each next 32 higher; none while the VON tab is open ([0xc03720] == 1).
+// Codes: 1 Bozo Filter (a no-op, 0x4017c0), 3 Set as my Waypoint, 4 Delete,
+// 5 Rename. Set Voice Channel / Send to... / Make Permanent need voice or
+// network players (multiplayer only). A mission object gets Set as my
+// Waypoint for class kind 7 or item 0x1775 (6005); no ITEMS.DEF type makes
+// kind 7 (READ), so 6005 alone, plus 0xfc3 / 0xfc4 (4035 / 4036).
 std::vector<std::pair<std::string, int>> Game::df2ActionButtons() const {
     std::vector<std::pair<std::string, int>> b;
     const Df2Sel s = df2Map_.sel;
-    if (!df2SelValid(s)) return b;
+    if (!df2SelValid(s) || df2Map_.tab == 1) return b;
     const std::string setWay = df2Text("Cmap", "CMAP_BTN_SETWAY", "Set as my Waypoint");
-    if (s.kind == 1) {   // +0x64 bit 0: a player
-        b.push_back({df2Text("Cmap", "CMAP_BTN_BOZO", "Bozo Filter"), 1});
-        b.push_back({df2Text("Cmap", "CMAP_BTN_SENDMESSAGE", "Send Message to"), 2});
-    }
+    if (s.kind == 1) b.push_back({df2Text("Cmap", "CMAP_BTN_BOZO", "Bozo Filter"), 1});   // +0x64 bit 0: a player
     if (df2SelOnPlayerTeam(s)) b.push_back({setWay, 3});
     const int item = df2SelItem(s);
-    if (s.kind == 3) {
-        const ItemDef* it = items_.byMissionType(uint32_t(item));
-        if ((it && it->type == "marker") || item == 6005 || item == 4035 || item == 4036) b.push_back({setWay, 3});
-    }
+    if (s.kind == 3 && (item == 6005 || item == 4035 || item == 4036)) b.push_back({setWay, 3});
     if (s.kind == 4) {
         b.push_back({df2Text("Cmap", "CMAP_BTN_DELETE", "Delete"), 4});
         b.push_back({df2Text("Cmap", "CMAP_BTN_RENAME", "Rename"), 5});
@@ -3742,7 +6967,7 @@ void Game::df2Action(int code) {
         m.promptText.clear();
         SDL_StartTextInput();
         break;
-    default: break;   // Bozo Filter, Send Message to: no-ops (0x4015e0)
+    default: break;   // Bozo Filter: a no-op
     }
 }
 
@@ -3764,16 +6989,57 @@ void Game::df2SetWaypoint(Df2Sel s) {
     df2HudWp_ = s;
 }
 
-// NextWaypoint (action 32, 0x446700(+1)): only the mission list; the current
-// waypoint not in it -> from index 0, so the next is entry 1.
-void Game::df2NextWaypoint() {
-    if (route_.empty()) return;
-    if (df2HudWp_.kind != 0) {
-        df2HudWp_ = Df2Sel{};
-        routeIndex_ = 1 % int(route_.size());
+// NextWaypoint (GOG Df2.exe 0x41f150 case 0x16 -> 0x44d280(+1), or (-1)
+// with Shift, bit 31 of the queued action; CD 0x446700): nothing with fewer
+// than two entries ([0x79a80c] < 2, so a custom HUD waypoint stays); the
+// route cleared when no entry has an item (+4); the current waypoint not in
+// the list counts as index 0; then the next (previous) entry that has an
+// item, wrapping, becomes the HUD waypoint [0x79a810].
+void Game::df2NextWaypoint(int dir) {
+    const int n = int(route_.size());
+    if (n < 2) return;
+    auto exists = [&](int i) { const MissionObject* o = route_[size_t(i)].object; return o && !o->omitted; };
+    bool any = false;
+    for (int i = 0; i < n && !any; ++i) any = exists(i);
+    if (!any) {
+        route_.clear();
+        routeIndex_ = 0;
         return;
     }
-    routeIndex_ = (routeIndex_ + 1) % int(route_.size());
+    const int cur = df2HudWp_.kind == 0 ? routeIndex_ : 0;
+    int found = -1;
+    if (dir >= 0) {
+        for (int i = cur + 1; i < n && found < 0; ++i)
+            if (exists(i)) found = i;
+        for (int i = 0; i <= cur && found < 0; ++i)
+            if (exists(i)) found = i;
+    } else {
+        for (int i = cur - 1; i >= 0 && found < 0; --i)
+            if (exists(i)) found = i;
+        for (int i = n - 1; i >= cur && found < 0; --i)
+            if (exists(i)) found = i;
+    }
+    if (found < 0) return;
+    df2HudWp_ = Df2Sel{};
+    routeIndex_ = found;
+}
+
+// GOG Df.exe NextWaypoint 0x484c80 / PrevWaypoint 0x484d00: nothing with
+// fewer than two entries or when no entry's object exists (+4, the
+// marker's item; a never-created one has none); else step with wrap until
+// an entry's object exists. (CD DF.EXE: (i + 1) % n.)
+void Game::df1StepWaypoint(int dir) {
+    const int n = int(route_.size());
+    if (n < 2) return;
+    auto exists = [&](int i) { const MissionObject* o = route_[size_t(i)].object; return o && !o->omitted; };
+    bool any = false;
+    for (int i = 0; i < n && !any; ++i) any = exists(i);
+    if (!any) return;
+    do {
+        routeIndex_ += dir;
+        if (routeIndex_ >= n) routeIndex_ = 0;
+        if (routeIndex_ < 0) routeIndex_ = n - 1;
+    } while (!exists(routeIndex_));
 }
 
 bool Game::df2HudWpIs(Df2Sel s) const {
@@ -3837,8 +7103,10 @@ void Game::df2Picture(HudImage& img, int w, int h, double px, double py, double 
 
 int Game::df2TypeCategory(int type) const {
     // The weapon-type table [0x4f05a4] = 0x4C5150, 216 bytes each, +0x94 menu category.
+    // (GOG Df2.exe: 0x4DA4F8, ExeImage::df2().)
     int32_t v = 0;
-    if (type <= 0 || type >= 39 || !df2Exe_.i32(0x4C5150 + uint32_t(type) * 216 + 0x94, v)) return 0;
+    const Df2ExeTables* t = df2Exe_.df2();
+    if (type <= 0 || type >= 39 || !t || !df2Exe_.i32(t->types + uint32_t(type) * 216 + 0x94, v)) return 0;
     return v;
 }
 
@@ -3875,14 +7143,9 @@ void Game::df2RequestWeapons() {
     df2Loadout_.gear = m.request[2];
     df2Loadout_.sidearm = m.request[3];
     df2Loadout_.grenade = m.request[4];
-    std::vector<std::string> hudGuns;
-    for (int i = 0; i < 57; ++i) {
-        char key[16];
-        std::snprintf(key, sizeof key, "HG%03d", i);
-        const std::string* t = gameTable_.find("HudGuns", key);
-        hudGuns.push_back(t ? *t : std::string());
-    }
-    if (arsenal_.initDf2(hudGuns, df2Exe_, &items_, df2Loadout_)) arsenal_.setWind(float(mission_.windKph), float(mission_.windDeg));
+    // 0x44eeb0 + 0x44f160(held slot): the scope flag, the binoculars'
+    // return slot and the rounds in flight stay (Arsenal::rearmDf2).
+    arsenal_.rearmDf2(df2Loadout_);
     pushMessage(df2Text("Client", "STRCLI10", "Weapons Updated"));
     sound_.play2D(0x164);
     const int cur[5] = {df2Loadout_.primary, df2Loadout_.secondary, df2Loadout_.gear, df2Loadout_.sidearm, df2Loadout_.grenade};
@@ -3902,7 +7165,7 @@ void Game::df2MapEnter(int tab) {
         m.panX = m.panZ = 0;
         m.wButton = false;
         m.dButton = df2Elevation_;
-    } else if (tab == 3) {
+    } else if (tab == 4) {
         // 0x40fb50: the current loadout to both lists (Primary, Secondary 1,
         // Secondary 2, Sidearm, Grenade = controller +0xb6..+0xba).
         const int cur[5] = {df2Loadout_.primary, df2Loadout_.secondary, df2Loadout_.gear, df2Loadout_.sidearm, df2Loadout_.grenade};
@@ -3977,60 +7240,83 @@ void Game::df2MapFrame() {
     // most max - page, at least 0; thumb: pos + (max - min)·dy / L for the
     // mouse's dy from the anchor (clamped the same way), and the anchor moves
     // with the thumb's top (0x40ca13..0x40ca2e).
-    if (m.tab == 1 || m.tab == 2) {
-        const float vy1 = m.tab == 1 ? 672 : 616;
-        const int page = m.tab == 1 ? 16 : 14;
-        int& pos = m.tab == 1 ? m.scrollPlayers : m.scrollTeam;
-        const Df2Map::Bar r = Df2Map::bar(608, 216, vy1, pos, page);
+    // The bars of the open tab: VON / Players (608, 216-672) page 16 and
+    // Team (608, 216-616) page 14, both 0..64; Mission (0x412bb0): the
+    // briefing's (608, 216-704) and the settings' (944, 216-704), each
+    // 0..count + 1 page 18 (0x40d160 every draw).
+    struct BarSpec { float vx, vy0, vy1; int* pos; int page, max; };
+    std::vector<BarSpec> bars;
+    if (m.tab == 1 || m.tab == 2) bars.push_back({608, 216, 672, &m.scrollPlayers, 16, 64});
+    else if (m.tab == 3) bars.push_back({608, 216, 616, &m.scrollTeam, 14, 64});
+    else if (m.tab == 5) {
+        bars.push_back({608, 216, 704, &m.scrollBrief, 18, m.briefLines + 1});
+        bars.push_back({944, 216, 704, &m.scrollSettings, 18, m.settingsLines + 1});
+    }
+    if (!bars.empty()) {
         const int mx = m.mouseX, my = m.mouseY;
-        int w = 0;   // 1 up, 2 page up, 3 thumb, 4 page down, 5 down (the last match of 0x40c040 wins)
+        // Widget = bar * 8 + zone: 1 up, 2 page up, 3 thumb, 4 page down, 5
+        // down (the last match of 0x40c040 wins).
+        int w = 0;
         auto inside = [&](int x0, int y0, int x1, int y1) { return mx >= x0 && mx <= x1 && my >= y0 && my <= y1; };
-        // The zone widgets (0x40c710): x0 + 1 .. x1 - 2; page-up ty0 + 3 .. top,
-        // thumb top .. bottom, page-down bottom .. ty1; arrows 16 x 16.
-        if (inside(r.x0, int(V(216)), r.x0 + 16, int(V(216)) + 16)) w = 1;
-        if (inside(r.x0 + 1, r.ty0 + 3, r.x1 - 2, r.top)) w = 2;
-        if (inside(r.x0 + 1, r.top, r.x1 - 2, r.bottom)) w = 3;
-        if (inside(r.x0 + 1, r.bottom, r.x1 - 2, r.ty1)) w = 4;
-        if (inside(r.x0, int(V(vy1)) - 16, r.x0 + 16, int(V(vy1)))) w = 5;
+        for (size_t b = 0; b < bars.size(); ++b) {
+            const BarSpec& sp = bars[b];
+            const Df2Map::Bar r = Df2Map::bar(sp.vx, sp.vy0, sp.vy1, *sp.pos, sp.page, sp.max);
+            const int base = int(b) * 8;
+            // The zone widgets (0x40c710): x0 + 1 .. x1 - 2; page-up ty0 + 3 .. top,
+            // thumb top .. bottom, page-down bottom .. ty1; arrows 16 x 16.
+            if (inside(r.x0, int(V(sp.vy0)), r.x0 + 16, int(V(sp.vy0)) + 16)) w = base + 1;
+            if (inside(r.x0 + 1, r.ty0 + 3, r.x1 - 2, r.top)) w = base + 2;
+            if (inside(r.x0 + 1, r.top, r.x1 - 2, r.bottom)) w = base + 3;
+            if (inside(r.x0 + 1, r.bottom, r.x1 - 2, r.ty1)) w = base + 4;
+            if (inside(r.x0, int(V(sp.vy1)) - 16, r.x0 + 16, int(V(sp.vy1)))) w = base + 5;
+        }
         if (w != m.barWidget) {
             m.barWidget = w;
             m.barAnchorY = my;
             m.barCount = 0;
-        } else if (w && m.leftHeld) {
+        } else if (w && m.held) {
+            const BarSpec& sp = bars[size_t(w / 8)];
+            int& pos = *sp.pos;
+            const int page = sp.page, zone = w % 8;
+            const Df2Map::Bar r = Df2Map::bar(sp.vx, sp.vy0, sp.vy1, pos, page, sp.max);
             const int c = m.barCount++;
-            const int mn = 0, mxv = 64, L = r.ty1 - (r.ty0 + 3);
-            if (w == 3) {
+            const int mn = 0, mxv = sp.max, L = r.ty1 - (r.ty0 + 3);
+            if (zone == 3) {
                 const int dy = my - m.barAnchorY;
                 if (dy != 0 && L > 0) {
                     pos += (mxv - mn) * dy / L;
                     if (dy > 0 && pos + page > mxv) pos = mxv - page;
                     if (pos < 0) pos = 0;
                     const int oldTop = r.top;
-                    m.barAnchorY += Df2Map::bar(608, 216, vy1, pos, page).top - oldTop;
+                    m.barAnchorY += Df2Map::bar(sp.vx, sp.vy0, sp.vy1, pos, page, sp.max).top - oldTop;
                 }
             } else if (c <= 0 || c >= 10) {
-                if (w == 1 && pos > mn) --pos;
-                if (w == 5 && pos + page < mxv) ++pos;
-                if (w == 2) pos = std::max(0, pos - page);
-                if (w == 4) {
+                if (zone == 1 && pos > mn) --pos;
+                if (zone == 5 && pos + page < mxv) ++pos;
+                if (zone == 2) pos = std::max(0, pos - page);
+                if (zone == 4) {
                     pos += page;
                     if (pos + page > mxv) pos = mxv - page;
                     if (pos < 0) pos = 0;
                 }
             }
-        } else if (!m.leftHeld) {
+        } else if (!m.held) {
             m.barCount = 0;
         }
     } else {
         m.barWidget = 0;
     }
-    if (m.tab == 0 && m.leftHeld) {
+    if (m.tab == 0 && m.held) {
         auto in = [&](float vx, float vy, float w) { return m.mouseX >= V(vx) && m.mouseX < V(vx) + w && m.mouseY >= V(vy) && m.mouseY < V(vy) + 16; };
         if (in(608, 668, V(32))) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);   // + (0x4000 min)
         if (in(608, 700, V(32))) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);    // - (0x39999 max)
+    }
+    if (m.tab == 0 && m.leftHeld) {
         // Held (0x40d558..0x40d5cd): the drag target moves by the world delta
         // of the mouse (+0x24 x, +0x28 y; the height +0x2c stays).
-        if (m.drag.kind && df2SelValid(m.drag) && (m.mouseX != m.lastX || m.mouseY != m.lastY)) {
+        // Not on the press frame: GOG Df2.exe 0x40dd70 only picks and
+        // anchors while [0xc08858] is 0, and moves on later held frames.
+        if (m.dragHeld && m.drag.kind && df2SelValid(m.drag) && (m.mouseX != m.lastX || m.mouseY != m.lastY)) {
             const double step = 1024.0 / 640.0 * mapScale_;
             const double dx = double(m.mouseX - m.lastX) * step, dy = -double(m.mouseY - m.lastY) * step;
             if (m.drag.kind == 4) {
@@ -4048,13 +7334,43 @@ void Game::df2MapFrame() {
         }
     }
     if (!m.leftHeld) m.drag = Df2Sel{};
+    m.dragHeld = m.leftHeld;   // [0xc08858] = 1 with the anchor [0xc08860/64] (0x40e085..0x40e09b)
     m.lastX = m.mouseX;
     m.lastY = m.mouseY;
 }
 
+// The command map's tabs (GOG Df2.exe table 0x4af9e0, stride 0x44): 0x40b890
+// copies Cmap CMAP_MENU000 to tab 0 and CMAP_MENU001..004 to tabs 2..5, so
+// tab 1 keeps its literal "VON" (Map, VON, Players, Team, Weapons, Mission).
+// None has flag 1 or 2, so all six show in single player. Layout 0x40bda0:
+// from x V(40) each tab's f_LG width (0x41bb40) in turn, then the rest up to
+// V(984) is shared: gap = (V(984) - end) / 6, tab i moved right by gap / 2 +
+// i * gap (integers).
+std::array<Game::Df2Tab, 6> Game::df2MapTabs() const {
+    std::array<Df2Tab, 6> t;
+    static const char* kKey[6] = {"CMAP_MENU000", nullptr, "CMAP_MENU001", "CMAP_MENU002", "CMAP_MENU003", "CMAP_MENU004"};
+    static const char* kDef[6] = {"Map", "VON", "Players", "Team", "Weapons", "Mission"};
+    int x = 25;   // V(40)
+    for (size_t i = 0; i < 6; ++i) {
+        t[i].label = kKey[i] ? df2Text("Cmap", kKey[i], kDef[i]) : std::string(kDef[i]);
+        t[i].x0 = x;
+        x += int(Hud::sheetWidth(df2Map_.big, t[i].label));
+        t[i].x1 = x;
+    }
+    const int gap = (615 - x) / 6;   // V(984)
+    int shift = gap / 2;
+    for (auto& tab : t) {
+        tab.x0 += shift;
+        tab.x1 += shift;
+        shift += gap;
+    }
+    return t;
+}
+
 void Game::drawDf2CommandMap(const Screen& s) {
     Df2Map& m = df2Map_;
-    // Testing: OPENDF_CMAPTAB opens a tab (2 Team selects the first squad
+    // Testing: OPENDF_CMAPTAB opens a tab (0 Map, 1 VON, 2 Players, 3 Team,
+    // 4 Weapons, 5 Mission; 3 also selects the first squad
     // member); OPENDF_CMAPTEST runs "FRAME OP ARGS" commands separated by
     // ';' (frames of the map, mouse in its 640x480 pixels): m X Y move,
     // d X Y left press, u X Y release, k NAME a key (SDL name), t TEXT typed
@@ -4063,7 +7379,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
         m.testInit = true;
         if (const char* t = std::getenv("OPENDF_CMAPTAB")) {
             df2MapEnter(std::atoi(t));
-            for (size_t i = 0; i < world_.objects.size() && m.tab == 2; ++i)
+            for (size_t i = 0; i < world_.objects.size() && m.tab == 3; ++i)
                 if (world_.objects[i].person && world_.objects[i].alive() && world_.objects[i].side == 1) { m.sel = Df2Sel{2, int(i)}; break; }
         }
         if (const char* t = std::getenv("OPENDF_CMAPTEST")) {
@@ -4118,7 +7434,12 @@ void Game::drawDf2CommandMap(const Screen& s) {
         // the map is open (0x45da2a); F_LG640 is also the only f_LG in
         // DF2.PFF (an F_LG800 load would fail and leave the font empty,
         // 0x4197e0 frees it first via 0x4195c0).
-        m.big = hud_.loadSheetFont(vfs_, "F_LG640.PCX");
+        m.big = hud_.loadSheetFont(vfs_, "F_LG640.PCX", true);   // flags 3 (0x465a20): blended
+        // f_sml's glyph heights (the same sheet loader, 0x41ba40): the text
+        // boxes step by the 'A' glyph's (0x40c310, font +0x20c).
+        static SheetFont sml;
+        if (!sml.ok) sml = hud_.loadSheetFont(vfs_, "F_SML640.PCX");
+        if (sml.ok && sml.glyphs['A'].h > 0) m.smlA = sml.glyphs['A'].h;
     }
     const float k = df2MapK(s), ox = (s.w - 640.f * k) * 0.5f, oy = (s.h - 480.f * k) * 0.5f;
     // f_sml (F_SML%i, the width capped at 800) is drawn 1:1 in the mode's
@@ -4183,27 +7504,23 @@ void Game::drawDf2CommandMap(const Screen& s) {
     };
     three(df2Chat_, 44);
     three(df2Sys_, 632);
-    // Tabs (Cmap CMAP_MENU000..004), f_LG, spread over x 25..615 at y 80;
-    // all five are shown in single player (no tab has flag 1 or 2).
-    std::string tabs[5];
-    float total = 0;
-    for (int i = 0; i < 5; ++i) {
-        char key[24];
-        std::snprintf(key, sizeof key, "CMAP_MENU%03d", i);
-        static const char* kDef[5] = {"Map", "Players", "Team", "Weapons", "Mission"};
-        tabs[i] = df2Text("Cmap", key, kDef[i]);
-        total += Hud::sheetWidth(m.big, tabs[i]);
+    // Tabs (df2MapTabs), f_LG at y 80: 0xff9020 the open one, else 0x603000.
+    {
+        const auto tabs = df2MapTabs();
+        for (int i = 0; i < 6; ++i)
+            hud_.sheetText(m.big, X(float(tabs[size_t(i)].x0)), Y(80), tabs[size_t(i)].label, i == m.tab ? cSel : rgb(0x60, 0x30, 0), k);
     }
-    const float gap = (590.f - total) / 5.f;
-    float tx = 25.f + gap / 2;
-    for (int i = 0; i < 5; ++i) {
-        hud_.sheetText(m.big, X(tx), Y(80), tabs[i], i == m.tab ? cSel : rgb(0x60, 0x30, 0), k);
-        tx += Hud::sheetWidth(m.big, tabs[i]) + gap;
-    }
-    // A text button: END1 + MIDL ... + END2, frame = state, text centred.
+    // A text button: END1 + MIDL ... + END2, text centred. The frame is the
+    // widget's hover state, not its on/off state (GOG Df2.exe 0x40c8a0): 1
+    // while the mouse is inside x0..x1, y0..y0 + END1's height (inclusive,
+    // 0x40cae0 sets +0x2c), 2 on the frames its callback fires because the
+    // button is held there (0x40cae0 sets 0x1000, 0x40c8a0 clears it after
+    // drawing), else 0. A toggle's state shows only in the text colour.
     auto textButton = [&](float vx, float vy, float vw, const std::string& label, bool on, Color offC, Color onC) {
         const float x0 = V(vx), y0 = V(vy), x1 = x0 + V(vw);
-        const int f = on ? 1 : 0;
+        const float bh = m.end1.texture ? float(m.end1.height) / 4.f : 16.f;
+        const bool hover = float(m.mouseX) >= x0 && float(m.mouseX) <= x1 && float(m.mouseY) >= y0 && float(m.mouseY) <= y0 + bh;
+        const int f = hover ? (m.held ? 2 : 1) : 0;
         frame(m.end1, f, x0, y0);
         for (float x = x0 + 8; x < x1 - 8; x += 8) frame(m.midl, f, x, y0);
         frame(m.end2, f, x1 - 8, y0);
@@ -4221,6 +7538,49 @@ void Game::drawDf2CommandMap(const Screen& s) {
         hud_.text(X(x + 1), Y(y + 1), t, cBlack, kt);
         hud_.text(X(x), Y(y), t, c, kt);
     };
+    // A list (0x40d520 builds it, the page draws it): the entries after the
+    // first `skip`, from (80, 240) 28 apart (virtual), a row's rect (V(80),
+    // V(y)) - (V(82) + name width, V(y + 28)). The page draws `slots` rows
+    // (VON / Players 16, Team 14), empty ones too: the number skip + i + 1
+    // right-aligned at x0 - 12 with a black copy at (x0 - 11, +1), 0xff9020
+    // on the selected entry's row, else 0xc06000; on an entry's row the
+    // name with a black shadow at +1 in that colour and, round the selected
+    // one, "[" right-aligned at x0 and "]" at x1 in red. `extra` draws a
+    // page's own columns of an entry's row.
+    using ListEntry = std::pair<Df2Sel, std::string>;
+    // A list row's name: +0x54, CMAP_ITEM_UNKNOWN when empty (0x40d520).
+    auto rowName = [&](Df2Sel e) {
+        const std::string n = df2SelName(e);
+        return n.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : n;
+    };
+    auto list = [&](const std::vector<ListEntry>& all, int skip, int slots, const std::function<void(size_t, float, Color)>& extra) {
+        m.rows.clear();
+        for (size_t i = size_t(std::max(0, skip)); i < all.size() && m.rows.size() < 32; ++i) {
+            const int r = int(m.rows.size());
+            const int x0 = int(V(80)), y0 = int(V(240 + 28 * float(r)));
+            m.rows.push_back({x0, y0, int(V(82)) + int(hud_.textWidth(all[i].second, kt) / k), int(V(268 + 28 * float(r))), all[i].first});
+        }
+        for (int r = 0; r < slots; ++r) {
+            const float x0 = V(80), y0 = V(240 + 28 * float(r));
+            const bool entry = size_t(r) < m.rows.size();
+            const bool selected = entry && m.rows[size_t(r)].sel == m.sel;
+            const Color c = selected ? cSel : cHead;
+            const std::string num = std::to_string(std::max(0, skip) + r + 1);
+            const float nw = hud_.textWidth(num, kt) / k;
+            hud_.text(X(x0 - 11 - nw), Y(y0 + 1), num, cBlack, kt);
+            hud_.text(X(x0 - 12 - nw), Y(y0), num, c, kt);
+            if (!entry) continue;
+            const Df2Map::Row& row = m.rows[size_t(r)];
+            const std::string& name = all[size_t(std::max(0, skip) + r)].second;
+            if (selected) {
+                hud_.text(X(x0) - hud_.textWidth("[", kt), Y(y0), "[", kDf2Red, kt);
+                hud_.text(X(float(row.x1)), Y(y0), "]", kDf2Red, kt);
+            }
+            shadowed(x0, y0, name, c);
+            extra(size_t(std::max(0, skip) + r), y0, c);
+        }
+    };
+    auto noExtra = [](size_t, float, Color) {};
     // A list's scroll bar (creator 0x40c660 -> 0x40c3f0, drawn by 0x40c7d0).
     // The up arrow (DF2_BT09) at (x, y0), the down arrow (BT10) at (x, y1 -
     // its height); the track record (+0x10..+0x1c) is (x, y0 + 16 - 1) -
@@ -4229,11 +7589,11 @@ void Game::drawDf2CommandMap(const Screen& s) {
     // ty1 + 1) and the thumb 0x4505e0 (x0 + 1, top)-(x1 - 2, bottom) in
     // 0xc06000 filled 0x683000, L = ty1 - (ty0 + 3), top = (pos - min)·L /
     // (max - min) + ty0 + 3, bottom = (pos - min + page)·L / (max - min) +
-    // ty0 + 3 clamped to ty1 (integer division). Both lists: min 0, max 64.
-    auto scrollBar = [&](float vx, float vy0, float vy1, int pos, int page) {
+    // ty0 + 3 clamped to ty1 (integer division). The lists: min 0, max 64.
+    auto scrollBar = [&](float vx, float vy0, float vy1, int pos, int page, int max = 64) {
         icon(m.bt09, V(vx), V(vy0), false);
         icon(m.bt10, V(vx), V(vy1) - 16, false);
-        const Df2Map::Bar r = Df2Map::bar(vx, vy0, vy1, pos, page);
+        const Df2Map::Bar r = Df2Map::bar(vx, vy0, vy1, pos, page, max);
         const Color c0 = rgb(0xc0, 0x60, 0), c1 = rgb(0x68, 0x30, 0);
         auto outline = [&](int x0, int y0, int x1, int y1, Color c) {   // 0x450560: four lines, ends inclusive
             hud_.rect(X(float(x0)), Y(float(y0)), float(x1 - x0 + 1) * k, k, c);
@@ -4295,7 +7655,9 @@ void Game::drawDf2CommandMap(const Screen& s) {
         }
         const char* kindKey = nullptr;
         const char* kindDef = nullptr;
-        if (sel.kind == 4 || item == 6005 || (it && it->type == "marker")) { kindKey = "CMAP_ITEM_WAYPOINT"; kindDef = "Waypoint"; }   // 0x40e800
+        // GOG Df2.exe 0x40ebf0: kind 7 (no ITEMS.DEF type makes it), 0x1775
+        // or 0x17c9; other markers (kind 4) get no panel.
+        if (sel.kind == 4 || item == 6005) { kindKey = "CMAP_ITEM_WAYPOINT"; kindDef = "Waypoint"; }   // 0x40f260
         else if (it && it->type == "building") { kindKey = "CMAP_ITEM_BUILDING"; kindDef = "Building"; }                   // 0x40e9d0
         else if (it && it->type == "vehicle") { kindKey = "CMAP_ITEM_VEHICLE"; kindDef = "Vehicle"; }                      // 0x40ea90
         if (!kindKey) return;   // enemy soldiers, items: nothing
@@ -4333,34 +7695,54 @@ void Game::drawDf2CommandMap(const Screen& s) {
         }
         auto toMap = [&](double x, double y) { return std::pair<float, float>{mx + float(x - px) / mPerPx, my - float(y - py) / mPerPx}; };
         // Grid (0x40e...): 100 m lines in orange, labels white at the cell middle.
+        // A label (0x426f10): four passes in [0x67d364] = 0x010101 at y - 1,
+        // y + 1, x - 1, x + 1, then white ([0x67d360]).
+        auto outlined = [&](float tx, float ty, const std::string& t) {
+            for (auto [dx, dy] : {std::pair{0.f, -k}, {0.f, k}, {-k, 0.f}, {k, 0.f}}) hud_.text(tx + dx, ty + dy, t, rgb(1, 1, 1), kt);
+            hud_.text(tx, ty, t, kHudWhite, kt);
+        };
         if (m.toggles[0]) {
             const double halfW = (x1 - x0) * 0.5 * mPerPx, halfH = (y1 - y0) * 0.5 * mPerPx;
             for (double gx = std::ceil((px - halfW) / 100) * 100; gx <= px + halfW; gx += 100) {
                 const float sx = toMap(gx, py).first;
                 hud_.rect(sx, y0, k, y1 - y0, kDf2Amber);
-                const int i = int(std::floor(gx / 100)) + 10;
-                std::string lab;
-                if (i >= 0 && i < 26) lab = std::string(1, char('A' + i));
-                else if (i >= 26) lab = std::string(1, char('@' + i / 26)) + char('A' + i % 26);
-                hud_.text(sx + 50 / mPerPx - hud_.textWidth(lab, kt) / 2, y0 + k, lab, kHudWhite, kt);
+                // Column letters (0x4261e0): negative indices wrap by 702.
+                const std::string lab = df2GridColumn(int(std::floor(gx / 100)) + 10);
+                // 0x426fd0: only while x0 <= lx - 16 and lx + 16 <= x1.
+                const float lx = sx + 50 / mPerPx;
+                if (x0 <= lx - 16 * k && lx + 16 * k <= x1) outlined(lx - hud_.textWidth(lab, kt) / 2, y0 + k, lab);
             }
             for (double gy = std::floor((py + halfH) / 100) * 100; gy >= py - halfH; gy -= 100) {
                 const float sy = toMap(px, gy).second;
                 hud_.rect(x0, sy, x1 - x0, k, kDf2Amber);
                 const int row = ((10 - int(std::floor((gy - 100) / 100))) % 100 + 100) % 100;
-                hud_.text(x0 + 2 * k, sy + 50 / mPerPx - 4 * k, std::to_string(row), kHudWhite, kt);
+                // 0x4270c0: only while y0 <= ly - 5 and ly + 5 <= y1.
+                const float ly = sy + 50 / mPerPx;
+                if (y0 <= ly - 5 * k && ly + 5 * k <= y1) outlined(x0 + 2 * k, ly - 4 * k, std::to_string(row));
             }
         }
         const float blip = 6.f * k;
-        auto teamColour = [](int side) {
-            return side == 1 ? rgb(0x10, 0x40, 0xff) : side == 2 ? rgb(0xff, 0, 0) : side == 3 ? rgb(0xff, 0xff, 0) : side == 4 ? rgb(0xff, 0xff, 0xff) : rgb(0, 0xff, 0);
+        auto teamColour = [](int side) { return df2BlipColour(false, side); };
+        // People (item kind 3) by df2BlipColour's person rule.
+        auto shapeColour = [&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
+            return df2BlipColour(d.world ? d.world->person : it && it->type == "person", d.side);
         };
         // Blips at double size, a black pass at +-1 pixel first (flag 0x1000);
         // each is recorded for picking (0x4226c0, within the clip +- 8 px).
         // The selected one blinks (flag 0x4000, 0x4229e5 / 0x422a1f): while
         // (frame + 8) & 0x20, its outline is its colour halved and the colour
-        // itself | 0x808080.
-        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead, Df2Sel id) {
+        // itself | 0x808080. With Names (flag 0x20, 0x427904) a non-empty
+        // name (+0x54) is drawn in every pass at (x + size, y), in that
+        // pass's colour.
+        // The selected object as last drawn (0x4273b0 keeps its shape in
+        // [0xa6de48]): drawn again after everything (flag 0x4000), also on
+        // the frames the HUD-waypoint blink skips it.
+        struct SelBlip { float x, y; int type; Color col; float heading; bool dead; std::string name; };
+        std::optional<SelBlip> selBlip;
+        auto blipAt = [&](float x, float y, int type, Color col, float heading, bool dead, Df2Sel id, const std::string& name = {}, bool hidden = false) {
+            if (id.kind && id == m.sel && !selBlip) selBlip = SelBlip{x, y, type, col, heading, dead, name};
+            if (hidden) return;
             if (x > x0 - 8 * k && x < x1 + 8 * k && y > y0 - 8 * k && y < y1 + 8 * k) m.picks.push_back({(x - ox) / k, (y - oy) / k, id});
             Color outline = rgb(1, 1, 1);
             if (id.kind && id == m.sel && ((ticks_ + 8) & 0x20)) {
@@ -4368,12 +7750,50 @@ void Game::drawDf2CommandMap(const Screen& s) {
                 outline = rgb((ch(col.r) >> 1) & 0x7f, (ch(col.g) >> 1) & 0x7f, (ch(col.b) >> 1) & 0x7f);
                 col = rgb(ch(col.r) | 0x80, ch(col.g) | 0x80, ch(col.b) | 0x80);
             }
-            for (auto [dx, dy] : {std::pair{-k, 0.f}, {k, 0.f}, {0.f, -k}, {0.f, k}})
+            const bool named = m.toggles[1] && !name.empty();
+            for (auto [dx, dy] : {std::pair{0.f, -k}, {k, 0.f}, {0.f, k}, {-k, 0.f}}) {
                 drawMapMarker(s, x + dx, y + dy, type, outline, heading, dead, blip);
+                if (named) hud_.text(x + dx + blip, y + dy, name, outline, kt);
+            }
             drawMapMarker(s, x, y, type, col, heading, dead, blip);
+            if (named) hud_.text(x + blip, y, name, col, kt);
         };
-        // The mission route (0x4224c0, not in multiplayer modes), 0xff8000,
-        // first four black (0x010101) copies at x +- 1 / y +- 1 (flag 0x1000).
+        if (m.toggles[2] && o_.gpsIcons > 0)
+            for (size_t i = 0; i < world_.objects.size(); ++i) {
+                const WorldObject& o = world_.objects[i];
+                if (o.missionGroup != 3 || !o.person || o.removed) continue;
+                if (o_.gpsIcons == 1 && !o.mapMarker) continue;
+                double ox = 0, oy = 0;
+                df2ObjectPos(o, ox, oy);
+                auto [gx, gy] = toMap(ox, oy);
+                blipAt(gx, gy, 5, df2BlipColour(true, o.side), o.heading, o.dead, Df2Sel{2, int(i)},
+                       o.missionIndex >= 0 ? df2RecordName(size_t(o.missionIndex)) : std::string());
+            }
+        forDf2Shapes([&](const Df2Shape& d) {
+            const ItemDef* it = items_.byMissionType(d.mission->type);
+            const std::string kind = it ? it->type : std::string();
+            // GOG Df2.exe 0x4273b0: kinds 5 (building) and 2 (decoration) need
+            // Buildings, 1 (vehicle) Vehicles, kind 7 (none) and the items
+            // 0x1775, 0x178a..0x178c, 0x17c9, 0x17cc, 0x17cd Waypoints; other
+            // markers (kind 4) are not filtered. (0xfc3 / 0xfc4 / 0x1020 need
+            // flag 0x10, always set here.)
+            const uint32_t t = d.mission->type;
+            const bool wpItem = t == 6005 || t == 6026 || t == 6027 || t == 6028 || t == 6089 || t == 6092 || t == 6093;
+            if (((kind == "building" || kind == "decoration") && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (wpItem && !m.toggles[3])) return;
+            const Df2Sel id{3, int(d.mission - mission_.objects.data())};
+            // The HUD waypoint blinks (0x421dc0): drawn while frame & 0x10.
+            const bool hidden = df2HudWpIs(id) && !(ticks_ & 16);
+            float bx, by;
+            if (d.world) {
+                double ox = 0, oy = 0;
+                df2ObjectPos(*d.world, ox, oy);
+                std::tie(bx, by) = toMap(ox, oy);
+            } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
+            blipAt(bx, by, d.shape, shapeColour(d), 0, false, id, df2RecordName(size_t(id.index)), hidden);   // with 0x467430's labels
+        });
+        // The mission route (0x4271b0 with Waypoints, not in multiplayer
+        // modes), after the objects' shapes (0x4261e0): 0xff8000, first four
+        // black (0x010101) copies at x +- 1 / y +- 1 (flag 0x1000).
         if (m.toggles[3])
             for (size_t i = 0; i + 1 < route_.size(); ++i) {
                 auto [ax, ay] = toMap(route_[i].x, route_[i].y);
@@ -4382,34 +7802,6 @@ void Game::drawDf2CommandMap(const Screen& s) {
                     hud_.line(ax + dx, ay + dy, bx + dx, by + dy, k, rgb(1, 1, 1));
                 hud_.line(ax, ay, bx, by, k, kDf2Amber);
             }
-        if (m.toggles[2] && o_.gpsIcons > 0)
-            for (size_t i = 0; i < world_.objects.size(); ++i) {
-                const WorldObject& o = world_.objects[i];
-                if (o.missionGroup != 3 || !o.person || o.removed) continue;
-                if (o_.gpsIcons == 1 && !o.mapMarker) continue;
-                const Vec3 at = world_.nearest(o.pos, player_.feet);
-                blipAt(mx + (at.x - c.x) / mPerPx, my + (at.z - c.z) / mPerPx, 5, teamColour(o.side), o.heading, o.dead, Df2Sel{2, int(i)});
-            }
-        forDf2Shapes([&](const Df2Shape& d) {
-            const ItemDef* it = items_.byMissionType(d.mission->type);
-            const std::string kind = it ? it->type : std::string();
-            if ((kind == "building" && !m.toggles[5]) || (kind == "vehicle" && !m.toggles[4]) || (kind == "marker" && !m.toggles[3])) return;
-            const Df2Sel id{3, int(d.mission - mission_.objects.data())};
-            // The HUD waypoint blinks (0x421dc0): drawn while frame & 0x10.
-            if (df2HudWpIs(id) && !(ticks_ & 16)) return;
-            float bx, by;
-            if (d.world) {
-                const Vec3 at = world_.nearest(d.world->pos, player_.feet);
-                bx = mx + (at.x - c.x) / mPerPx;
-                by = my + (at.z - c.z) / mPerPx;
-            } else std::tie(bx, by) = toMap(d.mission->x, d.mission->y);
-            blipAt(bx, by, d.shape, teamColour(d.side), 0, false, id);
-        });
-        if (m.toggles[1] && m.toggles[3])
-            for (const auto& rp : route_) {
-                auto [bx, by] = toMap(rp.x, rp.y);
-                hud_.text(bx + blip, by - 4 * k, rp.name, kDf2Amber, kt);
-            }
         // Player waypoints (pool loop 0x421e48, Waypoints filter): shape 3
         // (diamond) in team 0's green 0x00ff00; names (+0x54) in the blip
         // colour at x + size with Names; the HUD waypoint blinks (0x421e60).
@@ -4417,13 +7809,31 @@ void Game::drawDf2CommandMap(const Screen& s) {
             for (size_t i = 0; i < df2Wps_.size(); ++i) {
                 const Df2Waypoint& w = df2Wps_[i];
                 const Df2Sel id{4, int(i)};
-                if (!w.used || (df2HudWpIs(id) && !(ticks_ & 16))) continue;
+                if (!w.used) continue;
                 auto [bx, by] = toMap(w.x, w.y);
-                blipAt(bx, by, 3, teamColour(0), 0, false, id);
-                if (m.toggles[1]) hud_.text(bx + blip, by - 4 * k, w.name.empty() ? df2Text("Cmap", "CMAP_ITEM_UNKNOWN", "Unknown") : w.name, teamColour(0), kt);
+                blipAt(bx, by, 3, teamColour(0), 0, false, id, w.name, df2HudWpIs(id) && !(ticks_ & 16));
             }
-        blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, teamColour(0), player_.yaw, false, Df2Sel{1, 0});
+        // The player: an organics object, so hidden with People off (0x4273b0
+        // returns without flag 4; the map passes People as 4, 0x40e11a).
+        if (m.toggles[2])
+            blipAt(mx - m.panX / mPerPx, my - m.panZ / mPerPx, 5, df2BlipColour(true, kPlayerSide, true), player_.yaw, false, Df2Sel{1, 0},
+                   o_.soldierName);
+        // 0x4261e0 with flag 0x4000: the selection again with its last shape
+        // (players of another team excluded: multiplayer).
+        if (selBlip && df2SelValid(m.sel))
+            blipAt(selBlip->x, selBlip->y, selBlip->type, selBlip->col, selBlip->heading, selBlip->dead, m.sel, selBlip->name);
         hud_.unclip();
+        // Gridlines (0x4261e0's tail, after the clip is reset by 0x458040):
+        // the north arrow in [0x67d37c] = 0xff8000, virtual (590, 220) down
+        // to (590, 270) and to (600, 240) / (580, 240) (0x456c10), and "N"
+        // (0x4c36d0) f_sml centred at (570, 220) (0x4577a0 mode 2).
+        if (m.toggles[0]) {
+            const float ax = X(V(590)), ay = Y(V(220));
+            hud_.line(ax, ay, X(V(590)), Y(V(270)), k, kDf2Amber);
+            hud_.line(ax, ay, X(V(600)), Y(V(240)), k, kDf2Amber);
+            hud_.line(ax, ay, X(V(580)), Y(V(240)), k, kDf2Amber);
+            hud_.text(X(V(570)) - hud_.textWidth("N", kt) / 2, Y(V(220)), "N", kDf2Amber, kt);
+        }
         // Buttons (width 152 virtual): Gridlines, Names, People, Waypoints,
         // Vehicles, Buildings; the icon buttons and + / -.
         static const char* kLabels[6] = {"Gridlines", "Names", "People", "Waypoints", "Vehicles", "Buildings"};
@@ -4440,76 +7850,54 @@ void Game::drawDf2CommandMap(const Screen& s) {
         textButton(608, 700, 32, "-", true, cHead, cHead);
         infoPanel();
         actionButtons();
-    } else if (m.tab == 1) {
-        // Players tab (0x40eb50): the player array's players (+0x64 & 1):
-        // in single player the player alone, no buttons on its own row.
-        static const char* kHead[5][3] = {{"CMAP_HEADING_NAME", "Name", "80"}, {"CMAP_HEADING_MUTED", "Muted", "272"},
-                                          {"CMAP_HEADING_TALKTO", "Talk to", "360"}, {"CMAP_HEADING_LISTENING", "Listening", "448"},
-                                          {"CMAP_HEADING_WAYPOINTS", "Waypoints", "536"}};
-        for (int i = 0; i < 5; ++i) {
-            const std::string t = df2Text("Cmap", kHead[i][0], kHead[i][1]);
-            const float x = V(float(std::atoi(kHead[i][2])));
-            hud_.text(X(i == 0 ? x : x) - (i == 0 ? 0 : hud_.textWidth(t, kt) / 2), Y(V(196)), t, cHead, kt);
+    } else if (m.tab == 1 || m.tab == 2) {
+        // VON (0x40f5b0) and Players (0x40fb70): the player array's players
+        // (0x40d520(.., players 1, same side 0, self 1, voice 0): +0x64 & 1),
+        // in single player the player alone; scroll [0xc08894] shared, bar
+        // (608, 216-672) 0..64 page 16, 16 rows. Headings: Name left at (80,
+        // 204), the rest centred at y 196 / 212: VON Cmap CMAP_COL_VIOCECHAT /
+        // CMAP_COL_RECIPIENT at x 260, CMAP_COL_PLAYER / CMAP_COL_MUTED at
+        // 360, CMAP_COL_PLAYER / CMAP_COL_LISTENING at 460; Players
+        // CMAP_RECEIVE / CMAP_WAYPOINTS at 280, CMAP_MUTE / CMAP_TEXT_CHAT at
+        // 400. Each row's buttons (VON: TALK / ---- and the mute / listen
+        // icons; Players: the receive and mute toggles) are made only for
+        // rows other than the player's own, so single player has none.
+        hud_.text(X(V(80)), Y(V(204)), df2Text("Cmap", "CMAP_HEADING_NAME", "Name"), cHead, kt);
+        struct Head { const char* key; const char* def; float x, y; };
+        static const Head kVon[6] = {{"CMAP_COL_VIOCECHAT", "Voice Chat", 260, 196}, {"CMAP_COL_RECIPIENT", "Recipient", 260, 212},
+                                     {"CMAP_COL_PLAYER", "Player", 360, 196},        {"CMAP_COL_MUTED", "Muted", 360, 212},
+                                     {"CMAP_COL_PLAYER", "Player", 460, 196},        {"CMAP_COL_LISTENING", "Listening", 460, 212}};
+        static const Head kPlayers[4] = {{"CMAP_RECEIVE", "Receive", 280, 196}, {"CMAP_WAYPOINTS", "Waypoints", 280, 212},
+                                         {"CMAP_MUTE", "Mute", 400, 196},       {"CMAP_TEXT_CHAT", "Text Chat", 400, 212}};
+        const Head* heads = m.tab == 1 ? kVon : kPlayers;
+        for (int i = 0; i < (m.tab == 1 ? 6 : 4); ++i) {
+            const std::string t = df2Text("Cmap", heads[i].key, heads[i].def);
+            hud_.text(X(V(heads[i].x)) - hud_.textWidth(t, kt) / 2, Y(V(heads[i].y)), t, cHead, kt);
         }
         scrollBar(608, 216, 672, m.scrollPlayers, 16);
-        const int rows = 1 - m.scrollPlayers;   // the player only
-        for (int r = 0; r < std::min(rows, 16); ++r) {
-            const float x0 = V(80), y0 = V(224 + 28 * float(r));
-            const std::string name = df2SelName(Df2Sel{1, 0});
-            const bool selected = m.sel.kind == 1;
-            const std::string num = std::to_string(m.scrollPlayers + r + 1);
-            const float nw = hud_.textWidth(num, kt) / k;
-            hud_.text(X(x0 - 11 - nw), Y(y0 + 1), num, cBlack, kt);   // right-aligned
-            hud_.text(X(x0 - 12 - nw), Y(y0), num, selected ? cSel : cHead, kt);
-            if (selected) {
-                hud_.text(X(x0), Y(y0), "[", kDf2Red, kt);
-                hud_.text(X(V(82) + hud_.textWidth(name, kt) / k), Y(y0), "]", kDf2Red, kt);
-            }
-            shadowed(x0, y0, name, selected ? cSel : cHead);
-        }
+        list({{Df2Sel{1, 0}, rowName(Df2Sel{1, 0})}}, m.scrollPlayers, 16, noExtra);
         infoPanel();
         actionButtons();
-    } else if (m.tab == 2) {
-        // Team tab (0x40f190): the rows of the list builder 0x40ca80 (player
-        // array, same team, self included) from (80, 224), 28 apart, skipping
-        // the scroll position ([0xbd0598]). Heading "%s/%s/%s" (0x4a52a8) of
-        // Name / Weapon / Plan centred at (344, 196). Each row (0x40f2c8):
-        // the number (scroll + r + 1) right-aligned at x0 - 12 with a black
-        // shadow at +1, the name shadowed at x0, [ ] in red round the selected
-        // one, then the weapon at x0 + W·208/1024 (the controller's +0xb6
+    } else if (m.tab == 3) {
+        // Team tab (0x410060): the list 0x40d520(.., players 0, same side 1,
+        // self 1, voice 0) from (80, 240), 28 apart, after the scroll
+        // position ([0xc08898]; bar (608, 216-616) 0..64 page 14), 14 rows.
+        // Headings Cmap CMAP_HEADING_NAME left at (80, 204), CMAP_HEADING_WEAPON
+        // centred at (288, 204), CMAP_HEADING_PLAN centred at (464, 204). Each
+        // entry's row: the weapon at x0 + W·208/1024 (the controller's +0xb6
         // type's name) and the plan at x0 + W·384/1024: a player (+0x64 & 1)
         // its plan text (controller +0x14), the others TeamOrders S_HPHF /
         // S_HPCM / S_HP by the order byte +0xbb, else S_NONE; empty ->
-        // CMAP_PLANNONE. Selected 0xff9020, else 0xc06000. The selected one's
-        // buttons: the player "Set my plan to..." (plans: multiplayer, no
-        // effect in single player), a teammate "Set teammate to..." with the
-        // four orders (0x4113b0).
+        // CMAP_PLANNONE. The selected one's buttons: the player "Set my plan
+        // to..." (plans: multiplayer, no effect in single player), a teammate
+        // "Set teammate to..." with the four orders (0x4113b0).
+        hud_.text(X(V(80)), Y(V(204)), df2Text("Cmap", "CMAP_HEADING_NAME", "Name"), cHead, kt);
         {
-            char hdr[96];
-            std::snprintf(hdr, sizeof hdr, "%s/%s/%s", df2Text("Cmap", "CMAP_HEADING_NAME", "Name").c_str(),
-                          df2Text("Cmap", "CMAP_HEADING_WEAPON", "Weapon").c_str(), df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan").c_str());
-            hud_.text(X(V(344)) - hud_.textWidth(hdr, kt) / 2, Y(V(196)), hdr, cHead, kt);
+            const std::string w = df2Text("Cmap", "CMAP_HEADING_WEAPON", "Weapon"), p = df2Text("Cmap", "CMAP_HEADING_PLAN", "Plan");
+            hud_.text(X(V(288)) - hud_.textWidth(w, kt) / 2, Y(V(204)), w, cHead, kt);
+            hud_.text(X(V(464)) - hud_.textWidth(p, kt) / 2, Y(V(204)), p, cHead, kt);
         }
         scrollBar(608, 216, 616, m.scrollTeam, 14);
-        int r = 0, n = 0;
-        auto line = [&](Df2Sel id, const std::string& name, const std::string& weapon, const std::string& plan) {
-            if (n++ < m.scrollTeam || r >= 14) return;
-            const float x0 = V(80), y0 = V(224 + 28 * float(r));
-            const bool selected = id == m.sel;
-            const Color c = selected ? cSel : cHead;
-            const std::string num = std::to_string(m.scrollTeam + r + 1);
-            const float nw = hud_.textWidth(num, kt) / k;
-            hud_.text(X(x0 - 11 - nw), Y(y0 + 1), num, cBlack, kt);
-            hud_.text(X(x0 - 12 - nw), Y(y0), num, c, kt);
-            shadowed(x0, y0, name, c);
-            if (selected) {
-                hud_.text(X(x0), Y(y0), "[", kDf2Red, kt);
-                hud_.text(X(V(82) + hud_.textWidth(name, kt) / k), Y(y0), "]", kDf2Red, kt);
-            }
-            shadowed(x0 + std::floor(640.f * 208.f / 1024.f), y0, weapon, c);
-            shadowed(x0 + std::floor(640.f * 384.f / 1024.f), y0, plan, c);
-            ++r;
-        };
         static const char* kOrderKey[4] = {"CMAP_BTN_NOORDER", "CMAP_BTN_HPHF", "CMAP_BTN_HPCM", "CMAP_BTN_HP"};
         static const char* kOrderDef[4] = {"No orders", "Hold Position, Hold Fire", "Hold Position, Cover Me", "Hold Position"};
         static const char* kShortKey[4] = {"S_NONE", "S_HPHF", "S_HPCM", "S_HP"};
@@ -4517,16 +7905,25 @@ void Game::drawDf2CommandMap(const Screen& s) {
         const std::string planNone = df2Text("Cmap", "CMAP_PLANNONE", "None");
         // The player's row first (INFERRED: the player is the first object of
         // its team in mission group 3 in the shipped missions).
-        line(Df2Sel{1, 0}, df2SelName(Df2Sel{1, 0}), df2TypeName(df2Loadout_.primary), planNone);
+        std::vector<ListEntry> entries{{Df2Sel{1, 0}, rowName(Df2Sel{1, 0})}};
+        std::vector<std::pair<std::string, std::string>> cols{{df2TypeName(df2Loadout_.primary), planNone}};
         for (size_t i = 0; i < world_.objects.size(); ++i) {
             // Teammates: no code writes a mission soldier's controller bytes
             // +0xb6..+0xba (writers: the network 0x408eca / 0x40a071 /
             // 0x40a60b and the local player's join copy 0x454273), so the
             // weapon column shows type 0, "None".
-            if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)}) || !world_.objects[i].alive()) continue;
+            // 0x40d520 has no health test (organics +0xc is not cleared by
+            // death: writers 0x403790, 0x409610, 0x4146f0), so dead teammates
+            // stay listed; removed objects go.
+            if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)})) continue;
             const int ord = std::clamp(ai_.order(int(i)), 0, 3);
-            line(Df2Sel{2, int(i)}, df2SelName(Df2Sel{2, int(i)}), df2TypeName(0), df2Text("TeamOrders", kShortKey[ord], kShortDef[ord]));
+            entries.push_back({Df2Sel{2, int(i)}, rowName(Df2Sel{2, int(i)})});
+            cols.push_back({df2TypeName(0), df2Text("TeamOrders", kShortKey[ord], kShortDef[ord])});
         }
+        list(entries, m.scrollTeam, 14, [&](size_t e, float y0, Color c) {
+            shadowed(V(80) + std::floor(640.f * 208.f / 1024.f), y0, cols[e].first, c);
+            shadowed(V(80) + std::floor(640.f * 384.f / 1024.f), y0, cols[e].second, c);
+        });
         if (m.sel.kind == 1) {
             hud_.text(X(V(80)), Y(V(640)), df2Text("Cmap", "CMAP_SETPLAN", "Set my plan to..."), cHead, kt);
             static const char* kPlans[2][4] = {{"CMAP_PLAN001", "CMAP_PLAN002", "CMAP_PLAN003", "CMAP_PLAN004"},
@@ -4545,7 +7942,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
         }
         infoPanel();
         actionButtons();
-    } else if (m.tab == 3) {
+    } else if (m.tab == 4) {
         // Weapons tab (0x40fbe0), f_sml in colour -1 (0x40fc67): the HUD
         // font draw (0x4198e0) stores or blends the colour dword as given,
         // with no special case, so 0xffffffff is white: the current loadout left at y 212 + 96k, the requested
@@ -4557,8 +7954,9 @@ void Game::drawDf2CommandMap(const Screen& s) {
         static const char* kSlotDef[5] = {"Primary", "Secondary 1", "Secondary 2", "Sidearm", "Grenade"};
         const Color white = rgb(0xff, 0xff, 0xff);
         auto picture = [&](int type, float x, float y) {
-            if (!m.weap.texture || type < 0 || type >= 39 || kDf2TypeFrame[type] < 0) return;
-            const float fh = float(m.weap.height / 22), H = float(m.weap.height), f = float(kDf2TypeFrame[type]);
+            const int fr = type == 9 && arsenal_.df2Gog() ? kDf2Type9FrameGog : type >= 0 && type < 39 ? kDf2TypeFrame[type] : -1;
+            if (!m.weap.texture || fr < 0) return;
+            const float fh = float(m.weap.height / 22), H = float(m.weap.height), f = float(fr);
             hud_.setBlend(5);
             hud_.imageUV(m.weap.texture, X(x), Y(y), float(m.weap.width) * k, fh * k, 0, f * fh / H, 1, (f + 1) * fh / H);
             hud_.setBlend(0);
@@ -4580,37 +7978,64 @@ void Game::drawDf2CommandMap(const Screen& s) {
             }
         }
         textButton(336, 696, 300, df2Text("Cmap", "CMAP_BTN_REQUESTWEAP", "Request Weapons"), false, cHead, cHead);
-    } else if (m.tab == 4) {
-        // Mission tab: the DF2BRIEF MBBRIEF text in (64, 216)-(608, 704),
-        // colour 0xc06000; the box title CMAP_SETTINGS (0x410e60), its
-        // settings n/a in single player.
+    } else if (m.tab == 5) {
+        // Mission tab (0x412bb0): DF2BRIEF MBBRIEF (the mission name's first
+        // six characters) through 0x40c310 into (64, 216)-(608, 704) in
+        // 0xc06000, wrapped, after [0xc088a0] segments; the bar (608,
+        // 216-704). Then 0x412b00's text, "%s\r" of Cmap CMAP_SETTINGS and
+        // 0x410e10's "n/a" in single player, unwrapped into (704, 216)-(960,
+        // 704) after [0xc088a4]; its bar at x 944.
         std::vector<uint8_t> raw;
         static TextTable brief;
         static bool loaded = false;
         if (!loaded) { loaded = true; if (vfs_.read("DF2BRIEF.BIN", raw)) brief.parse(raw); }
         const std::string cur = current_ >= 0 && current_ < int(missions_.size()) ? toUpper(missions_[size_t(current_)]) : std::string();
         const std::string key = cur.substr(0, std::min<size_t>(6, cur.size()));
-        if (const std::string* t = brief.find("MBBRIEF", key)) {
-            float y = Y(V(216));
-            std::string line, word;
-            const float maxW = (V(608) - V(64)) * k;
-            auto emit = [&]() { hud_.text(X(V(64)), y, line, cHead, kt); y += 18.f * 0.625f * k; line.clear(); };
-            for (char ch : *t + " ") {
-                if (ch == '\r') continue;
-                if (ch == '\n') { if (!word.empty()) { line += (line.empty() ? "" : " ") + word; word.clear(); } emit(); continue; }
-                if (ch == ' ') {
-                    const std::string cand = line.empty() ? word : line + " " + word;
-                    if (hud_.textWidth(cand, kt) > maxW && !line.empty()) { emit(); line = word; }
-                    else line = cand;
-                    word.clear();
-                    continue;
+        // 0x40c310: segments end at NUL, '~', CR, LF and, wrapping, at a
+        // space; at each such end the text since the segment start is
+        // measured (f_sml widths) and a segment is cut when that width
+        // reaches the box width (it then ends after the previous space,
+        // which it keeps) or at any hard end (the end itself dropped, and
+        // stepped over unless NUL). Each cut segment counts; after `skip`
+        // of them, a non-empty one is drawn at the box's x while y + the
+        // 'A' height < the box bottom, y then moving by that height + 2.
+        // Returns the count.
+        auto textBox = [&](const std::string& t, float vx0, float vy0, float vx1, float vy1, int skip, bool wrap) {
+            const int x0 = int(V(vx0)), W = int(V(vx1)) - x0, yEnd = int(V(vy1)), h = m.smlA;
+            int y = int(V(vy0)), count = 0;
+            size_t start = 0, i = 0, kept = 0;   // kept: 0x40c310's sVar6, the length up to the last space
+            for (;;) {
+                const size_t prev = kept;
+                const char c = i < t.size() ? t[i] : '\0';
+                ++i;
+                const bool hard = c == '\0' || c == '~' || c == '\r' || c == '\n';
+                if (!hard && !(wrap && c == ' ')) continue;
+                const int w = int(hud_.textWidth(t.substr(start, i - 1 - start), kt) / k);
+                kept = i - start;
+                if (w < W && !hard) continue;
+                size_t n = kept - 1;
+                // OpenDF guard: a word wider than the box at a segment's
+                // start (prev 0, ended by a space) would make 0x40c310 cut
+                // an empty segment there forever; it is cut after the word.
+                if (wrap && w >= W && (prev != 0 || c != ' ')) n = prev;
+                if (skip > 0) --skip;
+                else if (n > 0 && h + y < yEnd) {
+                    hud_.text(X(float(x0)), Y(float(y)), t.substr(start, n), cHead, kt);
+                    y += h + 2;
                 }
-                word += ch;
+                size_t next = start + n;
+                if (c == '~' || c == '\r' || c == '\n') ++next;
+                ++count;
+                if (c == '\0') return count;
+                start = i = next;
+                kept = 0;
             }
-            if (!line.empty()) emit();
-        }
-        hud_.text(X(V(720)), Y(V(232)), df2Text("Cmap", "CMAP_SETTINGS", "Game Settings"), kDf2Amber, kt);
-        hud_.text(X(V(720)), Y(V(264)), "n/a", kDf2Amber, kt);
+        };
+        const std::string* t = brief.find("MBBRIEF", key);
+        m.briefLines = textBox(t ? *t : std::string(), 64, 216, 608, 704, m.scrollBrief, true);
+        scrollBar(608, 216, 704, m.scrollBrief, 18, m.briefLines + 1);
+        m.settingsLines = textBox(df2Text("Cmap", "CMAP_SETTINGS", "Game Settings") + "\rn/a", 704, 216, 960, 704, m.scrollSettings, false);
+        scrollBar(944, 216, 704, m.scrollSettings, 18, m.settingsLines + 1);
     }
     // The text prompt (0x4422b0 while 0x41ca70()): the darkened box with an
     // orange outline (0x45c160) at (50, y)-(974, y + 80), y = [0x65366c] - 160
@@ -4647,61 +8072,68 @@ void Game::drawDf2CommandMap(const Screen& s) {
     if (cur.texture) {
         const float hx = wcur ? 6.f : m.panning && overMap ? 10.f : overMap ? 12.f : 0.f;
         const float hy = wcur ? 6.f : m.panning && overMap ? 10.f : overMap ? 11.f : 0.f;
-        hud_.image(cur.texture, X(float(m.mouseX) - hx), Y(float(m.mouseY) - hy), float(cur.width) * k, float(cur.height) * k,
-                   wcur ? Color{1, 1, 1, 1} : Color{0, 1, 0, 1});
+        // 0x40ccf0: kept inside the 640x480 surface, the low edge first.
+        float cx = std::max(0.f, float(m.mouseX) - hx), cy = std::max(0.f, float(m.mouseY) - hy);
+        if (cx + float(cur.width) > 640.f) cx = 640.f - float(cur.width);
+        if (cy + float(cur.height) > 480.f) cy = 480.f - float(cur.height);
+        hud_.image(cur.texture, X(cx), Y(cy), float(cur.width) * k, float(cur.height) * k, wcur ? Color{1, 1, 1, 1} : Color{0, 1, 0, 1});
+    }
+    // 0x40bda0 ends with the Game Paused box (0x449200) while [0xc249e4] is
+    // set: the panel 0x465ae0(310, 330, 714, 438) (x ends rounded down to 4
+    // pixels) and Overlays STROVER7 centred at (512, 380) in 0x00ff00.
+    if (paused_) {
+        const float bx0 = X(float(int(V(310)) & ~3)), by0 = Y(V(330)), bx1 = X(float(int(V(714)) & ~3)), by1 = Y(V(438));
+        hud_.multiply(bx0, by0, bx1 - bx0, by1 - by0, {0.5f, 0.5f, 0.5f, 1});
+        hud_.rect(bx0, by0, bx1 - bx0, k, kDf2Amber);
+        hud_.rect(bx0, by1 - k, bx1 - bx0, k, kDf2Amber);
+        hud_.rect(bx0, by0, k, by1 - by0, kDf2Amber);
+        hud_.rect(bx1 - k, by0, k, by1 - by0, kDf2Amber);
+        const std::string t = df2Text("Overlays", "STROVER7", "Game Paused");
+        hud_.text(X(V(512)) - hud_.textWidth(t, kt) / 2, Y(V(380)), t, kHudPureGreen, kt);
     }
 }
 
 void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
     Df2Map& m = df2Map_;
     auto V = [](float v) { return std::floor(v * 0.625f); };
-    if (button == 3) { m.panning = down; return; }   // right drag pans
+    // Right drag pans (0x40ddff, bit 2); left alone picks on the map
+    // (0x40def6, bit 1); any button works the tabs, rows and widgets.
+    if (button == 3) m.panning = down;
     if (button == 1) m.leftHeld = down;
-    if (!down || button != 1) return;
+    const int bit = button == 1 ? 1 : button == 3 ? 2 : 4;
+    m.held = down ? (m.held | bit) : (m.held & ~bit);
+    if (!down) return;
     auto in = [&](float vx, float vy, float w) { return x >= V(vx) && x < V(vx) + w && y >= V(vy) && y < V(vy) + 16; };
-    // Tabs (the text rectangles, y 80).
-    if (y >= 80 && y < 80 + std::max(1, m.big.height)) {
-        float total = 0;
-        std::string tabs[5];
-        for (int i = 0; i < 5; ++i) {
-            char key[24];
-            std::snprintf(key, sizeof key, "CMAP_MENU%03d", i);
-            static const char* kDef[5] = {"Map", "Players", "Team", "Weapons", "Mission"};
-            tabs[i] = df2Text("Cmap", key, kDef[i]);
-            total += Hud::sheetWidth(m.big, tabs[i]);
-        }
-        const float gap = (590.f - total) / 5.f;
-        float tx = 25.f + gap / 2;
-        for (int i = 0; i < 5; ++i) {
-            const float w = Hud::sheetWidth(m.big, tabs[i]);
-            if (x >= tx && x <= tx + w) { df2MapEnter(i); return; }
-            tx += w + gap;
-        }
+    // Tabs (0x40d860): the text rectangles x0..x1, y 80..96, edges included.
+    if (y >= 80 && y <= 96) {
+        const auto tabs = df2MapTabs();
+        for (int i = 0; i < 6; ++i)
+            if (x >= tabs[size_t(i)].x0 && x <= tabs[size_t(i)].x1) {
+                // 0x40d800: only a different tab leaves / clears / enters.
+                if (i != m.tab) df2MapEnter(i);
+                return;
+            }
     }
-    // The action buttons of the selection (Map, Players, Team; group 2).
-    if (m.tab <= 2) {
+    // The action buttons of the selection (Map, VON, Players, Team; group 2).
+    if (m.tab <= 3) {
         const auto b = df2ActionButtons();
         for (size_t i = 0; i < b.size(); ++i)
             if (in(688, 696 - 32 * float(i), V(280))) { df2Action(b[i].second); return; }
     }
-    if (m.tab == 1) {
-        // Row click (0x40b80a): row 0 is the player while not scrolled away.
-        const float w = hud_.textWidth(df2SelName(Df2Sel{1, 0}), 640.f / float(std::max(640, hudMode_)));
-        if (m.scrollPlayers == 0 && x >= V(80) && x <= V(82) + w && y >= V(224) && y < V(252)) df2Select(Df2Sel{1, 0});
-        return;
+    {
+        // A list row (0x40c1e0 -> 0x40d790): the first row whose rect holds
+        // the mouse, edges included, is selected (0x40c5b0). GOG tests the
+        // last list built ([0xbfaee4], written only by the VON, Players and
+        // Team pages and reset by neither a tab switch nor a mission start)
+        // on every tab, so its rows stay live on Map, Weapons and Mission
+        // (READ quirk); a selection the mission no longer has is skipped.
+        // (OpenDF tests it before the tab's own click instead of after it;
+        // the row's selection wins either way.)
+        for (const auto& r : m.rows)
+            if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1 && df2SelValid(r.sel)) { df2Select(r.sel); return; }
     }
-    if (m.tab == 2) {
-        // Team tab: pick a row (the player first), or give an order.
-        if (y >= V(224) && y < V(616) && x >= V(80) && x < V(600)) {
-            const int r = int((float(y) - V(224)) / V(28) + 0.0001f) + m.scrollTeam;
-            if (r == 0) { df2Select(Df2Sel{1, 0}); return; }
-            int row = 0;
-            for (size_t i = 0; i < world_.objects.size(); ++i) {
-                if (!df2SelOnPlayerTeam(Df2Sel{2, int(i)}) || !world_.objects[i].alive()) continue;
-                if (++row == r) { df2Select(Df2Sel{2, int(i)}); return; }
-            }
-            return;
-        }
+    if (m.tab == 3) {
+        // Team tab: a teammate's order buttons.
         if (m.sel.kind == 2 && df2SelOnPlayerTeam(m.sel)) {
             static const float kOrderPos[4][2] = {{56, 664}, {344, 664}, {56, 696}, {344, 696}};
             for (int i = 0; i < 4; ++i)
@@ -4717,7 +8149,7 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
         }
         return;
     }
-    if (m.tab == 3) {
+    if (m.tab == 4) {
         // < (0x411740) / > (0x4117a0): step the requested type through the
         // 39 types, wrapping, to one whose category the slot accepts.
         for (int slot = 0; slot < 5; ++slot) {
@@ -4741,15 +8173,20 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
     if (in(528, 700, 16)) { m.dButton = !m.dButton; df2Elevation_ = m.dButton; return; }   // D (0x411280)
     if (in(568, 668, 16)) { m.panX = m.panZ = 0; return; }                                 // >< re-centres
     if (in(568, 700, 16)) { m.contours = !m.contours; return; }                            // {{{ (0x411220)
-    // The map (0x40d2d0): strictly inside (48, 200)-(640, 656).
-    if (x > V(48) && x < V(640) && y > V(200) && y < V(656)) {
-        const double step = 1024.0 / 640.0 * mapScale_;
-        const double cx = (V(48) + V(640)) / 2.0, cy = (V(200) + V(656)) / 2.0;
+    // The map (0x40d2d0): strictly inside (48, 200)-(640, 656), left only.
+    if (button == 1 && x > V(48) && x < V(640) && y > V(200) && y < V(656)) {
         if (m.wTool) {
-            // 0x422ea0 (the radar transform inverted), then 0x445e70(x, y,
-            // "WP", player): the first free pool slot (none of 128 free:
-            // nothing, select(0)); then the name prompt, and W goes off.
-            const double wx = player_.missionX() + m.panX + (double(x) - cx) * step, wy = player_.missionY() - m.panZ + (cy - double(y)) * step;
+            // GOG Df2.exe 0x427ba0 (the radar transform inverted): from the
+            // integer centre pixel ([0xa69e10] = (30 + 400) >> 1, [0xa69e14]
+            // = (125 + 410) >> 1, stored by 0x4261e0), the offset times the
+            // 16.16 step (0x4261e0's (scale << 10) / 640) cut to whole metres
+            // (& 0xffff0000), plus the map centre; then 0x445e70(x, y, "WP",
+            // player): the first free pool slot (none of 128 free: nothing,
+            // select(0)); then the name prompt, and W goes off.
+            const int cx = (int(V(48)) + int(V(640))) >> 1, cy = (int(V(200)) + int(V(656))) >> 1;
+            const int64_t step = (int64_t(std::llround(double(mapScale_) * 65536.0)) << 10) / 640;
+            auto metres = [](int64_t v) { return double(int32_t(uint32_t(v) & 0xffff0000u)) / 65536.0; };
+            const double wx = player_.missionX() + m.panX + metres(int64_t(x - cx) * step), wy = player_.missionY() - m.panZ + metres(int64_t(cy - y) * step);
             Df2Sel made;
             for (size_t i = 0; i < df2Wps_.size(); ++i)
                 if (!df2Wps_[i].used) {
@@ -4774,6 +8211,7 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
             if (d < best) { best = d; found = p.sel; }
         }
         m.drag = Df2Sel{};
+        m.dragHeld = false;
         if (found.kind) {
             df2Select(found);
             const int item = df2SelItem(found);
@@ -4786,12 +8224,11 @@ void Game::df2MapClick(const Screen& s, int x, int y, bool down, int button) {
 }
 
 void Game::drawBriefing(const Screen& s) {
-    // 0x482cb8: darkened box (200, 200)-(824, 568); "Mission Briefing"
-    // (DFMENU.BIN) centred at (512, 225) in bright green; the text wrapped
-    // by 0x482970 into x0 + 5, y0 + 35, width - 10, height - 40: words split
-    // at spaces, "{...}" tags removed, "~" a line break, a word that would
-    // pass the right edge starts a line; lines before the start line are
-    // skipped; stop when the next line would pass the bottom.
+    if (!df2Hud_.on) {
+        drawDf1Briefing(s);
+        return;
+    }
+    // (Delta Force 2: not traced; Delta Force's earlier reading.)
     const float x0 = s.vx(200), x1 = s.vx(824), y0 = s.vy(200), y1 = s.vy(568);
     hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
     const std::string* title = menuText_.find("GroupMainMenu", "HELPMISSIONBRIEFING");
@@ -4831,13 +8268,263 @@ void Game::drawBriefing(const Screen& s) {
     briefLast_ = line;
 }
 
+void Game::drawDf1Briefing(const Screen& s) {
+    // GOG Df.exe 0x42c7f0 (CD 0x482cb8): the panel (200, 200)-(824, 568)
+    // (0x401ec0, outlined); "Mission Briefing" (DFMENU.BIN) centred at
+    // (512, 225) in bright green; then the corners in mode pixels
+    // (0x471af0, not rounded to 4) and the text wrapped by 0x42c4a0 (CD
+    // 0x482970) into x0 + 5, y0 + 35, width - 10, height - 40 mode pixels;
+    // its result, the line it stopped on, is [0x6ba430].
+    df1Panel(s, 200, 200, 824, 568);
+    const std::string* title = menuText_.find("GroupMainMenu", "HELPMISSIONBRIEFING");
+    const std::string t = title ? *title : "Mission Briefing";
+    const float ts = s.text();
+    hud_.text(s.vx(512) - hud_.textWidth(t, ts) / 2, s.vy(225), t, kHudBright, ts);
+    const int mw = s.modeW, mh = s.modeW * 3 / 4;
+    const int px0 = 200 * mw / 1024, py0 = 200 * mh / 768, px1 = 824 * mw / 1024, py1 = 568 * mh / 768;
+    const float k = s.art(), ox = s.cx(-320);
+    const float left = ox + float(px0 + 5) * k, top = float(py0 + 35) * k;
+    const float right = left + float(px1 - px0 - 10) * k, bottom = top + float(py1 - py0 - 40) * k;
+    const float lh = hud_.lineHeight(ts);
+    // 0x42c4a0: no text (or "") returns 0. The text, at most 3999
+    // characters, is cut by strtok at ' ' only. The first word is taken as
+    // it is (no tag or '~' test, no wrap) and drawn at the top left on page
+    // 1. Every later word loses a leading "{...}" (a tag alone leaves an
+    // empty word, drawn as a space); one starting with '~' (the rest of it
+    // dropped) breaks the line; any other wraps when x + its width passes
+    // the right edge, even at a line's start. A break moves down only from
+    // the start line on and returns the line it was on when the next line
+    // would pass the bottom (so the next page repeats that line). Every word
+    // gets a ' ' and is drawn from the start line on, x advancing by its
+    // width with the space.
+    if (briefing_.empty()) { briefLast_ = 0; return; }
+    const std::string text = briefing_.substr(0, 3999);
+    std::vector<std::string> words;
+    for (size_t i = 0; i < text.size();) {
+        size_t e = text.find(' ', i);
+        if (e == std::string::npos) e = text.size();
+        if (e > i) words.push_back(text.substr(i, e - i));
+        i = e + 1;
+    }
+    if (words.empty()) { briefLast_ = 0; return; }
+    float x = left, y = top;
+    int line = 1;
+    std::string w = words[0].substr(0, 63) + ' ';
+    if (briefStart_ < 2) hud_.text(x, y, w, kHudBright, ts);
+    for (size_t i = 1;;) {
+        x += hud_.textWidth(w, ts);
+        bool done = false;
+        for (;;) {
+            if (i >= words.size()) { done = true; break; }
+            std::string tok = words[i++];
+            if (tok[0] == '{') {
+                const size_t e = tok.find('}');
+                tok = e == std::string::npos ? std::string() : tok.substr(e + 1);
+            }
+            w = tok.substr(0, 63);
+            if (w.empty() || w[0] != '~') break;
+            x = left;
+            if (briefStart_ <= line) y += lh;
+            if (bottom < y + lh) { done = true; break; }
+            ++line;
+        }
+        if (done) break;
+        if (right < x + hud_.textWidth(w, ts)) {
+            x = left;
+            if (briefStart_ <= line) y += lh;
+            if (bottom < y + lh) break;
+            ++line;
+        }
+        w += ' ';
+        if (briefStart_ <= line) hud_.text(x, y, w, kHudBright, ts);
+    }
+    briefLast_ = line;
+}
+
+namespace {
+// GOG Df2.exe 0x41c690: Windows virtual keys -> DF2GAME.BIN HelpScreenKeys
+// keys (the EXE's own default when the table lacks one: the same name).
+struct Df2VkName { int vk; const char* key; };
+const Df2VkName kDf2VkNames[] = {
+    {0x01, "LBUTTON"}, {0x02, "RBUTTON"}, {0x03, "CANCEL"}, {0x04, "MBUTTON"}, {0x08, "BACK"}, {0x09, "TAB"},
+    {0x0c, "CLEAR"}, {0x0d, "RETURN"}, {0x10, "SHIFT"}, {0x11, "CONTROL"}, {0x12, "MENU"}, {0x13, "PAUSE"},
+    {0x14, "CAPITAL"}, {0x15, "HANGUL"}, {0x17, "JUNJA"}, {0x18, "FINAL"}, {0x19, "HANJA"}, {0x1b, "ESCAPE"},
+    {0x1c, "CONVERT"}, {0x1d, "NONCONVERT"}, {0x1e, "ACCEPT"}, {0x1f, "MODECHANGE"}, {0x20, "SPACE"},
+    {0x21, "PRIOR"}, {0x22, "NEXT"}, {0x23, "END"}, {0x24, "HOME"}, {0x25, "LEFT"}, {0x26, "UP"},
+    {0x27, "RIGHT"}, {0x28, "DOWN"}, {0x29, "SELECT"}, {0x2a, "PRINT"}, {0x2b, "EXECUTE"}, {0x2c, "SNAPSHOT"},
+    {0x2d, "INSERT"}, {0x2e, "DELETE"}, {0x2f, "HELP"}, {0x5b, "LWIN"}, {0x5c, "RWIN"}, {0x5d, "APPS"},
+    {0x60, "NUMPAD0"}, {0x61, "NUMPAD1"}, {0x62, "NUMPAD2"}, {0x63, "NUMPAD3"}, {0x64, "NUMPAD4"},
+    {0x65, "NUMPAD5"}, {0x66, "NUMPAD6"}, {0x67, "NUMPAD7"}, {0x68, "NUMPAD8"}, {0x69, "NUMPAD9"},
+    {0x6a, "MULTIPLY"}, {0x6b, "ADD"}, {0x6c, "SEPARATOR"}, {0x6d, "SUBTRACT"}, {0x6e, "DECIMAL"},
+    {0x6f, "DIVIDE"}, {0x70, "F1"}, {0x71, "F2"}, {0x72, "F3"}, {0x73, "F4"}, {0x74, "F5"}, {0x75, "F6"},
+    {0x76, "F7"}, {0x77, "F8"}, {0x78, "F9"}, {0x79, "F10"}, {0x7a, "F11"}, {0x7b, "F12"}, {0x7c, "F13"},
+    {0x7d, "F14"}, {0x7e, "F15"}, {0x7f, "F16"}, {0x80, "F17"}, {0x81, "F18"}, {0x82, "F19"}, {0x83, "F20"},
+    {0x84, "F21"}, {0x85, "F22"}, {0x86, "F23"}, {0x87, "F24"}, {0x90, "NUMLOCK"}, {0x91, "SCROLL"},
+    {0xa0, "LSHIFT"}, {0xa1, "RSHIFT"}, {0xa2, "LCONTROL"}, {0xa3, "RCONTROL"}, {0xa4, "LMENU"},
+    {0xa5, "RMENU"}, {0xba, ";"}, {0xbb, "="}, {0xbd, "-"}, {0xbe, "."}, {0xbf, "/"}, {0xc0, "`"},
+    {0xdc, "\\"}, {0xde, "'"}, {0xf6, "ATTN"}, {0xf7, "CRSEL"}, {0xf8, "EXSEL"}, {0xf9, "EREOF"},
+    {0xfa, "PLAY"}, {0xfb, "ZOOM"}, {0xfc, "NONAME"}, {0xfd, "PA1"}, {0xfe, "OEM_CLEAR"}};
+} // namespace
+
+// GOG Df2.exe 0x41e5d0 at the mission start (0x441950, after the soldier's
+// key rows went into the table, 0x441140 -> 0x4410d0):
+// - 0x41e370 copies the 0x200 action rows (+4 command name, +0x24 key,
+//   +0x26 mouse 1 / 2 / 0x10, +0x2a flags, +0x2c category, +0x30 name);
+//   0x41e2d0 puts rows with neither a key nor a mouse button and category
+//   11 (Debug) in category 0; they are sorted by category, then by name
+//   (_strcmpi, 0x41e290); 0x41e310 names each row of a category through
+//   HelpScreenActions <command> (the table's name as default);
+// - 0x41e3c0 pages them: a new page at each category change or after 14
+//   rows, titled HelpScreenText <category key>;
+// - the key text (0x41c690): "Ctrl-" (flag 0x100), "Alt-" (0x80), "Shift-"
+//   (0x40) and the key's HelpScreenKeys name ("%c" for a printable key,
+//   "Key %d" otherwise); with a mouse button " or " (if a key) and its name;
+//   " *" for flag 0x200 (Shift reverses it).
+void Game::buildDf2Help() {
+    df2HelpRows_.clear();
+    df2HelpPages_.clear();
+    df2HelpPage_ = 0;
+    const Df2ExeTables* t = df2Exe_.df2();
+    if (!t || t->keyRecord != 0x70) return;   // GOG's table only
+    auto txt = [&](const char* section, const std::string& key, const std::string& def) {
+        const std::string* v = gameTable_.find(section, key);
+        return v ? *v : def;
+    };
+    struct Row { std::string command, rawName; int key = 0, mouse = 0, flags = 0, category = 0; int order = 0; };
+    std::vector<Row> rows;
+    const uint32_t base = t->keys - 0x70;   // record 0 (0x4b1710)
+    for (int i = 0; i < 0x200; ++i) {
+        const uint32_t a = base + uint32_t(i) * 0x70;
+        uint32_t km = 0, fl = 0;
+        int32_t cat = 0;
+        Row r;
+        r.order = i;
+        if (!df2Exe_.u32(a + 0x24, km) || !df2Exe_.u32(a + 0x28, fl) || !df2Exe_.i32(a + 0x2c, cat)) { rows.push_back(r); continue; }
+        r.command = df2Exe_.str(a + 4, 32);
+        r.rawName = df2Exe_.str(a + 0x30, 0x40);
+        r.key = int(int16_t(km & 0xFFFF));
+        r.mouse = int(int16_t(km >> 16));
+        r.flags = int(fl >> 16);
+        r.category = cat;
+        rows.push_back(r);
+    }
+    auto lower = [](std::string s) { for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c))); return s; };
+    // The soldier's bindings (0x441090: the first row of that name,
+    // _strcmpi; 0x4410d0: the key, and mouse 1 / 2 / 0x10).
+    for (const auto& [n, key] : o_.bindings)
+        for (Row& r : rows)
+            if (!r.command.empty() && lower(r.command) == lower(n)) {
+                r.key = int(key & 0xFFFF);
+                const uint32_t m = key >> 16;
+                r.mouse = m == 1 ? 1 : m == 2 ? 2 : m == 0x10 ? 0x10 : 0;
+                break;
+            }
+    for (Row& r : rows) {
+        if (r.key == 0 && r.mouse == 0) r.category = 0;
+        if (r.category == 11) r.category = 0;
+    }
+    std::stable_sort(rows.begin(), rows.end(), [&](const Row& a, const Row& b) {
+        if (a.category != b.category) return a.category < b.category;
+        return lower(a.rawName) < lower(b.rawName);
+    });
+    static const char* const kCat[12] = {"NULL", "SYSTEM", "WEAPONS", "CAMERA", "MAP", "COMMUNICATIONS", "SERVER",
+                                         "NOVALOGIC", "VON", "CHEAT", "MOVEMENT", "DEBUG"};
+    static const char* const kCatDef[12] = {"!Null", "!System", "!Weapons", "!Camera", "!Map", "!Communications", "!Server",
+                                            "!NovaLogic", "!Voice Over Net", "!Cheat", "!Movement", "!Debug"};
+    auto keyName = [&](int vk) {
+        for (const auto& v : kDf2VkNames)
+            if (v.vk == vk) return txt("HelpScreenKeys", v.key, v.key);
+        char b[32];
+        // MSVC's C-locale classes 0x157 (letters, digits, punctuation, space).
+        if (vk > 0 && vk < 0x80 && (std::isalnum(vk) || std::ispunct(vk) || vk == ' ')) std::snprintf(b, sizeof b, "%c", vk);
+        else std::snprintf(b, sizeof b, "%s %d", txt("HelpScreenKeys", "KEY", "KEY").c_str(), vk);
+        return txt("HelpScreenKeys", b, b);
+    };
+    int inPage = 0, prev = 0;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const Row& r = rows[i];
+        Df2HelpRow h;
+        h.category = r.category;
+        if (r.category != 0) {
+            h.name = txt("HelpScreenActions", r.command, r.rawName);
+            std::string k;
+            if (r.key != 0) {
+                if (r.flags & 0x100) k += txt("HelpScreenKeys", "Ctrl-", "!Ctrl - ");
+                if (r.flags & 0x80) k += txt("HelpScreenKeys", "Alt-", "!Alt - ");
+                if (r.flags & 0x40) k += txt("HelpScreenKeys", "Shift-", "!Shift - ");
+                k += keyName(r.key);
+            }
+            if (r.mouse != 0) {
+                if (r.key != 0) k += txt("HelpScreenKeys", "OR", " !or ");
+                if (r.mouse == 1) k += txt("HelpScreenKeys", "LBUTTON", "!mouse 1");
+                else if (r.mouse == 2) k += txt("HelpScreenKeys", "RBUTTON", "!mouse 2");
+                else if (r.mouse == 0x10) k += txt("HelpScreenKeys", "MBUTTON", "!mouse 3");
+            }
+            if (r.flags & 0x200) k += " *";
+            h.keys = k;
+            if (++inPage > 14 || r.category != prev) {
+                if (!df2HelpPages_.empty()) df2HelpPages_.back().last = int(i) - 1;
+                Df2HelpPage p;
+                p.first = int(i);
+                const int c = r.category >= 0 && r.category < 12 ? r.category : -1;
+                p.title = c >= 0 ? txt("HelpScreenText", kCat[c], kCatDef[c]) : txt("HelpScreenText", "UNKNOWN", "!Unknown Type");
+                df2HelpPages_.push_back(p);
+                inPage = 1;
+            }
+        }
+        prev = r.category;
+        df2HelpRows_.push_back(h);
+    }
+    if (!df2HelpPages_.empty()) df2HelpPages_.back().last = 0x1ff;
+}
+
+// GOG Df2.exe 0x41e620 (texts by 0x41e0f0; 0x41e5e0 draws at x + 20,
+// y + 100 of 1024x768, in [0x67d37c]): the 3D view's box darkened and
+// outlined (0x465ae0 from x 1 to 1024); "Help - <page>" and "Page %i of %i"
+// centred at x 512 + 20, y 115 / 140; 14 rows from y 190, 25 apart, the
+// action at x 40 and its keys at x 500; then CYCLE_STRING and CHANGE_SCREEN
+// at x 40, 50 and 75 below the last row.
+void Game::drawDf2Help(const Screen& s) {
+    const float vt = s.playY / (s.u * 0.625f), vb = (s.playY + s.playH) / (s.u * 0.625f);
+    df2Panel(s, 1, vt, 1024, vb);
+    const float ts = s.text();
+    auto at = [&](float x, float y, const std::string& t, bool centre) {
+        const float px = s.vx(x + 20), py = s.vy(y + 100);
+        hud_.text(centre ? px - hud_.textWidth(t, ts) / 2 : px, py, t, kDf2Amber, ts);
+    };
+    const int n = int(df2HelpPages_.size());
+    const int p = std::clamp(df2HelpPage_, 0, n - 1);
+    const Df2HelpPage& page = df2HelpPages_[size_t(p)];
+    char buf[160];
+    std::snprintf(buf, sizeof buf, df2Text("HelpScreenText", "HELPTITLE", "!Help - %s").c_str(), page.title.c_str());
+    at(512, 15, buf, true);
+    std::snprintf(buf, sizeof buf, df2Text("HelpScreenText", "PAGE", "!Page %i of %i").c_str(), p + 1, n);
+    at(512, 40, buf, true);
+    int y = 90;
+    for (int k = 0; k < 14; ++k, y += 25) {
+        const int i = page.first + k;
+        if (i > page.last || i >= int(df2HelpRows_.size())) continue;
+        at(20, float(y), df2HelpRows_[size_t(i)].name, false);
+        at(480, float(y), df2HelpRows_[size_t(i)].keys, false);
+    }
+    y -= 25;
+    at(20, float(y + 50), df2Text("HelpScreenText", "CYCLE_STRING", "!* Shift modifies this key to cycle in reverse order"), false);
+    at(20, float(y + 75), df2Text("HelpScreenText", "CHANGE_SCREEN", "!PgUp and PgDn to change pages"), false);
+}
+
 void Game::drawHelp(const Screen& s) {
-    // 0x48232c: darkened box (7, 98)-(1023, 666); labels (DFMENU.BIN HELP*)
+    if (df2Hud_.on && !df2HelpPages_.empty()) { drawDf2Help(s); return; }
+    // 0x48232c (GOG 0x42be00): the panel (7, 98)-(1023, 666) (0x401ec0,
+    // outlined); labels (DFMENU.BIN HELP*)
     // and keys in two columns, rows 25 apart from y 115, bright green: left
     // labels at x 40 / keys at 200, right at 540 / 770 (0x4822f4 draws at
     // x + 20, y + 100). Key texts from the soldier's bindings (0x4816a0).
-    const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    if (df2Hud_.on) {
+        const float x0 = s.vx(7), x1 = s.vx(1023), y0 = s.vy(98), y1 = s.vy(666);
+        hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
+    } else {
+        df1Panel(s, 7, 98, 1023, 666);
+    }
     auto label = [&](const char* key) {
         const std::string* t = menuText_.find("GroupMainMenu", key);
         return t ? *t : std::string(key);
@@ -4864,7 +8551,7 @@ void Game::drawHelp(const Screen& s) {
             {Action::Jump, "move_jump"}, {Action::NoRun, "NoRun"}, {Action::Binoculars, "Binoculars"}, {Action::Briefing, "briefing"},
             {Action::OldMessages, "OldMessages"}, {Action::ShowFriendly, "ShowFriendly"}, {Action::MissionGoals, "MissionGoals"},
             {Action::Fire, "attack_1"}, {Action::Scope, "scope"}, {Action::MapZoomIn, "zoomin"}, {Action::MapZoomOut, "zoomout"},
-            {Action::NextWaypoint, "NextWaypoint"}, {Action::BigMap, "BigMap"}, {Action::Weapon0, "weapon0"}, {Action::Weapon1, "weapon1"},
+            {Action::NextWaypoint, "NextWaypoint"}, {Action::PrevWaypoint, "PrevWaypoint"}, {Action::BigMap, "BigMap"}, {Action::Weapon0, "weapon0"}, {Action::Weapon1, "weapon1"},
             {Action::Weapon2, "weapon2"}, {Action::Weapon3, "weapon3"}, {Action::Weapon4, "weapon4"}, {Action::Weapon5, "weapon5"},
             {Action::Weapon6, "weapon6"}, {Action::Weapon7, "weapon7"}, {Action::Weapon8, "weapon8"}, {Action::Weapon9, "weapon9"}};
         for (const auto& [act, n] : names)
@@ -4898,17 +8585,33 @@ void Game::drawHelp(const Screen& s) {
     y = 15;
     static const Action slotKeys[10] = {Action::Weapon0, Action::Weapon1, Action::Weapon2, Action::Weapon3, Action::Weapon4,
                                         Action::Weapon5, Action::Weapon6, Action::Weapon7, Action::Weapon8, Action::Weapon9};
+    // GOG Df.exe 0x42be00 prints each slot's mode's short name (+0x44,
+    // 'Player Weapons' STR_SPWNAME%02i, 0x46bfb0; CD 0x48232c the same) and
+    // skips a row only when that string is empty. OpenDF falls back to the
+    // long name only when the game text has no short names at all.
+    const bool shortNames = !df2Hud_.on && gameTable_.find("Player Weapons", "STR_SPWNAME01") != nullptr;
     for (int k = 1; k <= 10; ++k) {
         const int slot = k % 10;
         const ModeDef* md = arsenal_.slotMode(slot);
-        if (!md || md->name.empty()) continue;
-        put(520, 750, y, md->name, keyOf(slotKeys[slot]));
+        // An empty slot shows mode 0's short name, STR_SPWNAME00 ("No Weapon"),
+        // as both builds index the table by the slot's mode whatever it is.
+        std::string name;
+        if (shortNames) {
+            char key[16];
+            std::snprintf(key, sizeof key, "STR_SPWNAME%02d", arsenal_.slotModeId(slot));
+            const std::string* t = gameTable_.find("Player Weapons", key);
+            name = t ? *t : std::string();
+        } else if (md) {
+            name = md->name;
+        }
+        if (name.empty()) continue;
+        put(520, 750, y, name, keyOf(slotKeys[slot]));
         y += 25;
     }
     put(520, 750, y, label("HELPFIRE"), keyOf(Action::Fire));
     y += 25;
     put(520, 750, y, label("HELPSCOPE"), keyOf(Action::Scope));
-    y += 75;
+    y += 50;   // 0x42be00: Terrain Map 75 below Fire, one row free after Scope
     put(520, 750, y, label("HELPTERRAINMAP"), label("HELPF10"));
     y += 25;
     put(520, 750, y, label("HELPCONTOURMAP"), label("HELPF11"));
@@ -4918,6 +8621,12 @@ void Game::drawHelp(const Screen& s) {
     put(520, 750, y, label("HELPWAYPOINT"), keyOf(Action::NextWaypoint));
     y += 25;
     put(520, 750, y, label("HELPBIGMAP"), keyOf(Action::BigMap));
+    // GOG Df.exe 0x42be00 (lines from 0x42b0b0): HELPPREVWP and HELPSERVER
+    // 25 and 50 lower, with the profile's +0x8b0 / +0x8bc keys.
+    if (exe_.build() == ExeBuild::Df1Gog) {
+        put(520, 750, y + 25, label("HELPPREVWP"), bindingText("PrevWaypoint"));
+        put(520, 750, y + 50, label("HELPSERVER"), bindingText("server"));
+    }
 }
 
 void Game::drawPaused(const Screen& s) {
@@ -4930,10 +8639,61 @@ void Game::drawPaused(const Screen& s) {
         hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
         return;
     }
-    const float x0 = s.vx(310), x1 = s.vx(714), y0 = s.vy(330), y1 = s.vy(438);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
-    const char* t = "Game Paused";
+    df1Panel(s, 310, 330, 714, 438);   // GOG 0x427180 -> 0x401ec0, outlined
+    const std::string t = df1Text("Overlays", "STROVER7", "Game Paused");   // GOG Df.exe 0x427180
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+void Game::drawQuitBox(const Screen& s) {
+    // DF.EXE 0x4831c8: the Game Paused box, a darkened box (shade level 10)
+    // from (310, 330) to (714, 438), and "End Mission? (Y/N)" (0x4c05d8)
+    // centred at (512, 380) in green (0x66f938).
+    if (df2Hud_.on) {
+        // DF2.EXE 0x442250: the panel box (310, 330)-(714, 438) and
+        // Overlays STROVER5 centred at (512, 380) in green ([0x653608]).
+        df2Panel(s, 310, 330, 714, 438);
+        const std::string t = df2Text("Overlays", "STROVER5", "End Mission? (Y/N)");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+        return;
+    }
+    df1Panel(s, 310, 330, 714, 438);   // GOG 0x4270a0 -> 0x401ec0, outlined
+    const std::string t = df1Text("Overlays", "STROVER5", "End Mission? (Y/N)");   // GOG Df.exe 0x4270a0
+    hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(380), t, kHudPureGreen, s.text());
+}
+
+void Game::drawAudioMacros(const Screen& s) {
+    // GOG Df.exe 0x429810: the panel (0x80, 200)-(0x380, 0x230) (0x401ec0);
+    // DFGAME.BIN "Male Audio Macros" STRMAM_%02i, or for a female soldier
+    // ([0x67f434]: profile +0x640 > 7) "Female Audio Macros" STRFAM_%02i,
+    // 1..10 as "%i - %s" ("0 - %s" for the tenth) left-aligned at x 200 from
+    // y 240, 30 apart, in bright green ([0x67db5c]).
+    df1Panel(s, 0x80, 200, 0x380, 0x230);
+    const char* section = o_.female ? "Female Audio Macros" : "Male Audio Macros";
+    for (int i = 0; i < 10; ++i) {
+        char key[16];
+        std::snprintf(key, sizeof key, "STR%cAM_%02d", o_.female ? 'F' : 'M', i + 1);
+        const std::string t = std::to_string((i + 1) % 10) + " - " + df2Text(section, key, "");
+        hud_.text(s.vx(200), s.vy(240 + 30 * float(i)), t, kHudBright, s.text());
+    }
+}
+
+// GOG Df2.exe 0x4478f0 (CD 0x441410): the panel (128, 200)-(896, 560),
+// darkened and outlined; ten lines "%i - %s" (the tenth "0 - %s") of
+// DF2GAME.BIN "Male Audio Macros" STRMAM_%02i or, for a female soldier
+// ([0x67cc14]: profile face +0x278 > 9), "Female Audio Macros"
+// STRFAM_%02i (0x4cb6d4 with its fourth character replaced), at (200,
+// 240 + 30k) in [0x67d37c].
+void Game::drawDf2AudioMacros(const Screen& s) {
+    df2Panel(s, 128, 200, 896, 560);
+    const char* section = o_.female ? "Female Audio Macros" : "Male Audio Macros";
+    for (int k = 0; k < 10; ++k) {
+        char key[16], line[160];
+        std::snprintf(key, sizeof key, "STR%cAM_%02d", o_.female ? 'F' : 'M', k + 1);
+        const std::string t = df2Text(section, key, key);
+        if (k == 9) std::snprintf(line, sizeof line, "0 - %s", t.c_str());
+        else std::snprintf(line, sizeof line, "%d - %s", k + 1, t.c_str());
+        hud_.text(s.vx(200), s.vy(float(240 + 30 * k)), line, kDf2Amber, s.text());
+    }
 }
 
 void Game::drawOldMessages(const Screen& s) {
@@ -4943,8 +8703,37 @@ void Game::drawOldMessages(const Screen& s) {
     // into a 40-deep ring), so the oldest of the 16 is at the top and the
     // newest always at y 610 (0x484e01..0x484e35), each in its message
     // colour (the ring's +0x78, 0x484e0d).
+    if (df2Hud_.on && arsenal_.df2Gog()) {
+        // GOG Df2.exe 0x448e40: the 3D view (rows DHT_h .. H - DHB_h, kept
+        // in 768 space by 0x466510 as [0x67d3bc] / [0x67d3c0]) halved over
+        // x 0..1024 without a border (0x465ae0's last argument 0; OpenDF:
+        // the window's width, as the strips), STROVER43 centred at (512,
+        // top + 20); then the 16 latest wrapped lines of both histories,
+        // entry 15 at the top: chat at (chat_message.x + 2, ...) and system
+        // at (sys_message.x + 2, ...), y = DHT_h ([0x67d3b0]) + the box's y
+        // + W*120/1024 + k * (W*12/640), in mode pixels, own colours.
+        const int n = s.modeW, modeH = n * 3 / 4;
+        const int top768 = df2Hud_.top.height * 768 / modeH;
+        const int bot768 = (modeH - df2Hud_.bottom.height) * 768 / modeH;
+        const float y0 = s.vy(float(top768)), y1 = s.vy(float(bot768));
+        hud_.multiply(0, y0, s.w, y1 - y0, {0.5f, 0.5f, 0.5f, 1});
+        const std::string t = df2Text("Overlays", "STROVER43", "Messages");
+        hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(float(top768 + 20)), t, kDf2Amber, s.text());
+        const int base = df2Hud_.top.height + n * 120 / 1024, step = n * 12 / 640;
+        auto column = [&](const std::deque<Df2Line>& h, const char* key) {
+            const float x = df2X(s, df2Hud_.def.value(n, key, 0) + 2, false);
+            for (int k = 0; k < 16; ++k) {
+                const size_t e = size_t(15 - k);
+                if (e < h.size() && !h[e].text.empty())
+                    hud_.text(x, df2Y(s, base + df2Hud_.def.value(n, key, 1) + k * step, false), h[e].text, h[e].colour, s.text());
+            }
+        };
+        column(df2Chat_, "chat_message");
+        column(df2Sys_, "sys_message");
+        return;
+    }
     if (df2Hud_.on) {
-        // DF2.EXE 0x442850: the panel box, STROVER43 centred at (512, 120) in
+        // DF2.EXE 0x442850 (the CD build): the panel box, STROVER43 centred at (512, 120) in
         // orange, the system history's entries 15..0 (0x41cf50 pushes the
         // newest into entry 0) at x 130, y 160 + 30k, each in its own colour:
         // bottom-anchored, the newest at y 610.
@@ -4957,9 +8746,8 @@ void Game::drawOldMessages(const Screen& s) {
         }
         return;
     }
-    const float x0 = s.vx(100), x1 = s.vx(924), y0 = s.vy(100), y1 = s.vy(668);
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
-    const char* t = "Messages";
+    df1Panel(s, 100, 100, 924, 668);   // GOG 0x428eb0 -> 0x401ec0, outlined
+    const std::string t = df1Text("Overlays", "STROVER43", "Messages");   // GOG Df.exe 0x428eb0
     hud_.text(s.vx(512) - hud_.textWidth(t, s.text()) / 2, s.vy(120), t, kHudBright, s.text());
     const size_t first = history_.size() < 16 ? 0 : history_.size() - 16;
     for (size_t i = first, row = 16 - (history_.size() - first); i < history_.size(); ++i, ++row)
@@ -4967,22 +8755,66 @@ void Game::drawOldMessages(const Screen& s) {
 }
 
 void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
-    // 0x44c72c / 0x44c574: soldiers on the player's side (no alive check)
-    // named in the campaign's "People Names" as NAMEID<record +4> (no name,
-    // no tag); at the origin raised by 1 m on screen, then 25 up; centred,
-    // clipped to x 60..964 and the view (top + 5 .. bottom - 30); colour by
-    // side: 1 blue, 2 red, else green.
-    const Vec3 eye = viewEye();
-    for (const auto& o : world_.objects) {
-        if (!o.person || o.side != kPlayerSide || o.missionIndex < 0) continue;
-        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
-        if (nameId == 0) continue;
-        char key[24];
-        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
-        const std::string* name = campText_.find("People Names", key);
-        if (!name || name->empty()) continue;
-        const Vec3 at = world_.nearest(o.pos, eye);
-        if (std::getenv("OPENDF_DEBUGTAG")) std::fprintf(stderr, "tag %s at (%.1f %.1f %.1f) eye (%.1f %.1f %.1f)\n", name->c_str(), at.x, at.y, at.z, eye.x, eye.y, eye.z);
+    // GOG Df.exe 0x485a90 -> 0x4858d0: nothing with Player Tags off
+    // (attributes 0x8000, [0x67f549] & 0x80); else every entry of the people
+    // draw list (0xc3b570, built by 0x485040 and thinned by 0x4854d0) on the
+    // player's side, the player's own body only in an outside view
+    // ([0x6ba3ec], OpenDF: once dead). The list: people not hidden
+    // (+0x6c & 2), |dx|, |dy| < 0x3fd m from the camera in whole metres,
+    // |view depth| < 0x3fc m, a 1 m sphere not outside the view frustum
+    // (0x44acf0: near plane, depth + 1 m <= 1020 m, the four side planes),
+    // then dropped when the terrain hides it (0x484fb0: no column of the
+    // sphere's top row, x - r .. x + r, in front of the terrain there).
+    // The name ((ai +0xc) +4; OpenDF the campaign's "People Names" as
+    // NAMEID<record +4>, as 0x44c72c), the projected 1 m over half a pixel,
+    // at the origin raised by 1 m on screen, then 25 up; centred, clipped
+    // to x 60..964 and the view (top + 5 .. bottom - 30); colour by side:
+    // 1 blue, 2 red, else green.
+    if (o_.attributes & 0x8000) return;
+    const Vec3 eye = viewEye(), fwd = viewDir();
+    const Terrain* trn = world_.terrain;
+    // INFERRED equivalent of 0x484fb0 for OpenDF's GL view: the sphere's
+    // top row is visible when a terrain march (every 1/4 m) from the eye to
+    // a point 1 m above the origin, at its centre or 1 m to either side
+    // across the view, finds no ground above the line.
+    const Vec3 cr = cross(fwd, Vec3{0, 1, 0});
+    const Vec3 side = dot(cr, cr) > 1e-6f ? normalize(cr) : Vec3{1, 0, 0};
+    auto terrainShows = [&](Vec3 at) {
+        if (!trn) return true;
+        for (float k : {0.f, -1.f, 1.f}) {
+            const Vec3 b = at + Vec3{0, 1.f, 0} + side * k, d = b - eye;
+            const float len = std::sqrt(dot(d, d));
+            const int n = int(len * 4.f);
+            bool clear = true;
+            for (int i = 1; i < n && clear; ++i) {
+                const Vec3 p = eye + d * (float(i) / float(n));
+                if (trn->heightAt(p.x, p.z) > p.y) clear = false;
+            }
+            if (clear) return true;
+        }
+        return false;
+    };
+    auto inList = [&](Vec3 at) {
+        if (std::abs(std::floor(at.x) - std::floor(eye.x)) >= 1021.f || std::abs(std::floor(at.z) - std::floor(eye.z)) >= 1021.f)
+            return false;
+        const Vec3 d = at - eye;
+        const float depth = dot(d, fwd);
+        if (std::abs(depth) >= 1020.f || depth + 1.f > 1020.f) return false;
+        // Side and near planes from the clip rows (view is rigid, so the
+        // plane distances are in metres).
+        auto plane = [&](int r, float sg) {
+            const float px = viewProj.at(3, 0) + sg * viewProj.at(r, 0), py = viewProj.at(3, 1) + sg * viewProj.at(r, 1),
+                        pz = viewProj.at(3, 2) + sg * viewProj.at(r, 2), pw = viewProj.at(3, 3) + sg * viewProj.at(r, 3);
+            const float len = std::sqrt(px * px + py * py + pz * pz);
+            return len > 0 ? (px * at.x + py * at.y + pz * at.z + pw) / len : 0.f;
+        };
+        for (int r = 0; r < 2; ++r)
+            for (float sg : {-1.f, 1.f})
+                if (plane(r, sg) < -1.f) return false;
+        if (depth < -1.f) return false;
+        return terrainShows(at);
+    };
+    auto tag = [&](Vec3 at, const std::string& name, int sideOf) {
         auto project = [&](Vec3 p, float& px, float& py) {
             const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
             const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
@@ -4993,12 +8825,220 @@ void Game::drawFriendlyTags(const Screen& s, const Mat4& viewProj) {
             return true;
         };
         float px, py, ux, uy;
-        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) continue;
-        if (py - uy <= 0.5f) continue;   // 1 m must be more than half a pixel
+        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) return;
+        if (py - uy <= 0.5f) return;   // 1 m must be more than half a pixel
         py = uy - s.vy(25);
-        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) continue;
-        const Color c = o.side == 1 ? kHudBlue : o.side == 2 ? kHudRed : kHudPureGreen;
-        hud_.text(px - hud_.textWidth(*name, s.text()) / 2, py, *name, c, s.text());
+        if (px < s.vx(60) || px > s.vx(964) || py < s.playY + s.vy(5) || py > s.playY + s.playH - s.vy(30)) return;
+        const Color c = sideOf == 1 ? kHudBlue : sideOf == 2 ? kHudRed : kHudPureGreen;
+        hud_.text(px - hud_.textWidth(name, s.text()) / 2, py, name, c, s.text());
+    };
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide || o.missionIndex < 0) continue;
+        const int nameId = int(mission_.objects[size_t(o.missionIndex)].raw[1]);
+        if (nameId == 0) continue;
+        char key[24];
+        std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
+        const std::string* name = campText_.find("People Names", key);
+        if (!name || name->empty()) continue;
+        const Vec3 at = world_.nearest(o.pos, eye);
+        if (!inList(at)) continue;
+        tag(at, *name, o.side);
+    }
+    // The player's own body, in the outside (dead) view.
+    if (playerDead() && !o_.soldierName.empty()) {
+        const Vec3 at = world_.nearest(deadBodyOrigin(), eye);
+        if (inList(at)) tag(at, o_.soldierName, kPlayerSide);
+    }
+}
+
+std::string Game::df2PersonName(const WorldObject& o) const {
+    // Object +0x54: any object placed from a mission record (0x403790).
+    return o.missionIndex < 0 ? std::string() : df2RecordName(size_t(o.missionIndex));
+}
+
+const WorldObject* Game::df2AimPick(float range) const {
+    // GOG Df2.exe 0x4189b0: from the player's origin 0.75 m up along its yaw
+    // and pitch (the player's pitch lowered by the zeroing, weapon table
+    // +0x98), the first entry of the organics table (people only, to
+    // [0xc310a4]: slot in use, not +0x64 & 2, not the player, side the
+    // player's or 0; no alive test) whose distance along the ray is
+    // in (1/256 m, range] and whose miss (0x41e880's approximate length)
+    // is at most 2 m.
+    const Vec3 from = player_.origin() + Vec3{0, 0.75f, 0};
+    const float pitch = player_.pitch - arsenal_.zeroElevation();
+    const Vec3 dir{std::cos(pitch) * std::sin(player_.yaw), std::sin(pitch), -std::cos(pitch) * std::cos(player_.yaw)};
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || (o.side != kPlayerSide && o.side != 0)) continue;
+        const Vec3 d = world_.nearest(o.pos, from) - from;
+        const float along = dot(d, dir);
+        if (along <= 1.f / 256.f || along > range) continue;
+        const Vec3 m = d - dir * along;
+        float a = std::abs(m.x), b = std::abs(m.y), c = std::abs(m.z);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        if (a + b * 11.f / 32.f + c * 0.25f <= 2.f) return &o;
+    }
+    return nullptr;
+}
+
+void Game::drawDf2TargetId(const Screen& s, float cx, float cy, float r) {
+    // GOG Df2.exe 0x4642b0 (after LAB_00464776) / 0x455be0 (LAB_004562ab):
+    // the pick at the centre's range + 2 m; nothing with attributes & 0x100
+    // (the single-player "FF" option off; & 8 in multiplayer). A same-side
+    // object gets four red diagonal ticks; a person (+0xc) with a name, of
+    // either side, its name centred in red ([0x67d374] = 0xff0000), drawn
+    // with 0x4577f0 in screen pixels.
+    if (o_.df2Attributes & 0x100) return;
+    // In the scope the pick goes by the inset's own depth (0x4562ab reads [0x735e54]).
+    const float aim = r > 0 ? df2ScopeRange() : rangeToAim();
+    const WorldObject* o = df2AimPick((aim < 0 ? viewDistance_ : aim) + 2.f);
+    if (!o) return;
+    const float t = s.px();
+    float nameY = cy;
+    if (r <= 0) {
+        // The crosshair: ticks from ±(gap + arm) to ±gap on both axes (no
+        // spread or bloom: attributes & 0x1000 clear); the name W*1920/65536
+        // above the top arm.
+        const float a = float(s.modeW * df2CrosshairGap() / 65536) * s.art(), b = float(s.modeW * 640 / 65536) * s.art();
+        if (o->side == kPlayerSide)
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                    hud_.line(cx + float(sx) * (a + b), cy + float(sy) * (a + b), cx + float(sx) * a, cy + float(sy) * a, t, kHudRed);
+        nameY = cy - float(s.modeW * 1920 / 65536) * s.art() - a - b;
+    } else if (o->side == kPlayerSide) {
+        // The scope: ticks from (±r/2, ±r/2) to (±r/4, ±r/4) about the centre.
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                hud_.line(cx + float(sx) * r / 2, cy + float(sy) * r / 2, cx + float(sx) * r / 4, cy + float(sy) * r / 4, t, kHudRed);
+    }
+    const std::string name = df2PersonName(*o);
+    if (!name.empty()) hud_.text(cx - hud_.textWidth(name, s.text()) / 2, nameY, name, kHudRed, s.text());
+}
+
+const WorldObject* Game::df1AimPick(float range) const {
+    // GOG Df.exe 0x45f740: from the player's origin 0.75 m up ([0x4ccb34])
+    // along its yaw and pitch, the first organic (slot in use, side +0x70
+    // the player's, not the player, not +0x6c & 2) whose distance along the
+    // ray is in (1/256 m, range] and whose miss (0x477670's approximate
+    // length) is at most 2 m.
+    const Vec3 from = player_.origin() + Vec3{0, 0.75f, 0};
+    const float pitch = player_.pitch;
+    const Vec3 dir{std::cos(pitch) * std::sin(player_.yaw), std::sin(pitch), -std::cos(pitch) * std::cos(player_.yaw)};
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide) continue;
+        const Vec3 d = world_.nearest(o.pos, from) - from;
+        const float along = dot(d, dir);
+        if (along <= 1.f / 256.f || along > range) continue;
+        const Vec3 m = d - dir * along;
+        float a = std::abs(m.x), b = std::abs(m.y), c = std::abs(m.z);
+        if (a < b) std::swap(a, b);
+        if (a < c) std::swap(a, c);
+        if (b < c) std::swap(b, c);
+        if (a + b * 11.f / 32.f + c * 0.25f <= 2.f) return &o;
+    }
+    return nullptr;
+}
+
+void Game::drawDf1TargetId(const Screen& s, float cx, float cy, float r) {
+    // GOG Df.exe 0x402300 / 0x466090: the pick at the centre's depth + 2 m
+    // (the depth buffer word << 10, at most 0xffff << 10); nothing with
+    // attributes & 0x2000 (Break X off; multiplayer & 0x40). The pick only
+    // returns the player's side, so the other-side branch (the name alone)
+    // never runs: four red ([0x67db54] = 0xff0000) diagonals and the AI's
+    // name (People Names, as the friendly tags) centred in red, style 2.
+    if (o_.attributes & 0x2000) return;
+    const float aim = rangeToAim();
+    const WorldObject* o = df1AimPick((aim < 0 ? 1024.f : std::min(aim, 1024.f)) + 2.f);
+    if (!o) return;
+    const float t = s.px();
+    float nameY = cy;
+    if (r <= 0) {
+        // Main view: (512 -+ 15, 384 -+ 15) to (512 -+ 5, 384 -+ 5) in the
+        // virtual 1024x768 space; the name at y 339 (384 - 10 - 5 - 30).
+        const float a = s.vy(15), b = s.vy(5);
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                hud_.line(cx + float(sx) * a, cy + float(sy) * a, cx + float(sx) * b, cy + float(sy) * b, t, kHudRed);
+        nameY = cy - s.vy(45);
+    } else {
+        // The scope inset: (±r/2, ±r/2) to (±r/4, ±r/4) about its centre,
+        // the name (0x472bc0) at the centre.
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                hud_.line(cx + float(sx) * r / 2, cy + float(sy) * r / 2, cx + float(sx) * r / 4, cy + float(sy) * r / 4, t, kHudRed);
+    }
+    if (o->missionIndex < 0) return;
+    const int nameId = int(mission_.objects[size_t(o->missionIndex)].raw[1]);
+    if (nameId == 0) return;
+    char key[24];
+    std::snprintf(key, sizeof key, "NAMEID%03d", nameId);
+    const std::string* name = campText_.find("People Names", key);
+    if (name && !name->empty()) hud_.text(cx - hud_.textWidth(*name, s.text()) / 2, nameY, *name, kHudRed, s.text());
+}
+
+void Game::drawDf2FriendlyTags(const Screen& s, const Mat4& viewProj) {
+    // GOG Df2.exe 0x465f90 -> 0x44fe70 -> 0x44fee0: unless attributes &
+    // 0x400, every person this frame draws (the list 0x780d40 of 0x4501b0:
+    // in the view, not +0x64 & 2) on the player's side, the player only in
+    // an outside view, with a name (+0x54) and the projected size of 1 m
+    // over half a pixel; at the projected origin raised by that size, in
+    // the virtual 1024x768 space 25 up, centred, no clip. Mode 1 the name,
+    // mode 2 glyph 4; always green ([0x67d368] = 0x00ff00; the CD build's
+    // 0x448de0 coloured by side).
+    if (o_.df2Attributes & 0x400) return;
+    const Vec3 eye = viewEye();
+    auto project = [&](Vec3 p, float& px, float& py) {
+        const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
+        const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
+        const float cw = viewProj.at(3, 0) * p.x + viewProj.at(3, 1) * p.y + viewProj.at(3, 2) * p.z + viewProj.at(3, 3);
+        if (cw <= 0.1f) return false;   // the near plane ([0xc30fc8])
+        px = (cx / cw * 0.5f + 0.5f) * s.w;
+        py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH;
+        return true;
+    };
+    for (const auto& o : world_.objects) {
+        if (!o.person || o.removed || o.side != kPlayerSide) continue;
+        const std::string name = df2PersonName(o);
+        if (name.empty()) continue;
+        const Vec3 at = world_.nearest(o.pos, eye);
+        if (std::abs(at.x - eye.x) > viewDistance_ || std::abs(at.z - eye.z) > viewDistance_) continue;
+        float px, py, ux, uy;
+        if (!project(at, px, py) || !project(at + Vec3{0, 1.f, 0}, ux, uy)) continue;
+        const float size = py - uy;
+        if (size <= 0.5f * s.art()) continue;
+        // 0x4501b0's view test (0x404c70) with a 1 m sphere.
+        if (px < -size || px > s.w + size || py < s.playY - size || py > s.playY + s.playH + size) continue;
+        const float ty = uy - s.vy(25);
+        const std::string label = friendlyTags_ == 2 ? std::string(1, '\x04') : name;
+        hud_.text(px - hud_.textWidth(label, s.text()) / 2, ty, label, kHudPureGreen, s.text());
+    }
+}
+
+void Game::drawDf2Waypoints3d(const Screen& s, const Mat4& viewProj) {
+    // GOG Df2.exe 0x465fde -> 0x450070, every frame: each pool waypoint in
+    // use (item_index, +0x6e set, a name at +0x54) whose camera depth is at
+    // least the near plane ([0xc30fc8]): a green (0x00ff00) line straight up
+    // the screen from its projected position, focal / depth pixels long (one
+    // metre), and its name centred 15 pixels above the line's top (0x4577f0
+    // flag 2, frame pixels, no clip).
+    const Vec3 eye = viewEye();
+    // The focal length in window pixels: the y row of viewProj is the
+    // projection's y scale times the view's (unit) up row.
+    const float fy = std::sqrt(viewProj.at(1, 0) * viewProj.at(1, 0) + viewProj.at(1, 1) * viewProj.at(1, 1) +
+                               viewProj.at(1, 2) * viewProj.at(1, 2)) * 0.5f * s.playH;
+    const float t = std::max(1.f, s.art());
+    for (const Df2Waypoint& w : df2Wps_) {
+        if (!w.used || w.name.empty()) continue;
+        const Vec3 p = world_.nearest(Vec3{float(w.x), w.z, float(-w.y)}, eye);
+        const float cx = viewProj.at(0, 0) * p.x + viewProj.at(0, 1) * p.y + viewProj.at(0, 2) * p.z + viewProj.at(0, 3);
+        const float cy = viewProj.at(1, 0) * p.x + viewProj.at(1, 1) * p.y + viewProj.at(1, 2) * p.z + viewProj.at(1, 3);
+        const float cw = viewProj.at(3, 0) * p.x + viewProj.at(3, 1) * p.y + viewProj.at(3, 2) * p.z + viewProj.at(3, 3);
+        if (cw <= 0.1f) continue;   // the near plane
+        const float px = (cx / cw * 0.5f + 0.5f) * s.w, py = s.playY + (0.5f - cy / cw * 0.5f) * s.playH;
+        const float top = py - fy / cw;
+        hud_.rect(px, top, t, py - top, kHudPureGreen);
+        hud_.text(px - hud_.textWidth(w.name, s.text()) / 2, top - 15.f * s.art(), w.name, kHudPureGreen, s.text());
     }
 }
 
@@ -5014,25 +9054,29 @@ void Game::drawBinoculars(const Screen& s) {
     const Vec3 eye = player_.eye(), dir = cam.forward();
     RayHit hit;
     float dist = 1e9f;
-    if (world_.raycast(eye, eye + dir * 1100.f, hit)) dist = hit.t * 1100.f * dot(dir, dir);
-    char buf[32];
-    if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "Distance: 1km+");
-    else std::snprintf(buf, sizeof buf, "Distance: %3im", int(dist));
+    if (world_.raycast(eye, eye + dir * 1100.f, hit, true, -3)) dist = hit.t * 1100.f * dot(dir, dir);   // not the player (nor his gun)
+    // GOG Df.exe 0x402300: Misc STRMISC01 / "%s %3im" with STRMISC02, and
+    // "%s %3i" with STRMISC03.
+    auto label = [&](const char* key, const char* cd) { return df2Hud_.on ? std::string(cd) : df1Text("Misc", key, cd); };
+    char buf[64];
+    if (dist >= 1000.f) std::snprintf(buf, sizeof buf, "%s", label("STRMISC01", "Distance: 1km+").c_str());
+    else std::snprintf(buf, sizeof buf, "%s %3im", label("STRMISC02", "Distance:").c_str(), int(dist));
     // DF2.EXE 0x45a9e0: the same texts in orange, 15 above the 3D view's centre.
     const float ty = df2Hud_.on ? s.playY + s.playH * 0.5f - s.vy(15) : s.vy(369);
     const Color tc = df2Hud_.on ? kDf2Amber : kHudBright;
     hud_.text(s.vx(768) - hud_.textWidth(buf, s.text()) / 2, ty, buf, tc, s.text());
     float deg = 360.f - cam.yaw * 180.f / kPi;
     deg -= 360.f * std::floor(deg / 360.f);
-    std::snprintf(buf, sizeof buf, "Heading: %3i", int(deg));
+    std::snprintf(buf, sizeof buf, "%s %3i", label("STRMISC03", "Heading:").c_str(), int(deg));
     hud_.text(s.vx(256) - hud_.textWidth(buf, s.text()) / 2, ty, buf, tc, s.text());
 }
 
 void Game::drawMissionEnd(const Screen& s) {
     // DF.EXE 0x483094: success if the winner is the player's side. A darkened
-    // panel (0x401b6c) from (128, 116) to (896, 246) virtual, i.e. x 80-560,
-    // y 72.5-153.75, shade level 10 of the 32-step shade table (0x435070:
-    // level r keeps r/31 of the brightness, so 10/31), with a one-pixel
+    // panel (0x401b6c, GOG 0x401ec0: see df1Panel) from (128, 116) to
+    // (896, 246) virtual: shade level 10 of the 32-step shade table in 8-bit
+    // modes, but in true colour every pixel halved ((p & 0xfefefefe) >> 1),
+    // as on every darkened panel (OpenDF draws true colour), with a one-pixel
     // outline in bright green (0x66f94c); three lines centred at x 512 in
     // green (0x66f938) with tops at 136, 176, 206 virtual.
     const bool won = missionResult_ == kPlayerSide;
@@ -5050,17 +9094,19 @@ void Game::drawMissionEnd(const Screen& s) {
             hud_.text(s.vx(512) - hud_.textWidth(lines[i], s.text()) / 2, s.vy(top + tops[i]), lines[i], kHudPureGreen, s.text());
         return;
     }
-    const float x0 = s.cx(-240), x1 = s.cx(240), y0 = s.y(72.5f), y1 = s.y(153.75f), t = s.px();
-    hud_.rect(x0, y0, x1 - x0, y1 - y0, {0, 0, 0, 1 - 10.f / 31.f});
-    hud_.rect(x0, y0, x1 - x0, t, kHudBright);
-    hud_.rect(x0, y1 - t, x1 - x0, t, kHudBright);
-    hud_.rect(x0, y0, t, y1 - y0, kHudBright);
-    hud_.rect(x1 - t, y0, t, y1 - y0, kHudBright);
-    const char* lines[] = {won ? "Congratulations!  Mission Completed Successfully." : "Game Over.  Mission Incomplete.",
-                           "Hit Enter to end mission.", "Hit Space Bar to replay mission"};
-    const float tops[] = {85, 110, 128.75f};
+    // GOG Df.exe 0x426f20 places it from the view's top [0x67dba0] (96 or,
+    // with letterbox 2, 192 virtual): the panel at +20..+150, the lines at
+    // +40, +80, +110.
+    const int top = int(std::lround(s.playY / s.vy(1)));
+    df1Panel(s, 0x80, top + 0x14, 0x380, top + 0x96);   // GOG 0x426f20 -> 0x401ec0
+    // GOG Df.exe 0x426f20: Overlays STROVER1 / STROVER2, STROVER3, STROVER4.
+    const std::string lines[] = {won ? df1Text("Overlays", "STROVER1", "Congratulations!  Mission Completed Successfully.")
+                                     : df1Text("Overlays", "STROVER2", "Game Over.  Mission Incomplete."),
+                                 df1Text("Overlays", "STROVER3", "Hit Enter to end mission."),
+                                 df1Text("Overlays", "STROVER4", "Hit Space Bar to replay mission")};
+    const float tops[] = {40, 80, 110};
     for (int i = 0; i < 3; ++i)
-        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.y(tops[i]), lines[i], kHudPureGreen, s.text());
+        hud_.text(s.cx(0) - hud_.textWidth(lines[i], s.text()) / 2, s.playY + s.vy(tops[i]), lines[i], kHudPureGreen, s.text());
 }
 
 void Game::drawGoals(const Screen& s) {
@@ -5074,7 +9120,9 @@ void Game::drawGoals(const Screen& s) {
         // each line twice (0x402000 shadow at +1,+1 pixel); "Win Conditions:"
         // then the header's win ids as DF2WPN STRWINCOND%03i (0x804000 once
         // met), 10 lower "Lose Condiitions:" (sic) and STRLOSECOND%03i (red
-        // once hit); others white.
+        // once hit); others white. Each header only with its first
+        // condition (GOG Df2.exe 0x448b10 / CD 0x442520 draw it inside the
+        // loop at i == 0, which stops at the first zero id).
         const float ts = s.text(), sh = s.px(), top = s.playY / s.vy(1);
         float y = top + 20;
         auto line = [&](const std::string& text, Color c) {
@@ -5083,7 +9131,7 @@ void Game::drawGoals(const Screen& s) {
             hud_.text(x, s.vy(y), text, c, ts);
             y += 25;
         };
-        line(df2Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
+        if (mission_.winIds[0]) line(df2Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
         for (int i = 0; i < 4 && mission_.winIds[i]; ++i) {
             char key[24];
             std::snprintf(key, sizeof key, "STRWINCOND%03d", mission_.winIds[i]);
@@ -5091,7 +9139,7 @@ void Game::drawGoals(const Screen& s) {
             line(t ? *t : key, script_.goalDone(i + 1) ? rgb(0x80, 0x40, 0) : kHudWhite);
         }
         y += 10;
-        line(df2Text("Overlays", "STROVER52", "Lose Condiitions:"), kHudWhite);
+        if (mission_.loseIds[0]) line(df2Text("Overlays", "STROVER52", "Lose Condiitions:"), kHudWhite);
         for (int i = 0; i < 4 && mission_.loseIds[i]; ++i) {
             char key[24];
             std::snprintf(key, sizeof key, "STRLOSECOND%03d", mission_.loseIds[i]);
@@ -5101,25 +9149,33 @@ void Game::drawGoals(const Screen& s) {
         return;
     }
     const float ts = s.text(), sh = s.px();
-    float y = 72.5f;
+    float y = s.playY / s.u + 12.5f;   // GOG Df.exe 0x429160: the view's top [0x67dba0] + 20 virtual
     auto line = [&](const std::string& text, Color c) {
         const float x = s.rx(625) - hud_.textWidth(text, ts);
         hud_.text(x + sh, s.y(y) + sh, text, kHudDark, ts);
         hud_.text(x, s.y(y), text, c, ts);
         y += 15.625f;
     };
+    // GOG Df.exe 0x429160 (CD 0x485004): each list ends at the first goal
+    // whose text is missing or empty; its header comes with the first one;
+    // the lose list starts 10 virtual units below the win list's last row,
+    // whether or not there was one. GOG takes the headers from DFGAME.BIN
+    // Overlays STROVER51 / STROVER52 ("Lose Condiitions:", sic), the CD
+    // build has them in the EXE (0x4c0990 / 0x4c09b4).
     for (int part = 0; part < 2; ++part) {
-        std::vector<std::pair<std::string, bool>> items;
+        if (part == 1) y += 6.25f;
         for (int n = 1; n <= 4; ++n) {
             char key[24];
             std::snprintf(key, sizeof key, part == 0 ? "M%02dSUBGOAL%02d" : "M%02dSUBFAIL%02d", missionNumber_, n);
-            if (const std::string* t = campText_.find("Goals", key))
-                items.push_back({*t, part == 0 ? script_.goalDone(n) : script_.failDone(n)});
+            const std::string* t = campText_.find("Goals", key);
+            if (!t || t->empty()) break;
+            if (n == 1) {
+                if (part == 0) line(df1Text("Overlays", "STROVER51", "Win Conditions:"), kHudWhite);
+                else line(df1Text("Overlays", "STROVER52", "Lose Conditions:"), kHudWhite);
+            }
+            const bool met = part == 0 ? script_.goalDone(n) : script_.failDone(n);
+            line(*t, met ? (part == 0 ? kHudGreen : kHudRed) : kHudWhite);
         }
-        if (items.empty()) continue;
-        if (part == 1) y += 6.25f;
-        line(part == 0 ? "Win Conditions:" : "Lose Conditions:", kHudWhite);
-        for (auto& [text, met] : items) line(text, met ? (part == 0 ? kHudGreen : kHudRed) : kHudWhite);
     }
 }
 
@@ -5129,6 +9185,7 @@ int Game::run() {
         std::fprintf(stderr, "cannot read ITEMS.DEF\n");
         return 1;
     }
+    items_.setMissIsFirst(vfs_.exists("DFGAME.BIN"));   // Delta Force: unknown BMS types are 'null' (0x4828c0)
     for (auto& n : vfs_.list(".BMS")) missions_.push_back(n.substr(0, n.size() - 4));
     // Delta Force 2 names its game text DF2GAME.BIN.
     const char* gameBin = vfs_.exists("DFGAME.BIN") ? "DFGAME.BIN" : "DF2GAME.BIN";
@@ -5136,6 +9193,7 @@ int Game::run() {
     if (vfs_.read("DFMENU.BIN", raw)) menuText_.parse(raw);
     if (vfs_.read("DF2WPN.BIN", raw)) wpnText_.parse(raw);
     if (vfs_.read(gameBin, raw)) gameTable_.parse(raw);
+    if (vfs_.exists("DFGAME.BIN")) items_.setDisplayNames(gameTable_);   // GOG Df.exe 0x401490 -> 0x482960
     {
         // The player soldier (ITEMS.DEF "player01") names its move table.
         const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
@@ -5177,6 +9235,8 @@ int Game::run() {
         if (!sound_.init(vfs_, &exe_, &audio_, &sndErr, &df2Exe_)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
+        gunVisible_ = o_.showGun;   // GOG 0x407a90: [0x67f514] = showgun
+        pinp_ = o_.picInPic;        // GOG 0x407a90: [0x67f510] = picinpic; GOG Df2.exe 0x43c280
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));
@@ -5199,7 +9259,7 @@ int Game::run() {
         return 1;
     }
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height,
-                            SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE));
+                            windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE)));
     if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
     SDL_GLContext ctx = SDL_GL_CreateContext(win_);
     if (!ctx) { std::fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); SDL_DestroyWindow(win_); return 1; }
@@ -5209,12 +9269,26 @@ int Game::run() {
     std::string err;
     if (!loadGl(&missing)) { std::fprintf(stderr, "missing OpenGL function %s\n", missing); rc = 1; }
     else if (!models_.init(&err) || !hud_.init(vfs_, &err)) { std::fprintf(stderr, "%s\n", err.c_str()); rc = 1; }
-    else if (!loadMission(int(it - missions_.begin()))) rc = 1;
-
-    // Delta Force 2's HUD: its strips and HUD.DEF (Land Warrior and Task
-    // Force Dagger have a HUD.DEF too, with other art).
-    if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
-        df2Hud_.on = df2Hud_.def.parse(def);
+    else {
+        // Delta Force 2's HUD: its strips and HUD.DEF (Land Warrior and Task
+        // Force Dagger have a HUD.DEF too, with other art); known before the
+        // load, whose loading screen draws in the HUD font.
+        if (std::vector<uint8_t> def; vfs_.exists("DHB640G.PCX") && vfs_.read("HUD.DEF", def))
+            df2Hud_.on = df2Hud_.def.parse(def);
+        // GOG Df2.exe 0x41bb90 (through 0x4577a0 / 0x4577f0, 0x41be40 /
+        // 0x41bdf0): plain glyph pixels in the colour, no shadow pass; the
+        // goals' shadow is its own +1,+1 draw (0x448b10).
+        if (df2Hud_.on) hud_.setTextShadow(false);
+        // Both games show a loading screen while the mission loads: Delta
+        // Force df_wait.pcx, Delta Force 2 df2_wait.pcx (GOG Df2.exe 0x465ed0,
+        // a fresh start only: the Space replay, 0x466ba0(1), shows none).
+        loadingScreen_ = true;
+        if (!loadMission(int(it - missions_.begin()))) rc = 1;
+        loadingScreen_ = false;
+    }
+    // GOG Df2.exe 0x466ba0: a fresh mission start (param 0, 0x465322) sets the
+    // friendly tags to 1 (names); the Space replay (0x466ad0) keeps them.
+    if (df2Hud_.on) friendlyTags_ = 1;
 
     if (rc == 0 && std::getenv("OPENDF_LOWEST")) {
         float best = 1e9, bx = 0, bz = 0;
@@ -5253,6 +9327,7 @@ int Game::run() {
         // 0x4712e0), so never on in a DF2 mission.
         audio_.setDfMixer(true, mission_.version < 0x0F && o_.mixerHook);
         audio_.setDfGame(mission_.version < 0x0F ? 1 : 2);   // the WAV conversion and mixer of DF.EXE / DF2.EXE
+        audio_.setLoopVoicesReserved(true);   // GOG Df.exe 0x403f01 -> 0x43e4a0: voices 10-15 for the loops
         if (!o_.record.empty()) {
             audioOut_ = std::fopen((o_.record + ".pcm").c_str(), "wb");
         } else if (!hidden && !audio_.openDevice()) {
@@ -5263,6 +9338,7 @@ int Game::run() {
         std::vector<uint8_t> videoFrame;
         float endHold = -1;   // after a watched script ends: keep showing for a moment
         SDL_SetRelativeMouseMode(captured_ ? SDL_TRUE : SDL_FALSE);
+        if (world_.df2Rules) flushDf2Input();   // GOG Df2.exe 0x466ba0 -> 0x420a30 -> 0x420800
         Uint64 last = SDL_GetPerformanceCounter();
         bool running = true, prevTrigger = false;
         int frame = 0;
@@ -5278,7 +9354,9 @@ int Game::run() {
 
             SDL_Event e;
             bool zoomClick = false;
+            int df2MouseX = 0, df2MouseY = 0;   // DF2: the frame's mouse counts (0x41eb50 reads them once a frame)
             while (SDL_PollEvent(&e)) {
+                if (fullscreenEvent(win_, e)) continue;
                 if (e.type == SDL_QUIT) { running = false; quit_ = true; }
                 if (leaveMission_) running = false;
                 else if (df2Hud_.on && showMap_ && (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)) {
@@ -5304,30 +9382,103 @@ int Game::run() {
                         df2MapClick(ms, nx, ny, e.type == SDL_MOUSEBUTTONDOWN, e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 3 : 2);
                 }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && !captured_) { captured_ = true; SDL_SetRelativeMouseMode(SDL_TRUE); }
+                else if (e.type == SDL_MOUSEBUTTONDOWN && arsenal_.df2() && controls_.df2Table()) {
+                    // GOG Df2.exe 0x4799e0 -> 0x420e10: the bound one-shot command
+                    // (scope on the right button, Prone on the middle by default).
+                    const int mask = e.button.button == SDL_BUTTON_LEFT ? 1 : e.button.button == SDL_BUTTON_RIGHT ? 2
+                                   : e.button.button == SDL_BUTTON_MIDDLE ? 0x10 : 0;
+                    if (mask) df2MouseButton(mask);
+                }
+                else if (e.type == SDL_MOUSEWHEEL && captured_ && arsenal_.df2() && controls_.df2Table()) {
+                    const int y = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+                    df2MouseWheel(y * 120);
+                }
                 else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) zoomClick = true;   // scope (original: S or right mouse)
-                else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
+                else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_ && arsenal_.df2()) {
+                    df2MouseX += e.motion.xrel;
+                    df2MouseY += e.motion.yrel;
+                } else if (e.type == SDL_MOUSEMOTION && captured_ && !showMap_) {
                     // DF.EXE 0x42eba0: mousescale << 14 binary angle per count
                     // (0x200000, 0.1758°, at the default 128), a quarter while
                     // zoomed; flipmouse flips the vertical axis (0x42ebd6).
-                    // DF2.EXE 0x41adec..0x41ae13: an eighth while the scope
-                    // shows (0x447b40, not moving: +0x74 & 0x18 clear).
-                    const float zoomScale = arsenal_.df2() ? (arsenal_.scopeShown() ? 0.125f : 1.f) : (arsenal_.zoomed() ? 0.25f : 1.f);
+                    // (Delta Force 2: once a frame, below.)
+                    const float zoomScale = arsenal_.zoomed() ? 0.25f : 1.f;
                     const float sens = 0.17578125f * kPi / 180.f * float(o_.mouseScale) / 128.f * zoomScale;
                     const float dy = o_.flipMouse ? -float(e.motion.yrel) : float(e.motion.yrel);
-                    player_.yaw += e.motion.xrel * sens;
-                    player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                    // GOG Df2.exe 0x41eb50: the video camera's view takes the
+                    // mouse instead (commands 0x35..0x38, 0x41f150 cases
+                    // 0x29..0x2c), turned as the player would be.
+                    if (arsenal_.cameraSteered()) {
+                        arsenal_.turnCamera(e.motion.xrel * sens, -dy * sens);
+                    } else {
+                        player_.yaw += e.motion.xrel * sens;
+                        player_.pitch = std::clamp(player_.pitch - dy * sens, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                    }
+                } else if (e.type == SDL_MOUSEWHEEL && !df2Hud_.on && exe_.build() == ExeBuild::Df1Gog) {
+                    // (The CD's in-game mouse hook 0x42f608 returns for the
+                    // 0x100 / 0x200 codes and its table has no 'cycleb'.)
+                    // DF1's wheel (GOG Df.exe 0x497a40 case 0x20a): the delta
+                    // summed in 120s, one 0x100 per notch forward and 0x200
+                    // per notch back; the in-game mouse hook 0x47a150 queues
+                    // command 0xc0 'cycleb' for 0x100 and 0xbf 'cycle' for
+                    // 0x200 (0x47a1b4..0x47a27f), run as 0x484b70(-1) / (1).
+                    // Neither id is gated by pause (0x477d40). SDL's notches
+                    // (fractions from fine wheels) times 120 stand in for the
+                    // WM_MOUSEWHEEL delta; a flipped wheel is turned back.
+                    const float y = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.preciseY : e.wheel.preciseY;
+                    wheelDelta_ += int(std::lround(y * 120.f));
+                    while (wheelDelta_ > 0x77) { wheelDelta_ -= 0x78; arsenal_.cycleBack(); }
+                    while (wheelDelta_ < -0x77) { wheelDelta_ += 0x78; arsenal_.cycle(); }
                 } else if (e.type == SDL_TEXTINPUT && df2Hud_.on && showMap_ && df2Map_.prompt) {
                     // The command map's name prompt (chat input 0x41d320, max 16).
                     for (const char* c = e.text.text; *c; ++c)
                         if (uint8_t(*c) >= 32 && uint8_t(*c) < 128 && df2Map_.promptText.size() < 16) df2Map_.promptText += *c;
                 } else if (e.type == SDL_KEYDOWN && (!e.key.repeat || (df2Map_.prompt && showMap_))) handleKey(e.key);
             }
-            if (zoomClick) arsenal_.toggleZoom();
+            if (zoomClick && (df2Hud_.on || !df1PauseGated(Action::Scope))) arsenal_.toggleZoom();
+            if (df2MouseX || df2MouseY) {
+                // GOG Df2.exe 0x41eb50, once a frame: the mouse sensitivity
+                // [0x67ccf8] (<= 0 -> 0x80, > 0x1ff -> 0x1ff) gives
+                // mouse << 14 binary angle per count. While the scope shows
+                // (0x455790: zoomed, not moving) the rate instead grows with
+                // the larger axis' counts u over the mode's width (that axis
+                // x) or height: r = (u << 32) / (size << 15) (16.16, 2u /
+                // size), then ((((r² >> 16) · (scope << 7)) >> 16) ·
+                // 0x200000 >> 16) + 0x40000, scope [0x67ccfc] = the soldier's
+                // scope sensitivity + 0x80, clamped to 0x80..0x1ff (the CD
+                // build: a fixed eighth, CD 0x41ad70). flipmouse [0x67ccf4]
+                // turns the vertical axis. The video camera's view takes the
+                // mouse instead (commands 0x35..0x38, 0x41f150 cases
+                // 0x29..0x2c), turned as the player would be.
+                const int mouse = o_.mouseScale <= 0 ? 0x80 : std::min(o_.mouseScale, 0x1ff);
+                const int scope = std::clamp(o_.df2ScopeSens, 0x80, 0x1ff);
+                const int dy = o_.flipMouse ? -df2MouseY : df2MouseY;
+                int64_t rate = int64_t(mouse) << 14;
+                if (!arsenal_.df2Gog()) {
+                    if (arsenal_.scopeShown()) rate /= 8;   // CD 0x41adec..0x41ae13: a fixed eighth
+                } else if (df2ScopeActive()) {   // 0x455790
+                    const int modeW = hudMode_ ? hudMode_ : 640;
+                    const bool across = std::abs(dy) < std::abs(df2MouseX);
+                    const int u = across ? df2MouseX : dy, size = across ? modeW : modeW * 3 / 4;
+                    const int32_t r = int32_t((int64_t(int32_t(uint32_t(u) << 16)) << 16) / int64_t(size << 15));
+                    const int32_t r2 = int32_t((int64_t(r) * r) >> 16);
+                    const int32_t t = int32_t((int64_t(scope << 7) * r2) >> 16);
+                    rate = int32_t((int64_t(t) * 0x200000) >> 16) + 0x40000;
+                }
+                const float perCount = float(rate) / 4294967296.f * 2.f * kPi;
+                if (arsenal_.cameraSteered()) {
+                    arsenal_.turnCamera(float(df2MouseX) * perCount, -float(dy) * perCount);
+                } else {
+                    player_.yaw += float(df2MouseX) * perCount;
+                    player_.pitch = std::clamp(player_.pitch - float(dy) * perCount, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+                }
+            }
 
             if (!inputCmds_.empty()) runInputScript(realDt);
             const Uint8* kb = SDL_GetKeyboardState(nullptr);
             Uint8 keys[SDL_NUM_SCANCODES];
             std::memcpy(keys, kb, sizeof keys);
+            maskFullscreenKey(keys);   // the fullscreen toggle's Enter / F
             for (SDL_Scancode sc : inputHeld_) keys[sc] = 1;
             const Uint32 mouse = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
             auto down = [&](Action a) { return controls_.down(a, keys, mouse); };
@@ -5336,27 +9487,62 @@ int Game::run() {
             in.strafe = float(down(Action::SlideRight)) - float(down(Action::SlideLeft));
             in.walk = down(Action::NoRun);
             in.jump = down(Action::Jump);
+            in.jumpPress = jumpPressed_;
+            jumpPressed_ = false;
             in.up = down(Action::Jump);
             in.down = down(Action::Crouch) && player_.fly;
             if (o_.walkForward) in.forward = 1;
             // Dead (0x45a234): no more control. The death sequence itself
             // (animation, mission end 0x444d24 / 0x46c9c0) is not done yet.
-            if (showMap_ || playerDead()) in = PlayerInput{};
+            // DF1's map flag [0x67db80] only picks the frame drawn (0x404640;
+            // its other readers are 0x477d40 and 0x429740): the controller
+            // keeps running, turning and firing on the held keys. DF2's
+            // command map takes the controls.
+            const bool mapHoldsControls = df2Hud_.on && showMap_;
+            if (mapHoldsControls || playerDead()) in = PlayerInput{};
+            in.dead = playerDead();
+            // DF2 control word +0x74 speed bits (GOG Df2.exe 0x41efd0): 2 (run)
+            // with a move direction and no walk key.
+            playerRunning_ = (in.forward != 0 || in.strafe != 0) && !in.walk;
             // Keyboard turning and looking (DF.EXE 0x436fec): 0x1fffffe binary
             // angle per 30 Hz controller tick (84.375°/s), half that with NoRun
             // held; the same for pitch, which stays within -67.5°..+90° (0x437435).
-            if (!showMap_) {
-                const float rate = (in.walk ? 42.1875f : 84.375f) * kPi / 180.f * dt;
+            // GOG Df2.exe: 0x41efd0 sets +0x74 0x1000 / 0x2000 / 0x4000 /
+            // 0x8000 from the turn and look keys and 0x447120 (0x44718d) halves
+            // the rate only for +0x74 & 0x800, which no writer of +0x74 sets:
+            // DF2 always turns at the full rate.
+            if (!mapHoldsControls) {
+                const float rate = ((arsenal_.df2() || !in.walk) ? 84.375f : 42.1875f) * kPi / 180.f * dt;
                 player_.yaw += rate * (float(down(Action::TurnRight)) - float(down(Action::TurnLeft)));
                 player_.pitch += rate * (float(down(Action::LookUp)) - float(down(Action::LookDown)));
             }
             player_.pitch = std::clamp(player_.pitch, -67.5f * kPi / 180.f, 90.f * kPi / 180.f);
+            // DF1's held camera keys (GOG Df.exe 0x477d40 cmds 0x19a..0x19f), each
+            // 30 Hz controller poll (not while the debug HUD [0xbd0040] is on,
+            // which OpenDF does not have): yaw offset -/+ 0x2000000, pitch
+            // -/+ 0x2000000 within 0xd0000000..0x40000000, distance -/+ 1/8 m
+            // within 1..500 m. They change the offsets in any mode.
+            if (!world_.df2Rules) {
+                const float step = float(0x2000000) / 4294967296.f * 2 * kPi;
+                for (camKeyClock_ += dt; camKeyClock_ >= 1.f / 30.f; camKeyClock_ -= 1.f / 30.f) {
+                    if (down(Action::CameraLeft)) camYawOff_ -= step;
+                    if (down(Action::CameraRight)) camYawOff_ += step;
+                    if (down(Action::CameraUp)) camPitch_ = std::max(camPitch_ - step, -0.375f * kPi);
+                    if (down(Action::CameraDown)) camPitch_ = std::min(camPitch_ + step, 0.5f * kPi);
+                    if (down(Action::CameraZoomIn)) camDist_ = std::max(camDist_ - 0x2000 / 65536.f, 1.f);
+                    if (down(Action::CameraZoomOut)) camDist_ = std::min(camDist_ + 0x2000 / 65536.f, 500.f);
+                }
+            }
             // Any move or jump key puts the binoculars down (0x4373ab: the
             // key bits [0x93351c] & 0x41e clear [0x93367c]); the scope flag
             // stays, DF.EXE only hides the scope while the keys are down
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
-            const bool moveKeys = in.forward != 0 || in.strafe != 0 || in.jump;
+            const bool moveKeys = in.forward != 0 || in.strafe != 0 || (arsenal_.df2() ? in.jump : in.jumpPress);   // DF1 0x400: the press
             arsenal_.setMoveKeys(moveKeys);
+            // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004 (dead,
+            // airborne, swimming, on a ladder) and an outside view.
+            arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder() ||
+                                     (outsideView() != 0 && !pinp_));   // [0xbf2b40] with picture-in-picture [0x67cd10] off
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
             if (arsenal_.df2()) {
                 // DF2.EXE: holding the binoculars (mode 47, +0x3C 0x200) the
@@ -5364,7 +9550,7 @@ int Game::run() {
                 // at speed bits ((+0x74 >> 3) & 3) zero (0x43f74f, 0x43f7a3,
                 // 0x43f886, each then testing the mode's 0x200); moving keeps
                 // the slot but lowers them. The frame (0x45c7e2) gives the
-                // view FOV 22 and the offset only in those moves and not in
+                // view FOV 22 (GOG 0x465f90: 22.5) and the offset only in those moves and not in
                 // an outside view ([0xbba840]); the offset is picked anew on
                 // the first frame of each raise ([0x4d2e78], 0x45c809 /
                 // 0x45c869 -> 0x4481e0). INFERRED: speed bits non-zero
@@ -5373,9 +9559,13 @@ int Game::run() {
                 if (raised && !binoculars_) pickBinocularOffset();
                 binoculars_ = raised;
             }
-            const bool trigger = !showMap_ && !playerDead() && (down(Action::Fire) || o_.holdFire);
+            const bool trigger = !mapHoldsControls && !playerDead() && (down(Action::Fire) || o_.holdFire);
 
             player_.oneHanded = arsenal_.mode().oneHanded();
+            // GOG Df2.exe 0x445980 (without DF2.EXE's mode table: the DF1 hand classes).
+            player_.df2ModeFlags = arsenal_.df2() ? arsenal_.mode().df2Flags : arsenal_.mode().oneHanded() ? 4 : 8;
+            player_.scoped = arsenal_.zoomed();
+            player_.df1ModeFlags = arsenal_.mode().flags;
             in.shooting = arsenal_.firing();
             player_.update(dt, in, world_);
             if (std::getenv("OPENDF_DEBUGPLAYER") && (ticks_ % 30) == 0) {
@@ -5393,22 +9583,33 @@ int Game::run() {
             }
             updateRoute();
             // Mission events run on the original's 60 Hz ticks.
-            for (const auto& hit : arsenal_.takeImpacts()) spawnImpact(hit);
+            for (const auto& hit : arsenal_.takeImpacts()) { recordHit(hit); spawnImpact(hit); }
+            for (int i : arsenal_.takeRoundHits()) ai_.roundHit(i, world_.objects[size_t(i)].team);
             // Rockets carry ITEMS.DEF `ambient rocket1` as a loop (0x44d6f9).
-            {
+            // Delta Force 2 refreshes its loop emitters once a game tick (GOG
+            // Df2.exe 0x464d46 counts the tick, 0x464d51 calls 0x4683f0), so
+            // there this runs in the 60 Hz loop below; DF1 once a frame.
+            const auto refreshLoops = [this] {
                 static const int rocket = sound_.idOf("ROCKET1");
                 for (const auto& p : arsenal_.projectiles())
                     if (p.flags & 0x40) sound_.setLoop(p.id, rocket, p.pos);
                 vehicles_.sounds(world_, ai_, sound_);
+                // DF2's loop markers (mixed with the others by 0x4683f0).
+                for (const auto& m : loopMarkers_) sound_.setLoop(200000 + m.record, m.id, m.at, 1.f);
                 sound_.sweepLoops();
                 sound_.updateLoops();
-            }
+            };
+            if (mission_.version < 0x0F) refreshLoops();
             for (const auto& e : arsenal_.takeSounds()) {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
                 // The player's gunshots are heard (0x46c228: range / 2).
-                if (e.shot) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
+                // Both games: the noise when the sound's range is not 0 (GOG
+                // Df.exe 0x4630d6; Df2.exe 0x451ae0 -> 0x414660); the mark is
+                // per round, by the gun (takeFireMark).
+                if (e.shot && sound_.range(e.id) > 0) ai_.noise(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, 2);
             }
+            if (arsenal_.takeFireMark()) ai_.markFired(-3);
             for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);
             for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
             // The designator's point (0x4508be: the depth at the centre of the
@@ -5427,9 +9628,29 @@ int Game::run() {
                     const std::string f = d.item ? d.item->aiFunction : std::string();
                     if (f.rfind("gnrl", 0) == 0) continue;   // 0x4012b0: silent, no barrel, no sound
                     if (f.rfind("smok", 0) == 0) { spawnSmk2(d.pos, false, 0, 0, 0xc0); continue; }   // 0x402550: one dark cloud (0x413e80, t 0xc0)
-                    if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos); continue; }    // 0x401240 -> 0x4572d0
+                    if (f.rfind("ibom", 0) == 0) { bigBlast(d.pos, d.heading, -1); continue; }    // GOG 0x401240 -> 0x45f910(0, +0x24): owner 0
                     if (f.rfind("bld2", 0) == 0) { startCollapse(i); continue; }   // 0x4028d0
                     if (df2ItemDestroyed(i)) continue;                              // slgt, mine, vtrg
+                }
+                if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "mine") {
+                    // GOG Df.exe 0x453220 (a round or blast, hp <= 0, flag 4
+                    // clear): flags |= 4 and 0x446fb0(killer, origin, 0) ->
+                    // 0x4606b0: effect 3, blast type 1, sound 0x32, a 3 mm
+                    // noise, no fragments; no smoke, the mine stays drawn.
+                    const Vec3 at = world_.objects[size_t(i)].pos;
+                    explode(at, 1);
+                    ai_.noise(at, kDf1BlastNoise, 0, 0);
+                    continue;
+                }
+                if (mission_.version < 0x0F && world_.objects[size_t(i)].item) {
+                    const std::string& f = world_.objects[size_t(i)].item->aiFunction;
+                    if (f == "wdsm" || f == "wdmd" || f == "cact" || f == "palm") woodDebris(i);
+                } else if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "palm") {
+                    // Delta Force 2's palm (GOG Df2.exe 0x42ed40) at hp <= 0:
+                    // 0x429e40(-1), the same pieces, counts, items 0xfe0..0xfe4
+                    // and sound 300 as GOG Df.exe's 0x44e6b0(-1), with DF2's
+                    // gdeb mover 0x42e6a0 equal to DF1's; then flags |= 0xc.
+                    woodDebris(i);
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
                 static const std::pair<int, int> kDestroyed[] = {
@@ -5448,11 +9669,12 @@ int Game::run() {
                 playSound(0x8A, at);
             }
             for (int i : world_.takeLandings()) {
-                // 0x413d70: the canopy left where the person landed, 1800 ticks.
+                // 0x413d70 (GOG 0x415cd0): the canopy left where the person
+                // landed, at its origin (+0x24..+0x2c), 1800 ticks.
                 const WorldObject& o = world_.objects[size_t(i)];
                 if (const ItemDef* ci = items_.byId(o.item && (o.item->attrib & 0x400) ? 107037 : 107038); ci && !ci->graphic.empty())
                     if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) {
-                        Effect e{cm, Vec3{o.pos.x, o.base, o.pos.z}, 1.f, 0, 1800, 1, 1};
+                        Effect e{cm, o.pos, 1.f, 0, 1800, 1, 1};
                         e.canopy = true;
                         e.heading = o.heading;
                         effects_.push_back(e);
@@ -5462,8 +9684,10 @@ int Game::run() {
                 for (auto& m : world_.stab(at, player_.origin())) pushMessage(m);
             for (const auto& sp : player_.takeSpawns()) {
                 if (sp.slot == -1) {
-                    // The player's canopy (PFoil: `parachut`).
-                    if (const ItemDef* ci = items_.byId(107037); ci && !ci->graphic.empty())
+                    // The player's canopy: GOG Df2.exe 0x415cd0 picks it by the
+                    // soldier's PFoil attribute (0x400: [0xbf0e74] `parachut`,
+                    // else [0xbf0e78]), as for everyone.
+                    if (const ItemDef* ci = items_.byId(player_.pfoil ? 107037 : 107038); ci && !ci->graphic.empty())
                         if (const GpuModel* cm = models_.get(vfs_, ci->graphic)) {
                             Effect e{cm, sp.pos, 1.f, 0, 1800, 1, 1};
                             e.canopy = true;
@@ -5473,24 +9697,43 @@ int Game::run() {
                     continue;
                 }
                 spawnEffect(sp.slot, sp.pos);
+                if (sp.sound) playSound(sp.sound, sp.pos);   // the splash (GOG Df.exe 0x4877d6: 0x8A; DF2 see Player)
             }
+            bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
+            if (paused_)
+                for (pauseClock_ += realDt; pauseClock_ >= 1.f / 60.f; pauseClock_ -= 1.f / 60.f) ++frameClock_;
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
+                ++frameClock_;
+                ++missionSteps_;   // GOG Df.exe 0x4043b3
+                if (mission_.version >= 0x0F) refreshLoops();
                 tickEffects();
-                tickDialogs();
+                tickDialogs(dlgDrawn);
+                dlgDrawn = false;
+                sound_.loopTick();   // GOG Df.exe 0x4043d0 -> 0x43f0b0's counter
                 touchPickups();
+                if (mission_.version < 0x0F) tickBirds();
                 // DF1: the carrier's move (0x4365c6 -> 0x436a0c) copies its
                 // origin +0x24..+0x2c into the carried item every tick.
                 if (carried_ >= 0 && world_.objects[size_t(carried_)].carried) world_.objects[size_t(carried_)].pos = player_.origin();
+                trackMapPositions();
                 if (mission_.version >= 0x0F) { tickAir(); tickCollapses(); tickDf2Items(); }
+                else tickDf1Lights();
                 // DF2.EXE 0x45b45d -> 0x46baa0: the rain and snow, once a tick.
+                // GOG Df2.exe spawns them around the player object's origin
+                // +0x24..+0x2c whatever the camera (0x464d8b..0x464d9e ->
+                // 0x476170); the CD's 0x46baa0 takes no arguments and reads
+                // DAT_004ee264..6c, which the draw path sets: the last
+                // frame's eye (set after drawWorld below).
+                if (arsenal_.df2Gog()) weather_.setCamera(player_.origin());
                 weather_.tick(int32_t(arsenal_.windX()), int32_t(-arsenal_.windZ()), int32_t(std::lround(terrain_.waterLevel() * 65536.f)),
                               [this](Vec3 at) { spawnEffect(17, at); });
-                // DF2 fall damage (0x43f600, single player): n = trunc(vz /
-                // -10360.5) with vz in 16.16 m a tick, (1 << n) - 1 for n >= 1
+                // DF2 fall damage (0x43f600, GOG 0x4458f0, single player): n =
+                // trunc(vz / -10354) (mulhi by -0x6545c5f3, >> 12) with vz in
+                // 16.16 m a tick, (1 << n) - 1 for n >= 1
                 // (the player's flag 1 skips the -1 others get).
                 if (const float vy = player_.takeLanding(); mission_.version >= 0x0F && vy < 0) {
-                    const int n = int(-vy / 60.f * 65536.f / 10360.5f);
+                    const int n = int(-vy / 60.f * 65536.f / 10354.f);
                     if (n >= 1) hurtPlayer((1 << std::min(n, 20)) - 1, 4, player_.feet);   // kind 4 (0x43f645)
                 }
                 // Testing: OPENDF_TEAMSPEED="TEAM:KMH[,TEAM:KMH...]" sets team
@@ -5502,6 +9745,18 @@ int Game::run() {
                         int team = 0, kmh = 0, n = 0;
                         if (std::sscanf(p, "%d:%d%n", &team, &kmh, &n) != 2) break;
                         ai_.teamSpeed(team, kmh);
+                        p += n;
+                        if (*p == ',') ++p;
+                    }
+                }
+                // Testing: OPENDF_AIPROP="TEAM:SUB:VALUE[,...]" applies the
+                // script's AI-attribute action (action 3) at tick 1.
+                if (static bool once = false; !once && std::getenv("OPENDF_AIPROP")) {
+                    once = true;
+                    for (const char* p = std::getenv("OPENDF_AIPROP"); p && *p;) {
+                        int team = 0, sub = 0, val = 0, n = 0;
+                        if (std::sscanf(p, "%d:%d:%d%n", &team, &sub, &val, &n) != 3) break;
+                        aiProperty(team, sub, val);
                         p += n;
                         if (*p == ',') ++p;
                     }
@@ -5652,6 +9907,7 @@ int Game::run() {
                 }
                 sound_.tickDelayed();
                 arsenal_.underwaterRule = mission_.version >= 0x0F;
+                arsenal_.tracersOff = (o_.df2Attributes & 0x80) != 0;   // Options3 TRACERS (GOG Df2.exe 0x45473b)
                 arsenal_.waterLevel = terrain_.waterLevel();
                 tickCharges();
                 // The player as a target: animated hit spheres (0x44dca4).
@@ -5674,6 +9930,7 @@ int Game::run() {
                     pv.team = kPlayerTeam;
                     ai_.tick(world_, arsenal_, sound_, pv);
                     vehicles_.tick(world_, ai_, arsenal_, sound_, pv);
+                    wildlife_.tick(world_, ai_, pv, player_.inWater());
                 }
                 // The camera's pivot and base yaw follow the body (0x481184).
                 {
@@ -5684,6 +9941,51 @@ int Game::run() {
                     float dy = (kPi * 0.5f - (playerDead() ? deadYaw_ : player_.yaw)) - camYaw_;
                     dy -= std::floor(dy / (2 * kPi) + 0.5f) * 2 * kPi;
                     camYaw_ += dy / 32.f;
+                }
+                // GOG Df.exe 0x404640 / Df2.exe 0x465f90: dead, the view is
+                // mode 1 ([0xc23a1c] / [0x79a68c] set); alive again it goes back
+                // to first person. Delta Force with attributes 0x400 (no
+                // outside views) stays first person. 0x42a6e0 / 0x413dd0: the
+                // lookout (fly-by point) moves on once the pivot is over 30 m
+                // from it (|dx| + |dy| + |dz| > 0x1e0000).
+                if (playerDead()) { setCamMode(1); deadCam_ = true; }
+                else if (deadCam_) { setCamMode(0); deadCam_ = false; }
+                else if (!world_.df2Rules && (o_.attributes & 0x400) && camMode_ != 0) setCamMode(0);
+                if (camMode_ == 3 && !playerDead()) {
+                    const Vec3 d = world_.nearest(lookout_, camPivot_) - camPivot_;
+                    if (std::abs(d.x) + std::abs(d.y) + std::abs(d.z) > 30.f) placeLookout();
+                }
+                // GOG Df2.exe's held camera commands (0x41f150 cases 0x73..0x77,
+                // polled each tick, 0x420670): yaw -/+ 0x2000000, pitch
+                // -/+ 0x2000000 within 0xd0000000..0x40000000, distance
+                // -/+ 0x2000 within 1..500 m.
+                // The same held-command pass (0x420670 -> 0x420940 -> 0x41eae0),
+                // unless the text prompt is open ([0xab0588]), runs zoomin /
+                // zoomout (0x41f150 cases 0x62 / 0x63): the map scale
+                // [0x79a69c] x 0.9 (min 0x4000) / 1.1 (max 0x39999), map open
+                // or not.
+                if (arsenal_.df2() && controls_.df2Table() && !(df2Map_.prompt && showMap_)) {
+                    Uint8 kb[SDL_NUM_SCANCODES];
+                    std::memcpy(kb, SDL_GetKeyboardState(nullptr), sizeof kb);
+                    maskFullscreenKey(kb);
+                    for (SDL_Scancode sc : inputHeld_) kb[sc] = 1;
+                    const Uint32 mb = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+                    if (controls_.down(Action::MapZoomIn, kb, mb)) mapScale_ = std::max(0.25f, mapScale_ * 0.9f);
+                    if (controls_.down(Action::MapZoomOut, kb, mb)) mapScale_ = std::min(3.6f, mapScale_ * 1.1f);
+                }
+                if (arsenal_.df2() && !(df2Hud_.on && showMap_)) {
+                    Uint8 kb[SDL_NUM_SCANCODES];
+                    std::memcpy(kb, SDL_GetKeyboardState(nullptr), sizeof kb);
+                    for (SDL_Scancode sc : inputHeld_) kb[sc] = 1;
+                    const Uint32 mb = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+                    auto held = [&](Action a) { return controls_.down(a, kb, mb); };
+                    const float step = float(0x2000000) / 4294967296.f * 2 * kPi;
+                    if (held(Action::CameraLeft)) camYawOff_ -= step;
+                    if (held(Action::CameraRight)) camYawOff_ += step;
+                    if (held(Action::CameraUp)) camPitch_ = std::max(camPitch_ - step, -0.75f * kPi * 0.5f);
+                    if (held(Action::CameraDown)) camPitch_ = std::min(camPitch_ + step, kPi * 0.5f);
+                    if (held(Action::CameraZoomIn)) camDist_ = std::max(camDist_ - 0x2000 / 65536.f, 1.f);
+                    if (held(Action::CameraZoomOut)) camDist_ = std::min(camDist_ + 0x2000 / 65536.f, 500.f);
                 }
                 // plyr (0x45a27c): every 64 ticks the route's points count as
                 // reached for the player's side.
@@ -5702,12 +10004,16 @@ int Game::run() {
                         const Vec3 fw{std::sin(deadYaw_), 0, -std::cos(deadYaw_)}, lf{-std::cos(deadYaw_), 0, -std::sin(deadYaw_)};
                         deadShift_ = deadShift_ + fw * r[0] + lf * r[1];
                     }
-                    const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
-                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0, kPlayerTeam);
+                    // Delta Force: the phrase set (def +0xd4, 0x43f5a0) of the
+                    // player's own item, by sex, snow and night (GOG Df.exe
+                    // 0x45d520), so 15 for the female soldier.
+                    const ItemDef* soldier = items_.byId(world_.df2Rules ? kItemPlayerSoldier : playerItem_);
+                    if (!soldier) soldier = items_.byId(kItemPlayerSoldier);
+                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0, kPlayerTeam, player_.airborne());
                 }
                 for (const auto& e : world_.takeAnimEvents()) {
                     const auto& o = world_.objects[size_t(e.object)];
-                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0, o.team);
+                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0, o.team, o.airborne);
                 }
                 // Ambience (0x45a5a8 dec0, 0x45a830 tree, 0x47f64c palm, 0x45a734..
                 // snd0..2): the sound (4 m up for dec0/tree/palm; trees and palms
@@ -5717,11 +10023,13 @@ int Game::run() {
                 // objects are visited every tick (think at wait <= 0, then
                 // wait - 1); section 1 when (tick & 31) == slot & 31 and section
                 // 2 when (tick & 63) == slot & 63, a visit taking 32 / 64 off a
-                // positive wait or else thinking (0x436c74).
+                // positive wait or else thinking (0x436c74). Delta Force 2
+                // (GOG Df2.exe 0x446550, CD 0x440180) visits section 1 (the
+                // decorations) when (tick & 7) == slot & 7, taking 8 off.
                 for (auto& a : ambients_) {
                     bool think = false;
                     if (a.section == 1 || a.section == 2) {
-                        const uint32_t mask = a.section == 1 ? 31 : 63;
+                        const uint32_t mask = a.section == 1 ? (mission_.version >= 0x0F ? 7 : 31) : 63;
                         if ((ticks_ & mask) != (uint32_t(a.slot) & mask)) continue;
                         if (a.wait > 0) a.wait -= int(mask + 1);
                         else think = true;
@@ -5730,17 +10038,40 @@ int Game::run() {
                         --a.wait;
                     }
                     if (!think) continue;
+                    if (a.object < 0) {
+                        // DF2 sound markers (GOG Df2.exe 0x4027f0 snd0, 0x402850
+                        // snd1, 0x4028b0 snd2, 0x402910 snd3): the sound at the
+                        // marker, then the next wait from 0x41ea20 (r, 16 bits):
+                        // ((r*6 >> 16) + 20) * 64, ((r*4 >> 16) + 8) * 64,
+                        // ((r*2 >> 16) + 3) * 64; snd3 (item +0xe0 >> 4) +
+                        // ((r * item +0xe8) >> 16 >> 10), +0xe0 being
+                        // atoi(acceleration) << 10 and +0xe8 axle_dist in 16.16
+                        // (the DF2 parser 0x422580 / 0x4226a3).
+                        const std::string& f = a.item->aiFunction;
+                        playSound(a.item->interruptSound, a.at);
+                        const int64_t r = int64_t(shrapRand());
+                        if (f == "snd3") {
+                            const int64_t axle = int64_t(double(a.item->axleDist) * 65536.0);
+                            a.wait = ((int(a.item->acceleration) << 10) >> 4) + (int32_t(uint32_t(uint64_t(r * axle) >> 16)) >> 10);
+                        } else {
+                            const int k = f == "snd0" ? 6 : f == "snd1" ? 4 : 2, add = f == "snd0" ? 20 : f == "snd1" ? 8 : 3;
+                            a.wait = (int((r * k) >> 16) + add) * 64;
+                        }
+                        continue;
+                    }
                     const auto& o = world_.objects[size_t(a.object)];
                     const std::string& f = o.item->aiFunction;
                     Vec3 at = o.pos;
                     const bool sound = f.rfind("snd", 0) == 0;   // snd0..3: at the marker itself
                     if (!sound) at.y += 4.f;
-                    if (f == "tree" && !o.alive()) { a.wait = 0x400; continue; }
+                    if ((f == "tree" || f == "oakt") && !o.alive()) { a.wait = 0x400; continue; }
                     if (o.alive() || sound) playSound(o.item->interruptSound, at);
-                    const int r = crtRand() * 2;
+                    // GOG Df.exe (0x45c180 dec0 / palm, 0x45c340 snd0, 0x45c3a0
+                    // snd1, 0x45c400 snd2, 0x45c460 tree): r from 0x477860, 16 bits.
+                    const int r = gogRand() || (world_.df2Rules && f == "oakt") ? int(shrapRand()) : crtRand() * 2;
                     a.wait = f == "snd0" ? (((r * 6) >> 16) + 20) << 6 : f == "snd1" ? (((r * 4) >> 16) + 8) << 6
                            : f == "snd2" ? (((r * 2) >> 16) + 3) << 6 : ((r >> 14) + 5) << 6;
-                    // snd3 (0x402730): acceleration·64 + rand·axle_dist·64 ticks
+                    // snd3 (GOG Df2.exe 0x402910): acceleration·64 + rand·axle_dist·64 ticks
                     // ((rand · (axle << 16)) >> 26 + (acc << 10) >> 4).
                     if (f == "snd3")
                         a.wait = int((int64_t(r & 0xFFFF) * int64_t(o.item->axleDist * 65536.f)) >> 26) + int(o.item->acceleration * 64.f);
@@ -5748,20 +10079,44 @@ int Game::run() {
                 }
                 // 0x449830: the damage flash fades 2 per tick.
                 damageFlash_ = damageFlash_ > 1 ? damageFlash_ - 2 : 0;
-                // 0x446148, every 64 ticks: a dead player ends the mission
-                // (0x44663c(2)); no side wins.
-                if (playerDead() && missionResult_ < 0 && (ticks_ & 63) == 0) endMission(0);
-                if (missionResult_ < 0) script_.tick(*this);
+                // A dead player ends the mission. Delta Force: GOG Df.exe
+                // 0x443c50 runs the end check 0x444630 every 63 ticks (the
+                // counter [0x6e474c], never reset); in single player a
+                // player with +0x6c bit 4 goes to 0x444ca0(2), side 2 wins.
+                if (!world_.df2Rules) {
+                    if (++endCheckClock_ > 0x3e) {
+                        endCheckClock_ = 0;
+                        if (playerDead() && missionResult_ < 0) endMission(2);
+                    }
+                } else if (playerDead() && missionResult_ < 0 && (ticks_ & 63) == 0) endMission(0);
+                // Delta Force runs the events after the mission has ended
+                // too (GOG Df.exe 0x443c50 is called without testing the
+                // end latch [0x67dbc0]; 0x444ca0 keeps the first result),
+                // then every 63 ticks recounts the teams (0x44a200).
+                if (!world_.df2Rules) {
+                    script_.tick(*this);
+                    if (++teamRecountClock_ > 0x3e) { countTeams(false); teamRecountClock_ = 0; }
+                } else if (missionResult_ < 0) {
+                    // GOG Df2.exe 0x45fc50: the events, then every 63 ticks
+                    // the alive recount 0x4043e0 ([0x67ffe8], never reset).
+                    script_.tick(*this);
+                    if (++teamRecountClock_ > 0x3e) { countTeams(false); teamRecountClock_ = 0; }
+                }
             }
             std::vector<std::string> msgs;
-            // The listener (0x4735b8): the player, or the external camera once dead.
+            // The listener (0x4735b8): the player, or the external camera once
+            // dead (GOG Df2.exe 0x418c80: the camera in any outside view).
             {
-                const Vec3 at = playerDead() ? viewEye() : player_.origin();
+                const Vec3 at = outsideView() != 0 ? viewEye() : player_.origin();
                 const Vec3 f = viewDir();
                 sound_.setListener(at, std::atan2(f.x, -f.z), &terrain_);
                 arsenal_.setListener(at);
             }
             arsenal_.update(dt, trigger, trigger && !prevTrigger, player_, world_, msgs);
+            // Placed at once, before this frame is drawn: GOG Df2.exe's
+            // video camera inset (0x4568a0) finds the new camera the frame
+            // it is fired.
+            for (const auto& e : arsenal_.takeEvents()) weaponEvent(e);
             prevTrigger = trigger;
             for (auto& m : msgs) pushMessage(m);
             for (auto& m : messages_) m.age += dt;
@@ -5787,8 +10142,13 @@ int Game::run() {
             // reloads the fonts for the new width (0x45cbfa -> 0x45c0a0:
             // f_sml%i and f_LG%i, i = min(width, 800)) and the HUD strips
             // (0x45cc06 -> 0x443bd0). So the map's text is F_SML640 /
-            // F_LG640 at any display mode.
-            useHudMode(df2Hud_.on && showMap_ ? 640 : s.modeW);
+            // F_LG640 at any display mode. GOG Df2.exe 0x4673b0 switches to
+            // index 4 only from a lower mode ([0xa6de8c] < 4), so with OpenDF's
+            // 640 / 800 / 1024 modes its map keeps the display mode.
+            useHudMode(df2Hud_.on && showMap_ && !arsenal_.df2Gog() ? 640 : s.modeW);
+            // GOG Df.exe 0x404640, every frame: with the player dead the map
+            // flag [0x67db80] is cleared and the normal view drawn.
+            if (!df2Hud_.on && showMap_ && playerDead()) showMap_ = false;
             // The 3D view: rows letterbox/8 .. 1 - letterbox/8 of the height
             // (0x404650); Delta Force 2: the rows between its strips, DHT_h ..
             // H - DHB_h (DF2.EXE 0x45cb40).
@@ -5807,16 +10167,20 @@ int Game::run() {
             // 3D view between the two HUD bars.
             glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
             // Focal length W/2 per 640 of width (FOV 90 across, 0x404489), or
-            // the binoculars' FOV 22 (0x40423d); the letterbox crops the height.
-            const float tanHalfX = binoculars_ && !playerDead() ? std::tan(11.f * kPi / 180.f) : 1.f;
+            // the binoculars' FOV 22 (0x40423d); Delta Force 2: 22.5 (GOG Df2.exe
+            // 0x465f90: 0x168000 in 16.16, halved by 0x4048b0; the CD build 22).
+            // The letterbox crops the height.
+            const float binoHalfDeg = arsenal_.df2Gog() ? 11.25f : 11.f;
+            const float tanHalfX = binoculars_ && !playerDead() && outsideView() == 0 ? std::tan(binoHalfDeg * kPi / 180.f) : 1.f;
             const float fovY = 2.f * std::atan(tanHalfX * std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
             viewFovY_ = 2.f * std::atan(std::tan(kOriginalFovY / 2) * s.playH / (s.h * 0.75f));
-            Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, viewDistance_ * 1.1f);
+            Mat4 proj = perspective(fovY, s.w / s.playH, 0.1f, kFarPlane);
             // With the binoculars up the camera carries their random offset (0x404246).
             Player cam = player_;
             if (binoculars_) { cam.yaw += binoYaw_; cam.pitch += binoPitch_; }
-            if (binoculars_) scopeFocal_ = 320.f / tanHalfX;
-            Mat4 view = playerDead() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
+            // Binoculars: FOV 22 (DF2 22.5) across the mode's width (0x40423d), F = (W/2) / tan(FOV/2).
+            if (binoculars_) scopeFocal_ = 320.f / tanHalfX * (df2Hud_.on ? 1.f : float(hudMode_ ? hudMode_ : 640) / 640.f);
+            Mat4 view = outsideView() ? lookDir(viewEye(), viewDir(), {0, 1, 0}) : lookDir(player_.eye(), cam.forward(), {0, 1, 0});
             if (o_.viewModelOnly) {
                 glClearColor(1, 0, 1, 1);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -5824,26 +10188,47 @@ int Game::run() {
                 glViewport(0, 0, dw, dh);
             } else {
                 // DF2 draws only the command map while it is open (0x45c610).
-                if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead());
-                // The weather spawns around the last rendered frame's camera (0x46b780's end).
-                weather_.setCamera(viewEye());
+                if (df2Hud_.on) gunInWorld_ = &s;
+                if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead() && outsideView() == 0);
+                // The CD DF2.EXE's weather centre: the last rendered frame's
+                // camera (0x46b780's end, DAT_004ee264..6c).
+                if (arsenal_.df2() && !arsenal_.df2Gog()) weather_.setCamera(viewEye());
+                gunInWorld_ = nullptr;
                 if (df2Hud_.on && showMap_) {
                     glViewport(0, 0, dw, dh);
                 } else if (df2Hud_.on) {
-                    // DF2.EXE 0x45c610: the scope inset, the night vision
-                    // (0x449450), then the weapon pass (0x448980).
-                    drawZoomInset(s, view, fovY);
+                    // GOG Df2.exe 0x465f90: the frame with the weapon in it
+                    // (0x44f8d0, above), then the scope view (0x455be0,
+                    // which skips the night vision) or the picture-in-picture
+                    // (0x4559d0), then the night vision (0x450550) only with
+                    // the player's own camera ([0xbf2b40] == 0).
                     glViewport(0, 0, dw, dh);
-                    if (nvg_ && !showMap_) {
+                    // The player waypoints (0x450070) before the insets.
+                    hud_.begin(dw, dh);
+                    drawDf2Waypoints3d(s, proj * view);
+                    hud_.end();
+                    drawZoomInset(s, view, fovY);
+                    drawDf2PinpInset(s);
+                    drawCameraInset(s);
+                    drawDf2FoInset(s);
+                    glViewport(0, 0, dw, dh);
+                    // GOG Df2.exe 0x465fde: the scoped path (0x455be0 at
+                    // 0x4662dd, JMP 0x4662ef) skips the night vision 0x450550.
+                    if (nvg_ && !showMap_ && !scopeShown() && !playerDead()) {
                         hud_.begin(dw, dh);
                         hud_.nightVision(s.w * 0.5f, s.playY + s.playH * 0.5f, float(s.modeW) * 5.f / 32.f * s.art());
                         hud_.end();
                     }
-                    glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
-                    drawViewModel(s);
                 } else {
+                    // Under water GOG Df.exe draws the gun (0x483f30) before
+                    // the tint (0x48d570): tint what the gun drew (only
+                    // there is depth written after this clear).
+                    const bool underWater = terrain_.df1UnderWater(viewEye());
+                    if (underWater) glClear(GL_DEPTH_BUFFER_BIT);
                     drawViewModel(s);
+                    if (underWater) terrain_.tintUnderwaterOver(viewEye());
                     drawZoomInset(s, view, fovY);
+                    drawFoInset(s);
                 }
                 glViewport(0, 0, dw, dh);
                 if (!o_.noHud) drawHud(s, proj * view);
@@ -5880,6 +10265,19 @@ int Game::run() {
             }
             if (inputDone_ && endHold < 0) endHold = 1.5f;
             if (endHold >= 0 && (endHold -= dt) < 0) running = false;
+            if (printScreen_) {
+                // 0x473eb0 writes the screen buffer at the game resolution;
+                // OpenDF writes the drawn window, 24-bit.
+                printScreen_ = false;
+                if (const auto path = freeScreenshotPath(o_.gameDir, exe_.build() != ExeBuild::Df1Cd); !path.empty()) {
+                    std::vector<uint8_t> px(size_t(dw) * size_t(dh) * 3), rows(px.size());
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadPixels(0, 0, dw, dh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+                    for (int y = 0; y < dh; ++y)
+                        std::memcpy(&rows[size_t(y) * size_t(dw) * 3], &px[size_t(dh - 1 - y) * size_t(dw) * 3], size_t(dw) * 3);
+                    writePcx24(path, dw, dh, rows.data());
+                }
+            }
             if (test && ++frame >= o_.frames) {
                 writePpm(o_.screenshot, dw, dh);
                 std::printf("wrote %s (%dx%d)\n", o_.screenshot.c_str(), dw, dh);
@@ -5916,11 +10314,15 @@ int Game::run() {
                 char title[200];
                 std::snprintf(title, sizeof title, "OpenDF - %s - %.0f fps", mission_.title.c_str(), fpsFrames / fpsTimer);
                 SDL_SetWindowTitle(win_, title);
+                // Testing: OPENDF_FPSLOG=1 also prints the rate to stderr.
+                if (std::getenv("OPENDF_FPSLOG")) std::fprintf(stderr, "fps %.1f tick %u\n", fpsFrames / fpsTimer, ticks_);
                 fpsFrames = 0;
                 fpsTimer = 0;
             }
         }
     }
+    leaveMissionFlags();   // the mission loop has ended (GOG Df.exe 0x40420a -> 0x401e70)
+    finalKills_ = playerKills();   // outcome() is read after the objects are gone
     // GL objects must go before the context.
     world_.objects.clear();
     terrainPtr_.reset();

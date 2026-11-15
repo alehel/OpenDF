@@ -55,13 +55,17 @@ add_executable(opendf
   src/game/Script.cpp
   src/game/Sound.cpp
   src/game/Vehicles.cpp
+  src/game/Wildlife.cpp
+  src/game/Tracers.cpp
   src/game/Weapons.cpp
+  src/game/TracerLines.cpp
   src/game/Weather.cpp
   src/game/World.cpp
   src/render/Gl.cpp
   src/render/Hud.cpp
   src/render/Models.cpp
   src/render/Terrain.cpp
+  src/render/Window.cpp
 )
 target_include_directories(opendf PRIVATE src)
 

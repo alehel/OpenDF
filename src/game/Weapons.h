@@ -12,6 +12,7 @@
 #include "../core/ExeImage.h"
 #include "../formats/Mission.h"
 #include "Player.h"
+#include "Tracers.h"
 #include "World.h"
 
 #include <array>
@@ -28,6 +29,7 @@ constexpr float kTick = 1.f / 60.f;
 // Player weapon table record (0x4E97D0, 168 bytes, 39 modes).
 struct ModeDef {
     int type = 0;               // +0x6C fire type: 1 gun, 2 launcher, 6 knife, 7 claymore, 8 detonator, 9 satchel, 10 laser, 11 grenade
+                                // (DF2: 12 binoculars, 13 GOG's video camera)
     int gun = 0;                // +0x74 gun table index (ammunition is kept per gun)
     int item = 0;               // +0x64 first-person item (ITEMS.DEF id - 100000)
     int offset[3] = {};         // +0x78 first-person model offset: forward, left, up in 1/256 m
@@ -40,14 +42,16 @@ struct ModeDef {
     std::string viewModel;      // the first-person item's graphic
     int icon = -1;              // WEAP%i.PCX frame (0x484ae8), -1 none
     bool burst = false;         // 0x46aefc: modes 6, 8, 21, 35, 36 fire bursts of three
+    int df2Flags = 0;           // DF2: the raw +0x3C flags (the move chooser's hand class, GOG Df2.exe 0x445980)
     bool binoculars = false;    // DF2 +0x3C & 0x200: the binoculars (mode 47); the move chooser 0x43f690 raises them
     std::vector<int> elevation; // DF2: the weapon type's scope elevation per range setting (type +0x98, << 16 binary angle)
     bool oneHanded() const { return !(flags & 4); }
     bool automatic() const { return flags & 0x20; }
     bool zoomable() const { return (flags & 1) && scope > 1; }
     // Fire types OpenDF handles: 1 guns, 2 launchers, 6 knife, 7 claymore,
-    // 8 radio detonator, 9 satchel, 10 laser designator, 11 grenade.
-    bool works() const { return type == 1 || type == 2 || (type >= 6 && type <= 11); }
+    // 8 radio detonator, 9 satchel, 10 laser designator, 11 grenade; 13 the
+    // video camera (GOG Df2.exe mode 48; no DF1 mode has it).
+    bool works() const { return type == 1 || type == 2 || (type >= 6 && type <= 11) || type == 13; }
 };
 
 // Gun table record (0x4E9060, 52 bytes).
@@ -69,10 +73,13 @@ struct GunDef {
     int64_t dragThr[5] = {0, 0, 0, 0, 0}, dragCoef[5] = {0, 0, 0, 0, 0};
     int64_t waterCoef = 0;
     int64_t mass = 0;
+    // GOG Df2.exe ammo +0x0C: the clips Extra Ammo adds (0x44dfc0); 0 on the CD.
+    int extraClips = 0;
 };
 
 // Things the weapons ask the game to do: place a charge (satchel 4020,
-// claymore 4014 motion / 4040 radio; 1 m ahead, the player's heading), set
+// claymore 4014 motion / 4040 radio; GOG DF2's video camera 4138; 1 m
+// ahead, the player's heading), set
 // off the player's satchels and radio claymores, ask for a fire mission
 // (the laser designator: pressed, then the request 180 ticks later).
 struct WeaponEvent {
@@ -100,10 +107,17 @@ struct Projectile {
     // direction, never changed in flight (0x44f3e0), so the grenade, M203 and
     // LAW models are drawn that way the whole time.
     float yaw = 0, pitch = 0;
+    // DF2: the tracer colour (+0x9c, 0xAARRGGBB), set on the first move.
+    bool coloured = false;
+    uint32_t colour = 0;
     void orient() {
         yaw = std::atan2(vel.x, -vel.z);
         pitch = std::atan2(vel.y, std::sqrt(vel.x * vel.x + vel.z * vel.z));
     }
+    // Delta Force: the round's tracer colour +0x88 (GOG Df.exe 0x462f20 /
+    // shrapnel 0x463200), set on its first tick.
+    uint32_t tracer = 0;
+    bool tracerSet = false;
     // DF.EXE 0x44f3e4: flags & 0x51 explode on impact.
     bool explosive() const { return flags & 0x51; }
 };
@@ -119,6 +133,13 @@ struct Impact {
     bool law = false;         // LAW (gun flag 0x40): heavy blast (type 3) out of the water
     int flags = 0;            // the projectile's gun flags (0x20 shrapnel)
     uint32_t material = 0;    // objects: the hit face's material flags (0x44f90a picks effect and sound)
+    float noise = 0;          // DF2: a +-noise m AI noise at the hit (GOG Df2.exe 0x414660, flags 0), 0 none
+    int shooter = -1;         // the projectile's shooter (-3 the player, -1 none); explosives: the blast's owner
+    bool timer = false;       // DF2: a delay grenade's fuse ran out (GOG Df2.exe 0x4546a8: effect 0x14, no smoke)
+    // DF2: an intact object's 0x10000000 (glass) face, shattered by the
+    // round (GOG Df2.exe 0x414a90): no impact effect; `mesh` the face's mesh.
+    bool glass = false;
+    int mesh = -1;
 };
 
 // The soldier's equipment (Change Gear): loadout rows of DF.EXE's item table
@@ -151,23 +172,36 @@ public:
     // DF2.EXE: slot 10 holds T[35] mode 0 = 47, the binoculars (0x447e20);
     // only the binoculars command reaches it (0x41b6e3). Empty in DF1.
     static constexpr int kBinocularSlot = 10;
+    // GOG Df2.exe: slots 11 and 12 hold the emplaced guns' modes 0x37 (the
+    // .50 cal) and 0x38 (the grenade launcher, item 4080) (0x44eeb0); only
+    // manning a gun selects them (0x44c840's end), 0x44f160 refuses them
+    // otherwise. Empty in DF1 and on the CD.
+    static constexpr int kMountSlot = 11, kMountGlSlot = 12;
 
     // `gameText`: DFGAME.BIN strings (mode names); `exe`: the original
     // DF.EXE (may be null: built-in tables); `items`: ITEMS.DEF.
     void init(const std::vector<std::string>& gameText, const ExeImage* exe, const ItemDefs* items, Loadout loadout);
     // Delta Force 2 (DF2.EXE tables 0x4C7238 modes, 0x4C5150 types, 0x4C4310
-    // ammo, 0x4C86B8 drag curve; init 0x46b230). `hudGuns`: the HudGuns
-    // names by mode. False (and DF1 left in place) if DF2.EXE is unusable.
+    // ammo, 0x4C86B8 drag curve; init 0x46b230; GOG Df2.exe: ExeImage::df2()).
+    // `hudGuns`: the HudGuns names by mode. False (and DF1 left in place) if
+    // DF2.EXE is unusable.
     bool initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout loadout);
+    // DF2's Request Weapons (GOG Df2.exe 0x409610 case 0x56): the slots of
+    // the new loadout, refilled, and the held slot selected again; nothing
+    // else changes.
+    void rearmDf2(const Df2Loadout& loadout);
     bool df2() const { return df2_; }
     // The tables in use (DF2's when loaded, else DF.EXE's), for AI and
     // vehicle guns: every shooter goes through the same tables (DF2.EXE
-    // 0x414ad0).
+    // 0x414ad0; GOG Df.exe 0x462f20 reads the one gun table 0x4f9154 for
+    // everyone, so AI soldiers and vehicles get the tables read from the
+    // user's DF.EXE too, e.g. GOG's silenced records 4/5/6 with power 1 /
+    // falloff 5; without an EXE they are the built-in CD values).
     const ModeDef& modeAt(int m) const {
-        return df2_ && m >= 0 && m < int(modes_.size()) ? modes_[size_t(m)] : modeInfo(m);
+        return (df2_ || fromExe_) && m >= 0 && m < int(modes_.size()) ? modes_[size_t(m)] : modeInfo(m);
     }
     const GunDef& gunAt(int g) const {
-        return df2_ && g >= 0 && g < int(guns_.size()) ? guns_[size_t(g)] : gunInfo(g);
+        return (df2_ || fromExe_) && g >= 0 && g < int(guns_.size()) ? guns_[size_t(g)] : gunInfo(g);
     }
     // DF2: the mission's wind, per tick in metres along x (east) and z
     // (DF2.EXE 0x46bbf0; projectiles are dragged toward it, 0x44c2f0).
@@ -179,11 +213,20 @@ public:
     // DF2 scope zeroing (keys X / Z, 0x445ff0): the setting of the primary
     // slots 3-5, 0..10 (0..15 for the Barrett); the scope view is lowered by
     // the type's elevation for it (0x44e143).
+    // GOG Df2.exe 0x44c770: only while the scope shows (0x455790).
     void zeroStep(int d) {
-        if (current_ < 3 || current_ > 5) return;
+        // GOG Df2.exe 0x44c770: only while 0x455790 holds (scopeShown); the
+        // CD's 0x445ff0 has no such test.
+        if ((df2Gog_ && !scopeShown()) || current_ < 3 || current_ > 5) return;
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
+    // The soldier's saved zero (profile +0x5c4 -> [0x67cdac], GOG Df2.exe
+    // 0x43c280 / CD 0x4371c0; stored back by 0x43c6f0 / 0x437550), as is.
+    // The mission start clears the slots' zeros [0x79a62c..0x79a634] and the
+    // last primary [0x79a6dc] (0x44e7f0), so 0x44eeb0 gives slots 3-5 this
+    // value; every step keeps it equal to theirs (0x44c770).
+    void setZeroSetting(int v) { zero_ = v; }
     float zeroElevation() const {
         const auto& e = mode().elevation;
         return current_ >= 3 && current_ <= 5 && zero_ < int(e.size()) ? float(e[size_t(zero_)]) * 65536.f / 4294967296.f * 6.28318531f : 0.f;
@@ -197,7 +240,22 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
-    void cycle();                 // 0x44b81c: next slot with a mode, wrapping
+    // DF2's grenade crate (item 4118, GOG Df2.exe 0x44e310): modes 0x21,
+    // 0x22 and 0x31 only.
+    void refillGrenades();
+    // 0x44b81c: next slot with a mode, wrapping. GOG Df2.exe 0x44d3c0:
+    // none from 11/12; dir < 1 goes back (Shift, the wheel forward).
+    void cycle(int dir = 1);
+    void cycleBack();             // DF1 'cycleb' (GOG Df.exe 0x484b70(-1)): previous slot with a mode, wrapping from 9
+    // GOG Df.exe's takeittothelimit command (0x79 -> 0x484960): flips
+    // [0x67dbc9] bit 0 and refills; while it is set a gun's chambering
+    // (0x483240) takes no round from the magazine and a launcher, grenade
+    // or charge (0x483654 / 0x4838a4) no spare. Returns the new state.
+    bool toggleInfiniteAmmo() { infiniteAmmo_ = !infiniteAmmo_; refill(); return infiniteAmmo_; }
+    // GOG Df.exe's spread (0x45ea00) draws from the generator 0x477860 it
+    // shares with the shrapnel and the binoculars; Game hands it in for that
+    // build (empty: Arsenal's own generator).
+    void setSharedRand(std::function<uint32_t()> f) { sharedRand_ = std::move(f); }
     void reload();                // 0x44a004
     void toggleZoom();
     // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10
@@ -210,12 +268,40 @@ public:
     // DF2: the binoculars mode is held (its +0x3C 0x200 bit).
     bool binocularsHeld() const { return df2_ && mode().binoculars; }
 
+    // GOG Df2.exe's video camera (mode 48, kind 13): the player's placed
+    // camera 4138 ([0x79a6b8], -1 none), its view yaw / pitch ([0x79a6c0] /
+    // [0x79a6bc], OpenDF heading sense, set from the object when it is
+    // created, 0x414850) and the inset flag [0x79a6b4] (set by firing kind
+    // 13, 0x44d8a0; toggled by VCam, 0x41f150 case 0x28; cleared when the
+    // inset finds no camera, 0x4568a0).
+    int camera() const { return camera_; }
+    void setCamera(int object, float yaw, float pitch) { camera_ = object; camYaw_ = yaw; camPitch_ = pitch; }
+    float cameraYaw() const { return camYaw_; }
+    float cameraPitch() const { return camPitch_; }
+    bool cameraView() const { return camView_; }
+    void toggleCameraView() { camView_ = !camView_; }
+    void clearCameraView() { camView_ = false; }
+    // 0x41eb50: the mouse steers the camera (commands 0x35..0x38 -> 0x41f150
+    // cases 0x29..0x2c) instead of the player while mode 0x30 is held, the
+    // camera is there and alive and the view is on.
+    bool cameraSteered() const { return camera_ >= 0 && camView_ && modeIndex() == 0x30; }
+    void turnCamera(float dyaw, float dpitch) { camYaw_ += dyaw; camPitch_ += dpitch; }
+    // DF2 mode flag 0x100 (modes 31, 48; GOG Df2.exe 0x44ea10) and DF1 mode
+    // flag 0x80 (+0xA4: satchel 29, grenades 33/34, claymores 37/38; GOG
+    // Df.exe 0x483f30, CD 0x44abd0): the first-person model only while a
+    // spare or a chambered one is left.
+    bool viewModelShown() const {
+        const bool counted = df2_ ? (mode().df2Flags & 0x100) != 0 : (mode().flags & 0x80) != 0;
+        return !counted || spares() > 0 || chambered();
+    }
+
     // Runs the weapon on 60 Hz ticks. Messages go to the HUD.
     void update(float dt, bool triggerDown, bool triggerPressed, Player& player, World& world,
                 std::vector<std::string>& messages);
 
     int slot() const { return current_; }
     // The mode in a slot (null if empty), e.g. for the help screen.
+    int slotModeId(int i) const { return i >= 0 && i < kSlots ? slots_[size_t(i)] : 0; }   // the player-table mode number (0 empty)
     const ModeDef* slotMode(int i) const { return i >= 0 && i < kSlots && slots_[size_t(i)] ? &modes_[size_t(slots_[size_t(i)])] : nullptr; }
     const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
     int modeIndex() const { return slots_[size_t(current_)]; }   // the player-table mode number
@@ -232,7 +318,35 @@ public:
     int rounds() const { return mag_[size_t(mode().gun)]; }
     int spares() const { return spares_[size_t(mode().gun)]; }
 
-    float zoom() const { return zoomed() ? float(mode().scope) : 1.f; }
+    float zoom() const { return !zoomed() ? 1.f : df2_ && df2Gog_ ? float(df2Zoom()) : float(mode().scope); }
+    bool df2Gog() const { return df2_ && df2Gog_; }
+    // GOG Df2.exe 0x44e6a0 (from the scope view, 0x4557e0; not in the CD
+    // build, whose scope is the mode's): the mode's
+    // scope (+0x38), but for slots 3-5 the magnification [0x79a698], set to
+    // 2 when it is under 2 (scope non-zero), 0 when negative, and lowered to
+    // the scope when above it (kept so).
+    int df2Zoom() const {
+        const int scope = mode().scope;
+        if (current_ < 3 || current_ > 5) return scope;
+        if (scope != 0 && df2Mag_ <= 1) df2Mag_ = 2;
+        else if (df2Mag_ < 0) df2Mag_ = 0;
+        if (df2Mag_ > scope) df2Mag_ = scope;
+        return df2Mag_;
+    }
+    int df2Magnification() const { return df2Mag_; }
+    // GOG Df2.exe 0x44e7f0 (mission start) clears [0x79a2c0..0x79aaa0],
+    // the magnification with it, before 0x44eeb0; Request Weapons (0x44eeb0
+    // alone) keeps it.
+    void clearMagnification() { df2Mag_ = 0; }
+    // GOG Df2.exe 0x44c7e0 (command scopemag, E; Shift+E steps down): only
+    // while the scope shows (0x455790) and the mode has a scope: +d, past
+    // the scope back to 2, under 2 to the scope.
+    void scopeMagStep(int d) {
+        const int scope = mode().scope;
+        if (!df2Gog_ || !scopeShown() || scope == 0) return;   // not in the CD build
+        const int m = df2Mag_ + d;
+        df2Mag_ = m > scope ? 2 : m < 2 ? scope : m;
+    }
     // The scope flag counts only for modes with flag 0x1 (DF2.EXE 0x447b40:
     // the held mode's +0x3C & 1 and [0x7655f4]; the binoculars, mode 47,
     // have no such bit, so holding them hides the scope and it comes back
@@ -247,8 +361,15 @@ public:
     // (+0x74 & 0x18) zero, i.e. not while moving; the shot's origin
     // (0x447102) and the designator (0x45aad6) take 0x447b40 alone.
     // INFERRED: the speed bits are non-zero exactly while a move key is down.
-    bool scopeShown() const { return zoomed() && (!df2_ || !moveKeys_); }
+    // GOG Df2.exe 0x455790 also wants none of the player's +0x64 bits
+    // 0x422004 (4 dead, 0x2000 airborne, 0x20000 swimming, 0x400000 on a
+    // ladder) and not an outside view ([0xbf2b40] with picture-in-picture
+    // [0x67cd10] off), set each tick by setScopeBlocked; the CD build tests
+    // the speed bits only (0x45c682). It gates the scope view (0x465f90),
+    // the scoped mouse (0x41eb50) and the zeroing and magnification keys.
+    bool scopeShown() const { return zoomed() && (!df2_ || (!moveKeys_ && !(df2Gog_ && scopeBlocked_))); }
     void setMoveKeys(bool down) { moveKeys_ = down; }
+    void setScopeBlocked(bool b) { scopeBlocked_ = b; }
     bool reloading() const { return reloadTicks_ > 0; }
     bool firing() const { return cooldown_ > 0; }   // refire time running ([0x93334c] > 0)
     // Gun model kick: metres back, left, up in the weapon's own axes.
@@ -257,7 +378,11 @@ public:
     // The binoculars leave the scope flag as it is (its only writer is the
     // toggle, 0x44b498 / 0x447b30).
     void setBinoculars(bool on) { binoculars_ = on; }
-    float flash() const { return flashTimer_; }
+    // The flash meshes to show (bit 0 mesh 1, bit 1 mesh 2): the object
+    // flags a shot sets (DF.EXE 0x44d635 +0x6d 0x08/0x10, DF2.EXE 0x44a9be
+    // +0x64 0x800/0x1000 from ammo +0x30 bits 0x2/0x4), cleared after the
+    // frame is drawn (0x4045f9 / 0x45c520): here for one tick.
+    int flash() const { return flashTimer_ > 0 ? flashMeshes_ : 0; }
     const std::vector<Projectile>& projectiles() const { return bullets_; }
     // Rounds not fired by the player's weapon (shrapnel); they hit and do
     // damage like any other.
@@ -265,10 +390,36 @@ public:
     // The first-person model's points (LOD 0 vertices in file order) by
     // graphic name, for the muzzle (player table +0x90); null if unknown.
     std::function<const std::vector<std::array<float, 3>>*(const std::string&)> modelPoints;
+    // Delta Force 2's shared generator (GOG Df2.exe 0x41ea10 seed, 0x41ea20
+    // the next 16 bits; the game's shrapRand), for the shotgun's pellets.
+    std::function<void(uint32_t)> df2Seed;
+    std::function<uint32_t()> df2Rand;
     // Delta Force 2's rule for shots from under the water (set by the game).
     bool underwaterRule = false;
     int playerArmourClass = 0;   // DF2: the player's second hp value (Kevlar's n)
     float waterLevel = 0;
+    // Delta Force tracers (GOG Df.exe 0x465273): night mission (header
+    // +0x7A & 0x10, [0x8cf982]), the Tracers option off (attributes 0x1000,
+    // [0x67f548]) and the player's side (the round colour by side, 0x462f20).
+    bool night = false, tracersOff = false;
+    int playerSide = 1;
+    // Delta Force's attributes 0x4000 ([0x67f549] & 0x40, GOG Df.exe
+    // 0x464c50): a round from a shooter of the target person's side (not
+    // the target itself) does nothing to that person.
+    bool sameSideSafe = false;
+    // Delta Force: living AI people hit by a round since the last call,
+    // whatever the damage (GOG Df.exe 0x464c50: ai +0x9c = 2 and the team's
+    // alert, 0x44a3e0, before the armour test 0x464c00).
+    std::vector<int> takeRoundHits() { std::vector<int> out; out.swap(roundHits_); return out; }
+    Tracers& tracers() { return tracers_; }
+    // Delta Force 2's tracers (GOG Df2.exe 0x452290 ring, 0x452610 draw):
+    // one segment per pass of a round, fading over 0x1e ticks. `tracersOff`
+    // is df2.cfg attributes & 0x80 (Options3 TRACERS OFF, set by the game).
+    struct Tracer { Vec3 a{0, 0, 0}, b{0, 0, 0}; int life = 0; uint32_t colour = 0; };
+    // Ages the records to the game tick `tick` (each drawn frame); then
+    // those with life >> 2 >= 1 are drawn, alpha ((life >> 2) << 3) / 255.
+    void ageTracers(uint32_t tick);
+    const std::vector<Tracer>& df2Tracers() const { return df2Tracers_; }
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
     // Knife strikes since the last call: the point 0.5 m along the view
     // from the body origin (0x42ca8c), for blast kind 2.
@@ -280,12 +431,19 @@ public:
     std::vector<WeaponEvent> takeEvents() { std::vector<WeaponEvent> out; out.swap(events_); return out; }
     std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
+    // A player round fired since the last call that marks him as having
+    // fired: Delta Force's gun without flag 0x80 (GOG Df.exe 0x463119),
+    // Delta Force 2's unsuppressed ammo (GOG Df2.exe 0x451ae0).
+    bool takeFireMark() { const bool m = fireMark_; fireMark_ = false; return m; }
 
 private:
     void tick(bool triggerDown, Player& player, std::vector<std::string>& messages);
-    void fire(Player& player);
+    bool fire(Player& player);   // false: DF2's under-water rule fired nothing
     void startReload();
     void moveProjectiles(float dt, World& world);
+    void tracerColour(Projectile& b, const World& world);
+    void recordTracer(const Projectile& b, Vec3 from, Vec3 to, Vec3 tickStart);
+    void clearTracers();
     int& chamberedRef() { return chambered_[size_t(mode().gun)]; }
     int& magRef() { return mag_[size_t(mode().gun)]; }
     int& sparesRef() { return spares_[size_t(mode().gun)]; }
@@ -293,12 +451,26 @@ private:
     std::vector<ModeDef> modes_;
     std::vector<GunDef> guns_;
     bool df2_ = false;
+    bool df2Gog_ = false;   // DF2's tables from GOG's Df2.exe (its refill, 0x44dfc0)
+    Df2Loadout df2Lo_;
+    void refillDf2Gog();
     int gear_ = 0, zero_ = 0;
+    std::vector<std::array<int, 3>> typeModes_;   // DF2 weapon type -> modes (+0x84..+0x8c)
+    void df2Slots(const Df2Loadout& lo);
+    mutable int df2Mag_ = 0;   // GOG Df2.exe [0x79a698]
     struct DragPoint { int64_t x, y, slope; };
     std::vector<DragPoint> dragCurve_;
     int64_t windX_ = 0, windZ_ = 0;   // 16.16 m a tick
     bool fromExe_ = false;
-    std::array<int, kSlots + 1> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars
+    std::array<int, kSlots + 3> slots_{};   // mode per slot, 0 = empty; [10] DF2's binoculars, [11]/[12] GOG's emplaced guns
+    // GOG Df2.exe: the player's manned gun (+0x8c; World::playerMount, -1
+    // none) and whether its item is 4080 (+0x20 == 0xff0), as of this update.
+    int mount_ = -1;
+    bool mountGl_ = false;
+    int camera_ = -1;
+    float camYaw_ = 0, camPitch_ = 0;
+    bool camView_ = false;
+    void mountTick();
     int prevSlot_ = 3;   // DF2 [0x76553c]: the slot the binoculars came from
     int current_ = 3;
     int kit_ = 1;
@@ -309,16 +481,26 @@ private:
     uint64_t debugTick_ = 0;   // ticks run (OPENDF_DEBUGWEAPON)
     int zoomLevel_ = 0;
     float flashTimer_ = 0;
+    int flashMeshes_ = 0;
     float kick_[3] = {0, 0, 0};
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
+    bool scopeBlocked_ = false;   // DF2: the player's +0x64 & 0x422004 (0x455790)
     std::vector<Projectile> bullets_;
+    Tracers tracers_;
+    uint32_t df1TracerColour(const Projectile& b, const World& world) const;
+    void tracer(const Projectile& b, Vec3 to);
+    std::vector<Tracer> df2Tracers_ = std::vector<Tracer>(2048);
+    int tracerHead_ = 0;
+    uint32_t tracerClock_ = 0;
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
     std::vector<SoundEvent> sounds_;
     std::vector<WeaponEvent> events_;
     std::vector<PlayerHit> playerHits_;
+    std::vector<int> roundHits_;
     bool followUp_ = false;
+    bool fireMark_ = false;
     int projectileIds_ = 0;
     Vec3 listener_{0, 0, 0};    // firing the second or third round of a burst
     Vec3 soundPos_{0, 0, 0};   // the player's position for weapon handling sounds
@@ -327,8 +509,12 @@ private:
     // tick), damage max(1, E / 25.0).
     int df2Damage(const Projectile& b) const;
     // Delta Force 2 (0x44c2f0): one tick of drag toward the wind.
-    void df2Drag(Projectile& b, float water) const;
+    // `speed` is the round's speed (16.16 per tick) at the start of the tick.
+    void df2Drag(Projectile& b, float water, int64_t speed) const;
+    static int64_t df2Speed(const Projectile& b);
     std::mt19937 rng_{1998};
+    std::function<uint32_t()> sharedRand_;
+    bool infiniteAmmo_ = false;   // GOG Df.exe [0x67dbc9] & 1
 };
 
 } // namespace df

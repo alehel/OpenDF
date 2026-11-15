@@ -5,6 +5,7 @@
 #include "../formats/Pcx.h"
 #include "../render/Gl.h"
 #include "../render/Hud.h"
+#include "../render/Window.h"
 
 #include <SDL.h>
 
@@ -69,6 +70,7 @@ bool LauncherSettings::load(const fs::path& file) {
     if (!in) return false;
     games.clear();
     last.clear();
+    fullscreen = false;
     std::string line, section;
     while (std::getline(in, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
@@ -79,6 +81,7 @@ bool LauncherSettings::load(const fs::path& file) {
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
         if (section == "[games]" && key == "game" && !value.empty()) games.emplace_back(fs::u8path(value));
         else if (section == "[launcher]" && key == "last") last = fs::u8path(value);
+        else if (section == "[display]" && key == "fullscreen") fullscreen = std::atoi(value.c_str()) != 0;
     }
     return true;
 }
@@ -91,6 +94,7 @@ bool LauncherSettings::save(const fs::path& file) const {
     out << "; OpenDF settings (written by the launcher)\n[games]\n";
     for (const auto& g : games) out << "game=" << g.u8string() << "\n";
     out << "\n[launcher]\nlast=" << last.u8string() << "\n";
+    out << "\n[display]\nfullscreen=" << (fullscreen ? 1 : 0) << "\n";
     return bool(out);
 }
 
@@ -158,10 +162,17 @@ SheetFont df1Font(Hud& hud, Vfs& vfs, const std::string& name) {
         for (int x = 0; x < W && full; ++x) full = px(x, y) == 1;
         if (full) period = y;
     }
+    // Blended as DF.EXE draws its menu fonts (0x44263c, 0x442aa6; see
+    // Frontend::font): alpha = (palette red of the index >> 1) / 128 over
+    // the anti-aliased grey ramp; indexes 0 and the width markers 2, 3 are
+    // not drawn (0x442231, 0x442249).
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v == 0 || v == 2 || v == 3) continue;
+        const int a = img.palette[v].r >> 1;
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = uint8_t((a * 255 + 64) / 128);
     }
     for (int band = 0; period > 0 && band < 16 && period * (band + 1) <= H; ++band) {
         const int y0 = band == 0 ? 0 : period * band + 1, y1 = period * (band + 1);
@@ -297,6 +308,8 @@ void Launcher::relabel() {
 void Launcher::save() {
     settings_.games.clear();
     for (const auto& e : entries_) settings_.games.push_back(e.dir);
+    // A fullscreen toggle wrote the file meanwhile (main's saver): keep it.
+    if (LauncherSettings cur; cur.load(settingsFile_)) settings_.fullscreen = cur.fullscreen;
     if (!settings_.save(settingsFile_))
         std::fprintf(stderr, "Could not write %s\n", settingsFile_.string().c_str());
 }
@@ -388,7 +401,7 @@ bool Launcher::openWindow() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    const Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (o_.screenshot.empty() ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_HIDDEN);
+    const Uint32 flags = windowFlags(SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | (o_.screenshot.empty() ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_HIDDEN));
     win_ = SDL_CreateWindow("OpenDF", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, o_.width, o_.height, flags);
     if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return false; }
     ctx_ = SDL_GL_CreateContext(win_);
@@ -444,6 +457,14 @@ bool Launcher::tryAdd(std::string path) {
         if ((n == "DFSETUP" || n == "DF2SETUP" || n == "DFLSETUP" || n == "TFDSETUP") && identifyGame(dir.parent_path()) != GameKind::Unknown)
             dir = dir.parent_path();
     }
+    // A GOG installer unpacked with innoextract puts the game in `app`
+    // (Df.exe or Df2.exe next to the PFFs): take that folder.
+    if (identifyGame(dir) == GameKind::Unknown)
+        for (const auto& de : fs::directory_iterator(dir, ec))
+            if (de.is_directory(ec) && upper(de.path().filename().string()) == "APP" && identifyGame(de.path()) != GameKind::Unknown) {
+                dir = de.path();
+                break;
+            }
     for (size_t i = 0; i < entries_.size(); ++i)
         if (fs::equivalent(entries_[i].dir, dir, ec)) {
             sel_ = int(i);
@@ -726,6 +747,7 @@ bool Launcher::run(fs::path* chosen) {
         };
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            if (fullscreenEvent(win_, ev)) continue;
             if (ev.type == SDL_QUIT) quit_ = true;
             else if (ev.type == SDL_DROPFILE) {
                 std::string p = ev.drop.file;

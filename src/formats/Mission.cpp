@@ -1,6 +1,9 @@
 #include "Mission.h"
 
+#include "Rtxt.h"
+
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -48,7 +51,11 @@ bool ItemDefs::parse(const std::string& text) {
         }
         if (!open) continue;
         if (line == "end") {
-            if (cur.id) items_[cur.id] = cur;
+            if (cur.id) {
+                cur.displayName = cur.name;
+                if (items_.empty()) firstId_ = cur.id;   // file order: the 'null' marker
+                items_[cur.id] = cur;
+            }
             open = false;
             continue;
         }
@@ -62,7 +69,10 @@ bool ItemDefs::parse(const std::string& text) {
                                                                         {"noak", 0x80},
                                                                         // Delta Force 2 (DF2.EXE 0x41e020, strings 0x4ab5b8)
                                                                         {"notool", 0x100}, {"snap", 0x200}, {"pfoil", 0x400},
-                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000}};
+                                                                        {"train", 0x800}, {"s&d", 0x1000}, {"noctool", 0x2000},
+                                                                        // GOG Df2.exe only (0x422cca / 0x422cfa): 4Team,
+                                                                        // and EWeap, the emplaced guns (0x4145a0)
+                                                                        {"4team", 0x4000}, {"eweap", 0x8000}};
                 for (const auto& b : bits)
                     if (a == b.first) cur.attrib |= b.second;
             }
@@ -92,6 +102,14 @@ bool ItemDefs::parse(const std::string& text) {
     return !items_.empty();
 }
 
+void ItemDefs::setDisplayNames(const TextTable& gameText) {
+    for (auto& [id, d] : items_) {
+        char key[32];
+        std::snprintf(key, sizeof key, "STR_ITM%04i", id - 100000);
+        if (const std::string* t = gameText.find("Item Names", key)) d.displayName = *t;
+    }
+}
+
 const ItemDef* ItemDefs::byName(const std::string& name) const {
     for (const auto& [id, d] : items_)
         if (d.name == name) return &d;
@@ -103,9 +121,14 @@ const ItemDef* ItemDefs::byId(int id) const {
     return it == items_.end() ? nullptr : &it->second;
 }
 
+// Delta Force (GOG 0x4828c0, called by the BMS loader 0x449710 with the raw
+// record type): the ITEMS.DEF parser stores id - 100000 (0x481d18), the lookup
+// scans for the type and returns item index 0 when nothing matches. So the one
+// mistyped `id 3034` ("inhut2", stored as -96966) is never found: BMS type 3034
+// (two objects in C04M05) becomes the first ITEMS.DEF item, the 'null' marker.
 const ItemDef* ItemDefs::byMissionType(uint32_t type) const {
     if (const ItemDef* d = byId(100000 + int(type))) return d;
-    return byId(int(type));
+    return missIsFirst_ ? byId(firstId_) : nullptr;
 }
 
 bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error) {
@@ -162,6 +185,7 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         m.terrain = cstr(d, 0x54, 0x10);
         m.dialogue = cstr(d, 0x64, 0x10);
         for (int i = 0; i < 8; ++i) m.routeNameIds[i] = int(u32(d, 0xAC + 4 * i));
+        for (int i = 0; i < 4; ++i) m.mapKeyIds[i] = int(u32(d, 0x88 + 4 * i));
         m.lightFlags = d.size() > 0x7A ? d[0x7A] : 0;
     }
     m.colorVariant = int(u32(d, 0x74) & 3);
@@ -186,7 +210,12 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
             ob.x = fixed16(d, o + 0x10);
             ob.y = fixed16(d, o + 0x14);
             ob.z = fixed16(d, o + 0x18);
-            ob.heading = float(u32(d, o + 0x34) % 360);
+            // The yaw is the signed 16-bit degrees at +0x34 (GOG Df2.exe
+            // 0x403790 and GOG Df.exe 0x449710 turn (90 - yaw) into a binary
+            // angle); the high word +0x36 is the pitch.
+            const int yaw = int16_t(u32(d, o + 0x34) & 0xFFFF);
+            ob.heading = float(((yaw % 360) + 360) % 360);
+            ob.pitch = float(int16_t(u32(d, o + 0x34) >> 16));
             ob.group = g;
             ob.indexInGroup = int(i);
             for (int k = 0; k < 24; ++k) ob.raw[k] = int32_t(u32(d, o + 4 * k));
@@ -197,6 +226,10 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
     for (int i = 0; i < 128; ++i, o += 0x88) {
         MissionPath p;
         p.flags = u32(d, o);
+        // A one-point path always ends there: flag 1 (stop at the end) is set
+        // at load (GOG Df.exe 0x449c70 over 0x78f280, GOG Df2.exe the same
+        // pass over 0xd7d700).
+        if (u32(d, o + 4) == 1) p.flags |= 1;
         const uint32_t n = std::min<uint32_t>(u32(d, o + 4), 32);
         for (uint32_t k = 0; k < n; ++k) p.points.push_back(int(u32(d, o + 8 + 4 * k)));
         m.paths.push_back(std::move(p));
@@ -228,6 +261,29 @@ bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error)
         return false;
     }
     return true;
+}
+
+void dropMultiplayerRecords(Mission& m, const ItemDefs& items) {
+    // Single player: no network game (GOG Df2.exe [0x67cd2c] = 0), and
+    // mp_numteams [0x67cd68] is the config default 2 (0x43bae0; 0x43c280
+    // copies it at every load).
+    constexpr int kNumTeams = 2;
+    const bool df2 = m.version >= 0x0F;
+    for (auto& ob : m.objects) {
+        bool drop = (ob.flags & 0x10) || (ob.flags & 0x80);
+        if (!drop && df2) {
+            const ItemDef* item = items.byMissionType(ob.type);
+            const int side = int8_t((uint32_t(ob.raw[16]) >> 24) & 0xFF);
+            if (item && (item->attrib & 0x4000)) drop = true;   // '4Team': network games of type 2/4/8 with four teams
+            else if (kNumTeams != 4 && (side == 3 || side == 4)) drop = true;
+        }
+        if (!drop) continue;
+        const int group = ob.group, index = ob.indexInGroup;
+        ob = MissionObject{};
+        ob.group = group;
+        ob.indexInGroup = index;
+        ob.omitted = true;
+    }
 }
 
 } // namespace df

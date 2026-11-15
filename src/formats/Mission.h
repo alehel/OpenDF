@@ -12,7 +12,10 @@ namespace df {
 
 struct ItemDef {
     int id = 0;
-    std::string name;
+    std::string name;          // ITEMS.DEF's name (what lookups by name use)
+    // The name the game shows: Delta Force replaces it from DFGAME.BIN
+    // (setDisplayNames), otherwise ITEMS.DEF's.
+    std::string displayName;
     std::string type;      // decoration, building, vehicle, person, object, marker, effect
     std::string graphic;   // .3DI name, empty for markers
     std::string husk;      // destroyed graphic
@@ -41,14 +44,23 @@ class ItemDefs {
 public:
     bool parse(const std::string& text);
     // BMS records store the item id minus 100000. ITEMS.DEF has one item
-    // whose id was typed without the leading 10 (3034), so both are tried.
+    // whose id was typed without the leading 10 (3034); the game never finds
+    // it. A type with no item gives nullptr, or with setMissIsFirst(true)
+    // (Delta Force, GOG 0x4828c0) the first item in the file ('null').
     const ItemDef* byMissionType(uint32_t type) const;
+    void setMissIsFirst(bool on) { missIsFirst_ = on; }
     const ItemDef* byId(int id) const;
     const ItemDef* byName(const std::string& name) const;
+    // Delta Force (GOG Df.exe 0x482960, called by 0x401490 after the
+    // ITEMS.DEF load 0x4827a0): each item with a DFGAME.BIN "Item Names"
+    // entry STR_ITM%04i (id - 100000) is shown under that name.
+    void setDisplayNames(const class TextTable& gameText);
     size_t size() const { return items_.size(); }
 
 private:
     std::map<int, ItemDef> items_;
+    int firstId_ = 0;
+    bool missIsFirst_ = false;
 };
 
 constexpr int kItemPlayerStart = 106001;
@@ -61,9 +73,15 @@ struct MissionObject {
     float x = 0, y = 0;        // map metres; x east, y north (terrain row = -y)
     float z = 0;               // height above the ground, metres
     float heading = 0;         // degrees clockwise from north; model +X faces it
-    int group = 0;             // which of the file's four object groups (0..3)
+    // The signed 16-bit degrees at +0x36 (GOG Df2.exe 0x403790 / GOG Df.exe
+    // 0x449710 -> object +0x34): the pitch, model +X up positive.
+    float pitch = 0;
+    int group = 0;            // which of the file's four object groups (0..3)
     int indexInGroup = 0;      // paths and events refer to objects by this
     int32_t raw[24] = {};      // the whole 96-byte record, for fields not yet decoded
+    // Dropped by the single-player record filter (dropMultiplayerRecords):
+    // the slot stays, zeroed, so paths and events keep their indices.
+    bool omitted = false;
 };
 
 // A path: an ordered list of objects of group 2 (waypoint markers). The
@@ -93,6 +111,9 @@ struct Mission {
     // The player's route names: header +0xAC, one number per point of the
     // route path; text "WPN%03i" in the campaign's "Waypoint Names" section.
     int routeNameIds[8] = {};
+    // Delta Force: the map key lines, header +0x88..+0x94 ([0x8cf990..],
+    // GOG Df.exe 0x48dd80): "MKEY%03i" in the campaign's "Map Keys" section.
+    int mapKeyIds[4] = {};
     // Header +0x74: which of each model material's four colour/texture
     // variants this mission uses (DF.EXE 0x43f964).
     int colorVariant = 0;
@@ -122,5 +143,14 @@ struct Mission {
 };
 
 bool parseMission(const std::vector<uint8_t>& file, Mission& out, std::string* error);
+
+// The BMS loader's record filter, single player (GOG Df2.exe 0x403790, GOG
+// Df.exe 0x449710): a record that fails is left as an all-zero slot (type 0,
+// no item, team 0), so it is never drawn, counted, used as a start, area or
+// teleport marker, or given AI; the group sizes and indices stay. Single
+// player drops flags 0x10 and 0x80 (network games only) and keeps 0x20 and
+// 0x40. Delta Force 2 (version 0x0F) also drops '4Team' items (attrib
+// 0x4000) and, with mp_numteams != 4, records of side 3 or 4 (byte +0x43).
+void dropMultiplayerRecords(Mission& mission, const ItemDefs& items);
 
 } // namespace df

@@ -20,8 +20,10 @@ enum class Stance { Stand, Crouch, Prone };
 struct PlayerInput {
     float forward = 0, strafe = 0;   // -1..1
     bool walk = false, jump = false;
+    bool jumpPress = false;          // DF1: the move_jump press this frame (GOG Df.exe [0xc23a00] & 0x400, 0x477d40)
     bool shooting = false;           // the weapon's refire time is running (DF.EXE [0x93334c] > 0)
     bool up = false, down = false;   // fly mode only
+    bool dead = false;               // the player is dead (+0x64 & 4): DF2's 0x4145a0 lets go of a gun
 };
 
 class Player {
@@ -34,6 +36,15 @@ public:
     bool pfoil = true;               // the player item's attribute PFoil (0x400): the chute glides (DF2.EXE 0x440651)
     const AnimDefs* moves = nullptr; // the soldier's .ANM table
     bool oneHanded = false;          // pistol: the *_1HW moves
+    // Delta Force 2: the current mode's raw flags +0x3C (0x18 _2HW moves,
+    // 4 _1HW, neither the plain WalkingN / RunningN; 0x10 SLW, 8 2HW,
+    // 0x200 BIN poses) and the scope in (+0x74 & 0x80): GOG Df2.exe 0x445980.
+    int df2ModeFlags = 0;
+    bool scoped = false;
+    // Delta Force: the current mode's raw flags +0xA4 (GOG Df.exe 0x488200:
+    // 8 SLW, 4 2HW, 0x40 KNIFE poses, 0xc the _2HW walking / running moves,
+    // 1 Jumping_2HW).
+    int df1ModeFlags = 0;
     // Eye height above the feet per stance (stand, crouch, prone) and hand
     // (two-, one-handed): the pose's origin height (.CHR contact points) plus
     // DF.EXE's eye offset (0x449913). Filled from the game data; defaults
@@ -43,11 +54,21 @@ public:
     // and Swimming poses (PLAYER01.CHR animations 134 / 133).
     float floatOrigin = 0.1489f, swimOrigin = 0.3184f;
 
-    void update(float dt, const PlayerInput& in, const World& world);
+    // `world` is changed only by GOG Df2.exe's emplaced-gun links (0x4145a0).
+    void update(float dt, const PlayerInput& in, World& world);
+    // GOG Df2.exe: manning an emplaced gun (+0x8c): the eye is the gun's
+    // (0x416e90 instead of the normal view, 0x44dd50).
+    // Delta Force: the Crouch / Prone / Stand commands are latched (GOG
+    // Df.exe 0x477d40: 0xa1 [0xc23a04], 0xa2 [0xc23a08], 0xa4 [0xc23a0c])
+    // and taken in update's on-ground branch (0x488200). Delta Force 2:
+    // [0x79a678] / [0x79a67c] / [0x79a680] (GOG Df2.exe 0x41f150), taken on
+    // the next odd tick (0x447120).
+    void requestStance(Stance s) { (s == Stance::Crouch ? reqCrouch_ : s == Stance::Prone ? reqProne_ : reqStand_) = true; }
+    bool mounted() const { return mounted_; }
     float landOrigin() const;
     // Effect slots spawned since the last call (water entry splash), with
     // their position.
-    struct Spawn { int slot; Vec3 pos; };
+    struct Spawn { int slot; Vec3 pos; int sound = 0; };   // sound: a 3-D sound at pos (0 none)
     std::vector<Spawn> takeSpawns() { std::vector<Spawn> out; out.swap(spawns_); return out; }
     bool inWater() const { return inWater_; }
     bool swimming() const { return inWater_ && swimMove_; }
@@ -57,11 +78,13 @@ public:
     // Position in mission coordinates: metres, x east, y north.
     double missionX() const { return feet.x + double(wrapX_) * wrapExtent_; }
     double missionY() const { return -(feet.z + double(wrapZ_) * wrapExtent_); }
-    Vec3 eye() const { return inWater_ ? Vec3{feet.x, originY_ + eyeOffset_, feet.z} : Vec3{feet.x, feet.y + eyeHeight_, feet.z}; }
+    Vec3 eye() const { return mounted_ ? mountEye_ : inWater_ ? Vec3{feet.x, originY_ + eyeOffset_, feet.z} : Vec3{feet.x, feet.y + eyeHeight_, feet.z}; }
     Vec3 forward() const;
     // Body origin (the pelvis; DF.EXE's object z): what blasts measure to.
     Vec3 origin() const { return inWater_ ? Vec3{feet.x, originY_, feet.z} : Vec3{feet.x, feet.y + landOrigin(), feet.z}; }
     bool moving() const { return moving_; }
+    // Off the ground (DF2 +0x64 & 0x2000).
+    bool airborne() const { return !onGround_; }
     // The move being played (an .ANM name), for the body's animation.
     const std::string& move() const { return move_; }
     float speed() const { return speed_; }
@@ -80,7 +103,10 @@ private:
     void updateInWater(float dt, const PlayerInput& in, const World& world, float water);
     // Delta Force 2's person move for the player, one 60 Hz tick (DF2.EXE
     // 0x440cd0 jump key, 0x43f690 move chooser, 0x440400 physics).
-    void tickDf2(const PlayerInput& in, const World& world);
+    void tickDf2(const PlayerInput& in, World& world);
+    void clampToMount(const World& world);
+    bool mounted_ = false;
+    Vec3 mountEye_{0, 0, 0};
     void enterWater(float z);
     void leaveWater(float z);
     float df2Clock_ = 0;
@@ -88,6 +114,7 @@ private:
     float vz_ = 0;                   // DF2: vertical speed, metres a tick (+0x44)
     Vec3 step_{0, 0, 0};             // DF2: the stored horizontal step of the move (0x9e2260)
     float stepDz_ = 0;               // and its vertical part (swimming)
+    Vec3 tickStep_{0, 0, 0};         // DF2: this odd tick's step (the slide replaces the move's, 0x446b35)
     float poseOrigin_ = 0;           // DF2: the chosen move's origin height above the feet
     bool ladder_ = false, armory_ = false;
     std::vector<int> neighbours_;    // DF2 +0xFC: the objects that can push (0x43f2b0)
@@ -103,6 +130,9 @@ private:
     float originY_ = 0, eyeOffset_ = 0;
     std::vector<Spawn> spawns_;
     bool sliding_ = false;
+    bool uphill_ = false;            // DF1 +0x6e & 8 (flag 0x80000): the walking moves (0x487370 -> 0x488200)
+    bool reqCrouch_ = false, reqProne_ = false, reqStand_ = false;
+    bool jumpArmed_ = true;          // DF1 GOG [0xc23a10]: set while the jump key is up (0x4795a0)
     Vec3 airDelta_{0, 0, 0};         // horizontal speed kept from take-off (m/s)
     float vy_ = 0;
     float landingSpeed_ = 0;

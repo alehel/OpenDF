@@ -193,6 +193,72 @@ int Audio::play(const SoundClip* clip, float left, float right, float pitch, int
     v.gL = dfGain(left);
     v.gR = dfGain(right);
     v.stepCur = v.stepTarget = dfStep(clip, pitch);   // 0x4a009f / 0x4a00a2: +8 = +0x34, +0x38 = 0
+    if (dfGame_ == 1) {
+        // GOG Df.exe 16 fixed voices (active 0x4a16d2, pending 0x4a1a12,
+        // 0x34 each). A one-shot (0x4b4f5e) takes the lowest slot that is
+        // not reserved (+0x31), not playing and not pending; else the
+        // lowest neither reserved nor pending whose start volume (+0x1c) is
+        // below its own (strictly); else none. Slots 10-15 are reserved for
+        // the loops during a mission only (0x43e4a0 / 0x43e6d0). OpenDF's
+        // loops take the lowest free one of 10-15.
+        Voice* at[kVoices] = {};
+        for (auto& o : voices_)
+            if (o.slot >= 0 && o.slot < kVoices) at[o.slot] = &o;
+        const int from = group ? kOneShotVoices : 0;
+        const int to = (!group && loopsReserved_) ? kOneShotVoices : kVoices;
+        for (int i = from; i < to; ++i)
+            if (!at[i]) {
+                v.slot = i;
+                voices_.push_back(v);
+                return v.id;
+            }
+        if (group) return 0;
+        for (int i = from; i < to; ++i)
+            if (at[i]->started && at[i]->volume < volume) {
+                v.slot = i;
+                *at[i] = v;
+                return v.id;
+            }
+        return 0;
+    }
+    if (dfGame_ == 2) {
+        // GOG Df2.exe 0x4aafc0: 16 slots in index order. A voice not yet
+        // mixed is the slot's pending record (0x496f72), promoted at the
+        // next mix (0x49a7fb); replacing the playing voice here is the same,
+        // as nothing is mixed in between.
+        auto in = [&](int s) -> Voice* {
+            for (auto& o : voices_)
+                if (o.slot == s) return &o;
+            return nullptr;
+        };
+        if (group) {
+            for (int s = 10; s < 16; ++s)
+                if (!in(s)) {
+                    if (loop) {
+                        // A loop (0x4ab183) follows on as the slot's template
+                        // with flag +0x30; its first copy into the voice
+                        // (0x4996d9..0x4996fb) steps the seed (rol 11 + seed
+                        // + 1) and starts it seed & 0x3fc00 (0..255 samples)
+                        // past sample 1, where every later pass restarts
+                        // (dfVoices).
+                        loopSeed_ = (loopSeed_ << 11 | loopSeed_ >> 21) + loopSeed_ + 1;
+                        v.pos = (uint64_t(1) << 32) + (uint64_t(loopSeed_ & 0x3fc00) << 22);
+                    }
+                    v.slot = s;
+                    voices_.push_back(v);
+                    return v.id;
+                }
+            return 0;
+        }
+        for (int s = 0; s < 16; ++s)
+            if (!reserved_[size_t(s)] && !in(s)) { v.slot = s; voices_.push_back(v); return v.id; }
+        for (int s = 0; s < 16; ++s) {
+            if (reserved_[size_t(s)]) continue;
+            Voice* o = in(s);
+            if (o && o->started && o->volume < volume) { v.slot = s; *o = v; return v.id; }
+        }
+        return 0;
+    }
     const int limit = group ? kLoopVoices : kOneShotVoices;
     int busy = 0;
     for (const auto& o : voices_) busy += o.group == group;
@@ -213,7 +279,9 @@ void Audio::setGains(int voice, float left, float right) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& v : voices_)
         if (v.id == voice) {
-            if (dfMixer_ && dfGame_ == 2 && !v.started) continue;   // 0x49fbf4: a pending voice is left as it is
+            // A pending voice is left as it is (GOG Df.exe 0x4b4cc4: an id
+            // found only in the pending table returns at once; Df2.exe 0x49fbf4).
+            if (dfMixer_ && !v.started) continue;
             v.left = left;
             v.right = right;
             int nL = dfGain(left), nR = dfGain(right);
@@ -240,7 +308,7 @@ void Audio::setPitch(int voice, float pitch) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& v : voices_)
         if (v.id == voice) {
-            if (dfMixer_ && dfGame_ == 2 && !v.started) continue;   // 0x49fbf4
+            if (dfMixer_ && !v.started) continue;   // GOG Df.exe 0x4b4cc4, Df2.exe 0x49fbf4
             v.step = uint64_t(double(v.clip->rate) * pitch / kRate * 4294967296.0);
             v.stepTarget = dfStep(v.clip, pitch);
             if (dfGame_ == 2) v.updated = true;   // DF2: the target +0x34 only (0x49fcb7); the mixer slides to it
@@ -263,6 +331,7 @@ bool Audio::playing(int voice) const {
 void Audio::stopAll() {
     std::lock_guard<std::mutex> lock(mutex_);
     voices_.clear();
+    reserved_.fill(false);
 }
 
 namespace {
@@ -289,7 +358,10 @@ void Audio::dfVoices(int32_t* acc, int from, int frames) {
         for (int i = from; i < from + frames; ++i) {
             if (v.pos >= end) {
                 if (!v.loop) break;
-                v.pos %= end;
+                // DF2: the template's position, sample 1, the fraction dropped (0x4996b5).
+                if (dfGame_ == 2) v.pos = uint64_t(1) << 32;
+                else v.pos %= end;
+                if (v.pos >= end) break;   // a one-sample loop
             }
             const int sv = smp[size_t(v.pos >> 32)] >> 8;   // the 8-bit sample, byte − 0x80
             acc[size_t(i) * 2] += dfContrib(v.gL, sv);

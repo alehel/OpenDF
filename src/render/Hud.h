@@ -36,14 +36,21 @@ public:
     bool init(Vfs& vfs, std::string* error);
     // Switches the HUD font (F_SML640.PCX, F_SML800.PCX, ...).
     bool loadFont(Vfs& vfs, const std::string& name, std::string* error);
+    // Delta Force 2: the HUD font (f_sml%i) cut by the band scanner (GOG
+    // Df2.exe 0x41ba90 -> 0x41b9a0 / 0x41b8a0) and drawn by 0x41bb90 from
+    // then on by text() / textWidth(); loadFont switches back.
+    bool loadSheetHudFont(Vfs& vfs, const std::string& name, std::string* error);
     // Loads a game PCX as a texture; pure black becomes transparent.
     // `index0Transparent`: palette index 0 is the colour key (menu icon sheets).
     HudImage loadImage(Vfs& vfs, const std::string& name, bool blackTransparent = true, bool index0Transparent = false);
     // Delta Force 2's HUD icons (weap/pos/itm/rad%i.pcx): the palette index
     // through DF2's amber ramp, for drawing with blend 5 (additive).
     HudImage loadAmberImage(Vfs& vfs, const std::string& name);
-    SheetFont loadSheetFont(Vfs& vfs, const std::string& name);
-    // Opaque glyphs (DF2.EXE 0x4198e0), y the top of the cell, scaled; returns
+    // blend: the font flag 1 (GOG Df2.exe 0x41ba90 flags 3 -> 0x41bb30, the
+    // f_LG fonts of 0x465a20): each ink pixel is blended into the screen with
+    // weight (palette blue >> 1) / 128 (0x41bb90), so the glyph edges fade.
+    SheetFont loadSheetFont(Vfs& vfs, const std::string& name, bool blend = false);
+    // Opaque glyphs (DF2.EXE 0x4198e0), or blended ones for a blend font, y the top of the cell, scaled; returns
     // the width; advance = glyph width + 1.
     float sheetText(const SheetFont& f, float x, float y, const std::string& s, Color c, float scale = 1);
     static float sheetWidth(const SheetFont& f, const std::string& s, float scale = 1);
@@ -63,6 +70,9 @@ public:
 
     // Text at integer `scale`; returns the advance in pixels.
     float text(float x, float y, const std::string& s, Color c, float scale = 1);
+    // Delta Force 2 draws its text without the dark shadow (GOG Df2.exe
+    // 0x41bb90 writes each glyph pixel once, in the colour).
+    void setTextShadow(bool on) { textShadow_ = on; }
     float textWidth(const std::string& s, float scale = 1) const;
     float lineHeight(float scale = 1) const { return 13 * scale; }
 
@@ -106,6 +116,9 @@ private:
     std::vector<Vertex> verts_;
     std::vector<GLuint> images_;
     float glyphX_[256] = {}, glyphW_[256] = {};   // source column and width per character
+    SheetFont sheetHud_;          // loadSheetHudFont's font
+    bool useSheetHud_ = false;    // text() draws sheetHud_
+    bool textShadow_ = true;
 };
 
 } // namespace df

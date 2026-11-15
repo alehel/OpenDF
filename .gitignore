@@ -4,3 +4,5 @@ runs/
 # Game data (your own copies) lives here and is never committed.
 games/*
 !games/README.md
+# Ghidra decompiles of the games' EXEs (local reference only, never committed).
+decomp/
