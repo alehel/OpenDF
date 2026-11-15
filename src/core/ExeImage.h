@@ -75,4 +75,5 @@ std::filesystem::path findGameExe(const std::filesystem::path& gameDir);
 // read only for DF2's own tables, never by the DF.EXE readers.
 std::filesystem::path findDf2Exe(const std::filesystem::path& gameDir);
 
+
 } // namespace df

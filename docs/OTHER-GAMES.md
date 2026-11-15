@@ -279,7 +279,8 @@ First differences from DF1:
     put soldiers on the cars; `OPENDF_TEAMSPEED=10:40` starts D06M05's
     train at once; `OPENDF_DEBUGRIDE=1` lists the riders.
   - **sound**: DF2's tables read from the user's DF2.EXE (sound names
-    0x4B85A8, 469 records, ids below 0x400; voice sets 0x4B70FC, 22 sets: the
+    0x4B85A8, GOG 0x4CD7C8, 469 records, ids below 0x400; voice sets 0x4B70FC,
+    GOG 0x4CBCC0, 22 sets: the
     new 16-21 are ids 700-772), built-in copies otherwise; no terrain
     occlusion (0x45E0A0 returns 1.0); the layer flag 0x80 shuffle (a random
     start, then in turn back round to it, 0x470560); the speed-of-sound queue
@@ -316,6 +317,12 @@ First differences from DF1:
     1000 ticks), told apart by the M4's ammo row; slots per
     0x447e20 (laser, knife, sidearm, primary ×3, secondary, gear, detonator,
     grenade), Extra Ammo doubling the primary's clips; bursts 6/8/51/21/35/36;
+    GOG's Df2.exe 1.06.15 (0x4758f0, told apart by the M4's ammo record) has
+    the tables at 0x4DC5E0 / 0x4DA4F8 / 0x4D95B8 / 0x4DDA60, 39 ammo records
+    of 100 bytes (+0x0C the clips Extra Ammo adds, later fields 4 on, flags
+    << 16), changed values (M203 12 rounds, mounted guns 55/56 full auto) and
+    its own refill (0x44dfc0: Extra Ammo as secondary or gear adds +0x0C
+    clips to slot 3's weapon, slot 4's too for primaries 9/10);
     projectiles (0x44c2f0): gravity 0xa7 a tick², drag toward the mission's
     wind by the ammo's speed band and the curve (×(1 + depth/10) under water,
     at most 0.5 a tick), rounds under the water spent below 15.5 m/s; people
@@ -611,7 +618,7 @@ First differences from DF1:
     still carries DF1's ANIMMGR KDV player (its strings at file 0x87d9f),
     but DF2 ships no KDV file.
   - **keys**: DF2's defaults from DF2.EXE (0x4a5cd4, {id, name[32], key,
-    flags}), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
+    flags}; GOG Df2.exe 0x4b1738, 112-byte entries, name +0x4C, key +0x6C), with scopeinc X, scopedec Z and NVG N added to OpenDF's actions.
 - **DF2 status (2026-11-14):** playable through its own front end (`opendf
   --game games/DF2 play`); all 47 single-player and quick missions load and
   run. Still open, by area:
