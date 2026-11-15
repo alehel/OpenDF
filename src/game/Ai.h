@@ -67,6 +67,8 @@ public:
     // metres for side `side`, and the shooter counts as firing (x6 to be
     // seen) until the flags are cleared (every 0x1f0 ticks).
     void shotFired(Vec3 at, float range, int side, int object);
+    // The shooter's half of shotFired: the "fired" mark (-3 the player).
+    void markFired(int object);
     // Any other noise (DF2.EXE 0x412840 with flags 0: footsteps, a building
     // collapsing): a box of +-r on all three axes; heard by relaxed soldiers
     // (0x413620, any team, any flags), not turned toward by alert ones

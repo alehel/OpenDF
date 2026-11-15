@@ -4,6 +4,7 @@
 #include "../formats/Pcx.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -439,6 +440,9 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     gen2_ = trueColor;
     if (gen2_ && waterOverride >= 0) desc_.waterHeight = float(waterOverride);
     heights_.assign(elev.pixels.begin(), elev.pixels.end());
+    detailMap_.clear();
+    detailElev_.clear();
+    sightMax_.clear();
     if (gen2_) {
         // Delta Force 2 (DF2.EXE 0x464c30): heights smoothed into 8.8 words,
         // H = 256 · Σ w·h / 29 with the wrapping kernel [2 3 2; 3 9 3; 2 3 2],
@@ -571,6 +575,14 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
         tile = dC.width;
         tiles = dC.height / tile;
         bool haveElev = loadImage(vfs, desc_.detailElev, dD) && dD.pixels.size() == dC.pixels.size();
+        if (!trueColor && haveElev && tile == 16) {
+            // Delta Force's sight-line detail (GOG Df.exe 0x47b590 loads the
+            // 16x16 tiles' elevations into byte 2 of 0xbd531c, 256 tiles,
+            // the rest zeroed by 0x47a7a0).
+            detailMap_ = detail.pixels;
+            detailElev_.assign(256 * 256, 0);
+            std::copy_n(dD.pixels.begin(), std::min(dD.pixels.size(), detailElev_.size()), detailElev_.begin());
+        }
         dcRgba.resize(dC.pixels.size() * 4);
         dsRg.resize(dC.pixels.size() * 2);
         const std::array<Rgb, 256> dPal = trueColor ? dC.palette : gradedPalette(dC.palette);
@@ -606,6 +618,26 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     }
     texDetailColor_ = makeTexArray(tile, tile, tiles, GL_RGBA8, GL_RGBA, dcRgba.data());
     texDetailShade_ = makeTexArray(tile, tile, tiles, GL_RG8, GL_RG, dsRg.data());
+    if (!trueColor) {
+        // Delta Force's max map 0xbd52d4 (0x47d9e0): each tile's highest
+        // detail elevation (the 1x1 level of 0x47d0a0 / 0x47d2f0, a max per
+        // 2x2), then per cell the highest of its four corners, each its
+        // height plus ceil((max - 128) / 16) steps by its own tile, at most
+        // 255. Without detail elevations the corners are their heights.
+        std::array<int, 256> tileMax{};
+        for (size_t t = 0; t < 256 && !detailElev_.empty(); ++t)
+            for (size_t k = 0; k < 256; ++k) tileMax[t] = std::max<int>(tileMax[t], detailElev_[t * 256 + k]);
+        auto corner = [&](int x, int z) {
+            const size_t c = size_t((z + size_) % size_) * size_t(size_) + size_t((x + size_) % size_);
+            const int e = detailMap_.empty() ? 0 : tileMax[detailMap_[c]];
+            return int(heights_[c]) + (((e < 0x80 ? 0 : e - 0x80) + 0xf) >> 4);
+        };
+        sightMax_.resize(size_t(size_) * size_t(size_));
+        for (int z = 0; z < size_; ++z)
+            for (int x = 0; x < size_; ++x)
+                sightMax_[size_t(z) * size_t(size_) + size_t(x)] =
+                    uint8_t(std::min(0xff, std::max({corner(x, z), corner(x + 1, z), corner(x, z + 1), corner(x + 1, z + 1)})));
+    }
 
     // Sky palette: entries 0..15 the gradient from the horizon up (entry 0 is
     // also the fog colour), entry 16 the cloud/highlight colour (DF.EXE 0x433880).
@@ -859,6 +891,26 @@ float Terrain::heightAt(float x, float z) const {
     float a = h(ix, iz) + (h(ix + 1, iz) - h(ix, iz)) * tx;
     float b = h(ix, iz + 1) + (h(ix + 1, iz + 1) - h(ix, iz + 1)) * tx;
     return (a + (b - a) * tz) * scale.heightScale;
+}
+
+float Terrain::sightHeight(float x, float z) const {
+    float h = heightAt(x, z);
+    if (detailMap_.empty()) return h;
+    const float cx = x / scale.cellSize, cz = z / scale.cellSize;
+    const float fx = std::floor(cx), fz = std::floor(cz);
+    const long ix = ((long(fx) % size_) + size_) % size_, iz = ((long(fz) % size_) + size_) % size_;
+    const int sx = std::min(15, int((cx - fx) * 16.f)), sz = std::min(15, int((cz - fz) * 16.f));
+    const int e = detailElev_[size_t(detailMap_[size_t(iz) * size_t(size_) + size_t(ix)]) * 256 + size_t(sz * 16 + sx)];
+    if (e >= 0x80) h += float(e - 0x80) / 64.f;
+    return h;
+}
+
+float Terrain::sightMax(float x, float z) const {
+    if (sightMax_.empty()) return 0;
+    long ix = long(std::floor(x / scale.cellSize)), iz = long(std::floor(z / scale.cellSize));
+    ix = ((ix % size_) + size_) % size_;
+    iz = ((iz % size_) + size_) % size_;
+    return float(sightMax_[size_t(iz) * size_t(size_) + size_t(ix)]) * scale.heightScale;
 }
 
 float Terrain::cellHeight(float x, float z) const {

@@ -840,6 +840,13 @@ void Arsenal::fire(Player& player) {
     } else {
         bullets_.push_back(p);
     }
+    // Delta Force's round 0x462f20 marks the shooter (+0x6d |= 0x40) unless
+    // the round's gun (0x45ea00: a burst's first round the burst gun, the
+    // others the next one) has flag 0x80 (0x463119): the silenced guns.
+    if (!df2_) {
+        const int bg = burstGun(slots_[size_t(current_)]);
+        if (!(guns_[size_t(bg >= 0 ? bg + (followUp_ ? 1 : 0) : md.gun)].flags & 0x80)) fireMark_ = true;
+    }
     // The Barrett (mode 15) pushes the shooter back 0x800 (1/32 m) along
     // -heading (0x447070).
     if (df2_ && slots_[size_t(current_)] == 15) {
