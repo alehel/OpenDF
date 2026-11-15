@@ -211,8 +211,9 @@ public:
     // the type's elevation for it (0x44e143).
     // GOG Df2.exe 0x44c770: only while the scope shows (0x455790).
     void zeroStep(int d) {
-        if (df2_ && !scopeShown()) return;
-        if (current_ < 3 || current_ > 5) return;
+        // GOG Df2.exe 0x44c770: only while 0x455790 holds (scopeShown); the
+        // CD's 0x445ff0 has no such test.
+        if ((df2Gog_ && !scopeShown()) || current_ < 3 || current_ > 5) return;
         zero_ = std::clamp(zero_ + d, 0, modeIndex() == 15 ? 15 : 10);
     }
     int zeroSetting() const { return zero_; }
@@ -229,10 +230,9 @@ public:
     // Ammunition crate (0x447b90 -> 0x44b634): every carried gun full again,
     // as at the mission start.
     void refill();
-    // Delta Force 2's grenade crate (GOG Df2.exe packet 0x1f -> 0x44e310):
-    // every slot 0-9 holding mode 0x21, 0x22 or 0x31 gets n - 1 spare clips,
-    // a full magazine and a round chambered; nothing else changes.
-    void refillDf2Grenades();
+    // DF2's grenade crate (item 4118, GOG Df2.exe 0x44e310): modes 0x21,
+    // 0x22 and 0x31 only.
+    void refillGrenades();
     // 0x44b81c: next slot with a mode, wrapping. GOG Df2.exe 0x44d3c0:
     // none from 11/12; dir < 1 goes back (Shift, the wheel forward).
     void cycle(int dir = 1);
@@ -298,8 +298,10 @@ public:
     int rounds() const { return mag_[size_t(mode().gun)]; }
     int spares() const { return spares_[size_t(mode().gun)]; }
 
-    float zoom() const { return !zoomed() ? 1.f : df2_ ? float(df2Zoom()) : float(mode().scope); }
-    // GOG Df2.exe 0x44e6a0 (from the scope view, 0x4557e0): the mode's
+    float zoom() const { return !zoomed() ? 1.f : df2_ && df2Gog_ ? float(df2Zoom()) : float(mode().scope); }
+    bool df2Gog() const { return df2_ && df2Gog_; }
+    // GOG Df2.exe 0x44e6a0 (from the scope view, 0x4557e0; not in the CD
+    // build, whose scope is the mode's): the mode's
     // scope (+0x38), but for slots 3-5 the magnification [0x79a698], set to
     // 2 when it is under 2 (scope non-zero), 0 when negative, and lowered to
     // the scope when above it (kept so).
@@ -321,7 +323,7 @@ public:
     // the scope back to 2, under 2 to the scope.
     void scopeMagStep(int d) {
         const int scope = mode().scope;
-        if (!scopeShown() || scope == 0) return;
+        if (!df2Gog_ || !scopeShown() || scope == 0) return;   // not in the CD build
         const int m = df2Mag_ + d;
         df2Mag_ = m > scope ? 2 : m < 2 ? scope : m;
     }
@@ -339,12 +341,13 @@ public:
     // (+0x74 & 0x18) zero, i.e. not while moving; the shot's origin
     // (0x447102) and the designator (0x45aad6) take 0x447b40 alone.
     // INFERRED: the speed bits are non-zero exactly while a move key is down.
-    // GOG Df2.exe 0x455790 also returns 0 while the player is dead,
-    // airborne, swimming or on a ladder (+0x64 & 0x422004), and in the
-    // third-person views ([0x67cd10] == 0 with [0xbf2b40]), which OpenDF
-    // does not have; it gates the scope view (0x465f90), the scoped mouse
-    // (0x41eb50) and the zeroing and magnification keys.
-    bool scopeShown() const { return zoomed() && (!df2_ || (!moveKeys_ && !scopeBlocked_)); }
+    // GOG Df2.exe 0x455790 also wants none of the player's +0x64 bits
+    // 0x422004 (4 dead, 0x2000 airborne, 0x20000 swimming, 0x400000 on a
+    // ladder) and not an outside view ([0xbf2b40] with picture-in-picture
+    // [0x67cd10] off), set each tick by setScopeBlocked; the CD build tests
+    // the speed bits only (0x45c682). It gates the scope view (0x465f90),
+    // the scoped mouse (0x41eb50) and the zeroing and magnification keys.
+    bool scopeShown() const { return zoomed() && (!df2_ || (!moveKeys_ && !(df2Gog_ && scopeBlocked_))); }
     void setMoveKeys(bool down) { moveKeys_ = down; }
     void setScopeBlocked(bool b) { scopeBlocked_ = b; }
     bool reloading() const { return reloadTicks_ > 0; }
@@ -396,8 +399,9 @@ public:
     std::vector<WeaponEvent> takeEvents() { std::vector<WeaponEvent> out; out.swap(events_); return out; }
     std::vector<SoundEvent> takeSounds() { std::vector<SoundEvent> out; out.swap(sounds_); return out; }
     std::vector<Vec3> takeStabs() { std::vector<Vec3> out; out.swap(stabs_); return out; }
-    // Delta Force: a player round fired since the last call whose gun lacks
-    // flag 0x80 (GOG Df.exe 0x463119): the player counts as having fired.
+    // A player round fired since the last call that marks him as having
+    // fired: Delta Force's gun without flag 0x80 (GOG Df.exe 0x463119),
+    // Delta Force 2's unsuppressed ammo (GOG Df2.exe 0x451ae0).
     bool takeFireMark() { const bool m = fireMark_; fireMark_ = false; return m; }
 
 private:

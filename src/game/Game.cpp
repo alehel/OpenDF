@@ -1916,21 +1916,20 @@ void Game::touchPickups() {
             o.boxes.clear();
             break;
         case 4010: case 4055:
-            arsenal_.refill();
-            pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
-            sound_.play2D(0x164);
-            o.removed = true;
-            o.boxes.clear();
-            break;
-        case 4118:
-            // DF2 grenade crate (GOG Df2.exe 0x446050 case 0x1016, the player
-            // only): 0x45ba20 sends packet 0x1f, whose client side (0x409610)
-            // refills the grenades (0x44e310), shows Misc "STRMSIC17" (sic:
-            // no such key, so an empty line) in [0x67d37c] = 0xff8000 and
-            // plays 0x164; 0x418110 deletes the crate.
-            if (!world_.df2Rules) break;
-            arsenal_.refillDf2Grenades();
-            pushMessage(df2Text("Misc", "STRMSIC17", ""), kDf2Amber);
+        case 4082: case 4089: case 4118:
+            // DF2 (GOG Df2.exe 0x446050: 0xfaa, 0xfd7, 0xff2, 0xff9 -> 0x45b9d0
+            // message 0x1d -> 0x44dfc0; 0x1016 -> 0x45ba20 message 0x1f ->
+            // 0x44e310 the grenades only; 0x409610 then shows Misc STRMSIC17
+            // in [0x67d37c] = 0xff8000 and plays 0x164). The key is misspelt in
+            // both builds (0x4af790; DF2GAME.BIN has STRMISC17 "Ammo
+            // reloaded."), so 0x464f20 finds nothing and returns its empty
+            // string (0x4f7a50): an empty line goes into the system messages.
+            // DF1 has 4010 / 4055 only.
+            if (!world_.df2Rules && id != 4010 && id != 4055) break;
+            if (id == 4118) arsenal_.refillGrenades();
+            else arsenal_.refill();
+            if (world_.df2Rules) pushMessage(df2Text("Misc", "STRMSIC17", ""), rgb(0xff, 0x80, 0));
+            else pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
             sound_.play2D(0x164);
             o.removed = true;
             o.boxes.clear();
@@ -4332,7 +4331,9 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         else models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
-    // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
+    // 4033 (DF2's delay grenade, CD 0x1000, too: GOG Df2.exe 0x451ae0 gives
+    // GOG 0x10000000 the model [0x735e78], item 0xfc1), 0x01 the M203's
+    // 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
     // at the launch yaw and pitch for the whole flight (gnrc draw:
     // T * Rz(yaw) * Ry(pitch), the record's angles never change).
     // Delta Force 2 (GOG Df2.exe 0x451ae0, models from 0x452560): first
@@ -5300,10 +5301,13 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
             if (arsenal_.modeIndex() != 0x1c) {
                 std::snprintf(buf, sizeof buf, "%4dm", arsenal_.zeroSetting() * 100);
                 hud_.text(s.vx(700), s.vy(500), buf, rgb(0xff, 0xff, 0), s.text());
-                // GOG Df2.exe 0x455be0: the magnification "%2ix" ([0x79a698])
-                // at (700, 480) in the same yellow ([0x67d370]).
-                std::snprintf(buf, sizeof buf, "%2dx", arsenal_.df2Magnification());
-                hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
+                // GOG Df2.exe 0x455be0: the magnification "%2ix" ([0x79a698],
+                // 0x4cc418) at (700, 480) in the same yellow ([0x67d370]); the
+                // CD build has none.
+                if (arsenal_.df2Gog()) {
+                    std::snprintf(buf, sizeof buf, "%2dx", arsenal_.df2Magnification());
+                    hud_.text(s.vx(700), s.vy(480), buf, rgb(0xff, 0xff, 0), s.text());
+                }
             }
         }
         drawDf2TargetId(s, zx, zy, r);   // GOG Df2.exe 0x455be0 LAB_004562ab
@@ -8270,7 +8274,8 @@ int Game::run() {
             // (0x44b44d in 0x44b420, Arsenal::zoomed).
             const bool moveKeys = in.forward != 0 || in.strafe != 0 || (arsenal_.df2() ? in.jump : in.jumpPress);   // DF1 0x400: the press
             arsenal_.setMoveKeys(moveKeys);
-            // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004.
+            // GOG Df2.exe 0x455790: the player's +0x64 & 0x422004 (dead,
+            // airborne, swimming, on a ladder) and an outside view.
             arsenal_.setScopeBlocked(playerDead() || player_.airborne() || player_.inWater() || player_.onLadder() ||
                                      outsideView() != 0);   // [0xbf2b40] with picture-in-picture [0x67cd10] off
             if (!arsenal_.df2() && moveKeys && binoculars_) { binoculars_ = false; arsenal_.setBinoculars(false); }   // 0x4373ab
@@ -8329,10 +8334,10 @@ int Game::run() {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
                 // The player's gunshots are heard (0x46c228: range / 2).
-                // Delta Force: the noise only when the range is not 0 (GOG
-                // 0x4630d6); the mark is per round, by the gun (takeFireMark).
-                if (e.shot && world_.df2Rules) ai_.shotFired(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, -3);
-                else if (e.shot && sound_.range(e.id) > 0) ai_.noise(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, 2);
+                // Both games: the noise when the sound's range is not 0 (GOG
+                // Df.exe 0x4630d6; Df2.exe 0x451ae0 -> 0x414660); the mark is
+                // per round, by the gun (takeFireMark).
+                if (e.shot && sound_.range(e.id) > 0) ai_.noise(e.pos, sound_.range(e.id) * 0.5f, kPlayerSide, 2);
             }
             if (arsenal_.takeFireMark()) ai_.markFired(-3);
             for (const auto& h : arsenal_.takePlayerHits()) hurtPlayer(h.damage, 1, h.from, h.part);

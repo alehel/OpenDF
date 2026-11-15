@@ -495,10 +495,19 @@ First differences from DF1:
     reload end, then the burst counter's fire command), the silent cooldown-
     end chambering 0x446410 (full auto on flag 0x40), reload end 0x447950
     (an empty chamber gets the cooldown with +0x24 via 0x447f40(0); no
-    message — "Ammo reloaded" is the ammo crate in both games), dry fire
+    message), dry fire
     0x4470ae (click +0x2C, silent cooldown, burst counter 0; launchers and
     grenades click only, charges do nothing) and the fire command 0x447270
-    with no reload gate. DF2's scope flag [0x7655f4] is only toggled
+    with no reload gate; the knife strikes whenever its cooldown is out,
+    with no chamber test (GOG 0x44df60 / 0x44da80). A round from ammo
+    without flag 0x80 (GOG 0x800000; the suppressed ammo 4, 5, 6 and 17
+    have it) marks its shooter as having fired (+0x64 0x4000, x6 to be
+    seen; 0x451ae0), sound or not; suppressed rounds still make their noise
+    box. Ammo crates (0x446050): 4010, 4055, 4082 and 4089 refill
+    everything (0x44dfc0), 4118 the grenades only (modes 0x21, 0x22, 0x31,
+    0x44e310); neither touches the reload timer or the cooldown; the
+    message is Misc "STRMSIC17", misspelt in both builds, so an empty line
+    (in 0xff8000) goes into the system messages, and sound 0x164. DF2's scope flag [0x7655f4] is only toggled
     (0x447b30, from command 0x41b35a; cleared with the weapon block at the
     mission start, 0x4477bf) and counts for flag-0x1 modes (0x447b40), so it
     survives weapon changes, reloads, moving and the binoculars. DF2's
@@ -517,7 +526,10 @@ First differences from DF1:
     RunningN (Running0 6.0 m/s against Running0_2HW's 5.0), _S only for
     the two hand classes; still: BIN 0x200, SLW 0x10, SCW with the scope
     in (standing), 2HW 8, 1HW 4, else KNIFE (prone: 1HW). The scope
-    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18), while
+    inset is likewise hidden while moving (0x45c6ac: +0x74 & 0x18; GOG
+    0x455790 also while dead, airborne, swimming or on a ladder, +0x64 &
+    0x422004, and in an outside view, the same test gating the zeroing and
+    magnification keys), while
     the shot's origin and the designator take 0x447b40 alone; the mouse
     turns at an eighth while the inset shows in the CD build (0x41ae13);
     GOG Df2.exe 0x41eb50 replaces the eighth by a rate that grows with the
@@ -593,7 +605,8 @@ First differences from DF1:
     yellow), half of it with the
     fraction kept, focal trunc(100 / tan(half) + 0.5) (camera 0x4048b0), not
     DF1's 28 / mag whole degrees (Scope Mag: command 0xc2 'scopemag', only
-    while 0x455790 holds);
+    while 0x455790 holds; the CD build has no magnification, its scope view
+    takes the mode's scope);
     night vision (key N, on at the start of night missions: 0x44781e) as an
     ellipse 4r × 2r, green only ×4, over the gun, which is drawn inside the
     3D frame and depth-tested against the world (GOG 0x44f8d0 -> 0x44ea10,
@@ -1157,7 +1170,9 @@ First differences from DF1:
     LAR V models drawn in their place (0x415410);
   - **delay grenade** (0x44ae50): no impact fuse; it slides off object
     faces (v −= n·(v·n)·1.07, × 0.85), stops on other surfaces, and goes
-    off (type 1) with 10 ticks of its 444 − rand(127) left.
+    off (type 1) with 10 ticks of its fuse left; the fuse is 444 −
+    ((heading >> 16) & 0x7f) ticks, from the throw's 32-bit binary heading
+    (GOG 0x451ae0), and it is drawn in flight as the grenade item 4033.
 
 ## Suggested order
 

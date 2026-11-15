@@ -434,6 +434,8 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     // Extra Ammo (secondary type 1, [0x765628]) doubles the primary's clips
     // (CD 0x4472d0); GOG's refill (0x44dfc0) is in refill().
     kit_ = lo.secondary == 1 ? 1 : 0;
+    reloadTicks_ = 0;
+    cooldown_ = 0;
     refill();
     current_ = 3;
     if (!slots_[3]) cycle();
@@ -562,7 +564,24 @@ void Arsenal::refill() {
         mag_[size_t(g)] = gd.magazine;
         chambered_[size_t(g)] = 1;
     }
-    reloadTicks_ = 0;
+    // DF2's refill (CD 0x4472d0) leaves the reload timer: a running reload
+    // goes on.
+    if (!df2_) reloadTicks_ = 0;
+}
+
+void Arsenal::refillGrenades() {
+    // DF2's grenade crate 4118 (GOG Df2.exe message 0x1f -> 0x44e310, CD
+    // 0x447380): every slot 0-9 holding mode 0x21, 0x22 or 0x31 gets n - 1
+    // spare clips, a full magazine and a round chambered; the timers stay.
+    for (int i = 0; i < kSlots; ++i) {
+        const int m = slots_[size_t(i)];
+        if (m != 0x21 && m != 0x22 && m != 0x31) continue;
+        const int g = modes_[size_t(m)].gun;
+        if (g < 0 || g >= int(guns_.size())) continue;
+        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
+        mag_[size_t(g)] = guns_[size_t(g)].magazine;
+        chambered_[size_t(g)] = 1;
+    }
 }
 
 void Arsenal::refillDf2Gog() {
@@ -601,20 +620,8 @@ void Arsenal::refillDf2Gog() {
         if (df2Lo_.primary == 9 || df2Lo_.primary == 10)
             if (const int g = gunOf(4); g >= 0) spares_[size_t(g)] += guns_[size_t(g)].extraClips;
     }
-    reloadTicks_ = 0;
-}
-
-void Arsenal::refillDf2Grenades() {
-    for (int i = 0; i < 10 && i < int(slots_.size()); ++i) {
-        const int m = slots_[size_t(i)];
-        if (m != 0x21 && m != 0x22 && m != 0x31) continue;
-        if (m >= int(modes_.size())) continue;
-        const int g = modes_[size_t(m)].gun;
-        if (g < 0 || g >= int(guns_.size())) continue;
-        spares_[size_t(g)] = guns_[size_t(g)].n - 1;
-        mag_[size_t(g)] = guns_[size_t(g)].magazine;
-        chambered_[size_t(g)] = 1;
-    }
+    // 0x44dfc0 leaves the reload timer [0x79a2d0] and the cooldown
+    // [0x79a2cc]: a running reload goes on.
 }
 
 void Arsenal::select(int slot) {
@@ -904,10 +911,14 @@ void Arsenal::fire(Player& player) {
     } else {
         bullets_.push_back(p);
     }
-    // Delta Force's round 0x462f20 marks the shooter (+0x6d |= 0x40) unless
-    // the round's gun (0x45ea00: a burst's first round the burst gun, the
-    // others the next one) has flag 0x80 (0x463119): the silenced guns.
-    if (!df2_) {
+    // The round marks the shooter as having fired. Delta Force (0x462f20,
+    // +0x6d |= 0x40) unless the round's gun (0x45ea00: a burst's first
+    // round the burst gun, the others the next one) has flag 0x80 (0x463119):
+    // the silenced guns. Delta Force 2 (GOG Df2.exe 0x451ae0, +0x64 0x4000)
+    // unless the ammo is suppressed (CD flag 0x80), sound or not.
+    if (df2_) {
+        if (!(g.flags & 0x80)) fireMark_ = true;
+    } else {
         const int bg = burstGun(slots_[size_t(current_)]);
         if (!(guns_[size_t(bg >= 0 ? bg + (followUp_ ? 1 : 0) : md.gun)].flags & 0x80)) fireMark_ = true;
     }
@@ -1058,11 +1069,12 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
                 if (md.type == 1) cooldown_ = md.cooldown;
             }
         } else if (md.type == 6) {
-            // Knife: DF1's strike has no chamber test, only the cooldown
-            // (GOG Df.exe 0x483b10 case 6; CD 0x44a7c8), so a switch during
-            // the cooldown (select clears it) cannot leave it dead. DF2 keeps
-            // the chamber test (0x44691b) until DF2.EXE's knife is checked.
-            if (!df2_ || chambered()) fire(player);
+            // Knife: no chamber test, only the cooldown (GOG Df.exe 0x483b10
+            // case 6, CD 0x44a7c8; GOG Df2.exe 0x44df60 lets kind 6 through
+            // with ammo 0 and 0x44d8a0 case 6 -> 0x44da80 tests only
+            // [0x79a2cc] < 1), so a switch during the cooldown (select
+            // clears it) cannot leave it dead.
+            fire(player);
         } else if (md.type == 7 || md.type == 9 || md.type == 13) {
             // Claymore, satchel: nothing without a chambered one, no click
             // (0x44aecb; DF2 0x446a5a); GOG's video camera the same (0x44d460).

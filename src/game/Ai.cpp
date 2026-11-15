@@ -586,9 +586,12 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         if (bg[0] == p.weapon) { soundGun = bg[1]; silentRound = followUp; }
     const int id = shots.gunAt(soundGun).sounds[0];
     if (df2) {
+        // DF2 (GOG Df2.exe 0x451ae0): the sound and its noise box (0x414660)
+        // for any round with a sound; the shooter counts as firing for every
+        // round not from suppressed ammo (CD flag 0x80), sound or not (below).
         if (id > 0 && !silentRound) {
             sound.play(id, muzzle);
-            shotFired(muzzle, sound.range(id) * 0.5f, o.side, p.object);
+            noise(muzzle, sound.range(id) * 0.5f, o.side, 2);
         }
     } else {
         // GOG Df.exe's round 0x462f20 with the gun 0x45ea00 picks (a burst's
@@ -605,6 +608,9 @@ void AiSystem::fire(World& world, Person& p, Arsenal& shots, SoundSystem& sound,
         }
         if (!(shots.gunAt(roundGun).flags & 0x80)) markFired(p.object);
     }
+    // DF2 (GOG Df2.exe 0x451ae0): the shooter counts as firing for every
+    // round not from suppressed ammo (CD flag 0x80), sound or not.
+    if (shots.df2() && !(g.flags & 0x80)) markFired(p.object);
     if (!followUp && md.burst) p.burstLeft = 2;
     p.think = std::max(1, md.cooldown);
 }

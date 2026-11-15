@@ -937,11 +937,14 @@ void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& 
     // 0x451ae0: the gun's sound at the muzzle and a noise of half its range.
     // Delta Force's rounds all go through GOG Df.exe 0x462f20: the noise only
     // when the sound's range is not 0 (0x4630d6), the shooter marked unless
-    // the gun has flag 0x80 (0x463119), with or without a sound.
+    // the gun has flag 0x80 (0x463119), with or without a sound. DF2 (GOG
+    // Df2.exe 0x451ae0): the noise for any round with a sound; the gunner
+    // counts as firing unless the ammo is suppressed (CD flag 0x80; +0x64
+    // 0x4000 per round, sound or not, below).
     if (shots.df2()) {
         if (g.sounds[0] > 0) {
             sound.play(g.sounds[0], muzzle);
-            ai.shotFired(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, v.object);
+            ai.noise(muzzle, sound.range(g.sounds[0]) * 0.5f, o.side, 2);
         }
     } else {
         if (g.sounds[0] > 0) {
@@ -950,6 +953,9 @@ void VehicleSystem::brdmTurret(World& world, AiSystem& ai, Vehicle& v, Arsenal& 
         }
         if (!(g.flags & 0x80)) ai.markFired(v.object);
     }
+    // DF2: the gunner counts as firing unless the ammo is suppressed (CD
+    // flag 0x80; 0x451ae0 sets +0x64 0x4000 per round, sound or not).
+    if (shots.df2() && !(g.flags & 0x80)) ai.markFired(v.object);
     o.shotFlash = 10;
 }
 
