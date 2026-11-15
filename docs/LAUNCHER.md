@@ -54,6 +54,10 @@ open a system dialog.
   (Comanche, an empty folder) is refused.
 - Choosing a setup folder itself stores the game folder above it, the same
   folder `--game` takes (Delta Force keeps its soldier profiles there).
+- GOG releases: the GOG game folder (`Df.exe` / `Df2.exe` next to `Df.pff`,
+  `Dfbase.pff` / `Df2.pff`) is recognised as it is. A GOG installer unpacked
+  with innoextract puts the game in an `app` folder; choosing the folder
+  above it stores `app` (e.g. `games/GOG/DF2` → `games/GOG/DF2/app`).
 - A folder already in the list is not added twice.
 
 On the very first start (no settings file yet, or an empty list) the launcher

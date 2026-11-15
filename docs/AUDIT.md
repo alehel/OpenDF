@@ -63,7 +63,7 @@ approximation), **todo** = not checked yet.
 
 | # | Item | Status | Notes |
 |---|---|---|---|
-| K1 | Every default key binding | fixed | DF.EXE default table at 0x4df4f8 (read at run time, built-in copy as fallback). Was wrong: Y next waypoint (original W), map zoom keys reversed, Tab/R/X/Z/WASD invented. Now the original table + mouse look (user's choice); N = debug flight only |
+| K1 | Every default key binding | fixed | DF.EXE default table at 0x4df4f8 (GOG Df.exe 0x4fb300; read at run time from either build, docs/FORMATS.md "Game executables"; built-in copy as fallback). Was wrong: Y next waypoint (original W), map zoom keys reversed, Tab/R/X/Z/WASD invented. Now the original table + mouse look (user's choice); N = debug flight only |
 | K2 | Weapon keys | fixed | slots per DF.EXE 0x44b598: 2 sidearm, 3-5 primary modes, 6-8 secondary modes (1 knife, 9/0 grenade/laser not implemented). Was: invented 2/3/4/6/7/8 with all five guns carried |
 | K3 | Keyboard turn/look, mouse | fixed | 0x1fffffe per 30 Hz controller tick = 84.375°/s, 42.1875°/s with NoRun (corrected: the controller runs every second tick, 0x436c74), same for pitch; pitch −67.5°..+90° (0x436fec, 0x437435); mouse 0.1758° per count, a quarter zoomed (0x42eba0) |
 

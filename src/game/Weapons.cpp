@@ -14,10 +14,9 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 constexpr int kModeCount = 39, kGunCount = 28, kRowCount = 28;
-// DF.EXE (US release) tables; see docs/FORMATS.md.
-constexpr uint32_t kModeTable = 0x4E97D0, kModeRecord = 168;
-constexpr uint32_t kGunTable = 0x4E9060, kGunRecord = 52;
-constexpr uint32_t kRowTable = 0x4E9610, kRowRecord = 16;
+// DF.EXE tables (CD 0x4E97D0 modes, 0x4E9060 guns, 0x4E9610 rows; the
+// build's addresses come from ExeImage::df1()); see docs/FORMATS.md.
+constexpr uint32_t kModeRecord = 168, kGunRecord = 52;
 constexpr int kReloadTicks = 0x78;   // 0x44a004
 constexpr int kFragRow = 26;         // slot 9: always the frag grenade (0x44b598)
 
@@ -247,7 +246,8 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     // The user's DF.EXE: sanity-check (M4 single shot: item 4057, gun 7 with
     // a 30-round magazine; row 9 = modes 6, 10, 7), then read everything.
     fromExe_ = false;
-    if (exe && exe->loaded()) {
+    if (const Df1ExeTables* t = exe ? exe->df1() : nullptr) {
+        const uint32_t kModeTable = t->modes, kGunTable = t->guns, kRowTable = t->rows, kRowRecord = t->rowRecord;
         int32_t item = 0, gun = 0, size = 0, r9 = 0;
         if (exe->i32(kModeTable + 7 * kModeRecord + 0x64, item) && exe->i32(kModeTable + 7 * kModeRecord + 0x74, gun) &&
             exe->i32(kGunTable + 7 * kGunRecord + 0x08, size) && exe->i32(kRowTable + 9 * kRowRecord + 4, r9) &&
@@ -315,9 +315,15 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
 }
 
 bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& exe, const ItemDefs* items, Df2Loadout lo) {
-    constexpr uint32_t kModes = 0x4C7238, kTypes = 0x4C5150, kAmmo = 0x4C4310, kCurve = 0x4C86B8;
-    constexpr int kModeN = 57, kTypeN = 39, kAmmoN = 38, kCurveN = 44;
-    if (!exe.loaded()) return false;
+    const Df2ExeTables* t = exe.df2();
+    if (!t) return false;
+    // CD 0x4C7238 modes, 0x4C5150 types, 0x4C4310 ammo, 0x4C86B8 curve; the
+    // build's from ExeImage::df2(). GOG Df2.exe's ammunition records are 100
+    // bytes with a word inserted at +0x0C (`at`) and the flags 16 bits up.
+    const uint32_t kModes = t->modes, kTypes = t->types, kAmmo = t->ammo, kCurve = t->curve;
+    constexpr int kModeN = 57, kTypeN = 39, kCurveN = 44;
+    const int kAmmoN = t->ammoCount;
+    auto at = [&](uint32_t cdOffset) { return cdOffset >= 0x0C ? cdOffset + t->ammoShift : cdOffset; };
     bool ok = true;
     auto rd = [&](uint32_t va) { int32_t v = 0; ok = ok && exe.i32(va, v); return v; };
     std::vector<ModeDef> modes(kModeN);
@@ -357,26 +363,27 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
             }
     }
     for (int a = 0; a < kAmmoN; ++a) {
-        const uint32_t b = kAmmo + uint32_t(a) * 96;
+        const uint32_t b = kAmmo + uint32_t(a) * t->ammoRecord;
         GunDef& g = guns[size_t(a)];
         g.n = rd(b + 0x04);
         g.magazine = rd(b + 0x08);
-        g.velocity = rd(b + 0x0C);
-        g.power = rd(b + 0x10);
-        g.falloff = std::max(1, rd(b + 0x14));
-        g.lifetime = rd(b + 0x18);
-        g.accuracy = rd(b + 0x1C);
-        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + 0x20 + 4 * uint32_t(k));
-        g.flags = rd(b + 0x30);
+        g.velocity = rd(b + at(0x0C));
+        g.power = rd(b + at(0x10));
+        g.falloff = std::max(1, rd(b + at(0x14)));
+        g.lifetime = rd(b + at(0x18));
+        g.accuracy = rd(b + at(0x1C));
+        for (int k = 0; k < 4; ++k) g.sounds[k] = rd(b + at(0x20 + 4 * uint32_t(k)));
+        // In the CD's bits (GOG Df2.exe 0x451ae0 tests them 16 bits higher).
+        g.flags = int(uint32_t(rd(b + at(0x30))) >> t->ammoFlagShift);
         // 0x46b230: thresholds / 62 (C truncation), coefficients 2^32 / c.
         for (int k = 0; k < 5; ++k) {
-            g.dragThr[k] = int64_t(rd(b + 0x34 + 8 * uint32_t(k))) / 62;
-            const int64_t c = rd(b + 0x38 + 8 * uint32_t(k));
+            g.dragThr[k] = int64_t(rd(b + at(0x34 + 8 * uint32_t(k)))) / 62;
+            const int64_t c = rd(b + at(0x38 + 8 * uint32_t(k)));
             g.dragCoef[k] = c ? (int64_t(1) << 32) / c : 0;
         }
         // +0x58 is both the fifth band's coefficient and the one under water.
         g.waterCoef = g.dragCoef[4];
-        const int64_t grains = int64_t(rd(b + 0x5C)) << 16;
+        const int64_t grains = int64_t(rd(b + at(0x5C))) << 16;
         const int64_t kg = (grains << 16) / 0x3c480000;
         g.mass = (kg << 16) / 0xa7;
     }
