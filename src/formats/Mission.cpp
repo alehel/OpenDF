@@ -108,6 +108,17 @@ const ItemDef* ItemDefs::byMissionType(uint32_t type) const {
     return byId(int(type));
 }
 
+void dropMultiplayerRecords(Mission& m) {
+    for (auto& ob : m.objects) {
+        if (!(uint32_t(ob.raw[3]) & 0x90)) continue;
+        MissionObject empty;
+        empty.group = ob.group;
+        empty.indexInGroup = ob.indexInGroup;
+        empty.omitted = true;
+        ob = empty;
+    }
+}
+
 bool parseMission(const std::vector<uint8_t>& d, Mission& m, std::string* error) {
     if (d.size() < 0x10C || std::memcmp(d.data(), "BMS", 3) != 0) {
         if (error) *error = "not a BMS mission";

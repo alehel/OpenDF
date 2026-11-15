@@ -64,6 +64,7 @@ struct MissionObject {
     int group = 0;             // which of the file's four object groups (0..3)
     int indexInGroup = 0;      // paths and events refer to objects by this
     int32_t raw[24] = {};      // the whole 96-byte record, for fields not yet decoded
+    bool omitted = false;      // dropped by the single-player record filter (an empty slot)
 };
 
 // A path: an ordered list of objects of group 2 (waypoint markers). The
@@ -122,5 +123,14 @@ struct Mission {
 };
 
 bool parseMission(const std::vector<uint8_t>& file, Mission& out, std::string* error);
+
+// Delta Force's single-player record filter (GOG Df.exe 0x449710, CD
+// 0x43ff24, run for all four groups by GOG 0x449c70 / CD 0x440480): a record
+// whose flags byte (+0x0C) has 0x10 (more players) or 0x80 (multiplayer only)
+// becomes an empty, zeroed slot. It keeps its index, so paths and events
+// still line up (a dropped waypoint sits at 0,0). The GOG build keeps 0x20
+// records in single player (the CD build dropped them) and 0x40 marks
+// single-player-only records.
+void dropMultiplayerRecords(Mission& m);
 
 } // namespace df

@@ -36,7 +36,8 @@ void MissionScript::load(const Mission& m) {
     }
     // Areas for "team inside area" (0x45c9a0): the bounding box of every Area
     // Trigger marker in group 2 whose tag (record byte +0x4A) is the area
-    // number; unusable (always false) unless it has width.
+    // number; unusable (always false) unless it has width and height
+    // (GOG Df.exe 0x42eea0 builds it, 0x460330 needs x1 != x2 and y1 != y2).
     conditionAreas_.assign(m.conditions.size(), {});
     for (size_t i = 0; i < m.conditions.size(); ++i) {
         const auto& c = m.conditions[i].raw;
@@ -53,7 +54,7 @@ void MissionScript::load(const Mission& m) {
             box.maxY = std::max<double>(box.maxY, o->y);
             any = true;
         }
-        box.valid = any && box.minX != box.maxX;
+        box.valid = any && box.minX != box.maxX && box.minY != box.maxY;
         conditionAreas_[i] = box;
     }
 }
@@ -83,7 +84,10 @@ bool MissionScript::condition(const MissionRecord& rec, size_t self, ScriptHost&
     case 2: return p1 >= 0 && p1 < int(events_.size()) && events_[size_t(p1)].fired;
     case 3: return p1 >= 0 && p1 < 32 && (g_flags >> p1 & 1);
     case 4: return g_loadToggle != 0;
-    case 5: return true;   // single player with squad members (the default option)
+    // Single player with Squad Members on (GOG Df.exe 0x42e620: [0x67f520]
+    // == 0 and attributes 0x200 clear; GOG DF2.exe 0x41af30: df2.cfg
+    // attributes 0x20 clear).
+    case 5: return host.squadMembers();
     default: return false;
     }
 }

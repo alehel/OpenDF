@@ -33,6 +33,8 @@ public:
     virtual void showText(int id) = 0;     // campaign "Triggered Text", key ID%03i
     virtual void radio(int id) = 0;        // dialog dlg%03i
     virtual void endMission(int winnerSide) = 0;   // 0 = nobody
+    // Condition class 5: single player with the Squad Members option on.
+    virtual bool squadMembers() const { return true; }
     // AI (0x45c0e4 conditions, 0x46bbe8 / 0x46c444 / 0x46cafc actions).
     virtual bool teamSpotted(int team, int targetTeam) const { (void)team; (void)targetTeam; return false; }
     virtual bool teamEngaging(int team) const { (void)team; return false; }

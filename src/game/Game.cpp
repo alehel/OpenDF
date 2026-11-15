@@ -150,6 +150,9 @@ public:
     void showText(int id) override;
     void radio(int id) override;
     void endMission(int winnerSide) override;
+    bool squadMembers() const override {
+        return mission_.version >= 0x0F ? !(o_.df2Attributes & 0x20) : !(o_.attributes & 0x200);
+    }
 
 private:
     struct Screen {
@@ -662,6 +665,9 @@ bool Game::loadMission(int index) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
     }
+    // Delta Force single player: multiplayer-only records are empty slots
+    // (GOG Df.exe 0x449710), for the world, the start pick and team totals.
+    if (mission_.version < 0x0F) dropMultiplayerRecords(mission_);
     {
         // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
@@ -767,7 +773,11 @@ bool Game::loadMission(int index) {
     player_.swimOrigin = swimOrigin_;
     player_.feet = {512, 0, 512};
     float startLift = 0;
+    // The start (GOG Df.exe 0x43f610, game type 0): start number slot %
+    // header +0xEC among the 6001 markers left by the record filter; the
+    // single player's slot is 0, so the first one left.
     for (const auto& obj : mission_.objects) {
+        if (obj.omitted || obj.group != 2) continue;
         const ItemDef* item = items_.byMissionType(obj.type);
         if (item && item->id == kItemPlayerStart) {
             const float ext = terrain_.mapExtent();
@@ -2263,6 +2273,29 @@ int Game::teamCount(int team, bool aliveOnly) const {
 
 bool Game::teamInArea(int team, const AreaBox& a) const {
     auto inside = [&](double x, double y) { return x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY; };
+    if (!world_.df2Rules) {
+        // GOG Df.exe 0x460330 (CD 0x46c848): team 0 never; the people list
+        // (group 3, the player and squad among them) and then group 0
+        // (vehicles, crates, barrels) at their current positions, the dead
+        // too; group 1 is not looked at.
+        if (team == 0) return false;
+        if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
+        const double ext = terrain_.mapExtent();
+        // The world keeps x/z inside the repeating tile; the mission space is
+        // continuous, so unwrap the live position around the BMS one.
+        auto unwrap = [&](double wrapped, double mission) {
+            double d = std::fmod(wrapped - mission, ext);
+            if (d > ext / 2) d -= ext;
+            else if (d < -ext / 2) d += ext;
+            return mission + d;
+        };
+        for (int group : {3, 0})
+            for (const auto& o : world_.objects)
+                if (o.team == team && o.missionGroup == group && !o.removed &&
+                    inside(unwrap(o.pos.x, o.missionX), unwrap(-o.pos.z, o.missionY)))
+                    return true;
+        return false;
+    }
     if (team == kPlayerTeam && inside(player_.missionX(), player_.missionY())) return true;
     // Other teams stand where the mission placed them until OpenDF has AI.
     for (const auto& o : world_.objects)
@@ -2272,10 +2305,19 @@ bool Game::teamInArea(int team, const AreaBox& a) const {
 }
 
 void Game::killTeam(int team) {
-    for (size_t i = 0; i < world_.objects.size(); ++i) {
-        auto& o = world_.objects[i];
-        if (o.team == team && o.missionGroup == 3 && o.alive()) world_.damage(int(i), 1000);
-    }
+    // GOG Df.exe 0x45f4c0 (CD 0x46ba38): for a non-zero team, every object
+    // of group 1 (scenery, props), group 3 (people) and group 0 (vehicles,
+    // crates, barrels) gets hit points -50 and its own damage handler, so
+    // people die, vehicles wreck and explosive barrels go off (GOG DF2.exe
+    // 0x416380 does the same over its object lists). Here: through
+    // World::damage with what takes the object below 0 (no damage class).
+    if (team == 0) return;
+    for (int group : {1, 3, 0})
+        for (size_t i = 0; i < world_.objects.size(); ++i) {
+            const auto& o = world_.objects[i];
+            if (o.team == team && o.missionGroup == group && !o.removed && !o.dead)
+                world_.damage(int(i), std::max(o.hp, 0) + 50, 0x7fff);
+        }
 }
 
 void Game::removeTeam(int team) {

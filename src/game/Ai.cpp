@@ -758,9 +758,11 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         if (world.objects[size_t(p.object)].team != team) continue;
         switch (subtype) {
         case 1: p.weapon = aiWeaponMode(value); world.objects[size_t(p.object)].weaponMode = p.weapon; break;
-        case 2: if (df2 && !value) p.flags &= ~2u; else p.flags |= 2; break;   // DF2 also clears
-        case 3: if (df2 && !value) p.flags &= ~0x10u; else p.flags |= 0x10; break;   // DF2 also clears
-        case 4: if (df2 && !value) p.flags &= ~0x20u; else p.flags |= 0x20; break;   // DF2 also clears
+        // 2/3/4/15 set a flag for a non-zero value and clear it for 0 in both
+        // games (GOG Df.exe 0x45ff20, CD 0x46c444); 14 the same for silent.
+        case 2: if (!value) p.flags &= ~2u; else p.flags |= 2; break;
+        case 3: if (!value) p.flags &= ~0x10u; else p.flags |= 0x10; break;
+        case 4: if (!value) p.flags &= ~0x20u; else p.flags |= 0x20; break;
         case 5: p.alert = 2; alertTeam(team); break;
         case 6: p.alert = 0; break;
         case 7: p.fov = float(value); break;
@@ -770,8 +772,8 @@ void AiSystem::property(World& world, int team, int subtype, int value) {
         case 11: p.holdTicks = value * 62; break;
         case 12: p.giveUpTicks = value * 62; break;
         case 13: p.flank = float(value); break;
-        case 14: p.silent = df2 ? value != 0 : true; break;
-        case 15: if (df2 && !value) p.flags &= ~1u; else p.flags |= 1; break;
+        case 14: p.silent = value != 0; break;
+        case 15: if (!value) p.flags &= ~1u; else p.flags |= 1; break;
         // DF2 (0x413...): 16-19 set or clear ai 0x200 / 0x400 / 0x800 / 0x1000.
         case 16: case 17: case 18: case 19:
             if (df2) {
