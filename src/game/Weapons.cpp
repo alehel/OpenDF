@@ -1213,8 +1213,12 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     // soldier's block is zeroed by 0x404080 and the BMS loader
                     // 0x403590 never writes it, so in single player only the
                     // player can wear Kevlar.
-                    bool alive = true;
-                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1) alive = spend(b, 0x4b0000, hp2);
+                    // A spent round (ttl 0 under the water, 0x453922) runs
+                    // Kevlar but neither damages nor goes on: 0x453860 calls
+                    // 0x453510 only while 0 < ttl (+0xfc, 0x454384), and goes
+                    // on past the person likewise (0x4544f1).
+                    bool alive = !spent;
+                    if (hit.object == -3 && gear_ == 31 && hit.part >= 0 && hit.part <= 1 && !spend(b, 0x4b0000, hp2)) alive = false;
                     // Damage (0x453510, while the round has energy left): for
                     // hp2 < 0 none and the round stops; else the energy left,
                     // max(1, E / 25), x8 on the head (part 2).
