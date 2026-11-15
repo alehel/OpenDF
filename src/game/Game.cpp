@@ -885,6 +885,7 @@ private:
     bool quitBox_ = false;
     bool quitFreedMouse_ = false;         // (OpenDF) the box released the mouse
     int flashFrame_ = 0;                  // first-person flash meshes' frame (drawViewModel)
+    int heldFlashFrame_ = 0;              // DF1 third-person flash meshes' frame ([0xc23800], 0x481330)
     void closeQuitBox();
     // [0x66f978]; Delta Force 2 [0x67d3a4] (GOG Df2.exe): 0 off, 1 names,
     // 2 abbreviated (glyph 4).
@@ -4211,14 +4212,22 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             // The held weapon (0x44cc34): the mode's third-person item (+0x68),
             // its LOD's first mesh, at the right hand (mesh 7) turned by the
             // fixed offset 0x44d3c0 (-30, -65, -30 degrees as yaw, pitch, roll).
+            // Delta Force (GOG Df.exe 0x481330, 0x481520..0x48152a): not drawn
+            // once the person's LOD is at or past the weapon's LOD count, and
+            // only mesh 0 of it (the flash meshes 1 / 2 need +0x6d & 8 / 0x10,
+            // 0x481571 / 0x4815c6, not modelled for other people).
+            const bool df1Held = !arsenal_.df2();
             if (const int item = arsenal_.heldItemAt(v.o->weaponMode); item > 0 && pose.size() > 7 && !v.o->dead)
                 if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
-                    if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty()) {
+                    if (const GpuModel* wm = models_.get(vfs_, wi->graphic);
+                        wm && !wm->lods.empty() && !(df1Held && v.lod >= int(wm->lods.size()))) {
                         const Mat4& offset = heldWeaponOffset();
                         const auto& l = v.o->model->lods[size_t(std::clamp(v.lod, 0, int(v.o->model->lods.size()) - 1))];
                         const auto& pv = l.meshPivot[7];
                         const Mat4 hand = pose[7] * translate({pv[0], pv[1], pv[2]});
-                        models_.draw(*wm, std::min(v.lod, int(wm->lods.size()) - 1), body * hand * offset);
+                        const int wl = std::min(v.lod, int(wm->lods.size()) - 1);
+                        models_.draw(*wm, wl, body * hand * offset, df1Held);
+                        if (df1Held) models_.drawTranslucent(*wm, wl, body * hand * offset, true);
                     }
             continue;
         }
@@ -4271,7 +4280,27 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
                     if (const ItemDef* wi = items_.byId(100000 + item); wi && !wi->graphic.empty())
                         if (const GpuModel* wm = models_.get(vfs_, wi->graphic); wm && !wm->lods.empty() && bm->lods[0].meshPivot.size() > 7) {
                             const auto& pv = bm->lods[0].meshPivot[7];
-                            models_.draw(*wm, 0, m * pose[7] * translate({pv[0], pv[1], pv[2]}) * heldWeaponOffset());
+                            const Mat4 wmm = m * pose[7] * translate({pv[0], pv[1], pv[2]}) * heldWeaponOffset();
+                            if (arsenal_.df2()) {
+                                models_.draw(*wm, 0, wmm);
+                            } else {
+                                // GOG Df.exe 0x481330: mesh 0, then mesh 1 while +0x6d & 8
+                                // (0x481571) and mesh 2 while +0x6d & 0x10 (0x4815c6), the
+                                // player's flash bits as in the first-person draw; each flash
+                                // mesh steps the counter [0xc23800] 1, 2, 0 into slot 1
+                                // ([0xad3cf4]). Bit 4 of the flash argument leaves mesh 0 out.
+                                const int fl = arsenal_.flash();
+                                int c = heldFlashFrame_;   // stepped once per frame drawn (the last pass keeps it)
+                                auto step = [&] { c = (c + 1) % 3; if (last) heldFlashFrame_ = c; return c; };
+                                const int f1 = (fl & 1) ? step() : 0;
+                                models_.draw(*wm, 0, wmm, true, fl & 1, f1);
+                                models_.drawTranslucent(*wm, 0, wmm, true, fl & 1, f1);
+                                if (fl & 2) {
+                                    const int f2 = step();
+                                    models_.draw(*wm, 0, wmm, true, 2 | 4, f2);
+                                    models_.drawTranslucent(*wm, 0, wmm, true, 2 | 4, f2);
+                                }
+                            }
                         }
             }
     // Effects: billboards facing the camera (yaw only), scaled, at their frame.

@@ -405,6 +405,7 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         // 0x44aceb, DF2.EXE 0x44a290 / 0x44a2db; the model's other meshes
         // are never drawn).
         if (weapon && b.mesh != 0 && !(b.mesh <= 2 && (flash & (1 << (b.mesh - 1))))) continue;
+        if (weapon && b.mesh == 0 && (flash & 4)) continue;   // a flash mesh drawn on its own
         if (b.doubleSided) glDisable(GL_CULL_FACE);
         else glEnable(GL_CULL_FACE);
         if (flags & 0x0040) {   // decal: drawn at the nearest vertex's depth (0x46f9bc)
