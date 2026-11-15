@@ -209,6 +209,7 @@ bool World::startMove(WorldObject& o, int number) {
     if (!mv || !o.chr->animation(mv->animation)) return false;
     o.anim.start(*o.chr, mv->animation);
     o.moveNumber = number;
+    if (!df2Rules && ((number >= 250 && number <= 253) || number == 255)) smokeOwners_.push_back(int(&o - objects.data()));
     return true;
 }
 
@@ -511,11 +512,12 @@ static void testFaces(const World& world, const WorldObject& o, Vec3 a, Vec3 b, 
     });
 }
 
-float World::faceGround(Vec3 feet, float step, int* owner) const {
+float World::faceGround(Vec3 feet, float step, int* owner, int skip) const {
     float best = terrain->heightAt(feet.x, feet.z);
     if (owner) *owner = -1;   // mover +0x100 = 0 (0x435dd9)
     for (const auto& o : objects) {
         if (o.person || o.removed || !o.model || o.model->hitMeshes.empty()) continue;
+        if (skip >= 0 && &o == &objects[size_t(skip)]) continue;
         const Vec3 at = nearest(o.pos, feet);
         const float R = o.model->flatRadius;   // +0x64
         if (std::abs(at.x - feet.x) > R || std::abs(at.z - feet.z) > R) continue;

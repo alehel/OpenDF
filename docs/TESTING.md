@@ -80,7 +80,8 @@ train at once; with `OPENDF_NOFLY=1 --camera -491.5,1356,4,0,-15` the
 player drops onto a flatcar and rides it. `OPENDF_DEBUGRIDE=1` lists every
 120 ticks the people standing on an object (DF1 +0x100 / DF2 +0xF8), their
 place on it and its velocity and turn; `=N` follows world object N every
-10 ticks (move, height, LADDER). `OPENDF_TESTLADDER=1` (DF2) sends the first
+10 ticks (move, height, LADDER). `OPENDF_AIPROP="TEAM:SUB:VALUE,..."` applies the script's AI-attribute action (action 3) at the
+first tick, e.g. `OPENDF_AIPROP=38:15:0` releases C04M03's Black Hawk guns. `OPENDF_TESTLADDER=1` (DF2) sends the first
 soldier allowed on ladders (BMS +0xC & 0x1000) running into the nearest
 ladder (type-4 volume) at tick 30; `=ITEM` only that item's ladders,
 `OPENDF_TESTLADDERWALK=1` walks instead (e.g. D06M11: the powcamp tower).

@@ -45,7 +45,8 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         v.waypoint = rec[0x4A];
         v.targetHeading = o.heading;
         v.lastHp = o.hp;
-        v.alerted = rec[0x42] == 2;
+        // GOG Df.exe 0x449710 (0x449b24..0x449b36): home = the load position.
+        v.home = o.pos;
         // The AI block soldiers use too (0x440109): perception +0x24 (%),
         // field of view +0x38 (degrees; half angle in 1/256 turns), alert +0x42.
         v.perception = (mo.raw[0x24 / 4] > 0 ? float(mo.raw[0x24 / 4]) : 100.f) / 100.f;
@@ -66,6 +67,7 @@ void VehicleSystem::init(World& world, const Mission& mission) {
         }
         // A helicopter starts on the ground unless placed in the air.
         v.floorHeight = world.terrain->heightAt(o.pos.x, o.pos.z);
+        v.probe = v.floorHeight;   // INFERRED: +0xdc before the first probe
         v.think = 1 + int(i % 8);
         vehicles_.push_back(v);
     }
@@ -131,7 +133,7 @@ bool VehicleSystem::pathStep(World& world, AiSystem& ai, Vehicle& v) {
     const MissionObject* wp = mission_->inGroup(2, path.points[size_t(v.waypoint)]);
     if (!wp) return false;
     const float ext = world.extent();
-    const Vec3 at = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos);
+    Vec3 at = world.nearest({std::fmod(std::fmod(wp->x, ext) + ext, ext), 0, std::fmod(std::fmod(-wp->y, ext) + ext, ext)}, o.pos);
     float radius = float(wp->raw[7]);
     if (radius <= 0) radius = wp->type == kWaypointB ? 1.f : 0.5f;
     const float dx = std::abs(at.x - o.pos.x), dz = std::abs(at.z - o.pos.z);
@@ -144,10 +146,15 @@ bool VehicleSystem::pathStep(World& world, AiSystem& ai, Vehicle& v) {
                 v.pathMode = 0;
                 v.path = 0;
                 v.stopped = true;
-                if (!v.hasHome) { v.home = o.pos; v.hasHome = true; }   // 0x47c717
+                v.home = o.pos;   // GOG Df.exe 0x450c26..0x450c2c: every one-way path end
                 return false;
             }
         }
+        // The next point is looked up again (GOG Df.exe 0x450ae0, 0x453f30;
+        // Df2.exe 0x42db20, 0x42f030 call 0x45c6a0 / 0x4033d0 once more) and
+        // the heading is set toward it, not the point just reached.
+        if (const MissionObject* nx = mission_->inGroup(2, path.points[size_t(v.waypoint)]))
+            at = world.nearest({std::fmod(std::fmod(nx->x, ext) + ext, ext), 0, std::fmod(std::fmod(-nx->y, ext) + ext, ext)}, o.pos);
     }
     v.targetHeading = std::atan2(at.x - o.pos.x, -(at.z - o.pos.z));
     return true;
@@ -263,7 +270,7 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
         if (!v.dead) heloTargeting(world, ai, v);
         else v.gunTarget = -1;   // the dead think clears the target (the gun fires until then)
         // Tail rotor (0x47cb4b): above 2 hits a smoke puff at hardpoint 2
-        // every think, and one more hit with chance 1/4 up to 17.
+        // every think, and one more hit with chance 1/8 up to 17 (GOG 0x45109c).
         if (!v.dead && o.tailHits > 2) {
             if (smoke && o.model && o.model->points.size() > 2) {
                 const auto& p = o.model->points[2];
@@ -274,6 +281,14 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             }
             if (o.tailHits <= 16 && (rnd() & 7) == 0) ++o.tailHits;
         }
+        // Delta Force's altitude controller (GOG Df.exe 0x450100) runs in
+        // the think: which branch calls it with which height, band and
+        // hysteresis shift (ctl 1), the landing branch (ctl 2), or neither
+        // (ctl 0: the accel +0xb0 stays).
+        const int nTail = o.tailHits > 2 ? std::min(o.tailHits, 5) : 1;   // 0x45100a
+        int ctl = 2, ctlShift = nTail;
+        float ctlH = 8.f, ctlBand = 1.f;
+        auto use = [&](float H, float band, int shift) { ctl = 1, ctlH = H, ctlBand = band, ctlShift = shift; };
         const bool onPath = !v.dead && v.gunTarget == -1 && pathStep(world, ai, v);
         if (onPath) { v.mode = 2; v.targetSpeed = teamSpeed; }
         else if (v.gunTarget != -1 && !v.dead) {
@@ -290,33 +305,57 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             const float dist = std::sqrt(d.x * d.x + d.z * d.z);
             const bool hawk = !(o.item && o.item->id == 100000 + kGazelle);
             float h = std::atan2(d.x, -d.z);
-            if (!world.df2Rules && v.rotor < float(0x14000000)) h = v.targetHeading;
-            else if (dist > 80) { v.targetSpeed = 15; v.mode = 2; }
-            else if (dist > 30) { v.targetSpeed = 5; v.mode = 1; if (hawk) h -= kPi / 8; }
-            else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h -= 3 * kPi / 8; }
-            else { v.targetSpeed = 5; v.mode = 1; }
+            if (!world.df2Rules && v.rotor < float(0x14000000)) { h = v.targetHeading; ctl = 0; }
+            else if (dist > 80) { v.targetSpeed = 15; v.mode = 2; use(18.f, 4.f, 4); }
+            else if (dist > 30) { v.targetSpeed = 5; v.mode = 1; if (hawk) h -= kPi / 8; use(8.f, 1.f, 5); }
+            else if (dist > 8) { v.targetSpeed = 0; v.mode = 1; if (hawk) h -= 3 * kPi / 8; use(8.f, 1.f, 7); }
+            else { v.targetSpeed = 5; v.mode = 1; use(8.f, 1.f, 5); }
             v.targetHeading = h;
-        } else if (!v.dead && (v.flags & 2) && v.hasHome) {
-            // Back to the point where the path ended (0x47c4f0).
+        } else if (!v.dead && (v.flags & 2) && homeDist(world, v) > 4.f) {
+            // Back home (GOG Df.exe 0x4509f0): the load position or the latest
+            // one-way path end; within 4 m (0x40000) it returns 0 and the
+            // idle branch below decides.
             const Vec3 d = world.nearest(v.home, o.pos) - o.pos;
-            const float dist = std::sqrt(d.x * d.x + d.z * d.z);
+            const float dist = homeDist(world, v);
             v.targetHeading = std::atan2(d.x, -d.z);
-            if (dist > 80) v.targetSpeed = 15, v.mode = 2;
-            else if (dist > 30) v.targetSpeed = 5, v.mode = 2;
-            else if (dist > 4) v.targetSpeed = 2.5f, v.mode = 1;
-            else v.targetSpeed = 0, v.mode = 0;
+            // 0x4509f0 calls 0x450100 itself: shifts 2 / 1 / 0.
+            if (dist > 80) v.targetSpeed = 15, v.mode = 2, use(18.f, 4.f, 2);
+            else if (dist > 30) v.targetSpeed = 5, v.mode = 2, use(18.f, 4.f, 1);
+            else v.targetSpeed = 2.5f, v.mode = 1, use(8.f, 1.f, 0);
         } else {
             v.targetSpeed = 0;
-            v.mode = (v.alerted || std::abs(v.speed) >= 0x400 / 65536.f * kTicks) ? 1 : 0;
-            if (v.mode == 1 && v.stopped && !v.alerted) v.mode = 0;
+            v.mode = (v.alert == 2 || std::abs(v.speed) >= 0x400 / 65536.f * kTicks) ? 1 : 0;
+            if (v.mode == 1 && v.stopped && v.alert != 2) v.mode = 0;
         }
-        // The floor: the ground around and ahead (1, 2, 4 s at this speed).
-        const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
+        // Path and idle (0x451317..0x45138f): mode 0 or no lift -> the
+        // landing branch; else 0x450100 at 18 m / 4 m (path) or 8 m / 1 m.
+        if (!v.dead && ctl == 2 && v.gunTarget == -1 && v.mode != 0 && v.rotor >= float(0x14000000))
+            use(v.mode == 2 ? 18.f : 8.f, v.mode == 2 ? 4.f : 1.f, nTail);
         float fl = ground;
-        for (const Vec3 p : {o.pos + Vec3{4, 0, 0}, o.pos - Vec3{4, 0, 0}, o.pos + Vec3{0, 0, 4}, o.pos - Vec3{0, 0, 4},
-                             o.pos + fwd * v.speed, o.pos + fwd * (2 * v.speed), o.pos + fwd * (4 * v.speed)})
-            fl = std::max(fl, world.terrain->heightAt(p.x, p.z));
-        v.floorHeight = fl;
+        if (world.df2Rules) {
+            // The floor: the ground around and ahead (1, 2, 4 s at this speed).
+            const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
+            for (const Vec3 p : {o.pos + Vec3{4, 0, 0}, o.pos - Vec3{4, 0, 0}, o.pos + Vec3{0, 0, 4}, o.pos - Vec3{0, 0, 4},
+                                 o.pos + fwd * v.speed, o.pos + fwd * (2 * v.speed), o.pos + fwd * (4 * v.speed)})
+                fl = std::max(fl, world.terrain->heightAt(p.x, p.z));
+            v.floorHeight = fl;
+        } else {
+            if (ctl == 2) {
+                // The landing branch (0x451198..0x4512a6): the probe +0xdc
+                // refreshed (0x486fd0 from 3 m below, 3 m step: terrain or an
+                // object face, not its own); with lift and more than 9 m up
+                // (0x90000) it hovers instead.
+                v.probe = world.faceGround(o.pos - Vec3{0, 3.f, 0}, 3.f, nullptr, v.object);
+                const float unit = 1.f / 65536.f;
+                const bool lift = v.rotor >= float(0x14000000);
+                v.floorHeight = v.probe;
+                if (lift && o.pos.y - v.probe > float(0x90000) * unit) use(8.f, 1.f, nTail);
+                else if (v.probe + rest < o.pos.y) v.accel = !lift ? -0x134 * unit : v.vz < -0x3ff * unit ? 0.f : -0x9a * unit;
+                else { v.accel = 0; v.vz = 0; o.pos.y = v.probe + rest; }
+            }
+            if (ctl == 1) altitude(world, v, ctlH, ctlBand, ctlShift);
+            fl = v.floorHeight;
+        }
         if (!v.dead) {
             // Rotor (GOG Df.exe 0x450e40): +0x800000 per think up to
             // 0x1b000000 (0x451035) while the mode is not 0 or the think is
@@ -329,14 +368,31 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             // reproduced here yet).
             const bool liftNow = v.rotor >= float(0x14000000);
             const bool idle = std::abs(v.speed) < 0x400 / 65536.f * kTicks;
-            const bool busy = world.df2Rules || v.mode != 0 || v.gunTarget != -1 || v.alerted ||
+            const bool busy = world.df2Rules || v.mode != 0 || v.gunTarget != -1 || v.alert == 2 ||
                               (idle && o.pos.y - fl > 8.f) || (liftNow && o.pos.y > ground + rest);
             if (busy) v.rotor = std::min(v.rotor + float(0x800000), float(0x1b000000));
             else if (v.rotor > float(0x700000)) v.rotor -= float(0x400000);
             else v.rotor = std::max(v.rotor - float(0x20000), 0.f);
         }
+        v.probeTimer += 8;   // ai+0x2c += the think interval (0x451115)
     }
     const bool lift = v.rotor >= float(0x14000000);
+    const float unit = 1.f / 65536.f;   // m per tick
+    if (!world.df2Rules) {
+        // The move (GOG Df.exe 0x451590): z += vz, then vz += accel (no cap);
+        // while coming down, never below max(terrain, probe +0xdc) + rest
+        // (vz is left as it is), destroyed when that happens faster than
+        // 0x1000 a tick (0x45170e).
+        o.pos.y += v.vz;
+        v.vz += v.accel;
+        if (v.vz < 0) {
+            const float floor = std::max(world.terrain->heightAt(o.pos.x, o.pos.z), v.probe) + rest;
+            if (o.pos.y < floor) {
+                o.pos.y = floor;
+                if (v.vz < -0x1000 * unit && !v.dead && o.hp > 0) world.damage(v.object, o.hp + 100);
+            }
+        }
+    }
     const float height = o.pos.y - v.floorHeight;
     // Turning (0x47ba4c): turn_rate degrees/s, only above 6 m.
     v.yawRate = 0;
@@ -354,16 +410,20 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     // anticlockwise, beyond what the heading controller can hold.
     if (!v.dead && o.tailHits > 2)
         o.heading -= float(std::min(uint32_t(o.tailHits) << 22, 0x1400000u)) / 4294967296.f * turn;
-    // Speed (0x47bacc).
-    const float accel = (o.item ? o.item->acceleration : 4.f) / kTicks;
-    if (std::abs(v.targetSpeed - v.speed) <= accel) v.speed = v.targetSpeed;
-    else v.speed += v.targetSpeed > v.speed ? accel : -accel;
-    if (!lift && height < 1.f) v.speed = 0;
-    // Altitude (0x47bc1c): climb below floor + H, descend above floor + H +
-    // band, damped inside; land: down at up to 1 m/s; no lift: fall.
-    const float unit = 1.f / 65536.f;   // m per tick
+    // Speed (0x47bacc). Delta Force without lift (GOG Df.exe 0x451687 ->
+    // 0x44ffc0(obj, 0)): toward 0, by twice the rate once destroyed.
+    const float accel = (o.item ? o.item->acceleration : 4.f) / kTicks * (!world.df2Rules && !lift && v.dead ? 2.f : 1.f);
+    const float want = !world.df2Rules && !lift ? 0.f : v.targetSpeed;
+    if (std::abs(want - v.speed) <= accel) v.speed = want;
+    else v.speed += want > v.speed ? accel : -accel;
+    if (world.df2Rules && !lift && height < 1.f) v.speed = 0;
+    // Delta Force 2 (its own helicopter think is not reproduced yet): the
+    // controller decided every tick. Altitude (0x47bc1c): climb below floor
+    // + H, descend above floor + H + band, damped inside; land: down at up
+    // to 1 m/s; no lift: fall.
     // Tail-rotor damage (0x47bc1c): 7..11 hits always climb, 12 or more fall.
-    if (!lift || v.dead || (!v.dead && o.tailHits >= 12)) {
+    if (!world.df2Rules) {
+    } else if (!lift || v.dead || (!v.dead && o.tailHits >= 12)) {
         v.vz -= 0x134 * unit;
     } else if (o.tailHits > 6) {
         v.vz += v.vz >= 0x800 * unit ? -0x100 * unit : 0x100 * unit;
@@ -381,8 +441,8 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     // Velocity +0x3C / +0x40 = speed (cos, sin) >> 6, 0 at speed 0 (DF1
     // 0x47bb1c, DF2 0x426660).
     o.tickVel = fwd * (v.speed / kTicks);
-    o.pos.y += v.vz;
-    if (o.pos.y < ground + rest) {
+    if (world.df2Rules) o.pos.y += v.vz;
+    if (world.df2Rules && o.pos.y < ground + rest) {
         // On the ground; hitting it fast while falling destroys it (0x47d1da).
         if (v.vz < -0x1000 * unit && !v.dead && o.hp > 0) world.damage(v.object, o.hp + 100);
         o.pos.y = ground + rest;
@@ -399,6 +459,51 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
     v.bank += std::clamp(bankTarget - v.bank, -step, step);
     o.roll = v.bank;
     o.pitch = -v.speed * 256.f * 65536.f / 4294967296.f * turn;
+}
+
+// Delta Force's altitude controller (GOG Df.exe 0x450100), from the think:
+// floor = max(probe +0xdc under the hub, refreshed when ai+0x2c passes
+// 0x3e; terrain 4 m to each side), then the terrain 1, 2 and 4 s ahead at
+// this speed, n = 1 + those that raise it. Hysteresis 0x100 << shift: the
+// height H lower while coming down, the band wider otherwise. Below:
+// vz > 0x7ff ? -0x100 : n * 0x100; above: vz < -0x7ff ? +0x100 : -n * 0x100;
+// inside -0xcd (rising), +0x33 (falling), -0x4d (still). Tail hits 7..11
+// count as below, 12 or more give -0x134. The result is the accel +0xb0.
+void VehicleSystem::altitude(World& world, Vehicle& v, float H, float band, int shift) {
+    WorldObject& o = world.objects[size_t(v.object)];
+    const float unit = 1.f / 65536.f;
+    if (v.probeTimer > 0x3e) {
+        v.probeTimer = 0;
+        v.probe = world.faceGround(o.pos - Vec3{0, 3.f, 0}, 3.f, nullptr, v.object);
+    }
+    float fl = v.probe;
+    for (const Vec3 p : {o.pos + Vec3{4, 0, 0}, o.pos - Vec3{4, 0, 0}, o.pos + Vec3{0, 0, 4}, o.pos - Vec3{0, 0, 4}})
+        fl = std::max(fl, world.terrain->heightAt(p.x, p.z));
+    const Vec3 fwd{std::sin(o.heading), 0, -std::cos(o.heading)};
+    int n = 1;
+    for (const float k : {1.f, 2.f, 4.f}) {
+        const Vec3 p = o.pos + fwd * (k * v.speed);
+        const float h = world.terrain->heightAt(p.x, p.z);
+        if (h > fl) { fl = h; ++n; }
+    }
+    v.floorHeight = fl;
+    float lo = H + fl;
+    const float hy = float(0x100 << shift) * unit;
+    if (v.vz < 0) lo -= hy;
+    else band += hy;
+    int err = o.pos.y < lo ? 1 : o.pos.y > lo + band ? -1 : 0;
+    if (o.tailHits > 6 && o.tailHits < 12) err = 1;
+    if (o.tailHits > 11) { v.accel = -0x134 * unit; return; }
+    if (err < 0) v.accel = v.vz < -0x7ff * unit ? 0x100 * unit : -float(n) * 0x100 * unit;
+    else if (err == 0) v.accel = v.vz > 0 ? -0xcd * unit : v.vz < 0 ? 0x33 * unit : -0x4d * unit;
+    else v.accel = v.vz > 0x7ff * unit ? -0x100 * unit : float(n) * 0x100 * unit;
+}
+
+// 2D distance to home (0x4509f0: 0x477670 of |dx|, |dy|).
+float VehicleSystem::homeDist(const World& world, const Vehicle& v) const {
+    const WorldObject& o = world.objects[size_t(v.object)];
+    const Vec3 d = world.nearest(v.home, o.pos) - o.pos;
+    return std::sqrt(d.x * d.x + d.z * d.z);
 }
 
 Vec3 VehicleSystem::targetPosition(const World& world, int t) const {
@@ -430,8 +535,9 @@ Vec3 VehicleSystem::gunPoint(const World& world, const Vehicle& v) const {
 // with record flag 1 none. A target seen dead is dropped during a pause;
 // with flag 2 one more than 100 m (2D) from where the helicopter took it is
 // given up for 60 thinks. Without a target the soldiers' scan (0x46a804,
-// from 1 m above the hub) is drawn against rand: score x perception x2
-// (hard, side 2), / 4 when relaxed, x perception again. With a target the
+// GOG Df.exe 0x45e280, from 1 m above the hub) is drawn against rand
+// (0x450c40): score x perception x2 (hard, side 2), / 4 when relaxed; taking
+// a target marks the team spotted (0x42edd0). With a target the
 // sight line is re-checked about every 192 ticks; only while it holds is the
 // last known position refreshed (and a dead target noticed). The gun's aim
 // is that position from the gun point, relative to the body, clamped to the
@@ -451,15 +557,31 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
     }
     if (v.gunTarget == -1) {
         if (v.giveUp > 0) { --v.giveUp; return; }
+        // The scan 0x45e280 first: while not alerted, a dead person of its own
+        // side within 50 m (2D) and in sight (1..2) sets ai+0x9c = 2 and the
+        // team's alert word (0x44a3e0).
+        if (v.alert != 2)
+            for (size_t qi = 0; qi < world.objects.size(); ++qi) {
+                const WorldObject& q = world.objects[qi];
+                if (!q.person || !q.dead || q.side != o.side) continue;
+                const int los = ai.sightLine(world, o.pos, q.pos, v.object, int(qi));
+                if (los < 1 || los > 2 || dist2D(o.pos, q.pos) >= 50.f) continue;
+                v.alert = 2;
+                ai.alertTeamOf(o.team);
+            }
         int id = -1;
         Vec3 at{0, 0, 0};
         const Vec3 eye = o.pos + Vec3{0, 1.f, 0};
         float score = ai.bestTarget(world, v.object, eye, o.heading, o.side, v.fovHalf, player_, id, at);
         if (id == -1) return;
+        // Perception once, x2 on hard for side 2, / 4 while ai+0x9c is 0
+        // (0x45e280); 0x450c40 takes the target when rand < score.
         score *= v.perception * ((ai.hard && o.side == 2) ? 2.f : 1.f);
         if (v.alert == 0) score *= 0.25f;
-        if (float(rnd()) >= score * v.perception * 65536.f) return;
+        if (float(rnd()) >= score * 65536.f) return;
         if ((v.flags & 2) && dist2D(o.pos, at) > 100.f) return;
+        // 0x450ca8: the "team spotted team" bit (0x42edd0).
+        ai.markSpotted(o.team, id == -3 ? player_.team : world.objects[size_t(id)].team);
         v.gunTarget = id;
         v.lastKnown = at;
         v.seen = true;
@@ -477,6 +599,8 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         if (v.losTimer > 0xBA) {
             v.losTimer = 0;
             v.seen = ai.sightLine(world, o.pos + Vec3{0, 1.f, 0}, targetPosition(world, v.gunTarget), v.object, v.gunTarget) >= 1;
+            // GOG Df.exe 0x45051a: each sight re-check that holds marks the team spotted.
+            if (v.seen) ai.markSpotted(o.team, v.gunTarget == -3 ? player_.team : world.objects[size_t(v.gunTarget)].team);
         }
         if (v.seen) {
             if (!targetAlive(world, v.gunTarget)) v.deadSeen = true;
@@ -707,8 +831,8 @@ void VehicleSystem::tick(World& world, AiSystem& ai, Arsenal& shots, SoundSystem
     for (auto& v : vehicles_) {
         WorldObject& o = world.objects[size_t(v.object)];
         if (o.removed) continue;
-        // Shot: helicopters become alerted (0x44f221).
-        if (o.hp < v.lastHp) v.alerted = true;
+        // A hit does not alert a vehicle: GOG Df.exe 0x464c50 (CD 0x44f184)
+        // writes ai+0x9c only for organics (item kind 3).
         v.lastHp = o.hp;
         if (!v.dead && (o.wrecked || (o.hp <= 0 && o.item && o.item->hp > 0))) {
             // Destroyed (0x480357 / 0x47c83c): the blast (shrapnel 60, or for a
@@ -771,6 +895,39 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
             // Engine loop 506, pitch 1 + v / team speed (0x48026d).
             const float ts = ai.teamSpeedMs(o.team);
             sound.setLoop(100000 + v.object, 506, o.pos, ts > 0 ? 1.f + v.speed / ts : 1.f);
+        }
+    }
+}
+
+void VehicleSystem::property(const World& world, int team, int subtype, int value) {
+    // GOG Df.exe 0x45ff20 (Df2.exe 0x4185b0) on a vehicle's AI block. The
+    // helicopter reads flags bit 1 (no targeting) and 2 (100 m leash, home),
+    // the alert byte, field of view and perception; the BRDM (DF2) also the
+    // accuracy (ai+0x80). The rest is kept for completeness. Team 0 is
+    // skipped (0x4601a0).
+    if (team == 0) return;
+    for (auto& v : vehicles_) {
+        if (world.objects[size_t(v.object)].team != team) continue;
+        switch (subtype) {
+        case 2: if (value) v.flags |= 2; else v.flags &= ~2u; break;
+        case 5: v.alert = 2; break;
+        case 6: v.alert = 0; break;
+        case 7: {
+            // (value << 16) / 360, then the scan's half angle (>> 9 | 1) in 1/256 turns.
+            const int fov = (value << 16) / 0x168;
+            v.fovHalf = float((fov >> 9) | 1) / 256.f * 2 * kPi;
+            break;
+        }
+        case 8:
+            if (value != 0) {
+                v.accuracy = value;
+                v.aimScale = float(int(65536.0 * (1.0 / (double(value) * 0.01))) >> 1) / 65536.f;
+            }
+            break;
+        case 9: v.perception = float((value << 16) / 100) / 65536.f; break;
+        case 14: v.silent = value != 0; break;
+        case 15: if (value) v.flags |= 1; else v.flags &= ~1u; break;
+        default: break;
         }
     }
 }

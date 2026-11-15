@@ -401,7 +401,8 @@ private:
     std::vector<Effect> effects_;
     // Smoke generators (ITEMS.DEF "Smoke Generator", sgen 0x480b88): a puff
     // every 16..23 ticks, 100 puffs.
-    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; };
+    // sgen (GOG Df.exe 0x42a520): owner +0xf8 (world object, -1 none).
+    struct SmokeGen { Vec3 pos; int wait = 0, puffs = 0; int owner = -1; };
     // Sound: live on the audio device, or mixed in fixed steps into the
     // recording (--record).
     Audio audio_;
@@ -426,7 +427,19 @@ private:
     bool teamAlerted(int team) const override { return ai_.alerted(team); }
     bool reachedWaypoint(int team, int path, int point) const override { return ai_.reached(team, path, point); }
     void followPath(int team, int path) override { ai_.followPath(world_, team, path); vehicles_.followPath(world_, team, path); }
-    void aiProperty(int team, int subtype, int value) override { ai_.property(world_, team, subtype, value); }
+    // GOG Df.exe 0x4601a0 / Df2.exe 0x4184c0: decorations (searchlights),
+    // organics and items of the team, each with an AI block (0x45ff20 / 0x4185b0).
+    void aiProperty(int team, int subtype, int value) override {
+        ai_.property(world_, team, subtype, value);
+        vehicles_.property(world_, team, subtype, value);
+        if (team == 0) return;
+        for (auto& l : lights_) {
+            if (world_.objects[size_t(l.object)].team != team) continue;
+            if (subtype == 5) l.alert = 2;
+            else if (subtype == 6) l.alert = 0;
+            else if (subtype == 9) l.perception = float((value << 16) / 100) / 65536.f;
+        }
+    }
     void teamSpeed(int team, int kmh) override { ai_.teamSpeed(team, kmh); }
     void setTeamSide(int team, int side) override {
         if (team == 0) return;   // 0x4133c5: team 0 is left alone
@@ -2129,9 +2142,19 @@ void Game::tickEffects() {
     effects_.erase(std::remove_if(effects_.begin(), effects_.end(), [](const Effect& e) { return e.age >= e.life; }),
                    effects_.end());
     std::uniform_int_distribution<int> r(0, 0x7fff);
+    if (!world_.df2Rules)
+        for (int i : world_.takeSmokeOwners()) smokeGens_.push_back({world_.objects[size_t(i)].pos, 0, 0, i});
     for (auto& g : smokeGens_) {
         if (--g.wait > 0) continue;
-        spawnPuff(g.pos);
+        // 0x42a520: no owner, a puff at its own position; an owner not dead
+        // (+0x6c & 4 clear) removes it; else a puff at the owner's origin.
+        Vec3 at = g.pos;
+        if (g.owner >= 0) {
+            const WorldObject& w = world_.objects[size_t(g.owner)];
+            if (!(w.dead || w.wrecked)) { g.puffs = 100; continue; }
+            at = w.pos;
+        }
+        spawnPuff(at);
         ++g.puffs;
         g.wait = ((r(effectRng_) * 2) >> 13) + 16;
     }
@@ -2152,7 +2175,7 @@ void Game::tickEffects() {
 // A destroyed Delta Force gnrc object goes off (GOG Df.exe 0x4533f0 with
 // flag 4 -> 0x453270, CD 0x47ee6c -> 0x47ecf0): the item's sound, then
 // 0x460a30(owner 0, origin + 1 m, scale n << 14): effect 3 with +0x7c =
-// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a +-200 m noise;
+// n / 4 (no sound 0x32 of its own), blast type 1 of 10 m, a +-200 noise box in raw 16.16 units (200/65536 m, 0x45fcf0);
 // a Smoke Generator at origin + 0.5 m (0x447610); then flags |= 8, the husk.
 // The blast is queued in DF.EXE and so meets the husk; here the husk goes
 // first. The table's n: 1001 1, 1002 3, 1039 4, 1040 1, 1041 3, 1042 3,
@@ -2173,7 +2196,7 @@ void Game::gnrcExplode(int index) {
     effectScale_ = n / 4.f;
     explode(at, 1, false, 10.f, false);   // surface 1: effect 3, no smoke generator
     effectScale_ = 0;
-    ai_.noise(at, 200.f, 0, 0);
+    ai_.noise(at, 200.f / 65536.f, 0, 0);   // 0x45fcf0 adds the 200 raw: +-200/65536 m
     smokeGens_.push_back({smoke, 0, 0});
 }
 
@@ -2211,7 +2234,7 @@ bool Game::df2Touch(const WorldObject& o, Vec3 origin, Vec3 feet) const {
 
 // Delta Force's touch (GOG Df.exe 0x488f00 case 0xfd6, CD 0x437f60) does
 // the same: 0x446fb0(toucher, the mine's origin, 0 fragments) -> 0x4606b0
-// (effect 3, blast type 1, sound 0x32, +-200 m noise), a Smoke Generator
+// (effect 3, blast type 1, sound 0x32, +-200 raw-unit noise box), a Smoke Generator
 // at +0.5 m (0x447610), hp and +0x76 = 0, flags |= 4; the mine stays drawn.
 // A Land Mine stepped on (DF2.EXE 0x43fc80 type 0xFD6, case 0x43ff93): if
 // its hp is above 0, the common blast at the mine with no fragments (owned
@@ -2228,9 +2251,12 @@ void Game::mineContact(int index) {
     if (world_.df2Rules) df2Blast(o.pos, 0, o.heading);
     else {
         explode(o.pos, 1);   // surface 1: effect 3, sound 0x32, no smoke generator
-        ai_.noise(o.pos, 200.f, 0, 0);
+        ai_.noise(o.pos, 200.f / 65536.f, 0, 0);   // 0x4606b0 -> 0x45fcf0: 200 raw units
     }
-    smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+    // DF1 0x488f00: 0x447610(the mine, origin + 0.5 m) owned by the mine,
+    // whose flags get 4 at once: the puffs rise from the mine's origin.
+    if (world_.df2Rules) smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0});
+    else smokeGens_.push_back({o.pos + Vec3{0, 0.5f, 0}, 0, 0, index});
 }
 
 // Delta Force 2's destruction of the section-8 items (the ai functions
@@ -2438,8 +2464,18 @@ void Game::tickDf1Lights() {
     for (auto& l : lights_) {
         WorldObject& o = world_.objects[size_t(l.object)];
         if (l.dead) continue;
-        // 0x4519a0: dead (+0x6c & 4) or hp below 1, the light stops for good.
-        if (o.removed || o.wrecked || o.hp <= 0) { l.dead = true; continue; }
+        if (o.removed) { l.dead = true; continue; }
+        // 0x4519a0, at its think: hp below 1 -> flags |= 0x10c, the turn
+        // stopped and 0x446fb0(killer, origin + 1 m, 0 fragments) -> 0x4606b0:
+        // effect 3, blast type 1, sound 0x32 and a +-200 (raw units, 0x45fcf0)
+        // noise box (0x451b7c); the light stops for good.
+        if (l.wait < 1 && o.hp <= 0) {
+            l.dead = true;
+            const Vec3 at = o.pos + Vec3{0, 1.f, 0};
+            explode(at, 1);
+            ai_.noise(at, 200.f / 65536.f, 0, 0);
+            continue;
+        }
         if (l.wait < 1) {
             l.wait = 0x10;
             if (!l.init) {
@@ -6542,11 +6578,11 @@ int Game::run() {
                 if (world_.objects[size_t(i)].item && world_.objects[size_t(i)].item->aiFunction == "mine") {
                     // GOG Df.exe 0x453220 (a round or blast, hp <= 0, flag 4
                     // clear): flags |= 4 and 0x446fb0(killer, origin, 0) ->
-                    // 0x4606b0: effect 3, blast type 1, sound 0x32, +-200 m
+                    // 0x4606b0: effect 3, blast type 1, sound 0x32, +-200 raw
                     // noise, no fragments; no smoke, the mine stays drawn.
                     const Vec3 at = world_.objects[size_t(i)].pos;
                     explode(at, 1);
-                    ai_.noise(at, 200.f, 0, 0);
+                    ai_.noise(at, 200.f / 65536.f, 0, 0);   // 0x45fcf0: 200 raw units
                     continue;
                 }
                 // 0x47ecf0: destruction sounds by item (def +0x20 = id - 100000).
@@ -6623,6 +6659,18 @@ int Game::run() {
                         int team = 0, kmh = 0, n = 0;
                         if (std::sscanf(p, "%d:%d%n", &team, &kmh, &n) != 2) break;
                         ai_.teamSpeed(team, kmh);
+                        p += n;
+                        if (*p == ',') ++p;
+                    }
+                }
+                // Testing: OPENDF_AIPROP="TEAM:SUB:VALUE[,...]" applies the
+                // script's AI-attribute action (action 3) at tick 1.
+                if (static bool once = false; !once && std::getenv("OPENDF_AIPROP")) {
+                    once = true;
+                    for (const char* p = std::getenv("OPENDF_AIPROP"); p && *p;) {
+                        int team = 0, sub = 0, val = 0, n = 0;
+                        if (std::sscanf(p, "%d:%d:%d%n", &team, &sub, &val, &n) != 3) break;
+                        aiProperty(team, sub, val);
                         p += n;
                         if (*p == ',') ++p;
                     }
