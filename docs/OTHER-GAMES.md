@@ -381,7 +381,14 @@ First differences from DF1:
     tick follow the segment traced at its start, each resuming 0x2000 past
     the hit. An item with hp2 < 0 (dish, radar, the 'Target:' vehicles)
     stops every round dead, whatever its face (0x453510), and sets off a
-    delay grenade there. Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
+    delay grenade there. Tracers (0x452290 / 0x452610): every pass of a
+    round leaves a segment in a ring of 2048 that fades over 0x1e ticks
+    (alpha ((life >> 2) << 3) / 255), coloured at fire time by the
+    shooter's side (0x451ae0: 1 light blue, 2 light red, 3 yellow, 4 pink,
+    else white; M203 and LAW white, shrapnel 0x1010101); with Options3
+    TRACERS on (attributes 0x80 clear) all but rounds with flags 0x1c900000
+    (hand and delay grenades, shotgun pellets among them), off only the LAW
+    and shrapnel; under the water every round, in white. Shrapnel (0x412b00 / 0x4136c0 / 0x415490): DF1's counts
     and speeds, but fragments are ammo 31 and DF2's random generator 0x41ac40
     is reseeded to 0x5FC by every burst (DF1's seed call is empty), so each
     burst has the same pattern about its heading; big blasts 0.2 m up, the

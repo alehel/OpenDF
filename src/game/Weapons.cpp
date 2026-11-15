@@ -311,6 +311,7 @@ void Arsenal::init(const std::vector<std::string>& gameText, const ExeImage* exe
     clock_ = flashTimer_ = 0;
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
+    clearTracers();
     impacts_.clear();
 }
 
@@ -431,6 +432,7 @@ bool Arsenal::initDf2(const std::vector<std::string>& hudGuns, const ExeImage& e
     clock_ = flashTimer_ = 0;
     kick_[0] = kick_[1] = kick_[2] = 0;
     bullets_.clear();
+    clearTracers();
     impacts_.clear();
     return true;
 }
@@ -473,6 +475,57 @@ void Arsenal::df2Drag(Projectile& b, float water) const {
     const int64_t wind[3] = {windX_, 0, windZ_};
     for (int i = 0; i < 3; ++i) v[i] -= ((v[i] - wind[i]) * k) >> 16;
     b.vel = Vec3{float(v[0]), float(v[1]), float(v[2])} * (1.f / (65536.f * kTick));
+}
+
+void Arsenal::tracerColour(Projectile& b, const World& world) {
+    // The round's tracer colour (+0x9c), set when it is fired (GOG Df2.exe
+    // 0x451ae0): by the shooter's side, 1 0xb9a0a0ff, 2 0xb9ffa0a0, 3
+    // 0xb9ffff00, 4 0xb9ff027f, else white; the M203 (CD 0x01) and the LAW
+    // (0x40) white; shrapnel 0x1010101 (0x452120); shotgun pellets 0
+    // (0x451eb0); a round with no shooter 0 (the record is cleared).
+    b.coloured = true;
+    if (b.flags & 0x20) { b.colour = 0x01010101; return; }
+    if (b.flags & 0x400) { b.colour = 0; return; }
+    const int side = b.shooter == -3 ? 1   // the player (Game kPlayerSide)
+                     : b.shooter >= 0 && size_t(b.shooter) < world.objects.size() ? world.objects[size_t(b.shooter)].side
+                                                                                    : -1;
+    if (side < 0) { b.colour = 0; return; }
+    b.colour = side == 1 ? 0xb9a0a0ffu : side == 2 ? 0xb9ffa0a0u : side == 3 ? 0xb9ffff00u : side == 4 ? 0xb9ff027fu : 0xffffffffu;
+    if (b.flags & 0x41) b.colour = 0xffffffffu;
+}
+
+void Arsenal::recordTracer(const Projectile& b, Vec3 from, Vec3 to, Vec3 tickStart) {
+    // Every pass of a DF2 round (GOG Df2.exe 0x4546e4..0x454797 ->
+    // 0x452290): with the round under the water (its position at the start
+    // of the tick) always, in white; otherwise, in single player, with the
+    // Tracers option on (attributes 0x80 clear) a round with none of GOG
+    // flags 0x1c900000 (CD 0x1c90: hand and delay grenades, shotgun pellets
+    // among them), with it off only the LAW and shrapnel (0x600000,
+    // CD 0x60). A ring of 2048 (0x7ff), life 0x1e ticks.
+    if (!df2_ || (from.x == to.x && from.y == to.y && from.z == to.z)) return;
+    uint32_t colour = b.colour;
+    if (waterLevel != 0 && tickStart.y < waterLevel) colour = 0xffffffffu;
+    else if (tracersOff ? !(b.flags & 0x60) : (b.flags & 0x1c90)) return;
+    tracerHead_ = (tracerHead_ + 1) & 0x7ff;
+    tracers_[size_t(tracerHead_)] = Tracer{from, to, 0x1e, colour};
+}
+
+void Arsenal::ageTracers(uint32_t tick) {
+    // GOG Df2.exe 0x452610, per drawn frame: every record loses the ticks
+    // since the last frame (none while paused); gone once life >> 2 < 1.
+    const int elapsed = tracerClock_ <= tick ? int(tick - tracerClock_) : 0;
+    tracerClock_ = tick;
+    for (auto& t : tracers_)
+        if (t.life > 0) {
+            t.life -= elapsed;
+            if ((t.life >> 2) < 1) t.life = 0;
+        }
+}
+
+void Arsenal::clearTracers() {
+    // 0x452530.
+    tracers_.assign(2048, Tracer{});
+    tracerHead_ = 0;
 }
 
 void Arsenal::refill() {
@@ -936,6 +989,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             if (!resume) passes = 0, ignore = b.shooter, tickStart = b.pos;
             const Vec3 next = resume ? resumeEnd : b.pos + b.vel * kTick;
             const bool firstPass = !resume;
+            const Vec3 passStart = b.pos;
+            if (df2_ && !b.coloured) tracerColour(b, world);
             resume = false;
             RayHit hit;
             bool hitSomething = world.raycast(b.pos, next, hit, true, ignore, true, true);
@@ -976,6 +1031,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                             im.armed = !(b.age <= 8 && !(b.flags & 0x50));
                             im.flags = b.flags;
                             impacts_.push_back(im);
+                            recordTracer(b, passStart, at, tickStart);
                             b.age = b.lifetime;
                             break;
                         }
@@ -1006,6 +1062,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
             if (hitSomething && df2_ && (b.flags & 0x1000) && hit.object != -2) {
                 const Vec3 dir = normalize(b.vel);
                 b.pos = hit.point - dir * (0x4000 / 65536.f);
+                recordTracer(b, passStart, b.pos, tickStart);
                 if (hit.object >= 0 && !world.objects[size_t(hit.object)].person) {
                     const float d = dot(b.vel, hit.normal);
                     b.vel = (b.vel - hit.normal * (d * float(0x111EB) / 65536.f)) * (float(0xD999) / 65536.f);
@@ -1159,6 +1216,8 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                         if (hit.mesh != 6) ++target.tailHits;   // +0xD4 (mesh 6: +0xD8, never read)
                     }
                 }
+                // The pass's tracer (0x454797) ends 0x4000 before the hit.
+                recordTracer(b, passStart, hit.point - normalize(next - passStart) * (0x4000 / 65536.f), tickStart);
                 if (goesOn && !spent) {
                     // GOG 0x454823..0x454894: the next pass starts 0x2000 past the hit
                     // (0x4000 back + 0x6000); when that is at or past the end
@@ -1196,6 +1255,7 @@ void Arsenal::moveProjectiles(float dt, World& world) {
                     sounds_.push_back({0x41, b.pos + d * t});
             }
             b.pos = stopped ? stopAt : next;
+            recordTracer(b, passStart, b.pos, tickStart);
             if (df2_) {
                 // DF2.EXE 0x44c2f0: gravity 0xa7 a tick² (not the LAW; 0x14
                 // for a delay grenade under the water), then drag toward the

@@ -103,6 +103,9 @@ struct Projectile {
     // direction, never changed in flight (0x44f3e0), so the grenade, M203 and
     // LAW models are drawn that way the whole time.
     float yaw = 0, pitch = 0;
+    // DF2: the tracer colour (+0x9c, 0xAARRGGBB), set on the first move.
+    bool coloured = false;
+    uint32_t colour = 0;
     void orient() {
         yaw = std::atan2(vel.x, -vel.z);
         pitch = std::atan2(vel.y, std::sqrt(vel.x * vel.x + vel.z * vel.z));
@@ -279,6 +282,15 @@ public:
     bool underwaterRule = false;
     int playerArmourClass = 0;   // DF2: the player's second hp value (Kevlar's n)
     float waterLevel = 0;
+    // Delta Force 2's tracers (GOG Df2.exe 0x452290 ring, 0x452610 draw):
+    // one segment per pass of a round, fading over 0x1e ticks. `tracersOff`
+    // is df2.cfg attributes & 0x80 (Options3 TRACERS OFF, set by the game).
+    struct Tracer { Vec3 a{0, 0, 0}, b{0, 0, 0}; int life = 0; uint32_t colour = 0; };
+    bool tracersOff = false;
+    // Ages the records to the game tick `tick` (each drawn frame); then
+    // those with life >> 2 >= 1 are drawn, alpha ((life >> 2) << 3) / 255.
+    void ageTracers(uint32_t tick);
+    const std::vector<Tracer>& tracers() const { return tracers_; }
     std::vector<Impact> takeImpacts() { std::vector<Impact> out; out.swap(impacts_); return out; }
     // Knife strikes since the last call: the point 0.5 m along the view
     // from the body origin (0x42ca8c), for blast kind 2.
@@ -296,6 +308,9 @@ private:
     void fire(Player& player);
     void startReload();
     void moveProjectiles(float dt, World& world);
+    void tracerColour(Projectile& b, const World& world);
+    void recordTracer(const Projectile& b, Vec3 from, Vec3 to, Vec3 tickStart);
+    void clearTracers();
     int& chamberedRef() { return chambered_[size_t(mode().gun)]; }
     int& magRef() { return mag_[size_t(mode().gun)]; }
     int& sparesRef() { return spares_[size_t(mode().gun)]; }
@@ -327,6 +342,9 @@ private:
     bool binoculars_ = false;
     bool moveKeys_ = false;   // DF.EXE [0x93351c] & 0x41e this tick
     std::vector<Projectile> bullets_;
+    std::vector<Tracer> tracers_ = std::vector<Tracer>(2048);
+    int tracerHead_ = 0;
+    uint32_t tracerClock_ = 0;
     std::vector<Impact> impacts_;
     std::vector<Vec3> stabs_;
     std::vector<SoundEvent> sounds_;
