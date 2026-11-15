@@ -481,13 +481,17 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     } else
         texColor_ = makeTex2D(size_, size_, GL_RGB8, GL_RGB, toRgb(color, gradedPalette(color.palette)).data(), true, true);
     {
+        // GOG Df.exe 0x47d080 ends with 0x47b4a0(0xbd5480): the colour-map
+        // palette as graded by 0x47be90 -> 0x480d00 (TRN saturation and
+        // gamma/filter table) against the TRN type colours, the first of the
+        // nearest (plain squared RGB) wins; no types: 1.
+        const std::array<Rgb, 256> pal = trueColor ? color.palette : gradedPalette(color.palette);
         uint8_t byIndex[256];
         for (int i = 0; i < 256; ++i) {
             int best = 1;
             long bestD = -1;
             for (const auto& t : desc_.types) {
-                const long dr = color.palette[size_t(i)].r - t.r, dg = color.palette[size_t(i)].g - t.g,
-                           db = color.palette[size_t(i)].b - t.b;
+                const long dr = pal[size_t(i)].r - t.r, dg = pal[size_t(i)].g - t.g, db = pal[size_t(i)].b - t.b;
                 const long d = dr * dr + dg * dg + db * db;
                 if (bestD < 0 || d < bestD) {
                     bestD = d;
