@@ -160,7 +160,7 @@ First differences from DF1:
     side's people green, other sides' people red, other objects by side 0
     green, 1 0x1040ff, 2 red, 3 yellow, 4 0xff027f), the
     next-waypoint dot on the `map_radius` ring (0x421510, 0x4226c0,
-    0x443850); the top strip: the last three of two 40-line histories
+    0x443850), the rad%i frame added over the blips (GOG 0x448620); the top strip: the last three of two 40-line histories
     (system and chat), each line in its own colour, no timeout (0x442170;
     GOG 0x448770). GOG Df2.exe keeps each message raw (0x77 characters) and
     word-wraps it into the 40-line history the strip, the command map and
@@ -168,8 +168,13 @@ First differences from DF1:
     HUD.DEF box width x2 − (x1 − 4) in the HUD font, a break at the last
     space, continuation lines indented "  " and measured with two space
     glyphs of indent; a mode change re-wraps the raw rings (0x4215e0);
-    the crosshair: four orange arms, gap W·320/65536, arm W·640/65536
-    (0x45a9e0); target identification (GOG 0x4642b0, scope 0x455be0,
+    every mission start, a replay too, empties all four rings (0x41ede0
+    from 0x466ba0; the CD build keeps them);
+    the crosshair: four orange arms, gap W·320/65536 (GOG: W·1024/65536
+    while manning a gun, 0x4642b0), arm W·640/65536 (0x45a9e0); the laser
+    designator ignores the Crosshairs option: the arms while its scope flag
+    holds, else a blinking "No Target" (GOG Overlays STROVER90) W·0x380/65536
+    above the centre; target identification (GOG 0x4642b0, scope 0x455be0,
     pick 0x4189b0): unless attributes & 0x100 (the "FF" option off), the
     first person (organics table) of the player's side or side 0 along the aim within the
     centre's range + 2 m and 2 m of the ray gets, if on the player's side,
@@ -577,11 +582,14 @@ First differences from DF1:
   - **in-mission screens** (DF2.EXE 0x442940 and friends): panels darkened
     50 % with an orange outline (0x45c160); the mission-end panel (0x441660,
     STROVER1-4, green, at top+20..+150), "You are dead." (STRMISC11, top+20),
-    pause (STROVER7), the message log (the system history 15..0, entry 0 the
-    newest, bottom-anchored, own colours),
+    pause (STROVER7), the message log (CD 0x442850: a panel with the system
+    history 15..0, entry 0 the newest, bottom-anchored, own colours; GOG
+    0x448e40: the whole view darkened without an outline, STROVER43 at
+    view top + 20, and both wrapped histories 15..0 at their top-strip
+    columns from view top + item y0 + W·120/1024, 12W/640 apart),
     the goals (right-aligned at 1000, STRWINCOND/STRLOSECOND%03i from the
     header's ids +0xB0/+0xB4, met 0x804000 / hit red, "Lose Condiitions:"
-    as spelt), binocular texts in orange at the view's centre − 15; the
+    as spelt; each header only when its list has an entry, 0x448b10), binocular texts in orange at the view's centre − 15; the
     help (F1; GOG Df2.exe 0x41e5d0 at the mission start, drawn by
     0x41e620): the action table's 0x200 rows with the soldier's bindings,
     rows without a key or mouse button and category 11 left out, sorted by
@@ -593,11 +601,14 @@ First differences from DF1:
     PgUp / PgDn turn the pages with wrap (0x41e240). The CD build's table
     has no categories, so with CD DF2.EXE OpenDF keeps its old layout; the
     scope (0x44e2a0): centred at H/2 of the screen, black ring and posts with
-    half-blended navy inner segments, "%4im" range in orange, the zeroing
+    inner segments that halve the pixels (0x457480 colour 0), "%4im" range in orange, the zeroing
     readout in yellow (setting × 100 m; X/Z step it 0..10, 0..15 for the
     Barrett, and lower the scope view by the type's elevation, 0x445ff0 /
     0x44e0a0) and above it the magnification "%2ix" (below), the laser
-    square. The scope shows (GOG 0x455790) only while
+    diamond (vertices r/8 out on the axes); the range is the depth at the
+    inset's centre, whose pitch carries the zeroing (GOG 0x4557e0); friendly
+    tags inside the disc are covered by the inset (0x455be0 after 0x44fe70).
+    The scope shows (GOG 0x455790) only while
     the scope flag is on for a flag-1 mode, no move key is down, and the
     player is not dead, airborne, swimming or on a ladder (+0x64 &
     0x422004); it also gates the scoped mouse and the X/Z/E keys; the
