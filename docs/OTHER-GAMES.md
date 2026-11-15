@@ -92,6 +92,14 @@ First differences from DF1:
     (only the GOG release does), and the results match the CD files byte
     for byte.
   - Terrain colour maps as JPEG (libjpeg, optional at build time) or TGA.
+    DF2's JPEGs (terrain colour maps, front-end pictures, the briefing
+    map) decode as Df2.exe's own decoder 0x482310 does: libjpeg supplies
+    the coefficients, then 0x481220's IDCT, whose column pass takes the
+    row-6 term from coefficient c+54 instead of c+48 (8x8 block artefacts
+    in about 16% of DF2_MAIN.JPG's blocks, all of DFD1_C.JPG's), nearest
+    chroma and the 0x481080 colour tables. Bit-exact with libjpeg's islow
+    without fancy upsampling once the slip is undone. The launcher keeps
+    plain libjpeg.
 - `opendf --game games/DF2 mission D03M01` (or any `DxxMyy`) loads and plays
   with DF1's rules and built-in tables, now with:
   - **soldier animations** from `PLAYER01.KSA` (DF2.EXE 0x41e5e0): 255
