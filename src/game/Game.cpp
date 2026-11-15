@@ -188,6 +188,7 @@ private:
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
+    const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
     void drawTopBar(const Screen& s);
     void drawBottomBar(const Screen& s);
@@ -2008,6 +2009,7 @@ Vec3 Game::deadBodyOrigin() const {
 // up), at least 1 m above the ground (less while the pivot still lags by
 // under 0.5 m); it looks at the pivot raised 0.5 m (0x4810ec).
 Vec3 Game::viewDir() const {
+    if (dirOverride_) return *dirOverride_;
     if (!playerDead()) return player_.forward();
     const float s = std::abs(camLag_.x) + std::abs(camLag_.z);
     const Vec3 target = camPivot_ + Vec3{0, 0.5f + (s < 0.5f ? (s - 0.5f) * 0.5f : 0.f), 0};
@@ -3641,9 +3643,13 @@ void Game::drawCameraInset(const Screen& s) {
     glEnable(GL_SCISSOR_TEST);
     glScissor(int(x0), int(s.h - y1), int(w), int(h));
     glClear(GL_DEPTH_BUFFER_BIT);
+    // 0x4568a0 hands the renderer the camera's eye and its yaw / pitch
+    // (local_3c / local_38), so culling, LOD and lighting go by the camera.
     eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
     drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
     eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
 }
