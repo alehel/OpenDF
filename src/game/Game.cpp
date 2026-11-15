@@ -671,6 +671,14 @@ bool Game::loadMission(int index) {
         std::fprintf(stderr, "%s: %s\n", name.c_str(), err.empty() ? "unreadable" : err.c_str());
         return false;
     }
+    // Delta Force's object create (GOG Df.exe 0x449710; CD 0x43ff24): with no
+    // network game ([0x67f520] == 0) a record with +0x0C bit 0x10 (present
+    // from byte +0x45 players: the extra player starts and kit of the
+    // co-op missions) or bit 0x80 (network only) is never created, so it is
+    // not in the world, not a start and not on the command map. Bits 0x20
+    // and 0x40 pass in single player (GOG; the CD build also dropped 0x20).
+    if (mission_.version < 0x0F)
+        for (auto& mo : mission_.objects) mo.absent = (mo.flags & 0x90) != 0;
     {
         // 0x469ae0: header +0x74 == 2 the snow soldiers, +0x7A & 0x10 night.
         const bool snow = mission_.variantWord == 2, night = (mission_.lightFlags & 0x10) != 0;
@@ -776,9 +784,11 @@ bool Game::loadMission(int index) {
     player_.swimOrigin = swimOrigin_;
     player_.feet = {512, 0, 512};
     float startLift = 0;
+    // The first created start (GOG Df.exe 0x43f610: the player's index among
+    // the live 6001s of group 2); co-op starts are never created (absent).
     for (const auto& obj : mission_.objects) {
         const ItemDef* item = items_.byMissionType(obj.type);
-        if (item && item->id == kItemPlayerStart) {
+        if (item && item->id == kItemPlayerStart && !obj.absent) {
             const float ext = terrain_.mapExtent();
             player_.feet = {obj.x, 0, -obj.y};
             player_.wrap(ext);
@@ -3142,20 +3152,42 @@ void Game::drawCommandMap(const Screen& s) {
         hud_.line(ax, ay, bx, by, t, kHudBright);
     }
 
-    // Map objects: anything in file groups 0-2 whose record +0x4C is nonzero
-    // is drawn with that marker type in its side's colour (0 green, 1 blue,
-    // 2 red). The current waypoint blinks: drawn while tick bit 4 is set
-    // (0x43d975; 16 ticks on, 16 off).
+    // Map objects (GOG Df.exe 0x48e070, CD 0x43cfc8): the live objects of
+    // groups 0, 1 and 2 (0x7dde80 / 0x867e80 / 0x8ace80) whose marker type
+    // (+0x76, record byte +0x4C) is nonzero, in their side's colour (0 green,
+    // 1 blue, 2 red), each at its current position (0x48f5d0: +0x24/+0x28),
+    // so a driving convoy moves on the map; a soldier shape takes the
+    // object's heading (+0x30) and is an X once dead (+0x6C & 4). Removed
+    // and never-created objects are zeroed there and not drawn; records with
+    // no world object here (bare markers) are at their file position. Only
+    // the group-2 object that is the current route point blinks: drawn while
+    // tick bit 0x10 is set ([0x6e471c]; 16 ticks on, 16 off).
     auto sideColour = [](int side) { return side == 1 ? kHudBlue : side == 2 ? kHudRed : kHudPureGreen; };
     const MissionObject* current = nullptr;
     if (!route_.empty()) current = route_[size_t(routeIndex_)].object;
-    for (const auto& o : mission_.objects) {
-        const int type = o.raw[19] & 0xFFFF;
-        if (!type || o.group == 3) continue;
-        if (&o == current && !(ticks_ & 16)) continue;
-        auto [sx, sy] = toScreen(o.x, o.y);
+    std::vector<const WorldObject*> live(mission_.objects.size(), nullptr);
+    for (const auto& o : world_.objects)
+        if (o.missionIndex >= 0 && size_t(o.missionIndex) < live.size()) live[size_t(o.missionIndex)] = &o;
+    for (size_t i = 0; i < mission_.objects.size(); ++i) {
+        const MissionObject& o = mission_.objects[i];
+        const int type = o.raw[19] & 0xFF;
+        if (!type || o.group == 3 || o.absent) continue;
+        const WorldObject* wo = live[i];
+        if (wo && wo->removed) continue;
+        if (o.group == 2 && &o == current && !(ticks_ & 16)) continue;
+        float sx, sy;
+        if (wo) {
+            const Vec3 at = world_.nearest(wo->pos, c);
+            sx = x0 + w / 2 + (at.x - c.x) * pxPerM;
+            sy = y0 + h / 2 + (at.z - c.z) * pxPerM;
+        } else {
+            const auto p = toScreen(o.x, o.y);
+            sx = p.first;
+            sy = p.second;
+        }
         if (sx < x0 - 20 || sx > x0 + w + 20 || sy < y0 - 20 || sy > y0 + h + 20) continue;
-        drawMapMarker(s, sx, sy, type, sideColour((uint32_t(o.raw[16]) >> 24) & 0xFF), 0, false);
+        drawMapMarker(s, sx, sy, type, sideColour((uint32_t(o.raw[16]) >> 24) & 0xFF), wo ? wo->heading : 0,
+                      wo && wo->dead);
     }
     // Soldiers by the GPS option (0x43d445): 0 none, 1 (default) those whose
     // record +0x4C is set, 2 all; drawn as soldier markers, an X once dead.

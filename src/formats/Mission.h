@@ -64,6 +64,10 @@ struct MissionObject {
     int group = 0;             // which of the file's four object groups (0..3)
     int indexInGroup = 0;      // paths and events refer to objects by this
     int32_t raw[24] = {};      // the whole 96-byte record, for fields not yet decoded
+    // Not created in this game: Delta Force's object create (GOG Df.exe
+    // 0x449710, CD 0x43ff24) leaves the object zeroed when the record is for
+    // multiplayer only; set by the game at mission load.
+    bool absent = false;
 };
 
 // A path: an ordered list of objects of group 2 (waypoint markers). The

@@ -124,6 +124,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
     };
     const float ext = extent();
     for (const auto& mo : mission.objects) {
+        if (mo.absent) continue;   // not created (GOG Df.exe 0x449710)
         const ItemDef* item = items.byMissionType(mo.type);
         if (!item || item->graphic.empty() || item->type == "effect") continue;
         WorldObject o;
@@ -156,7 +157,7 @@ void World::build(Vfs& vfs, ModelRenderer& models, const ItemDefs& items, const 
         o.team = mo.raw[18] & 0xFF;
         o.side = (uint32_t(mo.raw[16]) >> 24) & 0xFF;
         o.radarShape = int(int8_t(mo.raw[19] & 0xFF));
-        o.mapMarker = df2Rules ? o.radarShape != 0 : (mo.raw[19] & 0xFFFF) != 0;
+        o.mapMarker = df2Rules ? o.radarShape != 0 : (mo.raw[19] & 0xFF) != 0;   // DF.EXE +0x76: record byte +0x4C
 
         o.missionX = mo.x;
         o.missionY = mo.y;
