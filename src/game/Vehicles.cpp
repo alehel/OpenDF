@@ -759,9 +759,17 @@ void VehicleSystem::sounds(const World& world, const AiSystem& ai, SoundSystem& 
         if (v.helo) {
             // Rotor loop 502 (gazelle) or 503, pitch (rotor >> 13) + 0x5000
             // within 0x6000..0x12000 (0x47ca0f).
-            if (v.rotor > 0) {
+            // GOG Df2.exe 0x42c2da..0x42c34b: by graphic number, 502 for the
+            // gazelle 2018, Havoc 2005, Hind 2028 and Ka-29 2029, 503 for the
+            // Black Hawk 2021, and no loop for any other helicopter.
+            int loop = (o.item && o.item->id == 100000 + kGazelle) ? 502 : 503;
+            if (world.df2Rules) {
+                const int k = o.item ? o.item->id - 100000 : 0;
+                loop = (k == 2018 || k == 2005 || k == 2028 || k == 2029) ? 502 : k == 2021 ? 503 : 0;
+            }
+            if (v.rotor > 0 && loop) {
                 const float pitch = std::clamp((v.rotor / 8192.f + 0x5000) / 65536.f, 0x6000 / 65536.f, 0x12000 / 65536.f);
-                sound.setLoop(100000 + v.object, (o.item && o.item->id == 100000 + kGazelle) ? 502 : 503, o.pos, pitch);
+                sound.setLoop(100000 + v.object, loop, o.pos, pitch);
             }
         } else if (v.kind == Kind::Car) {
         } else if (v.kind == Kind::Loco) {

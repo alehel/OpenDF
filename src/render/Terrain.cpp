@@ -521,8 +521,9 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
     texDetailIdx_ = makeTex2D(size_, size_, GL_R8, GL_RED, detail.pixels.data(), false, false);
     // Delta Force 2: surfaces from the char_data .CAL, one `name,value` line
     // per detail tile (DF2.EXE 0x466290): DT dirt 1, GS grass 2, SW snow 3,
-    // RK/CT rock/concrete 4, SD sand 5 (classes 1..5 are OpenDF's surfaces;
-    // RD road 8, MD mud 9, IE ice 10, QS 11 and other names: no effect).
+    // RK/CT rock/concrete 4, SD sand 5, RD road 8, MD mud 9, IE ice 10,
+    // QS 11 (GOG Df2.exe 0x470190 the same), other names 0. Classes 8..11
+    // sound only in the GOG build (Game::animEvent, Game::spawnImpact).
     if (trueColor && !desc_.charData.empty()) {
         std::vector<uint8_t> raw;
         if (vfs.read(withExt(desc_.charData, ".CAL"), raw)) {
@@ -536,7 +537,8 @@ bool Terrain::load(Vfs& vfs, const std::string& trnName, std::string* error) {
                 for (auto& ch : name) ch = char(std::toupper(static_cast<unsigned char>(ch)));
                 const std::string pre = name.substr(0, 2);
                 const bool digit = name.size() == 3 && name[2] >= '1' && name[2] <= '3';
-                cls[i++] = !digit ? 0 : pre == "DT" ? 1 : pre == "GS" ? 2 : pre == "SW" ? 3 : (pre == "RK" || pre == "CT") ? 4 : pre == "SD" ? 5 : 0;
+                cls[i++] = !digit ? 0 : pre == "DT" ? 1 : pre == "GS" ? 2 : pre == "SW" ? 3 : (pre == "RK" || pre == "CT") ? 4 : pre == "SD" ? 5
+                       : pre == "RD" ? 8 : pre == "MD" ? 9 : pre == "IE" ? 10 : pre == "QS" ? 11 : 0;
                 line.clear();
             }
             // DF2.EXE's renumbering, copied with its bug: the detail map is
