@@ -187,6 +187,14 @@ private:
     void drawViewModel(const Screen& s);
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
+    // Delta Force's FO camera (GOG Df.exe 0x466d90 / 0x484a50): [0xc23a34]
+    // on/off, the target [0xc23a38]: -1 the player (as at mission start,
+    // 0x4829f0), -2 none, else a world object.
+    bool foOn_ = false;
+    int foTarget_ = -1;
+    void foNext();
+    void drawFoInset(const Screen& s);
+    const WorldObject* hideObject_ = nullptr;   // an inset's viewer, not drawn (0x4854d0's [0x6ba3f0])
     const Vec3* eyeOverride_ = nullptr;   // an inset's own eye while it is drawn (viewEye)
     const Vec3* dirOverride_ = nullptr;   // and its own look direction (viewDir: cull, LOD, viewYaw, light)
     void drawHud(const Screen& s, const Mat4& viewProj);
@@ -863,6 +871,8 @@ bool Game::loadMission(int index) {
 
     player_ = Player{};
     player_.moves = &playerMoves_;
+    foOn_ = false;     // 0x4829f0 clears [0xc23820..+0x648)
+    foTarget_ = -1;    // and sets [0xc23a38] to the player
     std::memcpy(player_.eyeHeights, eyeHeightTable_, sizeof eyeHeightTable_);
     player_.floatOrigin = floatOrigin_;
     player_.swimOrigin = swimOrigin_;
@@ -2971,6 +2981,10 @@ void Game::handleKey(const SDL_KeyboardEvent& k) {
         pushMessage(friendlyTags_ ? "Friendly Tags: On" : "Friendly Tags: Off");
         break;
     case Action::LetterBox: letterbox_ = letterbox_ == 1 ? 2 : 1; break;
+    // GOG Df.exe 0x477d40: fo toggles [0xc23a34]; tab, while it is on, picks
+    // the next team-mate (0x484a50). Delta Force only.
+    case Action::FoCamera: if (!df2Hud_.on) foOn_ = !foOn_; break;
+    case Action::FoNext: if (!df2Hud_.on && foOn_) foNext(); break;
     case Action::ScopeInc: arsenal_.zeroStep(1); break;    // DF2 0x445ff0 (X)
     case Action::ScopeDec: arsenal_.zeroStep(-1); break;   // (Z)
     case Action::NightVision: if (df2Hud_.on) nvg_ = !nvg_; break;   // DF2 action 51, [0x765740]
@@ -3108,7 +3122,7 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         return depth >= -sr && depth + sr <= 4080.f;
     };
     for (const auto& o : world_.objects) {
-        if (o.removed) continue;
+        if (o.removed || &o == hideObject_) continue;
         Vec3 at = world_.nearest(o.pos, eye);
         Vec3 d = at - eye;
         const float depth = dot(d, fwd);
@@ -3652,6 +3666,96 @@ void Game::drawCameraInset(const Screen& s) {
     dirOverride_ = nullptr;
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, int(s.w), int(s.h));
+}
+
+void Game::foNext() {
+    // GOG Df.exe 0x484a50: the next people slot after the target's with an
+    // item, on the player's side, item attrib FO (def +0x24 & 8), not hidden
+    // (+0x6c & 2); else from the first slot through the target's; else
+    // none. INFERRED: the player's own slot (chosen by its BMS id, 0x4829f0)
+    // is taken to come before every other person.
+    auto eligible = [&](int i) {
+        if (i < 0) {
+            const ItemDef* it = items_.byId(playerItem_);
+            return it && (it->attrib & 8);
+        }
+        const WorldObject& o = world_.objects[size_t(i)];
+        return o.person && !o.removed && o.side == kPlayerSide && o.item && (o.item->attrib & 8);
+    };
+    const int n = int(world_.objects.size());
+    const int cur = foTarget_ >= -1 ? foTarget_ : -1;
+    for (int i = cur + 1; i < n; ++i)
+        if (eligible(i)) { foTarget_ = i; return; }
+    for (int i = -1; i <= cur; ++i)
+        if (eligible(i)) { foTarget_ = i; return; }
+    foTarget_ = -2;
+}
+
+void Game::drawFoInset(const Screen& s) {
+    // GOG Df.exe 0x466d90, from 0x404640 when the scope inset is not up: no
+    // target clears [0xc23a34]; nothing while the player is dead (+0x6c &
+    // 4). The world from the target's position raised by the player's eye
+    // height ([0xc23a18]) and its yaw / pitch / roll (+0x30..+0x38) at FOV
+    // 90 (0x5a) in (0x2c0, top + 0x40)-(0x3c0, top + 0x100) virtual, x
+    // rounded down to 4 pixels, with the target not drawn ([0x6ba3f0]);
+    // a one-pixel border in [0x67db5c] (0x472610) and the target's name at
+    // (0x2d4, top + 0x114), left-aligned, in [0x67db5c]. Not modelled: the
+    // player's own body, which OpenDF does not draw while alive.
+    if (!foOn_ || df2Hud_.on || scopeShown() || showMap_) return;
+    if (foTarget_ == -2 || (foTarget_ >= 0 && (size_t(foTarget_) >= world_.objects.size() || world_.objects[size_t(foTarget_)].removed))) {
+        foOn_ = false;
+        return;
+    }
+    if (playerDead()) return;
+    const float x0 = float(int(s.vx(0x2c0)) & ~3), x1 = float(int(s.vx(0x3c0)) & ~3);
+    const float y0 = std::floor(s.playY + s.vy(0x40)), y1 = std::floor(s.playY + s.vy(0x100));
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return;
+    const float eyeUp = player_.eye().y - player_.origin().y;
+    Vec3 eye;
+    float yaw, pitch;
+    std::string name;
+    const WorldObject* target = nullptr;
+    if (foTarget_ < 0) {
+        eye = player_.origin() + Vec3{0, eyeUp, 0};
+        yaw = player_.yaw;
+        pitch = player_.pitch;
+        name = o_.soldierName;
+    } else {
+        target = &world_.objects[size_t(foTarget_)];
+        eye = target->pos + Vec3{0, eyeUp, 0};
+        yaw = target->heading;
+        pitch = target->aimPitch;
+        if (target->missionIndex >= 0)
+            if (const int id = int(mission_.objects[size_t(target->missionIndex)].raw[1]); id != 0) {
+                char key[24];
+                std::snprintf(key, sizeof key, "NAMEID%03d", id);
+                if (const std::string* t = campText_.find("People Names", key)) name = *t;
+            }
+    }
+    const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
+    const float fovY = 2 * std::atan(std::tan(kPi / 4) * h / w);
+    glViewport(int(x0), int(s.h - y1), int(w), int(h));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(int(x0), int(s.h - y1), int(w), int(h));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    eyeOverride_ = &eye;
+    dirOverride_ = &fwd;
+    hideObject_ = target;
+    drawWorld(lookDir(eye, fwd, {0, 1, 0}), perspective(fovY, w / h, 0.1f, kFarPlane), false);
+    hideObject_ = nullptr;
+    eyeOverride_ = nullptr;
+    dirOverride_ = nullptr;
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, int(s.w), int(s.h));
+    hud_.begin(int(s.w), int(s.h));
+    const float t = s.px();
+    hud_.rect(x0, y0, w, t, kHudBright);
+    hud_.rect(x0, y1, w + t, t, kHudBright);
+    hud_.rect(x0, y0, t, h, kHudBright);
+    hud_.rect(x1, y0, t, h, kHudBright);
+    if (!name.empty()) hud_.text(s.vx(0x2d4), s.playY + s.vy(0x114), name, kHudBright, s.text());
+    hud_.end();
 }
 
 void Game::hudBox(const Screen& s, float x0, float y0, float x1, float y1, bool right) {
@@ -7090,6 +7194,7 @@ int Game::run() {
                 } else {
                     drawViewModel(s);
                     drawZoomInset(s, view, fovY);
+                    drawFoInset(s);
                 }
                 glViewport(0, 0, dw, dh);
                 if (!o_.noHud) drawHud(s, proj * view);
