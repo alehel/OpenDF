@@ -49,8 +49,11 @@ public:
     // field of view (half angle `half`, radians), 100 / distance, line of
     // sight, the target's move visibility and x6 if it fired lately; before
     // perception and the relaxed quarter. Returns the score, 0 if none.
+    // `nearPlayer` (DF2, GOG Df2.exe 0x417830 local_10 -> *param_3): the
+    // whole-metre distance from `bodyAt` to the player when he passes the
+    // field-of-view test, else left as it was (the caller's 1024).
     float bestTarget(const World& world, int self, Vec3 eye, float heading, int side, float half, const PlayerView& player,
-                     int& id, Vec3& at, bool everyone = false) const;
+                     int& id, Vec3& at, bool everyone = false, float* nearPlayer = nullptr, Vec3 bodyAt = {}) const;
     // 0x45be04: <= 0 blocked, else 1 + see-through faces (World::sight).
     int sightLine(const World& world, Vec3 a, Vec3 b, int self, int target) const { return world.sight(a, b, self, target); }
     // One 60 Hz tick: people move (their move's speed along their heading)
@@ -144,7 +147,7 @@ private:
         int lastHp = 0;
         // Delta Force 2 (block moved +0x10; new fields):
         int unseenLimit = 60 * 62;    // +0xA8: BMS +0x54 x 62 (default 60 s)
-        float nearestPlayer = 0;      // +0xAC: distance to the player at the last successful scan
+        float nearestPlayer = 0;      // +0xAC: the scan's player distance (1024 unless in the field of view), whole metres
         int order = 0;                // +0xBB: 1 hold fire, 2 cover me, 3 hold position (command map)
         int gait = -1;                // DF2: the walk / run move a ladder move replaced (the control word +0x74)
         bool testWalk = false, testWalkSlow = false;
@@ -155,7 +158,7 @@ private:
     void patrol(World& world, Person& p);
     // The scan's score (0x46a804; GOG Df.exe 0x45e280): the best target x
     // perception, x2 when hard, a quarter when relaxed; no random draw.
-    float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos) const;
+    float scanScore(const World& world, const Person& p, const PlayerView& player, int& bestId, Vec3& bestPos, float* nearPlayer = nullptr) const;
     bool scan(World& world, Person& p, const PlayerView& player);
     Vec3 targetPos(const World& world, const Person& p, const PlayerView& player) const;
     bool targetAlive(const World& world, const Person& p, const PlayerView& player) const;
