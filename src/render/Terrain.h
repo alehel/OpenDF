@@ -64,13 +64,15 @@ public:
     // saturation, and sky palette entry 16 (shade table highlight). Delta
     // Force: the df.cfg gamma table with filters 128 and no saturation step
     // (GOG Df.exe 0x402940 / 0x4027d0 -> 0x480bb0(cfg gamma, 0x80 x4));
-    // Delta Force 2: the TRN's table and saturation.
+    // Delta Force 2: the TRN's table and saturation (the terrain's; DF2
+    // models take the grade before shading instead).
     GLuint lutTexture() const { return gen2_ ? texSkyPal_ : texDisplayLut_; }
-    // Delta Force: the TRN grade (saturation, then the TRN gamma/filter
-    // table) that GOG Df.exe 0x4867a0 bakes into the model palettes and
-    // material colours at load (0 / 1: none, as for Delta Force 2).
-    GLuint gradeLutTexture() const { return gen2_ ? 0 : texSkyPal_; }
-    float gradeSaturation() const { return gen2_ ? 1.f : desc_.saturation / 128.f; }
+    // The TRN grade (saturation, then the TRN gamma/filter table) that GOG
+    // Df.exe 0x4867a0 and GOG Df2.exe 0x4454e0 (0x413cd0 / 0x413ba0) bake
+    // into the model palettes and material colours at load, before shading.
+    // Delta Force 2 models use no other table (they skip lutTexture()).
+    GLuint gradeLutTexture() const { return texSkyPal_; }
+    float gradeSaturation() const { return desc_.saturation / 128.f; }
     // Surface at (x, z): 1 dirt, 2 grass, 3 snow, 4 cement, 5 sand, 6 packed
     // dirt, 0 none; each colour-map palette colour is matched to the nearest
     // TRN `type` colour (DF.EXE 0x4305b0; used for impact effects). Delta
@@ -86,6 +88,8 @@ public:
     // The same r = 0 tint over what was drawn since with depth (the gun).
     void tintUnderwaterOver(Vec3 eye);
     bool df1UnderWater(Vec3 eye) const;
+    // Delta Force 2's under-water tint over the whole 3D view (0x44fcb0), last.
+    void drawWaterTint(Vec3 eye);
     float saturationFactor() const { return gen2_ ? desc_.saturation / 128.f : 1.f; }
     Vec3 highlight() const { return {skyColors_[16].r / 255.f, skyColors_[16].g / 255.f, skyColors_[16].b / 255.f}; }
     Vec3 sunDirection() const;

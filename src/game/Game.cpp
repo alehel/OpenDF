@@ -33,6 +33,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -209,8 +210,9 @@ private:
     void df2MouseWheel(int delta);
     int wheelAccum_ = 0;
     void drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool scopeInset = false);
-    void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last);
-    void drawViewModel(const Screen& s);
+    void drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last);
+    void drawViewModel(const Screen& s, const Mat4* worldProj = nullptr);
+    const Screen* gunInWorld_ = nullptr;   // DF2: drawWorld draws the weapon inside the frame (0x44fa09)
     void drawZoomInset(const Screen& s, const Mat4& view, float fovY);
     void drawCameraInset(const Screen& s);
     // Delta Force's FO camera (GOG Df.exe 0x466d90 / 0x484a50): [0xc23a34]
@@ -3866,9 +3868,13 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
     // Ring divisors: main view 2.2 / 2.2, 3.2 / 3.2 with the binoculars up
     // ([0xc23b64], GOG Df.exe 0x404640 at 0x40484c..0x404871); the scope
     // inset 2.5 under magnification 5, else 5.0, and 2.5 (0x466090). Delta
-    // Force 2's rings do not use them.
-    terrain_.ringP1 = scopeInset ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : zoomView ? 3.2f : 2.2f;
-    terrain_.ringP2 = scopeInset ? 2.5f : zoomView ? 3.2f : 2.2f;
+    // Force 2 (GOG Df2.exe 0x465f90 -> 0x44f8d0): 2.0 / 2.0 in the main view,
+    // 3.2 / 3.2 in the binocular moves, the scope the same as Delta Force's
+    // (0x4557e0), 2.2 / 2.2 in the picture-in-picture views (0x456480,
+    // 0x456670, 0x4568a0).
+    const float mainP = !world_.df2Rules ? 2.2f : eyeOverride_ ? 2.2f : 2.f;
+    terrain_.ringP1 = scopeInset ? (arsenal_.zoom() < 5 ? 2.5f : 5.f) : zoomView ? 3.2f : mainP;
+    terrain_.ringP2 = scopeInset ? 2.5f : zoomView ? 3.2f : mainP;
     // (OpenDF) The depth buffer in two passes, so nothing z-fights: Delta
     // Force 2 keeps objects out to 4080 m and the terrain runs to 12.8 km,
     // and with the 0.1 m near plane a 24-bit buffer resolves only ~9.5 m at
@@ -3886,17 +3892,28 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
         return p;
     };
     const Mat4 projFar = withRange(kDepthSplit, zf), projNear = withRange(zn, kDepthSplit * 1.001f);
-    // Delta Force 2: the water before the objects while the camera is above
-    // it (DF2.EXE 0x4489a9), after them below it (0x4489c6).
-    const bool waterFirst = terrain_.df2Water() && eye.y > terrain_.waterLevel();
+    // Delta Force 2 (GOG Df2.exe 0x44f8d0): the water with the camera above
+    // it, 0x470aa0(0), after both object lists (0x44f490, 0x44f570) and
+    // before the translucent faces (0x44c480); with the camera at or below
+    // it, 0x470aa0(1) after them.
+    const bool waterMid = terrain_.df2Water() && eye.y > terrain_.waterLevel();
     for (int pass = 0; pass < 2; ++pass) {
         const bool last = pass == 1;
         glDepthRange(last ? 0.0 : 0.5, last ? 0.5 : 1.0);
         terrain_.pass = last ? Terrain::Pass::Near : Terrain::Pass::Far;
         terrain_.passSplit = kDepthSplit;
-        drawWorldPass(view, last ? projNear : projFar, eye, waterFirst, last);
+        drawWorldPass(view, last ? projNear : projFar, eye, waterMid, last);
     }
     terrain_.pass = Terrain::Pass::All;
+    // Delta Force 2: the first-person weapon inside the frame (GOG Df2.exe
+    // 0x44f8d0 -> 0x44ea10 at 0x44fa09, after the objects and the water,
+    // before the fog, the weather and the under-water tint), depth-tested
+    // against the world: it can sink into a wall pressed against it.
+    if (gunInWorld_) {
+        glDepthRange(0.0, 0.5);
+        drawViewModel(*gunInWorld_, &projNear);
+        gunInWorld_ = nullptr;
+    }
     glDepthRange(0.0, 1.0);
     // Delta Force 2's fog pass (0x4485b0, called at 0x44892a after the
     // objects), then the rain and snow, unfogged (0x448930 -> 0x46b780).
@@ -3917,13 +3934,13 @@ void Game::drawWorld(const Mat4& view, const Mat4& proj, bool zoomView, bool sco
         arsenal_.tracers().draw(view, pass ? projNear : projFar, [&](Vec3 p) { return world_.nearest(p, eye); });
     }
     glDepthRange(0.0, 1.0);
+    terrain_.drawWaterTint(eye);   // Delta Force 2, camera under water (0x44fcb0)
 }
 
 // One depth pass of drawWorld: the terrain, the objects, the effects and
 // the water, with that pass's projection; `last` for the second (near) pass.
-void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterFirst, bool last) {
+void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool waterMid, bool last) {
     terrain_.draw(view, proj, eye, viewDistance_);
-    if (waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Objects (DF.EXE 0x44badc / 0x4414b8 / 0x46fd94): never fogged; culled
     // beyond 1020 m in Delta Force (either horizontal axis, or view depth +
     // radius; Delta Force 2's limits below); LOD by
@@ -4174,10 +4191,26 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         }
         models_.draw(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
     }
+    if (waterMid) {   // DF2, camera above the water: over the opaque objects, under the translucent faces
+        models_.end();
+        terrain_.drawWater(view, proj, eye, float(ticks_));
+        models_.begin(proj * view, light);
+    }
+    // Delta Force 2 (GOG Df2.exe 0x44bc00 -> 0x861ec0, flushed by 0x44c480):
+    // the translucent faces of the objects and the effects are drawn after
+    // all of them, far first (0x44c480 shell-sorts by z0 + z1 + z2,
+    // descending). Here per draw, by its view depth; faces within one model
+    // keep their order.
+    std::vector<std::pair<float, std::function<void()>>> translucent;
     for (auto& v : visible)
         if (!(v.o->chr && !v.o->anim.angles().empty()) && !codePose(v, codeMeshes) &&
-            !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm"))   // the BRDM's are posed above
-            models_.drawTranslucent(*v.o->model, v.lod, v.o->matrix(v.at), false, false, codeFrame(v));
+            !(v.lod < 4 && v.o->model->lodCodes[v.lod] == "brdm")) {   // the BRDM's are posed above
+            const GpuModel* tm = v.o->model;
+            const int lod = v.lod, frame = codeFrame(v);
+            const Mat4 mm = v.o->matrix(v.at);
+            if (df2Cull) translucent.push_back({dot(v.at - eye, fwd), [this, tm, lod, mm, frame] { models_.drawTranslucent(*tm, lod, mm, false, false, frame); }});
+            else models_.drawTranslucent(*tm, lod, mm, false, false, frame);
+        }
     // The dead player's body, seen from the orbit camera: the soldier's
     // model posed by the death animation DF.EXE chose (0x46c920). GOG
     // Df2.exe draws the player like anyone else in its outside views
@@ -4258,20 +4291,25 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
             sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.size / 65536.f;
             m = m * sc;
             const float a = e.alpha > 0xff0000 ? 1.f : float(std::max(e.alpha >> 16, 1)) / 255.f;
-            models_.setTint(e.tint[0] / 255.f, e.tint[1] / 255.f, e.tint[2] / 255.f, a, true, e.fireball);
-            glEnable(GL_BLEND);
-            // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
-            // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
-            // colour to the screen with saturation (paddusb, 0x4850a1):
-            // additive. (The Direct3D back end [0xa7b6b4] is outside DF2.EXE.)
-            // Their colours skip the scene grade (0x42abc0 has no 0x411f70).
-            glBlendFunc(GL_SRC_ALPHA, e.fireball ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
-            models_.draw(*e.model, 0, m, false, false, frame);
-            models_.drawTranslucent(*e.model, 0, m, false, false, frame);
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-            models_.setTint(1, 1, 1, 1);
+            auto draw = [this, m, a, frame, tint = std::array<uint8_t, 3>{e.tint[0], e.tint[1], e.tint[2]}, fireball = e.fireball,
+                         model = e.model] {
+                models_.setTint(tint[0] / 255.f, tint[1] / 255.f, tint[2] / 255.f, a, true, fireball);
+                glEnable(GL_BLEND);
+                // The fireballs set 0x445e60(1), polygon flag 0x800 (0x4457ed):
+                // the software spans for it (0x45eac0 -> 0x484ffd) add texel ·
+                // colour to the screen with saturation (paddusb, 0x4850a1):
+                // additive. (The Direct3D back end [0xa7b6b4] is outside DF2.EXE.)
+                // Their colours skip the scene grade (0x42abc0 has no 0x411f70).
+                glBlendFunc(GL_SRC_ALPHA, fireball ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                models_.draw(*model, 0, m, false, false, frame);
+                models_.drawTranslucent(*model, 0, m, false, false, frame);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+                models_.setTint(1, 1, 1, 1);
+            };
+            if (df2Cull) translucent.push_back({dot(d, fwd), draw});
+            else draw();
             continue;
         }
         const int frame = std::min(e.age / std::max(1, e.ticksPerFrame), e.frames - 1);
@@ -4290,7 +4328,8 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         sc.at(0, 0) = sc.at(1, 1) = sc.at(2, 2) = e.scale;
         m = m * sc;
         models_.draw(*e.model, 0, m, false, false, frame);
-        models_.drawTranslucent(*e.model, 0, m, false, false, frame);
+        if (df2Cull) translucent.push_back({dot(d, fwd), [this, m, frame, model = e.model] { models_.drawTranslucent(*model, 0, m, false, false, frame); }});
+        else models_.drawTranslucent(*e.model, 0, m, false, false, frame);
     }
     // Rounds drawn in flight (0x44d96d): gun flag 0x10 the "grenade" item
     // 4033, 0x01 the M203's 4001 (m406), 0x40 the LAW's 4042 (law_rckt);
@@ -4320,9 +4359,11 @@ void Game::drawWorldPass(const Mat4& view, const Mat4& proj, Vec3 eye, bool wate
         pitch.at(0, 0) = c; pitch.at(0, 1) = -sn; pitch.at(1, 0) = sn; pitch.at(1, 1) = c;
         models_.draw(*gm, 0, translate(at) * rotateY(kPi * 0.5f - p.yaw) * pitch);
     }
+    std::stable_sort(translucent.begin(), translucent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& t : translucent) t.second();
     models_.end();
     // Water last: it tints what is under it (DF.EXE 0x43bfd8).
-    if (!waterFirst) terrain_.drawWater(view, proj, eye, float(ticks_));
+    if (!waterMid) terrain_.drawWater(view, proj, eye, float(ticks_));
     // Delta Force: the blended faces after the water (GOG Df.exe 0x485610:
     // 0x48d040 water, then 0x46bf60 / 0x46bf10), so the water does not
     // tint them.
@@ -4399,14 +4440,14 @@ void Game::drawWeather(const Mat4& view, const Mat4& proj, Vec3 eye) {
     models_.end();
 }
 
-void Game::drawViewModel(const Screen& s) {
+void Game::drawViewModel(const Screen& s, const Mat4* worldProj) {
     // The original hides the weapon while the zoom inset is up.
     // Nor is it drawn once the player is dead (0x4042df).
     if (!gunVisible_ || scopeShown() || showMap_ || playerDead() || binoculars_ || outsideView() != 0) return;   // 0x4042ff; DF1 0x404640: first person only
     if (!arsenal_.viewModelShown()) return;   // DF2 mode flag 0x100 (GOG Df2.exe 0x44ea10)
     const GpuModel* m = models_.get(vfs_, arsenal_.mode().viewModel);
     if (!m) return;
-    glClear(GL_DEPTH_BUFFER_BIT);
+    if (!worldProj) glClear(GL_DEPTH_BUFFER_BIT);
 
     // As in the original engine: the P* model is drawn unrotated (aligned with
     // the view) at the weapon's offset from DF.EXE's player weapon table, with
@@ -4428,6 +4469,13 @@ void Game::drawViewModel(const Screen& s) {
     // relative to the centre of the view (in screen heights); the extra width
     // only shows more of the world, so ultrawide screens look natural.
     Mat4 proj = perspective(viewFovY_ > 0 ? viewFovY_ : kOriginalFovY, s.w / s.playH, 0.02f, 10.f);
+    // Inside the DF2 frame: the world's near-pass projection (the same view
+    // and FOV; the gun is hidden with the binoculars up), with depth clamping
+    // so the parts nearer than its near plane stay, in front of everything.
+    if (worldProj) {
+        proj = *worldProj;
+        glEnable(GL_DEPTH_CLAMP);
+    }
     // The world light (DF.EXE 0x44bea4) rotated into view space, as the gun
     // is drawn there; the viewer looks along -Z.
     SceneLighting light;
@@ -4453,6 +4501,7 @@ void Game::drawViewModel(const Screen& s) {
     models_.draw(*m, 0, model, true, flash, flashFrame_);
     models_.drawTranslucent(*m, 0, model, true, flash, flashFrame_);
     models_.end();
+    if (worldProj) glDisable(GL_DEPTH_CLAMP);
 }
 
 // The zoom view is a magnified circle on the right of the 3D view (the main
@@ -5168,7 +5217,6 @@ void Game::drawHud(const Screen& s, const Mat4& viewProj) {
     // GOG Df2.exe 0x465fde: the friendly tags (0x44fe70) before the
     // crosshair and target identification (0x4642b0).
     if (!showMap_ && friendlyTags_ && df2Hud_.on) drawDf2FriendlyTags(s, viewProj);
-    if (!showMap_ && df2Hud_.on) drawDf2Waypoints3d(s, viewProj);   // 0x450070
     if (showMap_) drawCommandMap(s);
     else if (crosshair_ && df2Hud_.on && outsideView() == 0) {   // GOG Df2.exe 0x465fde: [0x79a7fc] and mode 0
         // DF2.EXE (0x45a9e0): four orange lines, gap W*320/65536 and arm
@@ -8804,27 +8852,35 @@ int Game::run() {
                 glViewport(0, 0, dw, dh);
             } else {
                 // DF2 draws only the command map while it is open (0x45c610).
+                if (df2Hud_.on) gunInWorld_ = &s;
                 if (!(df2Hud_.on && showMap_)) drawWorld(view, proj, binoculars_ && !playerDead() && outsideView() == 0);
+                gunInWorld_ = nullptr;
                 // The weather spawns around the last rendered frame's camera (0x46b780's end).
                 weather_.setCamera(viewEye());
                 if (df2Hud_.on && showMap_) {
                     glViewport(0, 0, dw, dh);
                 } else if (df2Hud_.on) {
-                    // DF2.EXE 0x45c610: the scope inset, the night vision
-                    // (0x449450), then the weapon pass (0x448980).
+                    // GOG Df2.exe 0x465f90: the frame with the weapon in it
+                    // (0x44f8d0, above), then the scope view (0x455be0,
+                    // which skips the night vision) or the picture-in-picture
+                    // (0x4559d0), then the night vision (0x450550) only with
+                    // the player's own camera ([0xbf2b40] == 0).
+                    glViewport(0, 0, dw, dh);
+                    // The player waypoints (0x450070) before the insets.
+                    hud_.begin(dw, dh);
+                    drawDf2Waypoints3d(s, proj * view);
+                    hud_.end();
                     drawZoomInset(s, view, fovY);
                     drawCameraInset(s);
                     drawDf2FoInset(s);
                     glViewport(0, 0, dw, dh);
                     // GOG Df2.exe 0x465fde: the scoped path (0x455be0 at
                     // 0x4662dd, JMP 0x4662ef) skips the night vision 0x450550.
-                    if (nvg_ && !showMap_ && !scopeShown()) {
+                    if (nvg_ && !showMap_ && !scopeShown() && !playerDead()) {
                         hud_.begin(dw, dh);
                         hud_.nightVision(s.w * 0.5f, s.playY + s.playH * 0.5f, float(s.modeW) * 5.f / 32.f * s.art());
                         hud_.end();
                     }
-                    glViewport(0, int(s.h - s.playY - s.playH), dw, int(s.playH));
-                    drawViewModel(s);
                 } else {
                     // Under water GOG Df.exe draws the gun (0x483f30) before
                     // the tint (0x48d570): tint what the gun drew (only

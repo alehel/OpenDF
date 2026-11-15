@@ -21,12 +21,18 @@ uniform int uPoseCount;
 uniform vec3 uLight, uViewer;
 uniform float uSpec, uBright;
 uniform int uSpecPow;
+uniform bool uDf2;   // a Delta Force 2 (v8) model
 out vec2 vUv;
 out vec2 vLit;   // shade for the front face, the back face
 float shade(vec3 n) {
     vec3 h = normalize(uLight + uViewer);
     float d = dot(n, uLight);
     if (d < 0.0) d = -d / 4.0;                 // back light wrapped at 25 %
+    // Delta Force 2 (GOG Df2.exe 0x44bab0): the intensity is ambient 0x8ccc
+    // plus diffuse 0x8000 x |n.L| (0x44c2f0 from 0x44f8d0, scaled by
+    // 0x44bb70), or the material's +0x3c for flag 0x20, capped at 0xffff;
+    // no specular term and no shade rows: colour x intensity (0x46a220).
+    if (uDf2) return min(uBright >= 0.0 ? uBright : float(0x8ccc) / 65536.0 + 0.5 * d, 65535.0 / 65536.0);
     float lit = uBright >= 0.0 ? uBright : 0.55 + 0.5 * d;
     if (uSpec != 0.0) {
         float s = dot(n, h);
@@ -59,6 +65,7 @@ uniform int uMode;   // 0 opaque/keyed, 1 50 % average, 2 texel-as-alpha, 3 text
 uniform vec4 uTint;
 uniform bool uOverride;   // DF2 0x445e50: the colour replaces the material's (texel-as-alpha parts)
 uniform bool uTintRaw;    // ... and is used without the scene grade
+uniform bool uDf2;        // a Delta Force 2 model: graded before shading, no final table
 out vec4 oColor;
 vec3 dec(vec3 c) { return pow(max(c, 0.0), vec3(1.25)); }
 vec3 enc(vec3 c) { return pow(max(c, 0.0), vec3(0.8)); }
@@ -69,8 +76,10 @@ vec3 post(vec3 c) {
     return vec3(texture(uLut, vec2(c.r * k + o, 0.5)).r, texture(uLut, vec2(c.g * k + o, 0.5)).g,
                 texture(uLut, vec2(c.b * k + o, 0.5)).b);
 }
-// Delta Force (GOG Df.exe 0x4867a0 -> 0x480bf0): the TRN saturation and
-// table, baked into the palettes and colours before any shading.
+// Delta Force (GOG Df.exe 0x4867a0 -> 0x480bf0) and Delta Force 2 (GOG
+// Df2.exe 0x466ba0 -> 0x4454e0: 0x413cd0 palettes, 0x413ba0 colours): the
+// TRN saturation and table, baked into the palettes and colours before any
+// shading.
 vec3 grade(vec3 c, bool on) {
     if (!on) return c;
     float y = (c.r + 2.0 * c.g + c.b) * 0.25;
@@ -79,6 +88,9 @@ vec3 grade(vec3 c, bool on) {
     return vec3(texture(uGrade, vec2(c.r * k + o, 0.5)).r, texture(uGrade, vec2(c.g * k + o, 0.5)).g,
                 texture(uGrade, vec2(c.b * k + o, 0.5)).b);
 }
+// The final stage: Delta Force's df.cfg table; none in Delta Force 2 (the
+// TRN grade was applied before shading).
+vec3 fin(vec3 c) { return uDf2 ? c : post(c); }
 void shade();
 void main() {
     shade();
@@ -88,7 +100,8 @@ void main() {
 void shade() {
     float idx = uTextured ? texture(uIndex, vUv).r * 255.0 : 1.0;
     if (uMode == 2) {               // 0x8000: dst += (C - dst) * texel / 256
-        oColor = vec4(uOverride ? (uTintRaw ? uTint.rgb : post(uTint.rgb)) : post(grade(uColor, uGradeOn)), idx / 256.0);
+        // An override colour is graded like the material's (0x413c50 at spawn).
+        oColor = vec4(uOverride ? (uTintRaw ? uTint.rgb : fin(grade(uTint.rgb, uGradeOn))) : fin(grade(uColor, uGradeOn)), idx / 256.0);
         return;
     }
     vec4 c = uTextured ? texture(uTex, vUv) : vec4(uColor, 1.0);
@@ -98,7 +111,11 @@ void shade() {
         if (c.a < 1.0 / 255.0) discard;
     } else if (c.a < 0.5) discard;
     if (uMode == 1) {               // 0x0080: unlit (shade row 32), averaged 50/50
-        oColor = vec4(post(c.rgb), 0.5);
+        oColor = vec4(fin(c.rgb), 0.5);
+        return;
+    }
+    if (uDf2) {
+        oColor = vec4(c.rgb * (gl_FrontFacing ? vLit.x : vLit.y), uMode == 3 ? c.a : 1.0);
         return;
     }
     // Shade table (0x435070 / 0x434d84): rows 0..31 black -> colour, rows
@@ -197,6 +214,7 @@ bool ModelRenderer::init(std::string* error) {
     locRoot_ = glGetUniformLocation(prog_, "uRoot");
     locPose_ = glGetUniformLocation(prog_, "uPose");
     locPoseCount_ = glGetUniformLocation(prog_, "uPoseCount");
+    locDf2_ = glGetUniformLocation(prog_, "uDf2");
     glUseProgram(prog_);
     glUniform1i(glGetUniformLocation(prog_, "uTex"), 0);
     glUniform1i(glGetUniformLocation(prog_, "uIndex"), 1);
@@ -239,6 +257,7 @@ const GpuModel* ModelRenderer::get(Vfs& vfs, const std::string& rawName, std::st
     auto g = std::make_unique<GpuModel>();
     g->name = name.substr(0, name.size() - 4);
     g->kind = src.kind;
+    g->gen2 = src.version >= 8;
     for (int k = 0; k < 4; ++k) g->lodCodes[k] = src.lodCodes[k];
     if (!src.lods.empty()) g->hitMeshes = src.lods[0].hitMeshes;
     std::copy(src.lodThreshold, src.lodThreshold + 4, g->lodThreshold);
@@ -354,6 +373,7 @@ void ModelRenderer::drawBatches(const GpuModel& m, int lod, const Mat4& model, b
         glUniformMatrix4fv(locRoot_, 1, GL_FALSE, model.m);
         glUniformMatrix4fv(locPose_, poses, GL_FALSE, (*meshes)[0].m);
     }
+    glUniform1i(locDf2_, m.gen2 ? 1 : 0);
     glBindVertexArray(l.vao);
     for (const auto& b : l.batches) {
         const int bFrame = weapon && b.mesh == 0 ? 0 : frame;

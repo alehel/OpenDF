@@ -34,6 +34,7 @@ struct GpuModel {
     };
     std::string name;
     std::string kind;                  // "efct" = billboard effect
+    bool gen2 = false;                 // a Delta Force 2 (v8) model: its own lighting and grade order
     std::string lodCodes[4];           // per-LOD draw routine ("helo", "gnrc", ...)
     float lodThreshold[4] = {0, 0, 0, 0};
     float headerRadius = 1;            // 3DI header +0x60 (LOD selection)
@@ -121,7 +122,7 @@ private:
     GLuint prog_ = 0, identityLut_ = 0;
     int variant_ = 0;
     GLint locModel_ = -1, locColor_ = -1, locTextured_ = -1, locMode_ = -1, locSpec_ = -1, locSpecPow_ = -1,
-          locBright_ = -1, locKey_ = -1, locGradeTexel_ = -1, locRoot_ = -1, locPose_ = -1, locPoseCount_ = -1;
+          locBright_ = -1, locKey_ = -1, locDf2_ = -1, locGradeTexel_ = -1, locRoot_ = -1, locPose_ = -1, locPoseCount_ = -1;
     bool grade_ = false;   // begin(): the scene has a TRN grade
     bool defer_ = false;
     float tint_[4] = {1, 1, 1, 1};

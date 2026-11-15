@@ -80,6 +80,12 @@ First differences from DF1:
     How DF2's renderer DLL draws them is INFERRED, not traced), the texture
     variant mask (3 camouflage variants), 192-byte LOD headers, collision
     planes, 80-byte volumes, 120-byte materials (DF2.EXE 0x43e570).
+    Lighting (GOG Df2.exe 0x44bab0): colour x intensity, intensity ambient
+    0x8ccc + diffuse 0x8000 x |n.L| (back faces /4) or the fullbright +0x3c,
+    capped at 0xffff; no specular and no shade-table highlight. The TRN
+    grade is baked into palettes and material colours before shading
+    (0x4454e0 -> 0x413cd0 / 0x413ba0), skipping textures flagged 0x10
+    (smoke, flashes, mist, sparks, blob shadows); no df.cfg table after.
   - **BMS version 0x0F**: a 0x208-byte header (title/author 32 bytes, terrain
     0x44, dialogue 0x54, flags 0x78 with night 0x100000, weather 0xAC); the
     rest is DF1's layout (DF2.EXE 0x403bd0).
@@ -202,7 +208,18 @@ First differences from DF1:
     RGB and S 255 − its mean alpha (loader 0x46f680, 2×2 reductions
     0x46d970), at mip 0 while drawing (0x470900 -> 0x472380, 0x490a79)
     and baked into mips 1..9 (0x46e0f0); OpenDF builds that tinted map
-    once with its mips for the far rings;
+    once with its mips for the far rings; its ring
+    table (GOG 0x4722f0 -> 0x472440, divisors p1/p2 2.0 in the main view,
+    3.2 in the binocular moves, the scope's as DF1's, 2.2 in the
+    picture-in-picture views): near bands end at F/(2^k·p1), k 6..1 (80 m
+    at F 320), far band k 0..8 ends at 2^k·F/p2 with colour mip k (terrain
+    to 40960 m unless fogged). Near ground relief (0x471c00): every sample
+    raised by e/256 m (no threshold), e from the detail elevation's 2×2-max
+    pyramid at the band's level, nearest texel (OpenDF's ¼ m mesh samples
+    the finest bands coarsely). Not done: the
+    Turbo option's 4 near bands, 0x46dc00's height-weighted mip filter and
+    max-filtered far heights, and the stored map's +2·max detail bias (line
+    tests, radar);
   - **rain and snow** (BMS flag 0x78 bit 3 → +0xAC: 1 rain in CTF_D11,
     D03M11, D05M11, TDM_DG31; 2 snow in D06M01, D06M09): 1024 particles
     born up to 64 m around the last frame's camera, 16 m up (rain 5 a tick
@@ -578,7 +595,10 @@ First differences from DF1:
     DF1's 28 / mag whole degrees (Scope Mag: command 0xc2 'scopemag', only
     while 0x455790 holds);
     night vision (key N, on at the start of night missions: 0x44781e) as an
-    ellipse 4r × 2r, green only ×4, before the gun is drawn (0x449450), not
+    ellipse 4r × 2r, green only ×4, over the gun, which is drawn inside the
+    3D frame and depth-tested against the world (GOG 0x44f8d0 -> 0x44ea10,
+    before the fog and the under-water tint 0x44fcb0); no night vision with
+    another camera or while dead (GOG 0x465f90 -> 0x450550), nor 
     while the scope shows (GOG 0x465fde); the scope image green ×4 while the
     night vision is on (GOG 0x455be0, [0x79a7fc]). DF2 has no "Player Health: Easy".
   - **front end** (`opendf --game games/DF2 play`; src/menu/FrontendDf2.cpp;
