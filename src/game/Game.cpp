@@ -1197,6 +1197,9 @@ bool Game::loadMission(int index) {
         }
         weather_.start(mission_.version >= 0x0F ? mission_.weather : 0);
         if (!df2Weapons) arsenal_.init(gameText_, &exe_, &items_, lo);
+        // GOG Df.exe's spread (0x45ea00) takes the shared 0x477860.
+        if (!df2Weapons && exe_.build() == ExeBuild::Df1Gog) arsenal_.setSharedRand([this] { return shrapRand(); });
+        else arsenal_.setSharedRand(nullptr);
         arsenal_.modelPoints = [this](const std::string& name) -> const std::vector<std::array<float, 3>>* {
             const GpuModel* m = name.empty() ? nullptr : models_.get(vfs_, name);
             return m ? &m->points : nullptr;
@@ -1954,7 +1957,11 @@ void Game::touchPickups() {
             if (!world_.df2Rules && id != 4010 && id != 4055) break;
             if (id == 4118) arsenal_.refillGrenades();
             else arsenal_.refill();
+            // GOG Df.exe (client message 0x1d, 0x46d9f0) looks up the same
+            // misspelt Misc STRMSIC17 (0x4cccd4; DFGAME.BIN has STRMISC17),
+            // so it too pushes an empty line; the CD build the literal.
             if (world_.df2Rules) pushMessage(df2Text("Misc", "STRMSIC17", ""), rgb(0xff, 0x80, 0));
+            else if (exe_.build() == ExeBuild::Df1Gog) pushMessage(df2Text("Misc", "STRMSIC17", ""), {1, 1, 1, 1}, false, kHudBright);
             else pushMessage("Ammo reloaded", {1, 1, 1, 1}, false, kHudBright);   // 0x42b57f: colour 0x66f94c
             sound_.play2D(0x164);
             o.removed = true;
@@ -2017,7 +2024,11 @@ void Game::weaponEvent(const WeaponEvent& e) {
             const float margin = item->type == "vehicle" ? 20.f : item->type == "object" || item->type == "person" ? 10.f : 0.f;
             at.y = world_.df2Surface(at, 0x4000 / 65536.f, world_.df2Neighbours(at, margin));
         } else {
-            at.y = world_.groundHeight({at.x, player_.feet.y + 0.25f, at.z}, 0.25f);
+            // GOG Df.exe 0x483b10 cases 7/9 send the player object's z (the
+            // body origin, +0x2c) and the host create (0x4473f0, CD 0x447fd8)
+            // snaps it with 0x486fd0(obj, pos, 0x4000): the highest floor up
+            // to 0.25 m above the origin.
+            at.y = world_.groundHeight({at.x, player_.origin().y, at.z}, 0x4000 / 65536.f);
         }
         if (e.item == 4138) {
             // GOG Df2.exe 0x459b80: a video camera first removes the
@@ -2330,7 +2341,7 @@ void Game::blowCharge(Charge& c) {
 }
 
 // Per tick: charges hit or set off blow up; motion claymores (cly2, every
-// 0x20 ticks, 0x46cf48) sense anyone within 15 m ahead (+-33.75 degrees),
+// 0x20 ticks, 0x46cf48) sense anyone under 16 m ahead (about +-34 degrees),
 // in sight and moving at least 1.1 m/s (vehicles 0.2), and go off 32 ticks
 // later. Fire missions count down; while the laser is on a point the strike
 // is pulled toward it 1 m a tick; at 0 a satchel-sized shell lands.
@@ -2342,50 +2353,71 @@ void Game::tickCharges() {
         if (c.fuse > 0) { if (--c.fuse == 0) blowCharge(c); continue; }
         if (c.item != 4014 || (ticks_ & 0x1f)) continue;
         const Vec3 sensor = o.pos + Vec3{0, 0.3f, 0};
-        auto sees = [&](Vec3 at, float speed, float need) {
-            const Vec3 v = world_.nearest(at, sensor) - sensor;
+        // GOG Df.exe 0x460aa0 (CD 0x46cf48): the octagonal distance from the
+        // claymore's origin to the target's, accepted while its whole metres
+        // are under 16 (0x460b94 / 0x460c70); the bearing less the heading in
+        // 1/256 turns ((x >> 24), folded 0x100 - x above 0x7f) at most 0x18,
+        // about -33.75..+35.2 degrees in the EXE's angle sense; then the
+        // sight line from the raised sensor to `ray` (a vehicle's z + 1 m).
+        const uint32_t headingBits = uint32_t(int64_t(std::llround(double(kPi / 2 - o.heading) / (2 * kPi) * 4294967296.0)));
+        auto sees = [&](Vec3 at, Vec3 ray, float speed, float need) {
+            const Vec3 v = world_.nearest(at, o.pos) - o.pos;
             float a = std::abs(v.x), b = std::abs(v.y), cc = std::abs(v.z);
             if (a < b) std::swap(a, b);
             if (a < cc) std::swap(a, cc);
             if (b < cc) std::swap(b, cc);
-            if (a + b * 11.f / 32.f + cc * 0.25f > 15.f || speed < need) return false;
-            float rel = std::atan2(v.x, -v.z) - o.heading;
-            rel -= std::floor(rel / (2 * kPi) + 0.5f) * 2 * kPi;
-            if (std::abs(rel) > 0x18 / 256.f * 2 * kPi) return false;
+            if (a + b * 11.f / 32.f + cc * 0.25f >= 16.f || speed < need) return false;
+            const double bearing = kPi / 2 - std::atan2(double(v.x), double(-v.z));
+            uint32_t step = (uint32_t(int64_t(std::llround(bearing / (2 * kPi) * 4294967296.0))) - headingBits) >> 24;
+            if (step > 0x7f) step = 0x100 - step;
+            if (step > 0x18) return false;
             RayHit h;
-            return !world_.raycast(sensor, sensor + v, h, true, c.object, false);
+            return !world_.raycast(sensor, world_.nearest(ray, sensor), h, true, c.object, false);
         };
-        bool hit = !playerDead() && sees(player_.origin(), player_.speed(), 1.1f);
+        bool hit = !playerDead() && sees(player_.origin(), player_.origin(), player_.speed(), 1.1f);
         for (const auto& q : world_.objects) {
             if (hit) break;
             if (!q.person || !q.alive() || !q.moves) continue;
             const char* n = moveName(q.moveNumber);
             const AnimMove* mv = n ? q.moves->find(n) : nullptr;
-            hit = sees(q.pos, mv ? mv->velocity : 0.f, 1.1f);
+            hit = sees(q.pos, q.pos, mv ? mv->velocity : 0.f, 1.1f);
         }
-        // Vehicles moving at 0.2 m/s or more (target z + 1 m).
+        // Vehicles moving at 0.2 m/s or more (only the sight line aims at
+        // z + 1 m).
         for (const auto& [obj, speed] : vehicles_.moving()) {
             if (hit) break;
-            hit = sees(world_.objects[size_t(obj)].pos + Vec3{0, 1, 0}, speed, 0.2f);
+            const Vec3 p = world_.objects[size_t(obj)].pos;
+            hit = sees(p, p + Vec3{0, 1, 0}, speed, 0.2f);
         }
         if (hit) c.fuse = 32;
     }
-    if (laserWindow_ > 0) --laserWindow_;
     for (auto& st : strikes_) {
+        // While the dot is lased the aim point steps 1 m toward it whenever
+        // it is off at all (GOG Df.exe 0x4478df / Df2.exe 0x461850: only a
+        // zero length is skipped), so it jitters around the dot.
         if (laserWindow_ > 0) {
             const Vec3 d = world_.nearest(laserPoint_, st.target) - st.target;
             const float dx = std::abs(d.x), dz = std::abs(d.z), len = std::max(dx, dz) + std::min(dx, dz) * 0.5f;
-            if (len > 1.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
+            if (len > 0.f) st.target = st.target + Vec3{d.x, 0, d.z} * (1.f / len);
         }
         if (--st.timer == 0) {
             // DF2 0x458a56 (GOG 0x461850): ground + 0x1999; below the water,
             // water + 0x4000; then the big blast (0x45f910) with yaw 0, owned
-            // by the requester.
-            Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z) + 0x1999 / 65536.f, st.target.z};
-            if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
+            // by the requester. Delta Force (GOG Df.exe 0x447848..0x44786d,
+            // CD 0x448368): ground + 6553.6 rounded (0x199a), no water test.
+            Vec3 at{st.target.x, terrain_.heightAt(st.target.x, st.target.z), st.target.z};
+            if (world_.df2Rules) {
+                at.y += 0x1999 / 65536.f;
+                if (const float w = terrain_.waterLevel(); w != 0 && at.y < w) at.y = w + 0x4000 / 65536.f;
+            } else {
+                at.y += 0x199a / 65536.f;
+            }
             bigBlast(at, kPi / 2, -3);
         }
     }
+    // The window counts down once after all strikes (GOG Df.exe 0x447888,
+    // Df2.exe 0x461850 end).
+    if (laserWindow_ > 0) --laserWindow_;
     strikes_.erase(std::remove_if(strikes_.begin(), strikes_.end(), [](const Strike& s) { return s.timer <= 0; }), strikes_.end());
 }
 
@@ -3753,6 +3785,18 @@ void Game::runAction(Action act, bool reverse) {
     case Action::Weapon8: arsenal_.select(8); break;
     case Action::Weapon9: arsenal_.select(9); break;
     case Action::Cycle: arsenal_.cycle(reverse ? -1 : 1); break;   // GOG Df2.exe 0x41f150 case 0x5e
+    // GOG Df.exe 0x477d40: 0xc0 cycleb -> 0x484b70(-1); the cheat commands
+    // (flag 0x100000: single player only; the CD's table has them too, CD
+    // 0x42d9c0) 0x78 -> 0x4848c0, 0x79 -> 0x484960 with Misc STRMISC26
+    // ("Pansy."; the CD the literal, 0x42dfbd) in white when it turns on,
+    // 0x7c -> 0x447970(1, 8).
+    case Action::CycleBack: if (!df2Hud_.on) arsenal_.cycleBack(); break;
+    case Action::CheatRefill: if (!df2Hud_.on) arsenal_.refill(); break;
+    case Action::CheatInfiniteAmmo:
+        if (!df2Hud_.on && arsenal_.toggleInfiniteAmmo())
+            pushMessage(exe_.build() == ExeBuild::Df1Gog ? df2Text("Misc", "STRMISC26", "") : std::string("Pansy."));
+        break;
+    case Action::CheatFireMissions: if (!df2Hud_.on) fireMissions_ = 8; break;
     case Action::VCam: arsenal_.toggleCameraView(); break;   // GOG Df2.exe 0x41f150 case 0x28
     // GOG Df.exe 0x477d40: 0x1e flips [0xc23a34]; 0x1f cycles (0x484a50) only while it is on.
     case Action::Magazine: arsenal_.reload(); break;
@@ -7468,11 +7512,24 @@ void Game::drawHelp(const Screen& s) {
     y = 15;
     static const Action slotKeys[10] = {Action::Weapon0, Action::Weapon1, Action::Weapon2, Action::Weapon3, Action::Weapon4,
                                         Action::Weapon5, Action::Weapon6, Action::Weapon7, Action::Weapon8, Action::Weapon9};
+    // GOG Df.exe 0x42be00 prints each mode's short name (+0x44, 'Player
+    // Weapons' STR_SPWNAME%02i, 0x46bfb0; CD 0x48232c the same) and skips
+    // an empty one. OpenDF falls back to the long name only when the game
+    // text has no short names at all.
+    const bool shortNames = gameTable_.find("Player Weapons", "STR_SPWNAME01") != nullptr;
     for (int k = 1; k <= 10; ++k) {
         const int slot = k % 10;
         const ModeDef* md = arsenal_.slotMode(slot);
-        if (!md || md->name.empty()) continue;
-        put(520, 750, y, md->name, keyOf(slotKeys[slot]));
+        if (!md) continue;
+        std::string name = md->name;
+        if (shortNames) {
+            char key[16];
+            std::snprintf(key, sizeof key, "STR_SPWNAME%02d", arsenal_.slotModeId(slot));
+            const std::string* t = gameTable_.find("Player Weapons", key);
+            name = t ? *t : std::string();
+        }
+        if (name.empty()) continue;
+        put(520, 750, y, name, keyOf(slotKeys[slot]));
         y += 25;
     }
     put(520, 750, y, label("HELPFIRE"), keyOf(Action::Fire));

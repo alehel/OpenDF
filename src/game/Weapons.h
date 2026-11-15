@@ -237,6 +237,15 @@ public:
     // none from 11/12; dir < 1 goes back (Shift, the wheel forward).
     void cycle(int dir = 1);
     void cycleBack();             // DF1 'cycleb' (GOG Df.exe 0x484b70(-1)): previous slot with a mode, wrapping from 9
+    // GOG Df.exe's takeittothelimit command (0x79 -> 0x484960): flips
+    // [0x67dbc9] bit 0 and refills; while it is set a gun's chambering
+    // (0x483240) takes no round from the magazine and a launcher, grenade
+    // or charge (0x483654 / 0x4838a4) no spare. Returns the new state.
+    bool toggleInfiniteAmmo() { infiniteAmmo_ = !infiniteAmmo_; refill(); return infiniteAmmo_; }
+    // GOG Df.exe's spread (0x45ea00) draws from the generator 0x477860 it
+    // shares with the shrapnel and the binoculars; Game hands it in for that
+    // build (empty: Arsenal's own generator).
+    void setSharedRand(std::function<uint32_t()> f) { sharedRand_ = std::move(f); }
     void reload();                // 0x44a004
     void toggleZoom();
     // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10
@@ -282,6 +291,7 @@ public:
 
     int slot() const { return current_; }
     // The mode in a slot (null if empty), e.g. for the help screen.
+    int slotModeId(int i) const { return i >= 0 && i < kSlots ? slots_[size_t(i)] : 0; }
     const ModeDef* slotMode(int i) const { return i >= 0 && i < kSlots && slots_[size_t(i)] ? &modes_[size_t(slots_[size_t(i)])] : nullptr; }
     const ModeDef& mode() const { return modes_[size_t(slots_[size_t(current_)])]; }
     int modeIndex() const { return slots_[size_t(current_)]; }   // the player-table mode number
@@ -476,6 +486,8 @@ private:
     // Delta Force 2 (0x44c2f0): one tick of drag toward the wind.
     void df2Drag(Projectile& b, float water) const;
     std::mt19937 rng_{1998};
+    std::function<uint32_t()> sharedRand_;
+    bool infiniteAmmo_ = false;   // GOG Df.exe [0x67dbc9] & 1
 };
 
 } // namespace df

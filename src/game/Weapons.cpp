@@ -564,9 +564,9 @@ void Arsenal::refill() {
         mag_[size_t(g)] = gd.magazine;
         chambered_[size_t(g)] = 1;
     }
-    // DF2's refill (CD 0x4472d0) leaves the reload timer: a running reload
-    // goes on.
-    if (!df2_) reloadTicks_ = 0;
+    // Neither game's refill touches the reload timer [0xc23834] or the
+    // cooldown (GOG Df.exe 0x4848c0, CD 0x44b634; DF2 CD 0x4472d0): a running
+    // reload goes on and its end (0x483390) uses one of the new spares.
 }
 
 void Arsenal::refillGrenades() {
@@ -823,7 +823,15 @@ void Arsenal::fire(Player& player) {
     // Spread (0x46af90): yaw and pitch each off by (A−1)·30·(0x8000 − rand)
     // binary angle, i.e. uniform ±(A−1)·0.0824°.
     float yaw = player.yaw, pitch = player.pitch;
-    if (g.accuracy > 1) {
+    if (g.accuracy > 1 && sharedRand_ && !df2_) {
+        // GOG Df.exe 0x45ea00: yaw and pitch each += (A - 1) * 0x1e *
+        // (0x8000 - 0x477860()) binary angle (OpenDF's yaw runs the other way).
+        const float unit = 2 * kPi / 4294967296.f * float((g.accuracy - 1) * 0x1e);
+        const int32_t ry = 0x8000 - int32_t(sharedRand_());
+        const int32_t rp = 0x8000 - int32_t(sharedRand_());
+        yaw -= unit * float(ry);
+        pitch += unit * float(rp);
+    } else if (g.accuracy > 1) {
         const float maxDev = 30.f * 0x8000 / 4294967296.f * 2 * kPi * float(g.accuracy - 1);
         std::uniform_real_distribution<float> u(-1.f, 1.f);
         yaw += u(rng_) * maxDev;
@@ -923,8 +931,8 @@ void Arsenal::fire(Player& player) {
         if (!(guns_[size_t(bg >= 0 ? bg + (followUp_ ? 1 : 0) : md.gun)].flags & 0x80)) fireMark_ = true;
     }
     // The Barrett (mode 15) pushes the shooter back 0x800 (1/32 m) along
-    // -heading (0x447070).
-    if (df2_ && slots_[size_t(current_)] == 15) {
+    // -heading, in both games (GOG Df.exe 0x483044, CD 0x449cbc; DF2 0x447070).
+    if (slots_[size_t(current_)] == 15) {
         player.feet.x -= std::sin(player.yaw) * (0x800 / 65536.f);
         player.feet.z += std::cos(player.yaw) * (0x800 / 65536.f);
     }
@@ -1003,7 +1011,7 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             // is held (DF1 not with the binoculars up, [0x93367c] 0x449ff1).
             if (magRef() > 0) {
                 chamberedRef() = 1;
-                --magRef();
+                if (!infiniteAmmo_) --magRef();   // GOG Df.exe 0x483240: not with [0x67dbc9] & 1
                 if (magRef() == 0) startReload();
                 else if (md.automatic() && triggerDown && !binoculars_) { fire(player); shot = true; }
             } else {
@@ -1024,7 +1032,7 @@ void Arsenal::tick(bool triggerDown, Player& player, std::vector<std::string>& m
             // weapon costs a spare; other types nothing.
             if ((md.type == 2 || md.type == 7 || md.type == 9 || md.type == 11) && sparesRef() > 0) {
                 chamberedRef() = 1;
-                --sparesRef();
+                if (!infiniteAmmo_) --sparesRef();   // 0x483654 / 0x4838a4: not with [0x67dbc9] & 1
             }
         } else if (sparesRef() > 0 && !chambered()) {
             // DF2.EXE 0x4463c0: the next grenade, launcher round or charge

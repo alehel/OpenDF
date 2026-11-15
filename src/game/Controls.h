@@ -42,6 +42,11 @@ enum class Action {
     // 0x1e) / tab (Tab, id 0x1f) (GOG Df.exe 0x477d40); GOG Df2.exe's
     // Forward Observer fo (F11) / tab (Tab).
     FoCamera, FoNext,
+    // GOG Df.exe: cycleb (command 0xc0, no default key: 0x484b70(-1)) and
+    // the single-player cheat commands (flags 0x100000, no key):
+    // hitmewithyourbestshot 0x78 (refill), takeittothelimit 0x79 (infinite
+    // ammunition), raindropskeepfallinonmyhead 0x7c (8 fire missions).
+    CycleBack, CheatRefill, CheatInfiniteAmmo, CheatFireMissions,
     Count
 };
 
