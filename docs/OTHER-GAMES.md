@@ -730,7 +730,16 @@ First differences from DF1:
     the same filter in Df.exe (0x449710) puts DF1 C02M01 at (-191, -113);
     record yaw = int16 +0x34 and pitch = int16 +0x36 (both games, e.g. the
     tilted pungi stakes); kill team (0x416380) destroys every object of the
-    team through its ai function, `null` / `dec0` excepted; condition 1/13
+    team through its ai function, `null` / `dec0` excepted, and on team 1
+    the player too (an organic of team 1, 0x4146f0, whose `plyr` 0x401fc0
+    dies at hp <= 0 on any event: death move kind 1, no red flash); the
+    campaign switches are kept when the mission is left with side 1 the
+    winner and at the Space replay (0x464140 via 0x464190 / 0x466ad0), not
+    at action 8 (0x41b700 case 8 only latches the winner), so the unlock
+    switch a win event sets after its action 8 is kept (DF1 still copies
+    them at action 8); one-point paths are marked stop-at-end (flags |= 1)
+    at load (0x403e20, loop 0x4041b0: 356 of the 778 lack it in the
+    files); condition 1/13
     "team hit team" (table 0xabbe00, set on a direct hit 0x453510 ->
     0x41ac30); area condition 1/10 (0x41b200, 0x4152a0): the first and last
     marker of the tag, both axes must differ, live positions of groups 0

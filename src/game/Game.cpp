@@ -2728,6 +2728,15 @@ void Game::killTeam(int team) {
             if (f.empty() || f == "null" || f == "dec0") continue;
             if (!o.person && o.hp <= 0) o.hp = 1;   // hp is set, not reduced: an hp-0 item goes too
             world_.damage(int(i), o.person ? 1000 : o.hp + 50, 0x7fff);        }
+        // The player is an organic of team 1 (0x4146f0) with `plyr`
+        // (0x401fc0): at hp <= 0 it dies on any event, with the death move
+        // of kind 1, part 0, direction 0 (0x417170(obj, 0, 0, 1)), and no
+        // red flash.
+        if (team == kPlayerTeam && !playerDead()) {
+            const int flash = damageFlash_;
+            hurtPlayer(playerHp_ + 50, 1, player_.feet + player_.forward());
+            damageFlash_ = flash;
+        }
         return;
     }
     // GOG Df.exe 0x45f4c0 (CD 0x46ba38): for a non-zero team, every object
