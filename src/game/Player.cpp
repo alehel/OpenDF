@@ -94,6 +94,30 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
         return;
     }
 
+    // Stance and jump commands (GOG Df.exe 0x488200, CD 0x436fd0), only in
+    // the on-ground branch (not airborne +0x6d & 0x20, water +0x6e & 2 or
+    // sliding +0x6e & 4); latched until then. In order: jump, Prone, Crouch,
+    // Stand. Prone and Crouch toggle: pressed again they stand up. Standing
+    // up on a platform (+0x100) DF raises the origin by 0.5 m from prone or
+    // 0.25 m from a crouch (also crouching from prone, a GOG change), which
+    // keeps the new pose's feet within the 0.5 m step of the platform's
+    // top; OpenDF tracks the feet, which stay on the platform.
+    // move_jump is a press command in GOG (key table 0x4fb2fc flag 1, CD 5)
+    // re-armed by [0xc23a10] while the jump key is up (0x4795a0), so holding
+    // it jumps once; prone, it stands the soldier up instead.
+    if (!in.jump) jumpArmed_ = true;
+    bool jumpNow = false;
+    if (onGround_ && !sliding_) {
+        if (in.jump) {
+            if (stance == Stance::Prone) stance = Stance::Stand;
+            else if (jumpArmed_) { jumpNow = true; jumpArmed_ = false; }
+        }
+        if (reqProne_) stance = stance == Stance::Prone ? Stance::Stand : Stance::Prone;
+        if (reqCrouch_) stance = stance == Stance::Crouch ? Stance::Stand : Stance::Crouch;
+        if (reqStand_) stance = Stance::Stand;
+        reqProne_ = reqCrouch_ = reqStand_ = false;
+    }
+
     // Move selection (DF.EXE 0x436fd0): prone crawls; otherwise walk (NoRun
     // or steep uphill) or run in the standard gait, also when crouched (the
     // crouch flag stays set, the soldier is crouched again when he stops);
@@ -157,14 +181,9 @@ void Player::update(float dt, const PlayerInput& in, const World& world) {
     feet = feet + delta;
     feet = world.resolve(feet, kRadius, kHeight, kStep);
 
-    // Jump (0x4375de / 0x437730): prone, the key stands the soldier up;
-    // otherwise 4 m/s up and 1/16 m at once (not while sliding). move_jump is
-    // a held command (table 0x4df4f4 flags 5, as move_forward): no latch, so
-    // holding it jumps again on landing.
-    if (in.jump) {
-        if (stance == Stance::Prone) stance = Stance::Stand;
-        else if (onGround_ && !sliding_) { vy_ = kJumpSpeed; feet.y += kJumpLift; onGround_ = false; }
-    }
+    // Jump (CD 0x4375de / 0x437730, GOG 0x488200): 4 m/s up ([0xc2382c]
+    // 0x1111) and 1/16 m at once; taken above.
+    if (jumpNow) { vy_ = kJumpSpeed; feet.y += kJumpLift; onGround_ = false; }
 
     // Ground (0x43655b..0x436a07): below ground snaps up; within 1/32 m holds;
     // higher up gravity applies, and over 0.5 m (or moving up) is airborne
