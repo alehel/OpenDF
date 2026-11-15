@@ -767,7 +767,8 @@ First differences from DF1:
     16 numbered rows from y 240, the VON or Receive/Waypoints/Mute/Text
     chat headings, no per-row buttons on the player's own row; Team tab
     (0x410060): the side-1
-    soldiers (player first) as Name/Weapon/Plan rows from y 240 (14
+    soldiers (player first; dead ones stay, 0x40d520 has no health test,
+    an empty name shows CMAP_ITEM_UNKNOWN) as Name/Weapon/Plan rows from y 240 (14
     rows, headings Name at 80, Weapon centred at 288, Plan at 464, y 204),
     each row hit only on its number-less name rect (0x40d790), picked there or by
     clicking them on the map (0x422640); a teammate's four orders (Cmap
@@ -779,11 +780,27 @@ First differences from DF1:
     selected blip blinks (outline its colour halved, colour | 0x808080 while
     (frame + 8) & 0x20). The selected-object panel at (684,200) (0x40e190:
     Selected/name/team/grid/Plan/Weapons for the player and squad;
-    Waypoint/Building/Vehicle with name and grid 0x427a60: 16.16 fixed
+    Waypoint (items 6005 / 6089 only, 0x40ebf0)/Building/Vehicle with the
+    object's +0x54 name as is (no fallback) and grid 0x427a60: 16.16 fixed
     point, columns wrapped by 70200 m, rows by 10000 m) and its action
-    buttons from (688,696) upward (0x40dd50: Bozo Filter and Send Message to
-    as no-ops, Set as my Waypoint, Delete, Rename) on the Map, Players and
-    VON, Players and Team tabs. The W tool (0x411250, one-shot; the W button made with state 0
+    buttons from (688,696) upward (GOG 0x40e800: Bozo Filter as a no-op,
+    Set as my Waypoint, Delete, Rename; the CD's 0x40dd50 also had Send
+    Message to) on the Map, Players and Team tabs (none on VON). Any mouse
+    button works the tabs, rows and buttons (0x40c1e0 ORs every held
+    button); left alone picks on the map, right drags it; a click on the
+    open tab does nothing (0x40d800). Opening or closing the map puts the
+    pointer at the screen centre (0x4673b0 -> 0x479b80); the cursor is kept
+    inside the 640x480 screen (0x40ccf0) and the Game Paused box is drawn
+    over the map (0x449200). Map draw (0x4261e0 / 0x4273b0): soldiers,
+    objects, the route, waypoints, the player (hidden with People off),
+    then the selection again with its last shape (so a selected HUD
+    waypoint does not blink out); Buildings hides buildings and
+    decorations, Vehicles vehicles, Waypoints only items 6005, 6026..6028,
+    6089, 6092, 6093 (other markers stay); destroyed S&D decorations are
+    not drawn (map and radar); objects at their absolute mission positions,
+    not the nearest wrapped copy; with Gridlines the orange north arrow and
+    "N" at (590, 220), the grid labels outlined in 0x010101 and drawn only
+    when they fit inside the map (0x426fd0 / 0x4270c0). The W tool (0x411250, one-shot; the W button made with state 0
     on every Map visit; the white DF2WCURA cursor anywhere on the Map tab):
     a click on the map makes a player waypoint "WP" (item 6089, 128-slot pool
     0xd34dc0 cleared at mission load; full: nothing made) at the clicked
@@ -792,13 +809,18 @@ First differences from DF1:
     ones too (x/y only; not on the press frame, GOG 0x40dd70). Pool waypoints show in the 3D view (GOG 0x450070: a green line one metre tall straight up the screen, the name centred 15 pixels above), on the map and the HUD radar as
     green diamonds, the HUD waypoint blinking. "Set as my Waypoint"
     (0x447b70) makes any object the HUD waypoint ("WP: name" off the mission
-    list; W returns to the list at entry 1, 0x446700; a deleted one shows NO
-    WAYPOINT). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
+    list; a deleted one shows NO WAYPOINT). NextWaypoint (0x44d280, -1 with
+    Shift): nothing with fewer than two route entries (a custom HUD waypoint
+    stays), the route cleared when no entry exists, from index 0 when the
+    HUD waypoint is not on the list, entries without an item skipped. The
+    W tool's point is cut to whole metres from the integer centre pixel
+    (0x427ba0). Elevation (D button, F9 / F10 with the [0x7655fc] flag that
     Escape clears first): the green ramp 0x4aecdc, also on the HUD radar, no
     water blend; contours ({{{, map only): 0x00ff00 where H >> 12 changes
     from the previous pixel of the row or the pixel south. The mission
     route keeps up to 16 points (GOG 0x459740; DF1 8). The Weapons tab (0x40fbe0):
-    current and requested loadout with WEAP640 pictures by type (0x4434e0),
+    current and requested loadout with WEAP640 pictures by type (0x4434e0;
+    GOG 0x449b50 also gives type 9, M4/M203, frame 4),
     < > cycling through types the slot's category mask allows (0x4a4c88),
     the button rows' quirk (empty slots share a row); Request Weapons is
     accepted only while the player overlaps a type-6 volume (+0x64 &
