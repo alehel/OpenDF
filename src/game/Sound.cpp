@@ -234,7 +234,25 @@ bool SoundSystem::init(Vfs& vfs, const ExeImage* exe, Audio* audio, std::string*
         for (const auto& s : kBuiltinSounds)
             if (names_[size_t(s.id)].empty()) names_[size_t(s.id)] = s.name, flags_[size_t(s.id)] = s.flags;
     }
-    for (int i = 0; i < 0x400; ++i) byId_[size_t(i)] = names_[size_t(i)].empty() ? nullptr : bank_.def(names_[size_t(i)]);
+    // GOG Df2.exe 0x4679c0 (from 0x466ba0 with 'df2.pwf', 'new.pwf'): when
+    // NEW.PWF exists and loads, each flag-1 record is looked up there first
+    // (0x47b300) and, if found, flagged 4 and played from that bank
+    // (0x677eac); else from DF2.PWF.
+    fromNew_.fill(false);
+    newBank_ = Pwf{};
+    bool haveNew = false;
+    if (df2 && vfs.exists("NEW.PWF")) {
+        std::vector<uint8_t> nd;
+        newBank_.full16 = true;
+        haveNew = vfs.read("NEW.PWF", nd) && newBank_.load(std::move(nd));
+    }
+    for (int i = 0; i < 0x400; ++i) {
+        byId_[size_t(i)] = nullptr;
+        if (names_[size_t(i)].empty()) continue;
+        if (haveNew && (flags_[size_t(i)] & 1))
+            if (SoundDef* d = newBank_.def(names_[size_t(i)])) { byId_[size_t(i)] = d; fromNew_[size_t(i)] = true; continue; }
+        byId_[size_t(i)] = bank_.def(names_[size_t(i)]);
+    }
     // Voice sets (0x4F019C: 16 sets of 12 sound ids; DF2.EXE 0x4B70FC: 22;
     // GOG Df.exe 0x4F7EAC, Df2.exe 0x4CBCC0, the same ids).
     phrases_.assign(16 * 12, 0);
@@ -439,15 +457,23 @@ float SoundSystem::occlusion(Vec3 a, Vec3 b) const {
     return float(sum);
 }
 
-void SoundSystem::start(SoundDef& def, float distance, int dir, bool positional, float callerPitch) {
+void SoundSystem::start(SoundDef& def, Pwf& bank, float distance, int dir, bool positional, float callerPitch) {
     // 0x492210, per layer: a variant (in turn or at random), pitch =
     // (def base + rand) x (variant base + rand) x caller pitch, volume =
     // min(gain x curve[d / range x 256] >> 8, cap), nothing beyond the range.
+    // Delta Force 2 (GOG Df2.exe 0x47b3c0): no range test before the pick,
+    // so far layers still step their counters and draw their randoms; per
+    // layer the pick, then the definition's pitch random (0x47b548), then
+    // the variant's (0x47b55a); a layer out of range gets volume 0
+    // (0x47b9a0) and is still started (0x47b602: vol >= bank +0xc0, 0).
     auto rnd = [&](float range) { return range * float(random() & 0xFF) / 256.f; };
-    const float defPitch = def.pitchBase + rnd(def.pitchRand);
+    const float defPitchOnce = df2_ ? 0.f : def.pitchBase + rnd(def.pitchRand);
     for (auto& layer : def.layers) {
         if (!(layer.flags & 6) || layer.variants.empty()) continue;   // mask 0x4F31EC = 6
-        if (layer.range > 0 && distance >= layer.range) continue;
+        // GOG Df2.exe 0x47b42b..0x47b433: a definition with flag 1 skips
+        // the layers whose flag 0x20 differs from 0x4de3e0's (fixed 6: clear).
+        if (df2_ && (def.flags & 1) && (layer.flags & 0x20)) continue;
+        if (!df2_ && layer.range > 0 && distance >= layer.range) continue;
         const int count = int(layer.variants.size());
         int pick;
         if (layer.flags & 0x10) {
@@ -468,16 +494,21 @@ void SoundSystem::start(SoundDef& def, float distance, int dir, bool positional,
             pick = int((random() & 0xFF) * uint32_t(count) >> 8);
         }
         const SoundVariant& v = layer.variants[size_t(pick)];
+        const SoundClip* clip = bank.clip(v.sample);
+        if (df2_ && !clip) continue;   // no sample: no draws, no voice
+        const float defPitch = df2_ ? def.pitchBase + rnd(def.pitchRand) : defPitchOnce;
         // A layer without a range plays at the caller's volume (255).
         const int vol = layer.range > 0
-                            ? std::min(v.gain * kCurve[std::clamp(int(distance / layer.range * 256.f), 0, 255)] >> 8, v.cap)
+                            ? (distance < layer.range
+                                   ? std::min(v.gain * kCurve[std::clamp(int(distance / layer.range * 256.f), 0, 255)] >> 8, v.cap)
+                                   : 0)
                             : 255;
-        if (vol <= 0) continue;
+        if (!df2_ && vol <= 0) continue;
         const float pitch = defPitch * (v.pitchBase + rnd(v.pitchRand)) * (callerPitch > 0 ? callerPitch : 1.f);
         const int p = (positional && (layer.flags & 1)) ? dir : 0;
         // Gain per channel = pan x volume (0x4a99b0), 127 x 255 = full.
         const float right = float(kPan[p][0]) * vol / (127.f * 255.f), left = float(kPan[p][1]) * vol / (127.f * 255.f);
-        audio_->play(bank_.clip(v.sample), left, right, pitch, vol);
+        audio_->play(clip, left, right, pitch, vol);
     }
 }
 
@@ -494,7 +525,7 @@ void SoundSystem::play(int id, Vec3 at, float pitch) {
     // Direction byte: 0xFF - ((listener yaw - bearing) >> 24) in DF.EXE's
     // anticlockwise angles, i.e. the bearing relative to the heading,
     // anticlockwise, in 256ths of a turn.
-    start(def, d, direction(at), true, pitch);
+    start(def, bankOf(id), d, direction(at), true, pitch);
 }
 
 void SoundSystem::playDelayed(int id, Vec3 at) {
@@ -523,7 +554,7 @@ void SoundSystem::tickDelayed() {
 
 void SoundSystem::play2D(int id) {
     if (!audio_ || id <= 0 || id >= 0x400 || !byId_[size_t(id)]) return;
-    start(*byId_[size_t(id)], 0, 0, false, 0);
+    start(*byId_[size_t(id)], bankOf(id), 0, 0, false, 0);
 }
 
 float SoundSystem::range(int id) const {

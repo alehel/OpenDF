@@ -88,6 +88,9 @@ void Music::play(int stem) {
 // goto state, yield, return with an empty return stack); after 32
 // instructions also when the data stack is empty.
 void Music::tick() {
+    // GOG Df2.exe 0x496250 points the data and return stacks at their bases
+    // (0x496271 / 0x496276) at the start of every tick.
+    if (df2_) { stack_.clear(); returns_.clear(); }
     for (int count = 0; count < 4096; ++count) {
         if (count >= 32 && stack_.empty()) return;
         if (step()) return;
@@ -216,7 +219,10 @@ void Music::update() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_) return;
     if (remaining_ > 0) {
-        if (queue_.size() <= 12) {
+        // GOG Df2.exe 0x4766c0 queues while 0x4ab2c2 (the ring slots not
+        // yet playing) is below 13; DF.EXE counts the playing block too.
+        const size_t waiting = queue_.size() - (df2_ && !queue_.empty() && queue_.front().started ? 1 : 0);
+        if (waiting <= 12) {
             const Stem& st = stems_[size_t(stem_)];
             const size_t base = size_t(st.offset) + read_;
             if (base + 8 <= sbf_.size()) {
@@ -227,8 +233,12 @@ void Music::update() {
                 queue_.push_back({base + 8, nbytes / 2, sbf_[base + 4], sbf_[base + 5]});
                 if (df2_) {
                     // 0x46c050: the stream volume for this block, then the fade's step.
+                    // GOG Df2.exe 0x4766c0 -> 0x47bb70 -> 0x4ab372 re-gains the
+                    // ring's blocks; the one playing keeps its latched gain.
                     streamVol_ = std::clamp((std::clamp(master_, 0, 255) * (fade_ >> 16)) >> 8, 0, 255);
                     fade_ = std::clamp(fade_ + fadeStep_, 0, 0xff0000);
+                    for (auto& q : queue_)
+                        if (!q.started) q.vol = streamVol_;
                 }
             }
             remaining_ = remaining_ > st.block ? remaining_ - st.block : 0;
@@ -244,11 +254,12 @@ void Music::mix(float* out, int frames) {
     if (!running_) return;
     // Gain per block (0x4a9c84): (V>>1)>>shift on the signed sample, V the
     // stream volume (DF1: master, fades unused by DFMenu; DF2: see setDf2).
-    const int V = df2_ ? streamVol_ : std::clamp(master_, 0, 255);
-    const float vol = float(V) / 255.f / 128.f;
     int done = 0;
     while (done < frames && !queue_.empty()) {
-        const Block& b = queue_.front();
+        Block& b = queue_.front();
+        b.started = true;
+        const int V = df2_ ? b.vol : std::clamp(master_, 0, 255);
+        const float vol = float(V) / 255.f / 128.f;
         const float gl = integer_ ? float((V >> 1) >> std::min(b.shiftL, 31)) : vol / float(1 << std::min(b.shiftL, 15));
         const float gr = integer_ ? float((V >> 1) >> std::min(b.shiftR, 31)) : vol / float(1 << std::min(b.shiftR, 15));
         while (done < frames && played_ < b.frames) {

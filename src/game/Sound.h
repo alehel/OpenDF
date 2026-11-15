@@ -59,7 +59,14 @@ public:
     bool playDialogLine(const std::string& clip);
     // df.cfg dialog_volume (0..255, default 200; 0x66fa5c); 0 plays no speech.
     void setDialogVolume(int v) { dialogVolume_ = v; }
+    bool dialogEnabled() const { return dialogVolume_ > 0; }   // Df2.exe 0x467950
     void stopAll();
+    // Delta Force 2's mission sound start-up (GOG Df2.exe 0x4679c0) keeps
+    // mixer slots 10-15 for the loops; the mission end (0x467bc0) frees them.
+    void reserveLoopVoices(bool on) {
+        if (audio_)
+            for (int s = 10; s < 16; ++s) audio_->setReserved(s, on);
+    }
 private:
     int dialogVolume_ = 200;
 public:
@@ -90,12 +97,17 @@ private:
     int loopFrame_ = 0;
     int direction(Vec3 at) const;
 
-    void start(SoundDef& def, float distance, int dir, bool positional, float callerPitch);
+    void start(SoundDef& def, Pwf& bank, float distance, int dir, bool positional, float callerPitch);
+    Pwf& bankOf(int id) { return fromNew_[size_t(id)] ? newBank_ : bank_; }
     float occlusion(Vec3 a, Vec3 b) const;
     uint32_t random();
 
     Audio* audio_ = nullptr;
     Pwf bank_, dialogs_;
+    // Delta Force 2's override bank NEW.PWF (GOG Df2.exe 0x4679c0, 0x677eac):
+    // a flag-1 record found there plays its definition and samples from it.
+    Pwf newBank_;
+    std::array<bool, 0x400> fromNew_{};
     std::array<SoundDef*, 0x400> byId_{};   // 1024 id slots (DF2: 0x45DA50; DF1 uses 0x200)
     std::array<std::string, 0x400> names_{};
     std::array<int, 0x400> flags_{};   // the id's table flags (1 PWF definition, 2 LOOP.DEF loop)

@@ -627,7 +627,7 @@ private:
     void hurtPlayer(int amount, int deathType = 1, Vec3 from = {0, 0, 0}, int part = 0);
     // Animation events (0x4360b0): footsteps 0x40-0x43 (0x46a680), voices
     // 0x12-0x16 (0x473f70, slots 7-11) of a body at `origin`.
-    void animEvent(int event, Vec3 origin, int phraseSet, int team = 0);
+    void animEvent(int event, Vec3 origin, int phraseSet, int team = 0, bool airborne = false);
     std::string playerMove_;
     Chr playerChr_;
     Animator playerBody_;
@@ -1328,6 +1328,7 @@ bool Game::loadMission(int index) {
         dialogText_.clear();
         activeDialogs_.clear();
         sound_.stopAll();
+        if (mission_.version >= 0x0F) sound_.reserveLoopVoices(true);   // GOG Df2.exe 0x4679c0
         ambients_.clear();
         for (size_t i = 0; i < world_.objects.size(); ++i) {
             const auto& o = world_.objects[i];
@@ -1831,7 +1832,7 @@ std::vector<Mat4> Game::personPose(const GpuModel& m, int lod, const Chr& chr, c
     return out;
 }
 
-void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
+void Game::animEvent(int event, Vec3 origin, int phraseSet, int team, bool airborne) {
     event &= 0xFF;
     // Delta Force 2 (DF2.EXE 0x43f480): 0x10 DEATH_WATER (400), 0x11 UW_IDLE
     // (804), 0x17 UW_SWIM (805).
@@ -1844,6 +1845,9 @@ void Game::animEvent(int event, Vec3 origin, int phraseSet, int team) {
         return;
     }
     if (event < 0x40 || event > 0x43) return;
+    // GOG Df2.exe 0x445750 cases 0x40..0x43: the footstep 0x415780 runs only
+    // while the body is not airborne (+0x64 & 0x2000 clear).
+    if (mission_.version >= 0x0F && airborne) return;
     // 0x46a680: the sound set by the event's low bit; in water (level above
     // origin - 0.8 m) a splash (effect 2) and 0x88 / 0x89 on the surface;
     // else by the ground's surface type.
@@ -3546,8 +3550,12 @@ void Game::tickDialogs(bool drawn) {
         }
         const int n = int(d.parts->size());
         const DialogPart& p = (*d.parts)[size_t(d.next)];
-        sound_.playDialogLine(p.clip);
-        if (p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
+        // Df2.exe 0x419650: the play callback 0x467950 returns 0 when the
+        // dialog volume [0x67cd1c] is 0, and then neither the clip nor the
+        // subtitle (0x467990) is started; the line still advances.
+        const bool say = !world_.df2Rules || sound_.dialogEnabled();
+        if (say) sound_.playDialogLine(p.clip);
+        if (say && p.subtitle >= 0 && p.subtitle < int(dialogText_.size()) && !dialogText_[size_t(p.subtitle)].empty())
             pushMessage(dialogText_[size_t(p.subtitle)]);
         if (d.next < n - 1) {
             ++d.next;
@@ -8367,7 +8375,10 @@ int Game::run() {
             // Mission events run on the original's 60 Hz ticks.
             for (const auto& hit : arsenal_.takeImpacts()) { recordHit(hit); spawnImpact(hit); }
             // Rockets carry ITEMS.DEF `ambient rocket1` as a loop (0x44d6f9).
-            {
+            // Delta Force 2 refreshes its loop emitters once a game tick (GOG
+            // Df2.exe 0x464d46 counts the tick, 0x464d51 calls 0x4683f0), so
+            // there this runs in the 60 Hz loop below; DF1 once a frame.
+            const auto refreshLoops = [this] {
                 static const int rocket = sound_.idOf("ROCKET1");
                 for (const auto& p : arsenal_.projectiles())
                     if (p.flags & 0x40) sound_.setLoop(p.id, rocket, p.pos);
@@ -8376,7 +8387,8 @@ int Game::run() {
                 for (const auto& m : loopMarkers_) sound_.setLoop(200000 + m.record, m.id, m.at, 1.f);
                 sound_.sweepLoops();
                 sound_.updateLoops();
-            }
+            };
+            if (mission_.version < 0x0F) refreshLoops();
             for (const auto& e : arsenal_.takeSounds()) {
                 if (e.id < 0) sound_.play2D(-e.id);
                 else playSound(e.id, e.pos);
@@ -8469,6 +8481,7 @@ int Game::run() {
             bool dlgDrawn = true;   // the first tick after a drawn frame (0x404b64)
             for (scriptClock_ += dt; scriptClock_ >= 1.f / 60.f; scriptClock_ -= 1.f / 60.f) {
                 ++ticks_;
+                if (mission_.version >= 0x0F) refreshLoops();
                 tickEffects();
                 tickDialogs(dlgDrawn);
                 dlgDrawn = false;
@@ -8744,11 +8757,11 @@ int Game::run() {
                         deadShift_ = deadShift_ + fw * r[0] + lf * r[1];
                     }
                     const ItemDef* soldier = items_.byId(kItemPlayerSoldier);
-                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0, kPlayerTeam);
+                    if (ev) animEvent(ev, player_.origin(), soldier ? soldier->phraseSet : 0, kPlayerTeam, player_.airborne());
                 }
                 for (const auto& e : world_.takeAnimEvents()) {
                     const auto& o = world_.objects[size_t(e.object)];
-                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0, o.team);
+                    animEvent(e.event, o.pos, o.item ? o.item->phraseSet : 0, o.team, o.airborne);
                 }
                 // Ambience (0x45a5a8 dec0, 0x45a830 tree, 0x47f64c palm, 0x45a734..
                 // snd0..2): the sound (4 m up for dec0/tree/palm; trees and palms
@@ -8758,11 +8771,13 @@ int Game::run() {
                 // objects are visited every tick (think at wait <= 0, then
                 // wait - 1); section 1 when (tick & 31) == slot & 31 and section
                 // 2 when (tick & 63) == slot & 63, a visit taking 32 / 64 off a
-                // positive wait or else thinking (0x436c74).
+                // positive wait or else thinking (0x436c74). Delta Force 2
+                // (GOG Df2.exe 0x446550, CD 0x440180) visits section 1 (the
+                // decorations) when (tick & 7) == slot & 7, taking 8 off.
                 for (auto& a : ambients_) {
                     bool think = false;
                     if (a.section == 1 || a.section == 2) {
-                        const uint32_t mask = a.section == 1 ? 31 : 63;
+                        const uint32_t mask = a.section == 1 ? (mission_.version >= 0x0F ? 7 : 31) : 63;
                         if ((ticks_ & mask) != (uint32_t(a.slot) & mask)) continue;
                         if (a.wait > 0) a.wait -= int(mask + 1);
                         else think = true;

@@ -24,6 +24,7 @@ public:
     bool load(Vfs& vfs, const std::filesystem::path& sbf, const char* script = "DFMUSIC.BIN");
     void start();                  // 0x404cc4 (all variables 0, state Begin)
     void stop();                   // 0x404c90
+    bool running() const { return running_; }
     void setVar(int n, int value); // 0x4b8570
     void setVolume(int v) { master_ = v; }   // cd_volume, 0..255
     // DF.EXE's integer units for Audio's DF mixer: (pcm − 128) · ((V >> 1) >> shift).
@@ -62,7 +63,9 @@ private:
     bool running_ = false;
     int stem_ = -1;
     uint32_t read_ = 0, remaining_ = 0;   // read position / bytes left in the stem
-    struct Block { size_t at; uint32_t frames; int shiftL, shiftR; };
+    // `vol`: DF2's latched stream volume (ring slot +0x24/+0x28, 0x4ab2d1);
+    // `started`: the block is playing (out of the ring).
+    struct Block { size_t at; uint32_t frames; int shiftL, shiftR; int vol = 255; bool started = false; };
     std::vector<Block> queue_;     // the ring (16 slots, at most 13 queued)
     uint32_t played_ = 0;          // frames played of queue_.front()
     int master_ = 255;

@@ -59,7 +59,8 @@ struct D2Menu { std::string name, background; std::vector<int> buttons; };
 // DF2.EXE 0x42e460: records KEY=value, fields split by strtok(", ") (empty
 // fields collapse), attribute letters -> 1 << (letter - 'A').
 struct D2Mnu {
-    std::map<std::string, std::string> sounds;   // name -> file
+    struct Sound { std::string file; int volume = 80; };
+    std::map<std::string, Sound> sounds;   // name -> file, volume (SOUND=name,file,flags,volume)
     std::map<std::string, uint32_t> colors;
     std::map<std::string, D2Font> fonts;
     std::map<std::string, D2Image> images;
@@ -95,7 +96,7 @@ struct D2Mnu {
             if (!cur.empty()) f.push_back(cur);
             auto at = [&](size_t i) { return i < f.size() ? f[i] : std::string(); };
             auto num = [&](size_t i) { return std::atoi(at(i).c_str()); };
-            if (key == "SOUND" && f.size() >= 2) sounds[upper(f[0])] = f[1];
+            if (key == "SOUND" && f.size() >= 2) sounds[upper(f[0])] = {f[1], f.size() >= 4 ? num(3) : 0};
             else if (key == "ARGB" && f.size() >= 5)
                 colors[upper(f[0])] = uint32_t(num(1)) << 24 | uint32_t(num(2)) << 16 | uint32_t(num(3)) << 8 | uint32_t(num(4));
             else if (key == "FONT" && f.size() >= 8) {
@@ -362,6 +363,11 @@ private:
 
     // Menus.
     void enter(Screen s);
+    // Music Var1 per screen (GOG Df2.exe 0x442f60; the multiplayer screens' 2, 8, 9 and 10 are not built).
+    static int musicVar1(Screen s) {
+        return s == Screen::Campaign ? 1 : s == Screen::Options1 || s == Screen::Options2 ? 3 : s == Screen::Soldier ? 4 : s == Screen::Credits ? 5
+             : s == Screen::Briefing ? 6 : s == Screen::Gear ? 7 : 0;
+    }
     void playIntroMovie();   // 0x435830: DF2INTRO.BIK through binkplay.exe
     void playBinkVideo(const std::filesystem::path& path);   // binkplay's part
     bool introShot_ = false;   // testing: --screenshot was taken during the intro
@@ -421,7 +427,6 @@ private:
     bool keyDelete_ = false, keyCapture_ = false;
     int keyRow_ = 0, keyMouse_ = 0;
     std::deque<uint32_t> keyQueue_;            // key-downs while capturing (VKs)
-    std::map<int, int> channels_;              // menu sound channel -> playing voice
     // Credits (0x430e00 / 0x430ea0 / 0x4316e0): CREDITS.SCR commands run
     // until a PAUSE; 250 object slots indexed by the command's ID.
     struct CreditCmd { int type = -1, id = 0, flags = 0, life = 0, t = 0, x1 = 0, y1 = 0, x2 = 0, y2 = 0; std::string font, color, str; };
@@ -912,24 +917,21 @@ void FrontendDf2::fill(float x0, float y0, float x1, float y1, uint32_t color) {
 }
 
 void FrontendDf2::sound(const std::string& name, int channel) {
-    // MNU [SOUNDS] (0x42f500): the file at its volume (x SFX volume of the soldier).
+    // MNU [SOUNDS]: GOG Df2.exe 0x4342d0 passes the record's volume (+0x44,
+    // the line's 4th field) and file to 0x4758b0 -> 0x442e40, which clamps
+    // the volume to 0..255 and starts the sample on a free voice. The
+    // channel argument is dropped there (sounds overlap) and the soldier's
+    // SFX volume (+0x5b8, copied to the never-read 0x67cd20) is not applied.
+    (void)channel;
     auto it = mnu_.sounds.find(upper(name));
-    const std::string f = it == mnu_.sounds.end() ? name : it->second;
-    int vol = 80;
-    if (upper(name) == "BTN_SLCT") vol = 150;
-    vol = vol * std::clamp(soldier().get(0x5b8), 0, 255) / 255;
+    const std::string f = it == mnu_.sounds.end() ? name : it->second.file;
+    const int vol = std::clamp(it == mnu_.sounds.end() ? 80 : it->second.volume, 0, 255);
     if (const SoundClip* c = audio_.clip(vfs_, upper(f))) {
-        // 0x43cb00 -> 0x4712f0(sample, direction 0, vol 0..255, pitch 1.0):
+        // 0x442e40 -> 0x47c170(sample, direction 0, vol 0..255, pitch 1.0):
         // the mixer's gains (pan[0] = 63 left, 64 right) x vol x master 255
-        // >> 16 (0x49fc69), passed as pan · vol / (127 · 255).
+        // >> 16, passed as pan · vol / (127 · 255).
         const float gl = 63.f * float(vol) / (127.f * 255.f), gr = 64.f * float(vol) / (127.f * 255.f);
-        // 0x42f500 plays on a channel: a new sound there cuts the old one.
-        if (channel) {
-            if (auto ch = channels_.find(channel); ch != channels_.end()) audio_.stop(ch->second);
-            channels_[channel] = audio_.play(c, gl, gr);
-        } else {
-            audio_.play(c, gl, gr);
-        }
+        audio_.play(c, gl, gr);
     }
 }
 
@@ -1056,10 +1058,8 @@ void FrontendDf2::enter(Screen s) {
             layout(b);
         }
     sound("mnu_tran", 1);
-    // Music Var1 per state (0x43cc20).
-    const int var1 = s == Screen::Campaign ? 1 : s == Screen::Options1 || s == Screen::Options2 ? 3 : s == Screen::Soldier ? 4 : s == Screen::Credits ? 5
-                   : s == Screen::Briefing ? 6 : s == Screen::Gear ? 7 : 0;
-    music_.setVar(1, var1);
+    // Music Var1 per state (0x43cc20); the menu loop also reasserts it every frame.
+    music_.setVar(1, musicVar1(s));
     switch (s) {
     case Screen::Soldier: refreshSoldier(); break;
     case Screen::Main:
@@ -2662,6 +2662,11 @@ int FrontendDf2::run() {
             if (screen_ == Screen::Campaign) campaignTick();   // GOG 0x43457b
             if (screen_ == Screen::Briefing) { mapTick(); voiceTick(); }   // GOG 0x43ca20 (CD 0x437820), the page's tick
             audio_.advance(0.016);   // OPENDF_AUDIODUMP (tests)
+            // GOG Df2.exe menu loop 0x468b3f..0x468b4d: while the music is on,
+            // Var1 is forced to the screen's value (0x442f60) right before the
+            // stream update (0x476810), so the script's own Var01 writes last
+            // one frame and a restarted stream gets it at once.
+            if (music_.running()) music_.setVar(1, musicVar1(screen_));
             music_.update();
         }
         if (!editing_.empty())

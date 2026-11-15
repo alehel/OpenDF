@@ -193,6 +193,44 @@ int Audio::play(const SoundClip* clip, float left, float right, float pitch, int
     v.gL = dfGain(left);
     v.gR = dfGain(right);
     v.stepCur = v.stepTarget = dfStep(clip, pitch);   // 0x4a009f / 0x4a00a2: +8 = +0x34, +0x38 = 0
+    if (dfGame_ == 2) {
+        // GOG Df2.exe 0x4aafc0: 16 slots in index order. A voice not yet
+        // mixed is the slot's pending record (0x496f72), promoted at the
+        // next mix (0x49a7fb); replacing the playing voice here is the same,
+        // as nothing is mixed in between.
+        auto in = [&](int s) -> Voice* {
+            for (auto& o : voices_)
+                if (o.slot == s) return &o;
+            return nullptr;
+        };
+        if (group) {
+            for (int s = 10; s < 16; ++s)
+                if (!in(s)) {
+                    if (loop) {
+                        // A loop (0x4ab183) follows on as the slot's template
+                        // with flag +0x30; its first copy into the voice
+                        // (0x4996d9..0x4996fb) steps the seed (rol 11 + seed
+                        // + 1) and starts it seed & 0x3fc00 (0..255 samples)
+                        // past sample 1, where every later pass restarts
+                        // (dfVoices).
+                        loopSeed_ = (loopSeed_ << 11 | loopSeed_ >> 21) + loopSeed_ + 1;
+                        v.pos = (uint64_t(1) << 32) + (uint64_t(loopSeed_ & 0x3fc00) << 22);
+                    }
+                    v.slot = s;
+                    voices_.push_back(v);
+                    return v.id;
+                }
+            return 0;
+        }
+        for (int s = 0; s < 16; ++s)
+            if (!reserved_[size_t(s)] && !in(s)) { v.slot = s; voices_.push_back(v); return v.id; }
+        for (int s = 0; s < 16; ++s) {
+            if (reserved_[size_t(s)]) continue;
+            Voice* o = in(s);
+            if (o && o->started && o->volume < volume) { v.slot = s; *o = v; return v.id; }
+        }
+        return 0;
+    }
     const int limit = group ? kLoopVoices : kOneShotVoices;
     int busy = 0;
     for (const auto& o : voices_) busy += o.group == group;
@@ -263,6 +301,7 @@ bool Audio::playing(int voice) const {
 void Audio::stopAll() {
     std::lock_guard<std::mutex> lock(mutex_);
     voices_.clear();
+    reserved_.fill(false);
 }
 
 namespace {
@@ -289,7 +328,10 @@ void Audio::dfVoices(int32_t* acc, int from, int frames) {
         for (int i = from; i < from + frames; ++i) {
             if (v.pos >= end) {
                 if (!v.loop) break;
-                v.pos %= end;
+                // DF2: the template's position, sample 1, the fraction dropped (0x4996b5).
+                if (dfGame_ == 2) v.pos = uint64_t(1) << 32;
+                else v.pos %= end;
+                if (v.pos >= end) break;   // a one-sample loop
             }
             const int sv = smp[size_t(v.pos >> 32)] >> 8;   // the 8-bit sample, byte − 0x80
             acc[size_t(i) * 2] += dfContrib(v.gL, sv);
