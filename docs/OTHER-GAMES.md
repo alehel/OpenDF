@@ -704,6 +704,39 @@ First differences from DF1:
     beyond 80 m, else 8 m / 1 m shift 5, 7 in the 8..30 m hover band, by
     0x41e880's distance; landing, unlifted and destroyed ones fall to /
     settle on the probe floor (at least the water while intact);
+  - **animals** (src/game/Wildlife.cpp; ai table 0x4af100, move table
+    0x4c37xx): vultures `vult` (think 0x42dfe0 every 0x10 ticks, move
+    0x42e1c0): 3 m/s at 72 m (40 m with a target), at least 20 m above
+    the ground, climbing / sinking speed >> 7 a tick; home again (+ a random
+    0..43.6°) beyond 200 m; ENV_VULTURE_CALL with chance 1/64; the corpse
+    scan 0x42aeb0 (dead people of another side, not side 0, within 90° and
+    999 m, in sight; 100/d × angle, ×2 but the player; × perception, ÷4
+    relaxed) against rand takes a target (spotted 0x41ac00), which it
+    circles (0x42df50: 3 m/s beyond 16 m, else 2 m/s with the yaw
+    +0x18000000); destroyed: ENV_VULTURE_DEATH once, it falls under 0x134 a
+    tick with its momentum and thuds (0x48) and bounces on the ground.
+    Penguins `peng` (think 0x42f030 every 8, move 0x42f430): walk their path
+    (0x4033d0) at 0.5 m/s, which the mover holds whatever the think wants
+    (so one without a path walks straight on), hop into the water when the
+    ground 2 s ahead is under it, dive (splash effect 4 + PENGUIN_INTO_WATER,
+    0x45af50), swim at 2.25 m/s with a random ±22.5° heading now and then,
+    climb out (PENGUIN_OUTOF_WTR) and level off; a waddle roll; destroyed:
+    PENGUIN_DEATH (0x42a9f0) and tipping over. Fish `prnh` (think 0x42db20
+    every 8, move 0x42de00): their path at 1 m/s with a tail-flick burst
+    (+0xC0 = 0x100, the speed + (+0xC0 << 12)) 1/32 of thinks, 0.5 m under
+    the surface (0x42d870); unless AI flag 1 (D05M06's eleven `fishy2` all
+    have it, so they only hang under the surface) the scan 0x42ac80 (people
+    of any side but 0 up to 1 m above the water, within the field of view
+    and 99 m, sight from 1 m up; ×6 swimming, ÷256 otherwise) takes a
+    swimmer, kept while he swims; the attack 0x42d920 lunges by the jaw
+    within 4 m, steers ±0x11000000 off him and within 0.75 m, after its
+    pause, bites with chance 1/8 (blast kind 4, 0x455180: 1 hp from every
+    person within 2 m, the player too) with effect 0x10 and
+    ENV_PIRANHA_BITE every time, backing off at -4 m/s; destroyed: belly
+    up, rising to just under the surface (no husk: it stays drawn).
+    INFERRED: the first think staggered as the markers' (+11 a record % 60);
+    the penguin's flipper / foot phases and the vulture's wing beat (+0xB0)
+    are not drawn;
   - **parachutes** (0x45bb10, 0x440b2b): people placed 100 m or more up,
     and the player and teleported teams at a start or teleport marker more
     than 0x62FFFF (99 m) above the ground: the marker pass GOG Df2.exe
