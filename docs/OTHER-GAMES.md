@@ -741,7 +741,9 @@ First differences from DF1:
     its sides): CTILE2 background, CTILE panels with DF2_EDGE/DF2_CRNR frames
     3 px outside, the last three chat/system lines, the six tabs of GOG's
     table 0x4af9e0 (Map, VON, Players, Team, Weapons, Mission: Cmap
-    CMAP_MENU000, the literal "VON", CMAP_MENU001-004; F_LG640, 0xff9020 /
+    CMAP_MENU000, the literal "VON", CMAP_MENU001-004; F_LG640, loaded with
+    flags 3 (0x465a20) and so blended by 0x41bb90, each ink pixel with weight
+    (palette blue >> 1) / 128, no shadow; 0xff9020 /
     0x603000, laid out from x 40 with the rest up to 984 shared six ways,
     0x40bda0, clickable on their text, 0x40d860; the CD's table has five);
     Map tab: the

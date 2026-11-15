@@ -165,7 +165,7 @@ bool Hud::loadSheetHudFont(Vfs& vfs, const std::string& name, std::string* error
     return true;
 }
 
-SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
+SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name, bool blend) {
     SheetFont f;
     std::vector<uint8_t> data;
     IndexedImage img;
@@ -175,7 +175,13 @@ SheetFont Hud::loadSheetFont(Vfs& vfs, const std::string& name) {
     std::vector<uint8_t> rgba(size_t(W) * size_t(H) * 4, 0);
     for (size_t i = 0; i < img.pixels.size(); ++i) {
         const uint8_t v = img.pixels[i];
-        if (v >= 8 || v == 4) rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 255;
+        if (v >= 8 || v == 4) {
+            rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+            // 0x41bb90's blend branch: dst += (colour - dst) * (B >> 1) >> 7,
+            // B the blue of the sheet's palette entry (0x405560 stores it
+            // as byte 0 of each BGRA entry).
+            rgba[i * 4 + 3] = blend ? uint8_t((img.palette[v].b >> 1) * 2) : 255;
+        }
     }
     int y0 = 0;
     for (int band = 0; band < 16 && y0 < H; ++band) {

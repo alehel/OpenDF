@@ -6464,7 +6464,7 @@ void Game::drawDf2CommandMap(const Screen& s) {
         // the map is open (0x45da2a); F_LG640 is also the only f_LG in
         // DF2.PFF (an F_LG800 load would fail and leave the font empty,
         // 0x4197e0 frees it first via 0x4195c0).
-        m.big = hud_.loadSheetFont(vfs_, "F_LG640.PCX");
+        m.big = hud_.loadSheetFont(vfs_, "F_LG640.PCX", true);   // flags 3 (0x465a20): blended
         // f_sml's glyph heights (the same sheet loader, 0x41ba40): the text
         // boxes step by the 'A' glyph's (0x40c310, font +0x20c).
         static SheetFont sml;
