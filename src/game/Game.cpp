@@ -309,6 +309,8 @@ public:
         o.won = missionResult_ == kPlayerSide;
         for (const auto& w : world_.objects) o.kills += (w.person && w.dead && w.killer == -3) ? 1 : 0;
         o.quit = quit_;
+        o.crosshairs = crosshair_;
+        o.showGun = gunVisible_;
         return o;
     }
 private:
@@ -6266,6 +6268,7 @@ int Game::run() {
         if (!sound_.init(vfs_, &exe_, &audio_, &sndErr, &df2Exe_)) std::fprintf(stderr, "no sounds: %s\n", sndErr.c_str());
         sound_.setDialogVolume(o_.dialogVolume);
         crosshair_ = o_.crosshairs;
+        gunVisible_ = o_.showGun;   // GOG 0x407a90: [0x67f514] = showgun
     }
     if (missions_.empty()) { std::fprintf(stderr, "no missions found\n"); return 1; }
     auto it = std::find(missions_.begin(), missions_.end(), toUpper(o_.mission));

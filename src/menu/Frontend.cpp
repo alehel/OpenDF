@@ -2473,6 +2473,7 @@ int Frontend::run() {
                 g.gpsIcons = gpsIcons_;
                 g.attributes = options_;
                 g.crosshairs = cfg_.get("crosshairs") != 0;
+                g.showGun = cfg_.get("showgun") != 0;
                 g.flipMouse = cfg_.get("flipmouse") != 0;
                 g.mouseScale = std::clamp(cfg_.get("mousescale"), 0, 255);
                 g.dialogVolume = std::clamp(cfg_.get("dialog_volume"), 0, 255);
@@ -2492,6 +2493,13 @@ int Frontend::run() {
                 runGame(vfs_, g, &outcome_, &flags);
                 missionPlayed_ = true;
                 audio_.setDfMixer(true, false);
+                // GOG 0x401e70 -> 0x407980: the mission's option words go back
+                // to the settings (df.cfg); of them OpenDF's missions change
+                // only the crosshair and gun toggles.
+                if (outcome_.played) {
+                    cfg_.set("crosshairs", outcome_.crosshairs ? 1 : 0);
+                    cfg_.set("showgun", outcome_.showGun ? 1 : 0);
+                }
                 if (outcome_.quit) break;
                 // 0x40e5d4 (GOG 0x407de0): a win marks the mission done and
                 // adds the kills; the flags are kept only on a win.

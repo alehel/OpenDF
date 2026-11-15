@@ -60,6 +60,9 @@ struct GameOptions {
     // dialog_volume (0x472f44).
     bool crosshairs = true, flipMouse = false;
     int mouseScale = 128, dialogVolume = 200;
+    // df.cfg showgun: the view model is drawn only when set (GOG Df.exe
+    // 0x407a90 -> [0x67f514], read by 0x483f30).
+    bool showGun = true;
     // df.cfg DISPLAY gamma (default 128): the display table's gamma, the
     // last colour stage of every Delta Force frame (GOG Df.exe 0x402940).
     int displayGamma = 128;
@@ -76,6 +79,9 @@ struct MissionOutcome {
     bool won = false;        // side 1 won
     int kills = 0;           // people the player killed
     bool quit = false;       // the window was closed: leave the program (exit code 2)
+    // The in-mission option toggles as the mission ended, copied back to the
+    // menu's settings (GOG Df.exe 0x401e70 -> 0x407980).
+    bool crosshairs = true, showGun = true;
 };
 
 // `campaignFlags`: in, the soldier's campaign flags; out, updated only when
