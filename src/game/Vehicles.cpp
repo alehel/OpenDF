@@ -343,12 +343,10 @@ void VehicleSystem::fly(World& world, AiSystem& ai, Vehicle& v, float teamSpeed)
             // bands (GOG Df.exe 0x4503f0), so -22.5 / -67.5 degrees in
             // OpenDF's clockwise headings.
             const Vec3 d = world.nearest(v.lastKnown, o.pos) - o.pos;
-            float dist = std::sqrt(d.x * d.x + d.z * d.z);
-            if (world.df2Rules) {
-                // GOG Df2.exe 0x42b8c7: 0x41e880(|dx|, |dy|, 0) = max + 11/32 min.
-                const float ax = std::abs(d.x), az = std::abs(d.z);
-                dist = std::max(ax, az) + std::min(ax, az) * 11.f / 32.f;
-            }
+            // GOG Df.exe 0x4503f0 -> 0x477670(|dx|, |dy|, 0), Df2.exe 0x42b8c7
+            // -> 0x41e880 the same: max + 11/32 min.
+            const float ax = std::abs(d.x), az = std::abs(d.z);
+            const float dist = std::max(ax, az) + std::min(ax, az) * 11.f / 32.f;
             // GOG Df2.exe 0x42b922 / 0x42b969: the Black Hawk (0x7e5) only.
             const bool hawk = heloType(world, o) == HeloType::Hawk;
             float h = std::atan2(d.x, -d.z);
@@ -574,7 +572,10 @@ void VehicleSystem::altitude(World& world, Vehicle& v, float H, float band, int 
 float VehicleSystem::homeDist(const World& world, const Vehicle& v) const {
     const WorldObject& o = world.objects[size_t(v.object)];
     const Vec3 d = world.nearest(v.home, o.pos) - o.pos;
-    return std::sqrt(d.x * d.x + d.z * d.z);
+    if (world.df2Rules) return std::sqrt(d.x * d.x + d.z * d.z);
+    // GOG Df.exe 0x4509f0 -> 0x477670(|dx|, |dy|, 0): max + 11/32 min.
+    const float ax = std::abs(d.x), az = std::abs(d.z);
+    return std::max(ax, az) + std::min(ax, az) * 11.f / 32.f;
 }
 
 // GOG Df2.exe 0x445f50 from 3 m under the origin: the terrain, or the
@@ -759,7 +760,11 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
     const float deg = kPi / 180.f;
     const Vec3 d = world.nearest(v.lastKnown, o.pos) - gunPoint(world, v);
     const float yaw = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
-    const float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) - o.pitch;
+    // Delta Force (GOG Df.exe 0x450710): the flat range is the integer
+    // square root of the whole-metre differences (0x477620), in metres.
+    const float flatRange = world.df2Rules ? std::sqrt(d.x * d.x + d.z * d.z)
+                                           : std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(-d.z) * std::floor(-d.z)));
+    const float pitch = std::atan2(d.y, flatRange) - o.pitch;
     // GOG Df2.exe 0x42bb5e / 0x42bba8: a helicopter that is neither the
     // Gazelle nor the Black Hawk stores the aim unclamped.
     if (type == HeloType::Other) { v.gunTgtYaw = yaw; v.gunTgtPitch = pitch; return; }
@@ -807,7 +812,8 @@ void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& sho
     const Vec3 d = world.nearest(v.lastKnown, muzzle) - muzzle;
     {
         const float ry = -wrapAngle(std::atan2(d.x, -d.z) - o.heading);
-        const float rp = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) - o.pitch;
+        const float rp = std::atan2(d.y, shots.df2() ? std::sqrt(d.x * d.x + d.z * d.z)
+                                                     : std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(-d.z) * std::floor(-d.z)))) - o.pitch;
         // GOG Df2.exe 0x42bccf: no limits for the other types.
         if (type != HeloType::Other && (ry < (hawk ? -135 * deg : -45 * deg) || ry > (hawk ? -45 * deg : 45 * deg) ||
             rp < (hawk ? -float(0x0C000000) * turn : -45 * deg) || rp > 0))
@@ -821,7 +827,10 @@ void VehicleSystem::doorGun(World& world, AiSystem& ai, Vehicle& v, Arsenal& sho
     auto spread = [&]() { return float((0x8000 - int(rnd())) * (g0.accuracy - 1) * 30) * turn; };
     // OpenDF heading is clockwise: the DF yaw bias and spread turn the other way.
     const float yaw = std::atan2(d.x, -d.z) - err() - v.bias * turn - spread();
-    const float pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) + err() + spread();
+    // Delta Force (GOG Df.exe 0x450830): the flat range as 0x450710's.
+    const float flatRange = shots.df2() ? std::sqrt(d.x * d.x + d.z * d.z)
+                                        : std::floor(std::sqrt(std::floor(d.x) * std::floor(d.x) + std::floor(-d.z) * std::floor(-d.z)));
+    const float pitch = std::atan2(d.y, flatRange) + err() + spread();
     const ModeDef& md = shots.modeAt(gunMode);
     const GunDef& g = shots.gunAt(md.gun);
     Projectile p;
