@@ -431,7 +431,8 @@ Vec3 VehicleSystem::gunPoint(const World& world, const Vehicle& v) const {
 // with flag 2 one more than 100 m (2D) from where the helicopter took it is
 // given up for 60 thinks. Without a target the soldiers' scan (0x46a804,
 // from 1 m above the hub) is drawn against rand: score x perception x2
-// (hard, side 2), / 4 when relaxed, x perception again. With a target the
+// (hard, side 2), / 4 when relaxed, x perception again (DF2's 0x42bff0
+// once, and it marks the team spotted). With a target the
 // sight line is re-checked about every 192 ticks; only while it holds is the
 // last known position refreshed (and a dead target noticed). The gun's aim
 // is that position from the gun point, relative to the body, clamped to the
@@ -458,8 +459,14 @@ void VehicleSystem::heloTargeting(World& world, AiSystem& ai, Vehicle& v) {
         if (id == -1) return;
         score *= v.perception * ((ai.hard && o.side == 2) ? 2.f : 1.f);
         if (v.alert == 0) score *= 0.25f;
-        if (float(rnd()) >= score * v.perception * 65536.f) return;
+        // DF1 multiplies by the perception a second time (0x47ccf2); DF2's
+        // 0x42bff0 draws against 0x417830's score as it comes (perception
+        // once).
+        if (float(rnd()) >= score * (world.df2Rules ? 1.f : v.perception) * 65536.f) return;
         if ((v.flags & 2) && dist2D(o.pos, at) > 100.f) return;
+        // DF2 (GOG Df2.exe 0x42bff0 -> 0x41ac00): the helicopter's team has
+        // spotted the target's.
+        if (world.df2Rules) ai.markSpotted(o.team, id == -3 ? player_.team : world.objects[size_t(id)].team);
         v.gunTarget = id;
         v.lastKnown = at;
         v.seen = true;

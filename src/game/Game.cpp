@@ -2358,8 +2358,10 @@ void Game::tickDf2Items() {
                     l.wait = 0x20;
                 } else {
                     // Scan (0x425c70); seen when score · perception > a 16-bit
-                    // draw: the "spotted" mark 0x418960(target team, own team)
-                    // (argument order as read), the target kept for 8 thinks.
+                    // draw: the "spotted" mark (light team, target team) as
+                    // org1's (GOG Df2.exe 0x42ce2f..0x42ce39 -> 0x41ac00: row
+                    // [light +0x6a], bit [target +0x6a]), the target kept for
+                    // 8 thinks.
                     AiSystem::PlayerView pv;
                     pv.alive = !playerDead();
                     pv.origin = player_.origin();
@@ -2377,7 +2379,7 @@ void Game::tickDf2Items() {
                     if (id != -1 && seen * 65536.f > float(shrapRand())) {
                         l.target = id;
                         l.counter = 8;
-                        ai_.markSpotted(id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team, o.team);
+                        ai_.markSpotted(o.team, id == -3 ? kPlayerTeam : world_.objects[size_t(id)].team);
                     }
                     l.wait = 0x10;
                 }
