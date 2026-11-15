@@ -223,6 +223,7 @@ public:
     // as at the mission start.
     void refill();
     void cycle();                 // 0x44b81c: next slot with a mode, wrapping (GOG Df2.exe 0x44d3c0: none from 11/12)
+    void cycleBack();             // DF1 'cycleb' (GOG Df.exe 0x484b70(-1)): previous slot with a mode, wrapping from 9
     void reload();                // 0x44a004
     void toggleZoom();
     // DF2.EXE's binoculars command (action 35, 0x41b6e3): holding slot 10

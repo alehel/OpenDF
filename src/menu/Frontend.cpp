@@ -38,7 +38,7 @@ Color argb(uint32_t c) {
 }
 
 // A soldier profile (playerNN.ply, 0xA90 bytes, DF.EXE 0x40f40c / 0x40f630):
-// "PLY" + version 0x1A (CD; GOG 0x1B), name +0x04, flags +0x24 (bit 0 in use), campaign
+// "PLY" + version 0x1A (GOG Df.exe 0x1B, 0x409180), name +0x04, flags +0x24 (bit 0 in use), campaign
 // +0x28, per campaign c mission-done flags +0x30 + c*0x44 + 4i and campaign
 // flags +0x70 + c*0x44, selected mission +0x470 + 4c, face +0x640, campaign
 // kills +0x664, sidearm/primary/secondary item +0x680/+0x684/+0x688, list
@@ -2069,7 +2069,7 @@ void Frontend::ownerDraw(MnuButton& b) {
     if (cb == "MNU_MIS_PL1") { drawBriefingMap(b); return; }
     if (cb == "MNU_MIS_SCROLLBAR" && b.type == 3) { briefLine_ = std::max(0, b.sliderPos); return; }   // 0x412b10
     if (cb == "MNU_KBD_SCROLLBAR" && b.type == 3) {
-        kbScroll_ = std::clamp(b.sliderPos, 0, keyRows_ - 11);   // DF.MNU's slider: 33 (CD), 35 (GOG)
+        kbScroll_ = std::clamp(b.sliderPos, 0, keyRows_ - 11);   // DF.MNU's slider: 33 (CD), 35 (GOG 0..0x23 at 0x422766)
         if (kbScroll_ != kbLastSlider_) { kbLastSlider_ = kbScroll_; refreshKeys(); }
         return;
     }
